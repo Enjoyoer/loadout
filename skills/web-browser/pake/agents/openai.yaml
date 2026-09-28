@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pake"
+  short_description: "Package websites as desktop apps"
+  default_prompt: "Use $pake to package this website into a desktop app."

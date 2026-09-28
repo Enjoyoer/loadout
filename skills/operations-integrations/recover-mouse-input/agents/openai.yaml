@@ -1,0 +1,4 @@
+interface:
+  display_name: "Recover Mouse Input"
+  short_description: "Recover stuck Windows mouse clicks"
+  default_prompt: "Use $recover-mouse-input to diagnose and recover stuck Windows mouse input without using Computer Use."

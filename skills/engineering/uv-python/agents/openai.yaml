@@ -1,0 +1,6 @@
+interface:
+  display_name: "Python uv"
+  short_description: "Manage Python deps with uv lockfiles."
+  default_prompt: "Use $uv-python to add or sync Python dependencies with uv lockfiles."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dispatching Parallel Agents"
+  short_description: "Use when the user explicitly asks for subagents, delegation,..."
+  default_prompt: "Use the dispatching-parallel-agents skill for this task."

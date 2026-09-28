@@ -1,0 +1,4 @@
+interface:
+  display_name: "Download to NAS"
+  short_description: "Stage NAS downloads and place exact destinations"
+  default_prompt: "Use download-to-nas to compare torrent or direct-URL options, follow my source and destination preferences, queue torrents in NAS qBittorrent, and place the result at my exact destination."

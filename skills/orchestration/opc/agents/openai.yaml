@@ -1,0 +1,7 @@
+interface:
+  display_name: "OPC"
+  short_description: "Multi-agent coding through verified delivery"
+  default_prompt: "Use $opc to orchestrate this coding task with a proportional agent topology and verified completion."
+
+policy:
+  allow_implicit_invocation: true

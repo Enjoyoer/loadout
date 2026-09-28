@@ -1,0 +1,4 @@
+interface:
+  display_name: "Find Docs"
+  short_description: "Find current non-OpenAI developer documentation"
+  default_prompt: "Use the find-docs skill for this task."

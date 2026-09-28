@@ -1,0 +1,4 @@
+interface:
+  display_name: "OPN Non-Code Orchestrator"
+  short_description: "Coordinate durable non-code work with one owner"
+  default_prompt: "Use $opn for durable non-code work; reuse one folder owner, delegate only when authorized, and work directly only within this agent's authorized scope and ownership."

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Handoff"
+  short_description: "Commit a comprehensive STATUS and LESSONS handoff"
+  default_prompt: "Use $handoff to commit a comprehensive repo-lessons update so the next agent can resume from STATUS.html and LESSONS.md."
+policy:
+  allow_implicit_invocation: false

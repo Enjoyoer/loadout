@@ -1,0 +1,4 @@
+interface:
+  display_name: "LiteParse"
+  short_description: "Fast local document parsing"
+  default_prompt: "Use $liteparse to extract clean markdown from this PDF."

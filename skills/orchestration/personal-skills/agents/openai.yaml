@@ -1,0 +1,4 @@
+interface:
+  display_name: "Personal Skills"
+  short_description: "Sync verified skill packages to local clients"
+  default_prompt: "Use $personal-skills to sync selected skills from this repository."

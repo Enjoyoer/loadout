@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repo lessons"
+  short_description: "Maintain owned PM or Worker two-file memory"
+  default_prompt: "Use $repo-lessons to maintain affected owned memory files after material changes and preserve durable evidence."

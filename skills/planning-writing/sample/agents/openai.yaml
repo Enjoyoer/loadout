@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sample-based Message Voice"
+  short_description: "Match supplied writing samples for short messages"
+  default_prompt: "Use $sample to draft a short message in the style of my supplied examples."
+
+policy:
+  allow_implicit_invocation: true

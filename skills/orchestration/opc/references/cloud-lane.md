@@ -1,0 +1,19 @@
+# Cloud lane
+
+The owner's toggle `~/.config/opc/cloud` (`on`/`off`, missing is off) is a standing explicit Worker route: when on, an eligible editing lane runs as one Claude Code cloud session on `claude-opus-5-5[1m]` at `xhigh`, billed to claude.ai cloud credits. Flip it with `node scripts/cloud-lane.mjs on|off|status`; add `--fleet host,...` to flip other hosts over SSH. `on` requires a claude.ai login on that host; it does not assume the account has cloud credits. GitHub tokens cannot list App installations, so the owner confirms repositories with `cloud-lane.mjs allow owner/repo` (`~/.config/opc/cloud-repos`).
+
+## Route
+
+Call `readCloudToggle()`. When on, gather facts for `checkCloudEligibility`: a GitHub remote, the repository listed by `readCloudRepos()` (owner-confirmed Claude GitHub App), a self-contained task, and `claude auth status` showing `claude.ai`. Pass both to `resolveCloudWorkerRoute`; a returned route replaces asking for the Worker route. Off or ineligible returns null: record the reasons and use the normal Worker route. Never offload a repository without the App, since the whole local repository would upload.
+
+## Launch
+
+Take the lane marker from `managedWorkerNames` (its `opc/<slug>` branch name) and build the brief with `buildDelegatedBrief`, then `buildCloudBrief`. Write it to a file outside the repository. `create_terminal` in the checkout, `send_terminal_keys` with `buildCloudLaunchCommand` plus a newline, then `capture_terminal` once for the session ID and URL. If `classifyCloudFailure` reports `no-credits`, no session exists: tell the owner that account has no cloud credits and stop the lane; for `unavailable` (organization policy or provider), use the fallback below. `--cloud` requires a PTY; a shell tool call silently runs locally. Create the check with `create_heartbeat(buildCloudHeartbeatRequest(...))`, then call `recordCloudLaunch`. Put the session URL, marker, and expected PR in the project's `STATUS.html`, then end the PM turn. Never name a branch in a cloud brief: the cloud git proxy accepts pushes only to the session's own `claude/...` branch, so the marker goes in the PR title and the heartbeat finds the PR by that title.
+
+## Wait
+
+The heartbeat is the lane's only observer. Each run reads the remote once and calls `recordCloudProgress`, which records commits, last push, and PR state in the task. A quiet remote (no draft PR in 20 minutes, no push for 90 minutes) returns `suspect`, not `dead`: sessions often work for long stretches without pushing. On `suspect`, open the recorded session URL with the Paseo browser tools, read the page, and call `recordCloudSessionCheck` with `working` (still acting), `waiting` (idle or asking for input), `unknown` (page unreadable), or `failed` (error or stopped). `working` restarts the quiet clocks. `waiting` or `unknown` returns `followUp` once: write `buildCloudFollowUp` to a file and send `buildCloudFollowUpCommand` from a shell, which restarts the clocks. The lane is `dead` only on `failed`, a second quiet spell after that follow-up, the 6-hour cap, cloud sessions unavailable for the login, or exhausted credits. A PM that wakes, resumes, or replaces another PM reads that record and never launches a second session or judges progress from elapsed time.
+
+## Finish
+
+On `ready`, delete the heartbeat and integrate the PR head through the normal integrate, verify, and merge states; cloud work never merges itself. A `tellOwner` result means no cloud credits: tell the owner and stop; a local fallback then needs their decision. On any other `dead`, delete the heartbeat, call `authorizeCloudFallback`, and launch one local managed Worker with the returned route; the local Worker is the last resort, after the session check and follow-up. If that fails too, stop and report. The cloud session never gets repairs; send them to the fallback Worker or a fresh owner decision.

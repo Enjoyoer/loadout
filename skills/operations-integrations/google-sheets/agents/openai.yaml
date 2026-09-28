@@ -1,0 +1,4 @@
+interface:
+  display_name: "Google Sheets"
+  short_description: "> Activate this skill when the user wants to find, read, or a..."
+  default_prompt: "Use the google-sheets skill for this task."

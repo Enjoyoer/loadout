@@ -1,0 +1,318 @@
+{
+  "skill": "opn",
+  "skill_path": "skills/orchestration/opn/SKILL.md",
+  "description": "Behavioral scenario fixtures for the compact non-code ownership policy. These cases need an evaluator; the structural validator does not claim to execute them.",
+  "cases": [
+    {
+      "id": "direct-work-fallback",
+      "prompt": "A user asks for a bounded non-code deliverable, has not authorized delegation, and no host adapter is available. Decide how the current agent proceeds.",
+      "scenario": {
+        "delegation_authorized": false,
+        "adapter_available": false,
+        "scope": "one project folder",
+        "current_agent_authorized": true,
+        "existing_owner": false
+      },
+      "expected": {
+        "decision": "work directly",
+        "block": false,
+        "owner": "current agent"
+      },
+      "rubric": [
+        {
+          "criterion": "authority",
+          "observable": "does not claim delegation permission"
+        },
+        {
+          "criterion": "fallback",
+          "observable": "continues the bounded work or asks only for missing user input"
+        },
+        {
+          "criterion": "identity",
+          "observable": "does not invent a Worker, task, or thread"
+        }
+      ],
+      "critical": true
+    },
+    {
+      "id": "denied-operation-no-takeover",
+      "prompt": "The host denies the operation needed to reach a project folder, and the folder already has an owner whose identity cannot be reconciled. Decide how the current agent proceeds.",
+      "scenario": {
+        "delegation_authorized": true,
+        "host_operation": "denied",
+        "resource_access": "inaccessible",
+        "existing_owner": {
+          "folder": "project/research",
+          "identity": "mismatch"
+        },
+        "requested_folder": "project/research"
+      },
+      "expected": {
+        "decision": "block dependent action",
+        "takeover": false,
+        "direct_equivalent": false,
+        "owner": "preserve existing owner"
+      },
+      "rubric": [
+        {
+          "criterion": "authority",
+          "observable": "does not reinterpret denial or identity mismatch as direct-work permission"
+        },
+        {
+          "criterion": "ownership",
+          "observable": "preserves the existing folder owner and does not create a sibling or take over"
+        },
+        {
+          "criterion": "blocker",
+          "observable": "reports the exact access or identity dependency and a reconciliation next action"
+        }
+      ],
+      "critical": true
+    },
+    {
+      "id": "reuse-exact-owner",
+      "prompt": "An existing Worker owns the exact folder and is idle after a completed objective. The user asks for a related follow-up.",
+      "scenario": {
+        "delegation_authorized": true,
+        "existing_owner": {
+          "folder": "project/research",
+          "state": "idle"
+        },
+        "requested_folder": "project/research"
+      },
+      "expected": {
+        "decision": "reuse",
+        "replacement": false,
+        "retirement": false
+      },
+      "rubric": [
+        {
+          "criterion": "folder ownership",
+          "observable": "the exact owner is reverified and reused"
+        },
+        {
+          "criterion": "no retirement",
+          "observable": "idle or accepted work does not archive the owner"
+        }
+      ],
+      "critical": true
+    },
+    {
+      "id": "authorized-native-handoff",
+      "prompt": "The user authorizes native delegation for one non-code workstream and the host exposes spawn, follow-up, and wait operations.",
+      "scenario": {
+        "delegation_authorized": true,
+        "codex_operations": false,
+        "native_operations": true,
+        "folder": "project/media"
+      },
+      "expected": {
+        "adapter": "native_subagent",
+        "owners": 1,
+        "handoff": "OPN delivers the bounded result"
+      },
+      "rubric": [
+        {
+          "criterion": "selection",
+          "observable": "native is selected only after explicit authorization"
+        },
+        {
+          "criterion": "scope",
+          "observable": "one folder-owning Worker receives outcome, scope, constraints, and checks"
+        },
+        {
+          "criterion": "delivery",
+          "observable": "OPN waits for and delivers that result without spawning a replacement"
+        }
+      ],
+      "critical": true
+    },
+    {
+      "id": "direct-user-codex-owner",
+      "prompt": "A named-task Worker acknowledged the brief and owns the requested folder. Explain the next collaboration boundary.",
+      "scenario": {
+        "delegation_authorized": true,
+        "adapter": "codex_named_task",
+        "acknowledged": true,
+        "user_facing_task": true
+      },
+      "expected": {
+        "decision": "user collaborates directly with Worker",
+        "pm_action": "stop routing work"
+      },
+      "rubric": [
+        {
+          "criterion": "boundary",
+          "observable": "the user is pointed to the existing Worker task"
+        },
+        {
+          "criterion": "no relay",
+          "observable": "OPN does not poll, redo, or relay the substantive work"
+        }
+      ],
+      "critical": true
+    },
+    {
+      "id": "evidence-provenance",
+      "prompt": "A Worker reports completion and links only to a generated artifact. Assess whether the objective is verified.",
+      "scenario": {
+        "artifact": "generated report",
+        "acceptance_checks": [
+          "source facts checked",
+          "output rendered"
+        ],
+        "observations": [
+          "artifact exists"
+        ]
+      },
+      "expected": {
+        "verified": false,
+        "next": "request observable check evidence and provenance"
+      },
+      "rubric": [
+        {
+          "criterion": "evidence",
+          "observable": "each applicable check is mapped to an observation"
+        },
+        {
+          "criterion": "provenance",
+          "observable": "the source or command behind the observation is named"
+        },
+        {
+          "criterion": "uncertainty",
+          "observable": "the missing verification and safe next action are explicit"
+        }
+      ],
+      "critical": true
+    },
+    {
+      "id": "scoped-cleanup-approval",
+      "prompt": "A Worker proposes deleting stale non-code files after finding a possible source-of-truth contradiction.",
+      "scenario": {
+        "destructive": true,
+        "manifest": true,
+        "rollback": true,
+        "post_checks": true,
+        "contradiction": true,
+        "user_approval": false
+      },
+      "expected": {
+        "decision": "do not execute",
+        "reason": "approval and contradiction gate"
+      },
+      "rubric": [
+        {
+          "criterion": "scope",
+          "observable": "an exact manifest and source-of-truth check precede any mutation"
+        },
+        {
+          "criterion": "safety",
+          "observable": "the contradiction blocks only the dependent cleanup"
+        },
+        {
+          "criterion": "authority",
+          "observable": "explicit user approval is required"
+        }
+      ],
+      "critical": true
+    },
+    {
+      "id": "memory-maintenance",
+      "prompt": "A project turn changed current status but added no durable lesson. Maintain project memory without creating an audit log.",
+      "scenario": {
+        "status_changed": true,
+        "durable_lesson_changed": false,
+        "blocked_turn": true,
+        "owned_pair": [
+          "STATUS.html",
+          "LESSONS.md"
+        ]
+      },
+      "expected": {
+        "status": "rewrite current facts",
+        "lessons": "unchanged unless durable facts need correction",
+        "extra_tracker": false
+      },
+      "rubric": [
+        {
+          "criterion": "two-file boundary",
+          "observable": "only the owned STATUS.html and LESSONS.md pair is maintained"
+        },
+        {
+          "criterion": "pruning",
+          "observable": "stale or duplicate material is removed without inventing a lesson"
+        },
+        {
+          "criterion": "marker",
+          "observable": "updates the maintenance marker only on a materially changed file; leaves unchanged files byte-identical"
+        }
+      ],
+      "critical": true
+    },
+    {
+      "id": "no-auto-retirement",
+      "prompt": "A Worker delivered an accepted result and is now inactive. Decide whether OPN may archive it.",
+      "scenario": {
+        "accepted": true,
+        "inactive": true,
+        "retirement_request": false
+      },
+      "expected": {
+        "archive": false,
+        "owner": "remains available"
+      },
+      "rubric": [
+        {
+          "criterion": "lifecycle",
+          "observable": "completion and inactivity leave the owner available"
+        },
+        {
+          "criterion": "authority",
+          "observable": "retirement waits for an explicit user request or approval"
+        }
+      ],
+      "critical": true
+    },
+    {
+      "id": "code-route",
+      "prompt": "The requested outcome requires tracked source changes and tests. State the non-code disposition.",
+      "scenario": {
+        "requires_code": true,
+        "delegation_authorized": true
+      },
+      "expected": {
+        "route": "$opc",
+        "opn_mutation": false
+      },
+      "rubric": [
+        {
+          "criterion": "boundary",
+          "observable": "OPN routes the request to OPC"
+        },
+        {
+          "criterion": "no mutation",
+          "observable": "OPN does not create a non-code Worker or edit source"
+        }
+      ],
+      "critical": true
+    },
+    {
+      "id": "memory-no-change",
+      "prompt": "A follow-up changes no project facts or durable lessons. Decide whether to write memory.",
+      "scenario": {
+        "status_changed": false,
+        "durable_lesson_changed": false
+      },
+      "expected": {
+        "writes": false
+      },
+      "rubric": [
+        {
+          "criterion": "no churn",
+          "observable": "leaves both owned files and their timestamps unchanged"
+        }
+      ],
+      "critical": true
+    }
+  ]
+}
