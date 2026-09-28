@@ -1,0 +1,688 @@
+{
+  "schema_version": 1,
+  "hash_basis": "git-blob",
+  "source_commit": "a4d4d95c558e357cda541db7f1fd0374ef1fdfb1",
+  "skill_count": 25,
+  "file_count": 97,
+  "files": [
+    {
+      "path": "skills/engineering/codebase-design/DEEPENING.md",
+      "category": "engineering",
+      "skill": "codebase-design",
+      "bytes": 2553,
+      "sha256": "f3dd099ce99289bd213914d8ee3e2429b78309c3957ca4583f7659551b1d53c1"
+    },
+    {
+      "path": "skills/engineering/codebase-design/DESIGN-IT-TWICE.md",
+      "category": "engineering",
+      "skill": "codebase-design",
+      "bytes": 2664,
+      "sha256": "8e740bf98446dbd4dfdc132ac4346d9a7eedaf93de6a495889171cf7f99f16bd"
+    },
+    {
+      "path": "skills/engineering/codebase-design/SKILL.md",
+      "category": "engineering",
+      "skill": "codebase-design",
+      "bytes": 6446,
+      "sha256": "2c20617f87ec8af6a434859f381b2f061a69b530444e74eb39e78bb016a6d1e2"
+    },
+    {
+      "path": "skills/engineering/codebase-design/agents/openai.yaml",
+      "category": "engineering",
+      "skill": "codebase-design",
+      "bytes": 102,
+      "sha256": "edebc9e4fcfe102114012575eaa9600b9b5fd08c311664f389c36e7bc717740f"
+    },
+    {
+      "path": "skills/engineering/domain-modeling/ADR-FORMAT.md",
+      "category": "engineering",
+      "skill": "domain-modeling",
+      "bytes": 2733,
+      "sha256": "944c92aa790e8fbdc9199640b170979abb8a34ba8d0fe18c2a01a63bce140ca0"
+    },
+    {
+      "path": "skills/engineering/domain-modeling/CONTEXT-FORMAT.md",
+      "category": "engineering",
+      "skill": "domain-modeling",
+      "bytes": 2290,
+      "sha256": "17ab16ce783e4d2801ee52fd9acdf550cbf44de65ae76797a93943bbedf22a13"
+    },
+    {
+      "path": "skills/engineering/domain-modeling/SKILL.md",
+      "category": "engineering",
+      "skill": "domain-modeling",
+      "bytes": 3331,
+      "sha256": "327a2b50620e2fd70abc6893cd6965e76b20f8d0adb0dc2c8d5eb3845efb643e"
+    },
+    {
+      "path": "skills/engineering/domain-modeling/agents/openai.yaml",
+      "category": "engineering",
+      "skill": "domain-modeling",
+      "bytes": 101,
+      "sha256": "f6bf2aa996c6e6f53fdd0708e18a0d16a56aed8322cca59fedbe3c0d2c75f06b"
+    },
+    {
+      "path": "skills/engineering/improve-codebase-architecture/SKILL.md",
+      "category": "engineering",
+      "skill": "improve-codebase-architecture",
+      "bytes": 2835,
+      "sha256": "2250d6282bb6d130b4bea5d1b888ca2f24fdb0ba0f0695f9d92ceca7a0f24555"
+    },
+    {
+      "path": "skills/engineering/improve-codebase-architecture/agents/openai.yaml",
+      "category": "engineering",
+      "skill": "improve-codebase-architecture",
+      "bytes": 171,
+      "sha256": "4070ed96d39f9b10e1740b01f3836f13b2bde2e930acc14af5c8e1abc5312253"
+    },
+    {
+      "path": "skills/engineering/uv-python/SKILL.md",
+      "category": "engineering",
+      "skill": "uv-python",
+      "bytes": 2043,
+      "sha256": "4c2b489838fcadbfda12b22d40a6f2acd5f66fb699a1ddaff9384863a375db93"
+    },
+    {
+      "path": "skills/engineering/uv-python/agents/openai.yaml",
+      "category": "engineering",
+      "skill": "uv-python",
+      "bytes": 231,
+      "sha256": "7adfbd5631e5d87781e636c4190b1e20353f0c3a56f062f189ee642e0de02e52"
+    },
+    {
+      "path": "skills/operations-integrations/download-to-nas/SKILL.md",
+      "category": "operations-integrations",
+      "skill": "download-to-nas",
+      "bytes": 6970,
+      "sha256": "8e33f002cbe5081e2b170f67bf5fb155ce78ed59a9ff94c0014cfcf44b7ab7e9"
+    },
+    {
+      "path": "skills/operations-integrations/download-to-nas/agents/openai.yaml",
+      "category": "operations-integrations",
+      "skill": "download-to-nas",
+      "bytes": 326,
+      "sha256": "82f4597ab3380c2311afe76914425e1356b9a5220966357404678f482ab9fd7d"
+    },
+    {
+      "path": "skills/operations-integrations/download-to-nas/references/sources.md",
+      "category": "operations-integrations",
+      "skill": "download-to-nas",
+      "bytes": 493,
+      "sha256": "03445060ea9c924e2196f6ed464d1232e998e5d123cba6f70b3ea101c9c059b6"
+    },
+    {
+      "path": "skills/operations-integrations/download-to-nas/references/subtitles.md",
+      "category": "operations-integrations",
+      "skill": "download-to-nas",
+      "bytes": 2710,
+      "sha256": "b6c0e51b8fd9cd2669786dce7e3fab655fcc4f74bfe8080ec8f669030f27e7ff"
+    },
+    {
+      "path": "skills/operations-integrations/download-to-nas/scripts/oshash.py",
+      "category": "operations-integrations",
+      "skill": "download-to-nas",
+      "bytes": 655,
+      "sha256": "472f6d03edebddf950a6e1c947949eb3e4b14260fe3c774c12a7fb10c0f43297"
+    },
+    {
+      "path": "skills/operations-integrations/download-to-nas/scripts/qbit_status.ps1",
+      "category": "operations-integrations",
+      "skill": "download-to-nas",
+      "bytes": 920,
+      "sha256": "2b96c3031cab0add5d257c7b86af417f938b02e28f8b24810f44304f8e901098"
+    },
+    {
+      "path": "skills/operations-integrations/gmail/SKILL.md",
+      "category": "operations-integrations",
+      "skill": "gmail",
+      "bytes": 8205,
+      "sha256": "1a7545611b081997e529f767d822a1177390f82fbded8d4a52abd0b0b89fa9c0"
+    },
+    {
+      "path": "skills/operations-integrations/gmail/agents/openai.yaml",
+      "category": "operations-integrations",
+      "skill": "gmail",
+      "bytes": 178,
+      "sha256": "50dcf3b35ffbd356f0dac7f61c90e22b39d3b3f947088e466275842ad5d73963"
+    },
+    {
+      "path": "skills/operations-integrations/google-sheets/SKILL.md",
+      "category": "operations-integrations",
+      "skill": "google-sheets",
+      "bytes": 1635,
+      "sha256": "05e32482ac202d7db8eb6264d846902cb0c5daa6d95284cafa1eb8884fb90e52"
+    },
+    {
+      "path": "skills/operations-integrations/google-sheets/agents/openai.yaml",
+      "category": "operations-integrations",
+      "skill": "google-sheets",
+      "bytes": 194,
+      "sha256": "4b0349abe584f6a998fc3cd36f2a808630663f052b72c5131bf868d66d23722f"
+    },
+    {
+      "path": "skills/operations-integrations/recover-mouse-input/SKILL.md",
+      "category": "operations-integrations",
+      "skill": "recover-mouse-input",
+      "bytes": 3177,
+      "sha256": "ee26d465ea75e1aa3594b673323bacdd3e7ebcad0544cb9f6cc9419ae77885ae"
+    },
+    {
+      "path": "skills/operations-integrations/recover-mouse-input/agents/openai.yaml",
+      "category": "operations-integrations",
+      "skill": "recover-mouse-input",
+      "bytes": 230,
+      "sha256": "4834a17cb5bb048e721e41a3bc357a42543c929c3747c3b252fce28a7a555e08"
+    },
+    {
+      "path": "skills/operations-integrations/todoist-api/SKILL.md",
+      "category": "operations-integrations",
+      "skill": "todoist-api",
+      "bytes": 2319,
+      "sha256": "a21afb482e7ae51bf9ac97a3369a783d3f9c036f5601811f662d3e2763040cd9"
+    },
+    {
+      "path": "skills/operations-integrations/todoist-api/agents/openai.yaml",
+      "category": "operations-integrations",
+      "skill": "todoist-api",
+      "bytes": 168,
+      "sha256": "ddf9de3e35ecc2902397e4a4c94c8f3fc16bab415618cbd920d3c9ee381359b3"
+    },
+    {
+      "path": "skills/operations-integrations/todoist-api/references/api.md",
+      "category": "operations-integrations",
+      "skill": "todoist-api",
+      "bytes": 8523,
+      "sha256": "fc71144e694b37ccb9a33ef48ab2400f6e7159fdcaae729d4fc0e639702bf39c"
+    },
+    {
+      "path": "skills/operations-integrations/todoist-api/scripts/todoist.ps1",
+      "category": "operations-integrations",
+      "skill": "todoist-api",
+      "bytes": 6372,
+      "sha256": "6f6b410622c35540d29fe77a2ab719029912ab67af6600b8768aeae14359ca83"
+    },
+    {
+      "path": "skills/operations-integrations/wizard/SKILL.md",
+      "category": "operations-integrations",
+      "skill": "wizard",
+      "bytes": 4123,
+      "sha256": "bdf31d48211ea559878f95a4f344aeabf8d85897488ba564382bab0b000daac1"
+    },
+    {
+      "path": "skills/operations-integrations/wizard/agents/openai.yaml",
+      "category": "operations-integrations",
+      "skill": "wizard",
+      "bytes": 96,
+      "sha256": "98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83"
+    },
+    {
+      "path": "skills/operations-integrations/wizard/template.sh",
+      "category": "operations-integrations",
+      "skill": "wizard",
+      "bytes": 8567,
+      "sha256": "33cbe9dfb1d0e9185b60248a52aabed14bc64785a00cac695e302e739dd6c153"
+    },
+    {
+      "path": "skills/orchestration/claude-cloud/SKILL.md",
+      "category": "orchestration",
+      "skill": "claude-cloud",
+      "bytes": 4808,
+      "sha256": "c605efc2732c2bef2e2902b1fe55b8f411aaf2c30a4747ed05a46fa8a0032b82"
+    },
+    {
+      "path": "skills/orchestration/dispatching-parallel-agents/SKILL.md",
+      "category": "orchestration",
+      "skill": "dispatching-parallel-agents",
+      "bytes": 1711,
+      "sha256": "624eddc9bed0d59e744ef42b8b7187d6f0474cf752b6edfc8a409e7cbd499f25"
+    },
+    {
+      "path": "skills/orchestration/dispatching-parallel-agents/agents/openai.yaml",
+      "category": "orchestration",
+      "skill": "dispatching-parallel-agents",
+      "bytes": 221,
+      "sha256": "b924b0eec3ea6b5e277fa0836b2aa59695b644a58440864a01884bc9be274ffc"
+    },
+    {
+      "path": "skills/orchestration/handoff/SKILL.md",
+      "category": "orchestration",
+      "skill": "handoff",
+      "bytes": 1398,
+      "sha256": "c8cedf671caf792697dddf23236b3c5bf94112fd54769162ab2d2254cc8d09fa"
+    },
+    {
+      "path": "skills/orchestration/handoff/agents/openai.yaml",
+      "category": "orchestration",
+      "skill": "handoff",
+      "bytes": 294,
+      "sha256": "e0536c1bbc44e9c0530cec2e2fcd671e01784a63177fa753b35e0c0925102f13"
+    },
+    {
+      "path": "skills/orchestration/opc/SKILL.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 4803,
+      "sha256": "64bf9c2a14e9a75b8df859f99108791c33112171dd424f326cafa83ead702d71"
+    },
+    {
+      "path": "skills/orchestration/opc/agents/openai.yaml",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 265,
+      "sha256": "c27630e37e181eda06958aceccd613949ac59397c63ea4e28c53f418577d7b92"
+    },
+    {
+      "path": "skills/orchestration/opc/references/cloud-lane.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 3901,
+      "sha256": "44c1703ad7c27d8b0b86b6d143d36fa4f012a0341ec4e26f0991c122ddd68466"
+    },
+    {
+      "path": "skills/orchestration/opc/references/codex-sites.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 2991,
+      "sha256": "8debfe22eb0e00971373baa1542ebfbb10161fb857d6d9dfe9866f765d54b213"
+    },
+    {
+      "path": "skills/orchestration/opc/references/exploration-swarm.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 1059,
+      "sha256": "08de9efd6bc5bf60b232e0920ecc3fd5e035aa2717d6220a31a4e211f9a2e86f"
+    },
+    {
+      "path": "skills/orchestration/opc/references/imp-execution.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 4971,
+      "sha256": "12b76249c34602276d77b5751688e513c6dc1e29e756959d65d3f010c53bbe87"
+    },
+    {
+      "path": "skills/orchestration/opc/references/maintenance.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 652,
+      "sha256": "1378abac39dcb600bfd3ad4af705fb72f9b143b42e985bcae615057206d5b17f"
+    },
+    {
+      "path": "skills/orchestration/opc/references/planner.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 1495,
+      "sha256": "e5c129a2ada0dc6ebd3a6ce383d22f45a10f9e68af120c36fa795ce06b1d33a8"
+    },
+    {
+      "path": "skills/orchestration/opc/references/recovery.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 1477,
+      "sha256": "3c89eb9f940c29b7e563cd0a3ce014ab6e75ac08c67d84e165d43661e73e5841"
+    },
+    {
+      "path": "skills/orchestration/opc/references/simplifier-review.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 2011,
+      "sha256": "f1db95ee410c66ec9b6dfbbfd4924c5a7cd0bd9b576bb0f3c0bbdb1a6317bec8"
+    },
+    {
+      "path": "skills/orchestration/opc/references/web-lane.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 1079,
+      "sha256": "6d442396f7488acc9ea9870717b666ccead73c223f3ba559dde68b7f6575f213"
+    },
+    {
+      "path": "skills/orchestration/opc/references/web-models-not-approved.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 4008,
+      "sha256": "97f7187d117462eaad1d16e391ae92e7c688aee372c770edb51b05be05851a21"
+    },
+    {
+      "path": "skills/orchestration/opc/references/web-reviewer.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 3719,
+      "sha256": "512433197b94408a943c310267d08b27521a26ba842e2bee304606f995eaadb6"
+    },
+    {
+      "path": "skills/orchestration/opc/references/worktree-lifecycle.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 898,
+      "sha256": "9231c10d996039fd160910042eca9c11ab224d7c11b941ea27172eee287aecad"
+    },
+    {
+      "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 5211,
+      "sha256": "f513df53bc7e2565e48119fb900b8cd429a066647931e30647d801f47b30bcb7"
+    },
+    {
+      "path": "skills/orchestration/opc/scripts/cloud-lane.mjs",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 15208,
+      "sha256": "28e487f96d9b825a7c003c91dc52078ec564d5471fcd0665eb3df99ac336f962"
+    },
+    {
+      "path": "skills/orchestration/opc/scripts/delivery.mjs",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 9260,
+      "sha256": "a32a113fed5b89e1b9150c9b787eaf1eadecc4970529ff8a2c878749e99e2dda"
+    },
+    {
+      "path": "skills/orchestration/opc/scripts/paseo-worker.mjs",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 7107,
+      "sha256": "a113350584d5e0b730a44b3558d14cf5992513507caab5b08f83352c8ec5792f"
+    },
+    {
+      "path": "skills/orchestration/opc/scripts/planner.mjs",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 7157,
+      "sha256": "28bb2165c1bc2ab6cb6d462ef4cbe091419086613c2ddbecdbcbc89a47360859"
+    },
+    {
+      "path": "skills/orchestration/opc/scripts/task-state.mjs",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 15339,
+      "sha256": "b9b9b214a66f7cfa4aa408b4795b4253cf03092c82e54ba87b067699e71c7c29"
+    },
+    {
+      "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 6013,
+      "sha256": "2bf3b02bad4c83dece6de3eb4ebe136d4db8505ba3909a57101947e6a319d25f"
+    },
+    {
+      "path": "skills/orchestration/opc/scripts/web-reviewer.mjs",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 13934,
+      "sha256": "796712edd94ba0532978163d24d160746f802516532423fdc9b24506715d929f"
+    },
+    {
+      "path": "skills/orchestration/opc/scripts/worker.mjs",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 19022,
+      "sha256": "d2ed73d4e04098e12834f457eb5a56f2dcd42d6dcf8160827b0852dae5b23a5d"
+    },
+    {
+      "path": "skills/orchestration/opn/SKILL.md",
+      "category": "orchestration",
+      "skill": "opn",
+      "bytes": 8453,
+      "sha256": "5079e1276886970e91643879a65d428b6109c9c1115f46ba6ee1f0687083fb72"
+    },
+    {
+      "path": "skills/orchestration/opn/agents/openai.yaml",
+      "category": "orchestration",
+      "skill": "opn",
+      "bytes": 312,
+      "sha256": "ae201e83972f08a61c62f5d0deee411329feed8d2a5f9929f70b6e46e8d92115"
+    },
+    {
+      "path": "skills/orchestration/opn/evals.json",
+      "category": "orchestration",
+      "skill": "opn",
+      "bytes": 10052,
+      "sha256": "116ef27b7587c8edafb630f969695ba6e7f11e592a2af240e91570b040df1424"
+    },
+    {
+      "path": "skills/orchestration/opn/references/host-adapters.md",
+      "category": "orchestration",
+      "skill": "opn",
+      "bytes": 3507,
+      "sha256": "f5081803ba792db4bf9584da2cf64d055657c176553c69f51421e52172d6b8a2"
+    },
+    {
+      "path": "skills/orchestration/opn/scripts/host_adapters.py",
+      "category": "orchestration",
+      "skill": "opn",
+      "bytes": 4915,
+      "sha256": "cf4441a035cb55f59ad1649aadf32e26939da8f323704cb8dc3ad17e8ce8e017"
+    },
+    {
+      "path": "skills/orchestration/opn/scripts/test_validate_opn.py",
+      "category": "orchestration",
+      "skill": "opn",
+      "bytes": 5054,
+      "sha256": "bf9b93f2b23ae1bfb6af6be6de07493a16bab7cfe696eea59d5aeaaf7d636455"
+    },
+    {
+      "path": "skills/orchestration/opn/scripts/validate-opn.py",
+      "category": "orchestration",
+      "skill": "opn",
+      "bytes": 4269,
+      "sha256": "30ec8e66deb33d4e03acdfee4de6d5e6a32205e5c6781772dcf98152143ecacd"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/SKILL.md",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 2739,
+      "sha256": "b2d1c4f039ba32c503c053f111281bd1b55c6d7f4f556289df8f1c8e5840e09d"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/agents/openai.yaml",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 201,
+      "sha256": "2830437b43425404fd04aa2336e837b119ffad71606a09e3f6cd65a89466fb8a"
+    },
+    {
+      "path": "skills/orchestration/repo-lessons/SKILL.md",
+      "category": "orchestration",
+      "skill": "repo-lessons",
+      "bytes": 6593,
+      "sha256": "28a3b4863263a52e0e0cfa78e4454725af432f0e3652b04c649ea3f315a7e8c7"
+    },
+    {
+      "path": "skills/orchestration/repo-lessons/agents/openai.yaml",
+      "category": "orchestration",
+      "skill": "repo-lessons",
+      "bytes": 241,
+      "sha256": "fd60fa18204967eff3b4056e85a0ea25b1139135e52cbc3ff4d188a580b4bd85"
+    },
+    {
+      "path": "skills/planning-writing/grilling/SKILL.md",
+      "category": "planning-writing",
+      "skill": "grilling",
+      "bytes": 1987,
+      "sha256": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2"
+    },
+    {
+      "path": "skills/planning-writing/grilling/agents/openai.yaml",
+      "category": "planning-writing",
+      "skill": "grilling",
+      "bytes": 113,
+      "sha256": "1411d7df7d99b7e621a1ff8283c8133cc2464be63d064e52d8ce169c6800ee9b"
+    },
+    {
+      "path": "skills/planning-writing/sample/SKILL.md",
+      "category": "planning-writing",
+      "skill": "sample",
+      "bytes": 2190,
+      "sha256": "e603436b43af9230feb26108074591cee211217796035bfcd65b680fa6f54436"
+    },
+    {
+      "path": "skills/planning-writing/sample/agents/openai.yaml",
+      "category": "planning-writing",
+      "skill": "sample",
+      "bytes": 267,
+      "sha256": "3b7ba4552b3f9d77b9f730a66d158bd582efb2790f48343bf898ca1e783cdf66"
+    },
+    {
+      "path": "skills/research-docs/find-docs/SKILL.md",
+      "category": "research-docs",
+      "skill": "find-docs",
+      "bytes": 6297,
+      "sha256": "c617305d356942daac0c342681d74ce9a6ca8ef5ef689dd1b58b1e87ac66605e"
+    },
+    {
+      "path": "skills/research-docs/find-docs/agents/openai.yaml",
+      "category": "research-docs",
+      "skill": "find-docs",
+      "bytes": 169,
+      "sha256": "90ad9cb20dcf1fa45a1128753edc3ef1a579f6f21b1b4a02a65d93fda025a1f6"
+    },
+    {
+      "path": "skills/research-docs/liteparse/SKILL.md",
+      "category": "research-docs",
+      "skill": "liteparse",
+      "bytes": 1910,
+      "sha256": "4871db8ff064fd6b13dac731fbfd92c514438911e2389459a7e2265cd789d694"
+    },
+    {
+      "path": "skills/research-docs/liteparse/agents/openai.yaml",
+      "category": "research-docs",
+      "skill": "liteparse",
+      "bytes": 166,
+      "sha256": "0b238cfe472ec92ec39351541c3f0331f4446e8cd8f4cfe7d6559d32c7d20563"
+    },
+    {
+      "path": "skills/research-docs/liteparse/scripts/parse_document.py",
+      "category": "research-docs",
+      "skill": "liteparse",
+      "bytes": 1307,
+      "sha256": "dd251242877431c931408e47d26ff872739975a854a39b51734d7f800310a6ef"
+    },
+    {
+      "path": "skills/web-browser/browse-x/SKILL.md",
+      "category": "web-browser",
+      "skill": "browse-x",
+      "bytes": 2561,
+      "sha256": "d0a8c91f900c2b4ad60c6b310fc1dfb32798a0d644fc762ce863981f5192f99e"
+    },
+    {
+      "path": "skills/web-browser/browse-x/scripts/browse-x.ts",
+      "category": "web-browser",
+      "skill": "browse-x",
+      "bytes": 9575,
+      "sha256": "b2650f1cceb79178dfcb83a8a02328e3ede9bd8b86ae15974d3624dc29c0d951"
+    },
+    {
+      "path": "skills/web-browser/browse-x/tests/browse-x.test.ts",
+      "category": "web-browser",
+      "skill": "browse-x",
+      "bytes": 4928,
+      "sha256": "ab0a36bb908cbb90606eb1dc9b96c048920b6e9372afde8d91e384bd42856ce3"
+    },
+    {
+      "path": "skills/web-browser/frontend-design/LICENSE.txt",
+      "category": "web-browser",
+      "skill": "frontend-design",
+      "bytes": 10174,
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+    },
+    {
+      "path": "skills/web-browser/frontend-design/SKILL.md",
+      "category": "web-browser",
+      "skill": "frontend-design",
+      "bytes": 4277,
+      "sha256": "08834ebc6382f9b6c561f854e0041b85973876584f545ac4930cabbdd142bd9e"
+    },
+    {
+      "path": "skills/web-browser/frontend-design/agents/openai.yaml",
+      "category": "web-browser",
+      "skill": "frontend-design",
+      "bytes": 230,
+      "sha256": "b622eb18a7d622a10e9d9d380d593f7f57d249f8e854bc672514910740dadc23"
+    },
+    {
+      "path": "skills/web-browser/pake/SKILL.md",
+      "category": "web-browser",
+      "skill": "pake",
+      "bytes": 3617,
+      "sha256": "14bfd84391a6ac0cded9894f1564be2034e692d2fa4f7040425193c111593ed5"
+    },
+    {
+      "path": "skills/web-browser/pake/agents/openai.yaml",
+      "category": "web-browser",
+      "skill": "pake",
+      "bytes": 164,
+      "sha256": "66cab4044c8a101e6455538a21a85eae396ae83120ff3a09f774d566100d3943"
+    },
+    {
+      "path": "skills/web-browser/pake/references/pake-cli.md",
+      "category": "web-browser",
+      "skill": "pake",
+      "bytes": 3138,
+      "sha256": "54d25f635517816329f70bdbff75ab25e13d54c5cabb3ddf1f27611414e5da00"
+    },
+    {
+      "path": "skills/web-browser/playwright/LICENSE.txt",
+      "category": "web-browser",
+      "skill": "playwright",
+      "bytes": 11351,
+      "sha256": "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
+    },
+    {
+      "path": "skills/web-browser/playwright/NOTICE.txt",
+      "category": "web-browser",
+      "skill": "playwright",
+      "bytes": 403,
+      "sha256": "417d5d3372914ecfd9fe102ac1d7dc2119253209f9718d6c222f616876c1904b"
+    },
+    {
+      "path": "skills/web-browser/playwright/SKILL.md",
+      "category": "web-browser",
+      "skill": "playwright",
+      "bytes": 3769,
+      "sha256": "9882ed06b27d8a6e8e5f8610f08845c9aa9b6d90720bc26094cf5fec95ab3b14"
+    },
+    {
+      "path": "skills/web-browser/playwright/agents/openai.yaml",
+      "category": "web-browser",
+      "skill": "playwright",
+      "bytes": 313,
+      "sha256": "ddda43720fc566fffa45264be8f17f7745a3cee28d5245d41d3b963bc9967230"
+    },
+    {
+      "path": "skills/web-browser/playwright/assets/playwright-small.svg",
+      "category": "web-browser",
+      "skill": "playwright",
+      "bytes": 828,
+      "sha256": "f1d213c0f76735d8272c3d3e9fbf71fe7b894e2d1588907044c780f2c33a9732"
+    },
+    {
+      "path": "skills/web-browser/playwright/assets/playwright.png",
+      "category": "web-browser",
+      "skill": "playwright",
+      "bytes": 1730,
+      "sha256": "521669f088c838196c6c852ccc9abdd7234d8f37fc9a8a7a9af7db2d50193381"
+    },
+    {
+      "path": "skills/web-browser/playwright/references/cli.md",
+      "category": "web-browser",
+      "skill": "playwright",
+      "bytes": 1863,
+      "sha256": "7c069a8206ba20b9ddbdc42436b04de30bb3aa4a825ba98680757ee62e954900"
+    },
+    {
+      "path": "skills/web-browser/playwright/references/workflows.md",
+      "category": "web-browser",
+      "skill": "playwright",
+      "bytes": 1864,
+      "sha256": "a2b5835a00ebee3906c146adf7f764f7718ea3f89a8702d86eaa135dfe0fc8c2"
+    },
+    {
+      "path": "skills/web-browser/playwright/scripts/playwright_cli.sh",
+      "category": "web-browser",
+      "skill": "playwright",
+      "bytes": 526,
+      "sha256": "aa3fdff5d0e4556177f4dfd5f04117e772aa54f94b6a2e34b6c0edf629c6b9b5"
+    }
+  ]
+}
