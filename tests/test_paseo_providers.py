@@ -48,6 +48,7 @@ FAKE_PASEO = textwrap.dedent(r"""
       "terminal create") [ -e "$FAKE_ROOT/fail-terminal" ] && { echo "terminal failed" >&2; exit 1; }
         : > "$FAKE_ROOT/term.out"; echo '{"id":"term-1"}' ;;
       "terminal send-keys") counter drop-sends && exit 0
+        [ -e "$FAKE_ROOT/echo-only" ] && { printf '$ %s\n' "$4" | fold -w 50 >> "$FAKE_ROOT/term.out"; exit 0; }
         # Input sent while the shell is still starting is lost, as on a slow relay host.
         n=$(cat "$FAKE_ROOT/quiet-captures" 2>/dev/null || echo 0); [ "$n" -gt 0 ] && exit 0
         { printf '$ %s\n' "$4"; HOME="$FAKE_ROOT/hosts/$host" sh -c "$4" 2>&1; } | fold -w 50 >> "$FAKE_ROOT/term.out" ;;
@@ -121,6 +122,7 @@ class ProviderSyncTest(unittest.TestCase):
             "LOADOUT_RELAY_WAIT_SECONDS": "3",
             "LOADOUT_RELAY_READY_SECONDS": "2",
             "LOADOUT_RELAY_SETTLE_SECONDS": "0",
+            "LOADOUT_RELAY_RESEND_SECONDS": "0.5",
         }
         assert_fakes_run(self.env)
 
@@ -203,6 +205,28 @@ class ProviderSyncTest(unittest.TestCase):
         calls = self.calls().splitlines()
         send = next(i for i, line in enumerate(calls) if "send-keys" in line)
         self.assertEqual(sum("terminal capture" in line for line in calls[:send]), 5)
+
+    def test_relay_resends_once_when_the_command_never_echoed(self):
+        (self.root / "drop-sends").write_text("1")
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 0, out)
+        self.assertIn("tablet (paseo-relay): write CHANGED", out)
+        self.assertEqual(self.calls().count("terminal send-keys"), 2)
+
+    def test_relay_resend_is_bounded_to_one(self):
+        (self.root / "drop-sends").write_text("5")
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.calls().count("terminal send-keys"), 2)
+        self.assertEqual((self.root / "workspaces").read_text(), "")
+
+    def test_relay_never_resends_an_echoed_command(self):
+        (self.root / "echo-only").touch()
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.calls().count("terminal send-keys"), 1)
+        self.assertIn("did not finish within 3s; last output:", out)
+        self.assertIn("@@LOADOUT-EXIT-", out)
 
     def test_relay_never_ready_times_out_and_cleans_up(self):
         (self.root / "quiet-captures").write_text("999")
