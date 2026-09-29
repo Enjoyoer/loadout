@@ -1,7 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "2566b5a87d3612bb714ea55cc2d3686f452420f4",
+  "source_commit": "c34ab5b0470dcb36f1d0eb0e61652b4099724d0f",
   "skill_count": 25,
   "file_count": 100,
   "files": [
@@ -471,22 +471,22 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 3915,
-      "sha256": "b850d72e5d7c8db06b51c86df7d7e826480e211ca758ffab9c1e42f3056fc0d8"
+      "bytes": 6223,
+      "sha256": "55397a76c94d0504cb0254e5b5f3f6fe1dc6cb825d57b90aa5133580840c41ac"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 214,
-      "sha256": "abe347ccfac6e21faa8a8a5c9bb3cc09c33ee62e2f4b5e17cc3f4a87f06fff6b"
+      "bytes": 236,
+      "sha256": "b1139e2a501c315f11d144d16236674074416e5cbdefc2f703f369c235399ecc"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 1549,
-      "sha256": "f801f36d75f178464a950da12763249dc2e14272d1fd3ef331a93f45672282bb"
+      "bytes": 2348,
+      "sha256": "e0e62c4a9dfa17e01372c90c6a8394240d5225ccdd6fd6834cd0a42099828fb1"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/global/AGENTS.md",
@@ -499,8 +499,8 @@
       "path": "skills/orchestration/personal-skills/fleet/example/hosts.json",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 487,
-      "sha256": "38d0f3570205aeab864c856d23073254a44f2a5f838b07b64f21e5558f0fe0ea"
+      "bytes": 800,
+      "sha256": "6aad4db53e9a469dcac1e2ad628aa880499b9f4b250a160bb973b4769d13879f"
     },
     {
       "path": "skills/orchestration/repo-lessons/SKILL.md",
@@ -704,6 +704,364 @@
       "skill": "playwright",
       "bytes": 526,
       "sha256": "aa3fdff5d0e4556177f4dfd5f04117e772aa54f94b6a2e34b6c0edf629c6b9b5"
+    }
+  ],
+  "plugin_count": 4,
+  "plugin_file_count": 56,
+  "plugins": [
+    {
+      "id": "cache-aware-autocompact",
+      "paseo": ">=0.9.2 <0.10.0"
+    },
+    {
+      "id": "merged-worker-archiver",
+      "paseo": ">=0.9.1 <0.10.0"
+    },
+    {
+      "id": "orphan-project-sweeper",
+      "paseo": ">=0.9.0 <0.10.0"
+    },
+    {
+      "id": "usage-limit-auto-resume",
+      "paseo": ">=0.9.0 <0.10.0"
+    }
+  ],
+  "plugin_files": [
+    {
+      "path": "plugins/cache-aware-autocompact/README.md",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 5314,
+      "sha256": "109a437ad06c41c86a3dd294429777f2f3e6578d824a8892a99d1372c3f2c905"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/index.server.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 11250,
+      "sha256": "62bbd294dcdc0c1de6e374effb76dcc441af71b6ccfb72ea049c58a56e4ca0b4"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/package-lock.json",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 21293,
+      "sha256": "9bb54f874bc1c44227608b2d89a93e2b9a5eff5cb4a030addfdb58c9ad315bd9"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/package.json",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 896,
+      "sha256": "c6eb437f54e2fa75d670412f8c2171a090286835de6e1337b29f0b40910a5caf"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/paseo-plugin.json",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 189,
+      "sha256": "9e18c3049d7821a25e96ea38de3c5e4138828adf3237dadd85cbbebe71bbb467"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/server/config.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 1131,
+      "sha256": "57a500579273de08db078676d755c7323312c92de38532f234722c7ad3b9d60a"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/server/metrics.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 918,
+      "sha256": "15d1d772558515a930f8892c1015ef678b0867814abb7620f7be4251152a7751"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/server/model.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 3340,
+      "sha256": "f073ef4c51117d97eb231e614afd5dbac23f8e509c5d6e6aa4ecc9cf748618c0"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/server/retry.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 368,
+      "sha256": "7f421e99400c57ba6e61695c9e33b74ed10c30ac80a97dca00e405982ac8cc15"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/server/store.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 1739,
+      "sha256": "d1a3a4df8c49a10c969cb483ce99d0e0260764e1d4ed29639e59f524be4c1436"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/server/timer.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 1383,
+      "sha256": "baba6025c58e92e43ff3b784d0a0d0fe708593c814bba2e498b9dbeff4f7fb7a"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/test/model.test.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 8121,
+      "sha256": "022568afbe108266858172df96bdb847e814e42b3527820c1d782bd8649c3b47"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/test/retry.test.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 853,
+      "sha256": "d8ebb64f936cc099040835590bf0a1b15afe2a077dc2f8208f4d88352f63c054"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/test/store.test.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 1081,
+      "sha256": "5073f2d247bf6ee2a00ad8728908fbaba37ebd23424a4d02edb45f6556548c27"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/test/timer.test.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 1887,
+      "sha256": "d6e22847395e08f4cc60c64b6ac63afc6badb61e004f30625e8f6d6a3dafcda6"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/tsconfig.json",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 465,
+      "sha256": "b1d7ee66aa92807b0ae9b6fdb74ec20d99d5453c3b39d14dd69a0d7a5610cea5"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/README.md",
+      "plugin": "merged-worker-archiver",
+      "bytes": 12070,
+      "sha256": "bd98588defc5275054c2a0e6b86c3f0d2334603db89982032d6af4948ce86a80"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/index.server.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 5280,
+      "sha256": "eebb98255e74b9c6fec9076ca799049367af30007884e00da1628473e6b55153"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/package-lock.json",
+      "plugin": "merged-worker-archiver",
+      "bytes": 21291,
+      "sha256": "17722d395a55bee7fcbd7a1f7a60f6d3a4da6f2155dae991fa6341d0bd05273a"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/package.json",
+      "plugin": "merged-worker-archiver",
+      "bytes": 1008,
+      "sha256": "1bb3ae30d14289d9b8dff4e9c6ca4da34084e60ed93d96516ed7ac6b43f540ab"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/paseo-plugin.json",
+      "plugin": "merged-worker-archiver",
+      "bytes": 212,
+      "sha256": "75057a3847d490530478d9da6b9a9b8af29523d8127a75c31ae400a78fea9f5d"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/scripts/dry-run.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 2648,
+      "sha256": "f0970e258682b1a0d43ab196d9897709a56eabebd12033d56d4b0bd11faba6e9"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/server/config.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 2006,
+      "sha256": "6cd97d382dba02cceb709ea768c0c211ff73392b17bf73e2d54868fc553d772c"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/server/daemon.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 2336,
+      "sha256": "35b7092d07030e4719d9405e78ed6925916baddf855aa937639ed88107c4cb41"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/server/evaluate.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 4698,
+      "sha256": "a43ba95d7e916c89ca479f93020ede67d0c42ef1d2a52b653c48603f072c020d"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/server/io.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 2991,
+      "sha256": "0e551dab2a7d19eaf0313f969dd0ebaf0691c1d65573015aa7b097f5513669c6"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/server/merge-check.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 11158,
+      "sha256": "3df965f297320048f53284725f60830420c9bc9138f976817bed54f03df8066c"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/server/scheduler.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 6850,
+      "sha256": "a6879278012cd629f2fe872cbd12109e6cf14d5492687bff2da7363bf783cd76"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/server/sweeper.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 9482,
+      "sha256": "adf9cf02e47cea9d68154238454b372f8237a32ece4047c2db42a2a29ca5ccf8"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/server/types.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 2084,
+      "sha256": "4bd95f50485dc7f38663557174cf032dff32e99cc003fe80cb90afe9be9c45eb"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/test/config.test.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 1706,
+      "sha256": "8e1ff05ae627a98b6f17c6803b274c3054724bff227ea330d375839d6b1add15"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/test/evaluate.test.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 11522,
+      "sha256": "5fe2f4f4d5d28cd98c8efae6faef1d8d34f03573a0fe9f1e7368871d64fc24d5"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/test/fakes.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 5371,
+      "sha256": "df5585d04b949ba1bb623f1d94faa9ea6a2cf52b44dbb44c5e70e6e0a6f6dde2"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/test/scheduler.test.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 5702,
+      "sha256": "b1209832891f07b0cbad0482d71effb5b3d3a25785bd7e86b08c5dfcc190cfae"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/test/sweeper.test.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/tsconfig.json",
+      "plugin": "merged-worker-archiver",
+      "bytes": 534,
+      "sha256": "56d76219c406b78100bd65f675811cbda5af947ae76b390f65ffd396aadbd75b"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/README.md",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 3449,
+      "sha256": "3fa1d5ef76ab0336e2d87c236292049a10b46e0bb47a9b064007661407b66a1f"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/index.server.ts",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 1060,
+      "sha256": "c71f284f7f3c9ee24e42e37aa60a454f4fbde237661965d260e829024ba974aa"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/package-lock.json",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 6963,
+      "sha256": "8d689ded26e7968fbbb7b8a25788d4a1fdc7afb771acd03859996706a403f438"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/package.json",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 508,
+      "sha256": "9ead0d6aeaff867eb1c060e39af6f4171fd6ab4c9b052a07c79a6a9003dd357f"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/paseo-plugin.json",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 93,
+      "sha256": "4342dc23cc9b26f3e52ec4353481a174bc42d8b5e043d7d1e8db08f2d900495d"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/server/daemon.ts",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 3212,
+      "sha256": "cc22c4501d950af265b820f43b7c0937e1dcb757ff9857108709b8f19f1f7b63"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/server/sweeper.ts",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 10500,
+      "sha256": "37691e6a348be4397d1ecf1c323b567349929b1589e4dd0b6acecb8dd9d9f6f3"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/tsconfig.json",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 391,
+      "sha256": "20366520105fab77f3b4b724a78991d6c1e1d9f60ef43807afff08c545fc263f"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/README.md",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 3540,
+      "sha256": "144c12f1dd0f1f1be589f31be921b5c700269fd09e3eade2e957bc81f0a7eca0"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/index.server.ts",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 18221,
+      "sha256": "f342b77d0940e0b08f803735f9e7e74e12c221fe1f4a8d444611634efb655f26"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/package-lock.json",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 21293,
+      "sha256": "d66a2e56f60b40412238cda65fe190239b6818f22ae4412d97cd5087128bee0c"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/package.json",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 886,
+      "sha256": "f8c3bd09028f92e8fb3b13837fecaef1bf60eebbb865c2e25ab52cb326aa389c"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/paseo-plugin.json",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 185,
+      "sha256": "553fa2c09d928d16093b88bd3d89a54427e6799137a3a123952ed560a491bc45"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/server/config.ts",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 1055,
+      "sha256": "563c62a875daaa052c404ef203c8a31938cf3a22ea8073d03b84d13dc60431b0"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/server/daemon.ts",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 1769,
+      "sha256": "eff70a39946699b224ae72f9cb5e6db5df7fbe246b7c378a36ae51218b258a9c"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/server/model.ts",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 20431,
+      "sha256": "50a28144994af4c0d90960279d6303b2232187212017d4a9f3e5c717fc4ce948"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/server/store.ts",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 2599,
+      "sha256": "30ce4c05e83d82fcdad1e39731834f7922894427e74ec8bec06ae5fdc03863c9"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/test/model.test.ts",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 17550,
+      "sha256": "43d8b93ef32ebc80c14f160627123f1e04acb1beee55d94aff1073286c526e3f"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/test/store.test.ts",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 1359,
+      "sha256": "388aa3952f5b6290be487fa58f0090bad4b56710dbca70ef5b468b6466f24095"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/tsconfig.json",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 431,
+      "sha256": "e89a10f974c258b9358f8fcd7c56ec1153b2eff0ea61e490c9c736312112362d"
     }
   ]
 }
