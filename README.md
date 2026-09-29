@@ -14,7 +14,7 @@ Choose the packages you want and follow the `personal-skills` skill or the manif
 
 For a manual install, resolve the `source_commit` in `MANIFEST.json`, verify each selected committed blob's byte count and SHA256, then copy it to the flat destination after checking for local edits and symlink or junction ancestors. `skills/orchestration/personal-skills/SKILL.md` describes the full preflight. A changed installed file that matches no verified prior publication is a conflict; leave it untouched.
 
-Some packages need an external CLI, connected service, or local credential. Read each `SKILL.md` before using it. A package may read an optional private `references/local.md` for host-specific settings, and `personal-skills` reads your private fleet from `fleet/local/` (see `skills/orchestration/personal-skills/fleet/README.md`). Both are ignored by Git, absent from the manifest, and never published. The `sample` package learns style from examples supplied by the user; this public version contains no personal voice profile.
+Some packages need an external CLI, connected service, or local credential. Read each `SKILL.md` before using it. A package may read an optional private `references/local.md` for host-specific settings, and `personal-skills` reads your private fleet from `$LOADOUT_FLEET` or `~/.config/loadout/fleet/` (see `skills/orchestration/personal-skills/fleet/README.md`). Both are ignored by Git, absent from the manifest, and never published. The `sample` package learns style from examples supplied by the user; this public version contains no personal voice profile.
 
 ## Packages
 
@@ -32,6 +32,12 @@ See [SKILLS_CATALOG.md](SKILLS_CATALOG.md) for all 25 active packages. There are
 | `orphan-project-sweeper` | Deletes Paseo project rows with no active workspace and a missing root path | Acts immediately; no dry-run |
 
 Every plugin pins a Paseo version range in `paseo-plugin.json`. To install one manually, run `npm ci` and `npm run check` (or `npm run typecheck`) in its folder, confirm the daemon's `pluginsEnabled` is `true`, then run `paseo plugin install "$PWD"`. `personal-skills` stages and installs plugins across a fleet; see its `Paseo plugins` section. Plugin settings stay host-local and are never part of this repository.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests
+```
 
 ## Publication integrity
 
