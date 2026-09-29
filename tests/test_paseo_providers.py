@@ -295,6 +295,16 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertIn("tablet (paseo-relay): write CHANGED", out)
         self.assertIn("tablet (paseo-relay): reload FAILED: request timed out; the write above still stands", out)
 
+    def test_reload_failure_after_an_unchanged_write_is_a_warning(self):
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 0, out)
+        (self.root / "fail-reload-tablet").touch()
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 0, out)
+        self.assertIn("tablet (paseo-relay): write unchanged", out)
+        self.assertIn("tablet (paseo-relay): reload warning (config unchanged, not a failure): request timed out", out)
+        self.assertNotIn("FAILED", out)
+
     def test_relay_cleanup_failure_is_reported(self):
         (self.root / "fail-archive").touch()
         code, out = self.run_sync("--host", "tablet")
