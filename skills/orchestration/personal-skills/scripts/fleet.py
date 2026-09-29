@@ -32,8 +32,9 @@ BOOT = "eval(require('zlib').gunzipSync(Buffer.from(process.argv[1],'base64')).t
 RESULT = re.compile(r"@@LOADOUT-RESULT (.*?) @@END", re.S)
 SCHEMA_VERSIONS = {1, 2}
 TRANSPORTS = {"ssh", "paseo-relay"}
-SCOPES = ("skills", "plugins", "providers")
-FILE_SCOPES = {"skills", "plugins"}
+SCOPES = ("skills", "plugins", "providers", "client-config")
+# Scopes that move files or secrets, so they need an ssh transport.
+SSH_SCOPES = {"skills", "plugins", "client-config"}
 OSES = {"macos", "windows", "linux"}
 CLIENTS = {"codex", "claude", "opencode"}
 TOP_KEYS = {"schema_version", "source_host", "transport", "notes", "hosts", "global"}
@@ -81,6 +82,10 @@ def describe(source: FleetSource) -> str:
 
 
 class FleetError(ValueError):
+    pass
+
+
+class HostSelectionError(FleetError):
     pass
 
 
@@ -151,7 +156,7 @@ def validate(data: Any) -> dict:
         else:
             sync = ["skills"] + (["plugins"] if paseo is not None else [])
         if transport == "paseo-relay":
-            blocked = sorted(set(sync) & FILE_SCOPES)
+            blocked = sorted(set(sync) & SSH_SCOPES)
             if blocked:
                 raise FleetError(f"{where}: paseo-relay has no file transport, so sync cannot include {blocked}")
             if not isinstance(host.get("paseo_offer"), str):
@@ -194,6 +199,19 @@ def hosts_for(fleet: dict, scope: str) -> list:
     return [host for host in fleet["hosts"] if scope in host["sync"]]
 
 
+def select(fleet: dict, scope: str, only: Optional[str] = None) -> list:
+    """Hosts in a scope, optionally narrowed to one host that must exist and be in scope."""
+    targets = hosts_for(fleet, scope)
+    if only is None:
+        return targets
+    if only not in {host["name"] for host in fleet["hosts"]}:
+        raise HostSelectionError(f"unknown host: {only}")
+    targets = [host for host in targets if host["name"] == only]
+    if not targets:
+        raise HostSelectionError(f"host {only} does not have the {scope} sync scope")
+    return targets
+
+
 def pack(data: bytes) -> str:
     return base64.b64encode(gzip.compress(data)).decode()
 
@@ -227,16 +245,31 @@ def push_targets(fleet: dict) -> tuple:
             [host for host in others if host["transport"] != "ssh"])
 
 
-def push_host(name: str, files: dict, dry_run: bool) -> dict:
-    command = f'node -e "{BOOT}" -- {pack(PUSH_JS.read_bytes())}'
-    body = pack(json.dumps({"dry_run": dry_run, "target": None, "files": files}).encode())
-    done = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", name, command],
-                          input=body, capture_output=True, text=True)
+def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Optional[float] = None) -> tuple:
+    """Run a Loadout node program on a host with a gzip+base64 JSON payload on stdin.
+
+    Returns (result dict or None, raw output). Secrets travel only on stdin.
+    """
+    body = pack(json.dumps(payload).encode())
+    if local:
+        command = ["node", "-e", BOOT, "--", pack(program.read_bytes())]
+    else:
+        command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", name,
+                   f'node -e "{BOOT}" -- {pack(program.read_bytes())}']
+    try:
+        done = subprocess.run(command, input=body, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, f"timed out after {timeout}s"
+    output = done.stdout + done.stderr
     result = parse_result(done.stdout)
     if result is None:
-        tail = (done.stdout + done.stderr).strip()[-300:]
-        return {"status": "failed", "error": f"no result from host (exit {done.returncode}): {tail}"}
-    return result
+        return None, f"no result from host (exit {done.returncode}): {output.strip()[-300:]}"
+    return result, output
+
+
+def push_host(name: str, files: dict, dry_run: bool) -> dict:
+    result, error = run_node(name, False, PUSH_JS, {"dry_run": dry_run, "target": None, "files": files})
+    return result if result is not None else {"status": "failed", "error": error}
 
 
 def describe_push(result: dict) -> str:

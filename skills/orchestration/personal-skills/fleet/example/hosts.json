@@ -6,11 +6,12 @@
   "hosts": [
     {
       "name": "laptop", "os": "macos", "checkout": "~/src/loadout", "clients": ["codex", "claude"],
-      "sync": ["skills", "plugins", "providers"],
+      "sync": ["skills", "plugins", "providers", "client-config"],
       "paseo": { "plugin_root": "~/.local/share/loadout/plugins", "stage": ["merged-worker-archiver"], "install": ["merged-worker-archiver"] }
     },
     {
       "name": "desktop", "os": "windows", "checkout": null, "clients": ["codex", "claude"],
+      "sync": ["skills", "plugins", "client-config"],
       "paseo": { "plugin_root": "%LOCALAPPDATA%\\loadout\\plugins", "stage": ["merged-worker-archiver", "usage-limit-auto-resume"], "install": [] }
     },
     { "name": "devbox", "os": "linux", "checkout": null, "clients": ["codex"] },
