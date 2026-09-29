@@ -6,10 +6,12 @@ A fleet describes the hosts that `personal-skills` syncs. The public `example/` 
 example/                     public, made up
   hosts.json
   paseo-providers.json       optional
+  client-config.json         optional
   global/AGENTS.md           optional
 <fleet directory>/           yours, private (copy example/ here and edit)
   hosts.json
   paseo-providers.json       optional
+  client-config.json         optional
   global/AGENTS.md           optional
 ```
 
@@ -40,7 +42,7 @@ With none of these, the fleet is the current host only. To move an existing `fle
     - `ssh`: files and commands travel over SSH.
     - `paseo-relay`: the host is reached only through its Paseo daemon via a pairing offer. There is no file transport, so it cannot take `skills` or `plugins`, and it needs an explicit `sync`.
   - `paseo_offer`: path to a file holding the host's Paseo pairing offer. Required for `paseo-relay`; optional for `ssh`, where it lets daemon commands go over the relay. Keep offers private.
-  - `sync`: optional list of scopes from `skills`, `plugins`, `providers`. Default: `skills`, plus `plugins` when `paseo` is present. Skill sync skips a host without `skills`, and plugin sync a host without `plugins`, and both report it as skipped, not failed. `providers` is opt-in and is used by the Paseo provider-picker sync.
+  - `sync`: optional list of scopes from `skills`, `plugins`, `providers`, `client-config`. Default: `skills`, plus `plugins` when `paseo` is present. Each sync skips a host outside its scope and reports it as skipped, not failed. `providers` (Paseo provider pickers) and `client-config` (managed Codex and Claude Code settings) are opt-in. `paseo-relay` hosts can take only `providers`.
   - `checkout`: path to a local Git checkout of this repository, or `null` (the default). A host without a checkout receives verified bytes from the source host and reverifies them.
   - `clients`: clients to sync, from `codex`, `claude`, `opencode`. Required when `sync` includes `skills`. Absent clients are skipped and reported.
   - `paseo`: optional. Paseo plugin sync for this host's daemon. Required when `sync` includes `plugins`.
@@ -66,4 +68,24 @@ Optional. The Paseo provider-picker sync (`python3 scripts/paseo_providers.py`) 
   - `env`: per-provider values layered over the default.
   - `inherit_env`: `false` skips the default `env`, so the host keeps its own values.
   - `required_env`: per-provider variable names that must be set after the merge, or the host fails without a write.
+
+## client-config.json
+
+Optional. `python3 scripts/client_config.py [--dry-run] [--host <name>] [--update-claude]` reads it and updates hosts whose `sync` includes `client-config`. Each host gets the base settings, then its role's, then its own `hosts.<name>` overrides. It holds router URLs, so it stays in the private fleet directory.
+
+- `token_file`: optional path, on the source host, to a secret file. Its contents go to hosts whose settings name a `claude.token_env`, over SSH stdin only. The token is never passed as an argument, stored in this file, or printed.
+- `codex`: managed keys for Codex `config.toml`.
+  - `top`: top-level keys. Missing keys are inserted before the blank lines that precede the first section header.
+  - `sections`: named sections such as `model_providers.<id>`, each a map of keys. A missing section is appended.
+  - `reportOnly`: top-level keys that are printed per host and never written.
+  - Values are strings, numbers, or booleans. The merge is line-based and keeps CRLF, comments, and every other key and section.
+- `claude`: managed parts of Claude Code `~/.claude/settings.json`.
+  - `settings`: top-level keys, each replaced whole.
+  - `env`: keys merged into `env`.
+  - `token_env`: an `env` name to fill from `token_file`, or `null`.
+  - `minVersion`: base only. Hosts below it are reported, and `--update-claude` runs `claude update` on them. Versions compare like `sort -V`.
+- `roles.local`, `roles.remote`: layers with `codex` (`top`, `sections`) and `claude` (`settings`, `env`, `token_env`). The source host is `local` and every other host `remote`.
+- `hosts.<name>`: the same layer for one host, plus an optional `role` that overrides the default.
+
+Only these keys are written. Everything else stays host-local. A missing client is skipped. Each changed file is backed up in place as `<file>.bak-loadout-<stamp>` and replaced atomically; a second run reports `unchanged`.
 

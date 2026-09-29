@@ -1,6 +1,6 @@
 ---
 name: personal-skills
-description: Sync selected skill packages, Paseo plugins, and optional Paseo provider pickers from this repository to local Codex, Claude Code, and Paseo daemon installations across a fleet, with committed-blob verification and local-edit protection.
+description: Sync selected skill packages, Paseo plugins, and optional Paseo provider pickers and client settings from this repository to local Codex, Claude Code, and Paseo daemon installations across a fleet, with committed-blob verification and local-edit protection.
 ---
 
 # Personal skills
@@ -49,6 +49,10 @@ Optional, and only when the user asks. `python3 scripts/paseo_providers.py [--dr
 - The merge program travels gzip and base64 encoded so it survives `cmd.exe` and terminal quoting. Hosts need `node`; relay hosts need a POSIX shell.
 - Each host reports the write and the reload on separate lines. A relay reload can time out after a successful write; report that as a reload failure, not a failed write, and do not undo the write.
 - Run `--dry-run` first and show the user the result. Never put catalog, router URLs, or offers in this repository.
+
+## Client config
+
+Optional, for hosts whose `sync` includes `client-config`. `python3 scripts/client_config.py [--dry-run] [--host <name>] [--update-claude]` writes only the managed Codex `config.toml` and Claude Code `settings.json` keys from `<fleet>/client-config.json`, backing up each changed file first. The source host runs locally and other hosts over SSH. A secret from `token_file` travels only on SSH stdin and is never printed. Run `--dry-run` first. Report each client per host, the host-local `reportOnly` values, and the Claude Code version against `minVersion`.
 
 ## Local-edit protection
 

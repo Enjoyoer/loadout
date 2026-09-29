@@ -89,8 +89,8 @@ class ValidateTest(unittest.TestCase):
         got = fleet.load(EXAMPLE)
         by_name = {h["name"]: h for h in got["hosts"]}
         self.assertEqual(got["schema_version"], 2)
-        self.assertEqual(by_name["laptop"]["sync"], ["skills", "plugins", "providers"])
-        self.assertEqual(by_name["desktop"]["sync"], ["skills", "plugins"])
+        self.assertEqual(by_name["laptop"]["sync"], ["skills", "plugins", "providers", "client-config"])
+        self.assertEqual(by_name["desktop"]["sync"], ["skills", "plugins", "client-config"])
         self.assertEqual(by_name["devbox"]["sync"], ["skills"])
         self.assertEqual(by_name["tablet"]["transport"], "paseo-relay")
         self.assertEqual([h["name"] for h in fleet.hosts_for(got, "skills")], ["laptop", "desktop", "devbox"])
@@ -128,6 +128,7 @@ class ValidateTest(unittest.TestCase):
                          ["providers"])
         self.check_error(fleet_doc(host("a"), relay), "explicit sync")
         self.check_error(fleet_doc(host("a"), {**relay, "sync": ["skills", "providers"]}), "no file transport")
+        self.check_error(fleet_doc(host("a"), {**relay, "sync": ["client-config"]}), "['client-config']")
         no_offer = {k: v for k, v in relay.items() if k != "paseo_offer"}
         self.check_error(fleet_doc(host("a"), {**no_offer, "sync": ["providers"]}), "paseo_offer")
 

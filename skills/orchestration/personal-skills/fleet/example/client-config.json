@@ -1,0 +1,29 @@
+{
+  "token_file": "~/.config/example-router/api-key",
+  "codex": {
+    "top": { "approval_policy": "on-request", "sandbox_mode": "workspace-write" },
+    "reportOnly": ["model"]
+  },
+  "claude": {
+    "minVersion": "2.1.0",
+    "settings": { "theme": "dark", "permissions": { "defaultMode": "acceptEdits" } },
+    "env": { "CLAUDE_CODE_SUBAGENT_MODEL": "example-small" }
+  },
+  "roles": {
+    "local": {
+      "claude": { "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000" } }
+    },
+    "remote": {
+      "codex": {
+        "top": { "model_provider": "example_router" },
+        "sections": {
+          "model_providers.example_router": { "base_url": "https://router.example.test/v1", "wire_api": "responses" }
+        }
+      },
+      "claude": { "env": { "ANTHROPIC_BASE_URL": "https://router.example.test" }, "token_env": "ANTHROPIC_AUTH_TOKEN" }
+    }
+  },
+  "hosts": {
+    "desktop": { "claude": { "settings": { "theme": "light" } } }
+  }
+}
