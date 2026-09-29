@@ -143,5 +143,23 @@ class SyncTest(unittest.TestCase):
         self.assertIn("FAILED: cannot read", out)
 
 
+
+class SyncFlagsTest(unittest.TestCase):
+    def test_migrate_path_reaches_the_plugins_step(self):
+        sys.path.insert(0, str(SCRIPTS))
+        import plugins_sync
+        import sync
+        seen = []
+        original = plugins_sync.run
+        plugins_sync.run = lambda *args: seen.append(args[-1]) or {}
+        try:
+            for flag in ([], ["--migrate-path"]):
+                args = sync.argparse.Namespace(dry_run=True, migrate_path=bool(flag), update_claude=False)
+                sync.scope_runner("plugins", args)({}, None, [], print)
+        finally:
+            plugins_sync.run = original
+        self.assertEqual(seen, [False, True])
+
+
 if __name__ == "__main__":
     unittest.main()

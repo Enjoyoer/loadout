@@ -31,6 +31,8 @@ python3 skills/orchestration/personal-skills/scripts/sync.py
 
 Describe your hosts first: copy `skills/orchestration/personal-skills/fleet/example/` to `~/.config/loadout/fleet/` and edit it (see its `fleet/README.md`). Each host's `sync` list decides which steps it gets. Hosts need `node`, and remote hosts are reached over SSH.
 
+After changing a host's `plugin_root`, plugins installed from the old directory report `blocked`; `sync.py --migrate-path` moves them and keeps their settings (see the `personal-skills` skill).
+
 ## Paseo plugins
 
 `plugins/<id>` holds server-only [Paseo](https://paseo.sh) plugins. Each is trusted, unsandboxed code that runs inside a daemon, so read its README before installing it.

@@ -29,7 +29,8 @@ def scope_runner(step: str, args) -> Callable:
     if step == "skills":
         return lambda doc, path, targets, emit: skills_sync.run(doc, path, targets, args.dry_run, emit)
     if step == "plugins":
-        return lambda doc, path, targets, emit: plugins_sync.run(doc, path, targets, args.dry_run, emit)
+        return lambda doc, path, targets, emit: plugins_sync.run(doc, path, targets, args.dry_run, emit,
+                                                                  args.migrate_path)
     if step == "providers":
         return lambda doc, path, targets, emit: paseo_providers.run(doc, path, targets, args.dry_run, emit)
     return lambda doc, path, targets, emit: client_config.run(doc, path, targets, args.dry_run,
@@ -47,6 +48,8 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="preflight and report everything without writing")
     parser.add_argument("--host", help="sync only this fleet host")
     parser.add_argument("--only", help=f"comma-separated steps from {','.join(STEPS)} (default: all)")
+    parser.add_argument("--migrate-path", action="store_true",
+                        help="plugins: move plugins installed from another directory to plugin_root, keeping settings")
     parser.add_argument("--update-claude", action="store_true", help="client-config: run `claude update` below minVersion")
     args = parser.parse_args(argv)
     steps = list(STEPS)
