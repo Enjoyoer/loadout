@@ -43,6 +43,9 @@ FAKE_PASEO = textwrap.dedent(r"""
     cfg="$HOME/.paseo/config.json"
     case "$1 $2" in
       "--version ") cat "$FAKE_ROOT/paseo-version" ;;
+      "daemon status") [ -e "$FAKE_ROOT/daemon-down" ] && { echo '{"error":{"code":"DAEMON_NOT_RUNNING"}}'; exit 1; }
+        printf '{"localDaemon":"running","daemonVersion":"%s"}
+' "$(cat "$FAKE_ROOT/daemon-version")" ;;
       "plugin install") node -e '
         const fs=require("fs"),path=require("path");const [cfg,dir]=process.argv.slice(1);
         const c=JSON.parse(fs.readFileSync(cfg,"utf8"));const id=JSON.parse(fs.readFileSync(path.join(dir,"paseo-plugin.json"),"utf8")).id;
@@ -79,6 +82,7 @@ class Fixture(unittest.TestCase):
             (bin_dir / name).write_text(body)
             (bin_dir / name).chmod(0o755)
         (self.root / "paseo-version").write_text("0.10.1\n")
+        (self.root / "daemon-version").write_text("0.10.1\n")
         self.env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "FAKE_ROOT": str(self.root)}
         for name in ("ssh", "npm", "paseo"):
             done = subprocess.run([name, "--fake-ok"], env=self.env, capture_output=True, text=True)
@@ -156,10 +160,26 @@ class RemotePluginTest(Fixture):
         self.assertNotIn("plugin install", self.calls())
 
     def test_version_outside_pin_blocks(self):
-        (self.root / "paseo-version").write_text("0.11.0-beta.1\n")
+        (self.root / "daemon-version").write_text("0.11.0-beta.1\n")
         self.assertIn("outside demo's pin", self.run_remote()["plugins"]["demo"]["installed"])
-        (self.root / "paseo-version").write_text("0.9.1\n")
+        (self.root / "daemon-version").write_text("0.9.1\n")
         self.assertEqual(self.run_remote()["status"], "blocked")
+
+    def test_pin_checks_the_running_daemon_not_the_cli(self):
+        (self.root / "paseo-version").write_text("0.9.2\n")
+        got = self.run_remote(pin=">=0.10.0 <0.11.0")
+        self.assertEqual(got["status"], "updated", got)
+        self.assertEqual(got["daemon"], {"version": "0.10.1", "cli": "0.9.2", "pluginsEnabled": True})
+        self.assertIn("daemon 0.10.1 (CLI 0.9.2), pluginsEnabled true", plugins_sync.describe(got)[0])
+        (self.root / "paseo-version").write_text("0.10.1\n")
+        (self.root / "daemon-version").write_text("0.9.2\n")
+        self.assertEqual(self.run_remote(pin=">=0.10.0 <0.11.0")["status"], "blocked")
+
+    def test_unreachable_daemon_blocks_install(self):
+        (self.root / "daemon-down").touch()
+        got = self.run_remote()
+        self.assertEqual(got["status"], "blocked")
+        self.assertIn("did not report its version", got["plugins"]["demo"]["installed"])
 
     def test_failed_check_skips_install(self):
         (self.root / "fail-check").touch()
