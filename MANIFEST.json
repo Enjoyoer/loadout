@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "39ab8250cf71af003c64eb755e4b544e703c2a74",
+  "source_commit": "ea8b6e06adc7950c0cc8229f8be80cd3a868e659",
   "skill_count": 26,
-  "file_count": 113,
+  "file_count": 115,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -471,8 +471,8 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 9987,
-      "sha256": "f9816436f792f7be1c439ae419648a98e4c8a8c2088271c9d4582ed239d5c93f"
+      "bytes": 10272,
+      "sha256": "67b4d47999948db06f4ddbdb21fecdc6bc49625295888836ac7bc528bcc14f92"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
@@ -534,8 +534,8 @@
       "path": "skills/orchestration/personal-skills/scripts/fleet.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 14440,
-      "sha256": "e3f678b60af4c47e925f29cd0fb05da9b74c5a641504be17efb49a79d2f63351"
+      "bytes": 14652,
+      "sha256": "17794a883e71dac5a0c7c8e11e297230233fcd90a3f7368dd63265be7d0e95ce"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/fleet_push_remote.js",
@@ -557,6 +557,20 @@
       "skill": "personal-skills",
       "bytes": 2683,
       "sha256": "3032bb31f51f8026520d363f3b25b1386ce41ece4656c3bb049f32fdbc6be6f1"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/plugins_sync.py",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 4980,
+      "sha256": "f1e637943a97017c3be085534ef7cf4ccdb8c64d32dba0cd528cc0dbce5f2960"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/plugins_sync_remote.js",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 9757,
+      "sha256": "a735df9757168f2267e6188dc27847123836640cf21f8e651740b67bf8985bef"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/publication.py",
