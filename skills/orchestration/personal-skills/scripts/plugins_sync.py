@@ -46,7 +46,8 @@ def describe(result: dict) -> list:
     lines = [result["status"]]
     daemon = result.get("daemon")
     if daemon:
-        lines[0] += f"; daemon {daemon['version']}, pluginsEnabled {str(daemon['pluginsEnabled']).lower()}"
+        cli = f" (CLI {daemon['cli']})" if daemon.get("cli") and daemon["cli"] != daemon["version"] else ""
+        lines[0] += f"; daemon {daemon['version']}{cli}, pluginsEnabled {str(daemon['pluginsEnabled']).lower()}"
     for plugin_id, info in result["plugins"].items():
         if "state" in info:
             detail = f" ({', '.join(info['differ'])})" if info.get("differ") else ""

@@ -123,10 +123,15 @@ try {
   // Daemon gates for install: version inside every pin, and pluginsEnabled already true.
   let gate = null;
   if (p.install.length) {
-    let version = null;
-    try { version = paseo("--version").trim().split(/\s+/).pop(); } catch (e) { gate = "paseo CLI not found"; }
+    // Pin-check the running daemon, not the CLI on PATH: they can differ after a staged upgrade.
+    let version = null, cli = null;
+    try { cli = paseo("--version").trim().split(/\s+/).pop(); } catch (e) { gate = "paseo CLI not found"; }
+    if (!gate) {
+      try { version = JSON.parse(paseo("daemon status --json")).daemonVersion || null; } catch (e) { /* below */ }
+      if (!version) gate = "the running daemon did not report its version (paseo daemon status --json)";
+    }
     const enabled = daemonConfig().pluginsEnabled === true;
-    result.daemon = { version, pluginsEnabled: enabled };
+    result.daemon = { version, cli, pluginsEnabled: enabled };
     if (!gate && !enabled) gate = "pluginsEnabled is not true on this daemon; the owner must allow trusted plugins first";
     for (const id of p.install)
       if (!gate && !satisfies(version, p.plugins[id].pin)) gate = `paseo ${version} is outside ${id}'s pin ${p.plugins[id].pin}`;
