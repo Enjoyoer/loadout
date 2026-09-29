@@ -1,0 +1,6 @@
+interface:
+  display_name: "Reassign PM"
+  short_description: "Take over a project's PM role and archive the old PM"
+  default_prompt: "Use $reassign-pm to make this agent the project's PM and archive the previous one."
+policy:
+  allow_implicit_invocation: false
