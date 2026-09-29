@@ -43,6 +43,7 @@ With none of these, the fleet is the current host only. To move an existing `fle
     - `paseo-relay`: the host is reached only through its Paseo daemon via a pairing offer. There is no file transport, so it cannot take `skills` or `plugins`, and it needs an explicit `sync`.
   - `paseo_offer`: path to a file holding the host's Paseo pairing offer. Required for `paseo-relay`; optional for `ssh`, where it lets daemon commands go over the relay. Keep offers private.
   - `sync`: optional list of scopes from `skills`, `plugins`, `providers`, `client-config`. Default: `skills`, plus `plugins` when `paseo` is present. Each sync skips a host outside its scope and reports it as skipped, not failed. `providers` (Paseo provider pickers) and `client-config` (managed Codex and Claude Code settings) are opt-in. `paseo-relay` hosts can take only `providers`.
+  - `exclude_skills`: optional skill names the skills sync leaves alone on this host, such as a package you keep a private version of.
   - `checkout`: path to a local Git checkout of this repository, or `null` (the default). A host without a checkout receives verified bytes from the source host and reverifies them.
   - `clients`: clients to sync, from `codex`, `claude`, `opencode`. Required when `sync` includes `skills`. Absent clients are skipped and reported.
   - `paseo`: optional. Paseo plugin sync for this host's daemon. Required when `sync` includes `plugins`.

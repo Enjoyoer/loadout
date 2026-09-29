@@ -56,6 +56,8 @@ Optional, for hosts whose `sync` includes `client-config`. `python3 scripts/clie
 
 ## Local-edit protection
 
+`python3 scripts/skills_sync.py [--dry-run] [--host <name>] [--skills a,b]` implements this for skills and global instructions. It reads blobs from `source_commit`, treats every version in the committed `MANIFEST.json` history as a verified prior publication, and records the global-instruction hashes it installed in each host's `loadout/global-sync.json`, under the config directory from Fleet. It skips each host's `exclude_skills`.
+
 Preflight every selected destination before writing any file on that host. Reject escaping or duplicate paths, symlink or junction ancestors, unexpected file types, and hash mismatches. An existing file may be replaced only if it matches a verified prior publication of the same source path or the desired blob. Preserve unknown local edits and stop the host without a partial package update. Leave unselected files untouched.
 
 After a successful preflight, write verified bytes, verify every installed hash, and run the available package validators. Report selected packages, commit IDs, destinations, files written, files already current, skipped clients, and blockers. A host without its own checkout may receive verified bytes from another eligible checkout, but must reverify them before the same preflight and write.

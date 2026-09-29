@@ -38,7 +38,7 @@ SSH_SCOPES = {"skills", "plugins", "client-config"}
 OSES = {"macos", "windows", "linux"}
 CLIENTS = {"codex", "claude", "opencode"}
 TOP_KEYS = {"schema_version", "source_host", "transport", "notes", "hosts", "global"}
-HOST_KEYS = {"name", "os", "checkout", "clients", "paseo", "transport", "sync", "paseo_offer"}
+HOST_KEYS = {"name", "os", "checkout", "clients", "paseo", "transport", "sync", "paseo_offer", "exclude_skills"}
 PASEO_KEYS = {"plugin_root", "stage", "install"}
 
 
@@ -169,6 +169,7 @@ def validate(data: Any) -> dict:
             _strings(host["clients"], f"{where}.clients", CLIENTS)
         if "plugins" in sync and paseo is None:
             raise FleetError(f"{where}: sync includes plugins but the host has no paseo entry")
+        _strings(host.get("exclude_skills", []), f"{where}.exclude_skills")
         checkout = host.get("checkout")
         if checkout is not None and not isinstance(checkout, str):
             raise FleetError(f"{where}.checkout must be a string or null")
