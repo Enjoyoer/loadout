@@ -1,10 +1,12 @@
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -18,27 +20,38 @@ import paseo_providers  # noqa: E402
 FAKE_SSH = textwrap.dedent("""\
     #!/bin/sh
     while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
+    [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
     host="$1"; shift
     echo "ssh $host" >> "$FAKE_ROOT/calls.log"
     HOME="$FAKE_ROOT/hosts/$host" exec sh -c "$*"
     """)
 
 # PASEO_HOST holds "offer:<host>"; without it the call targets the local daemon.
-FAKE_PASEO = textwrap.dedent("""\
+# Like the real CLI, it refuses PASEO_HOME together with PASEO_HOST. Files in
+# FAKE_ROOT shape relay faults: drop-sends (count of send-keys to lose),
+# quiet-captures (captures that return nothing before the shell starts),
+# fail-archive, stale-workspace.
+FAKE_PASEO = textwrap.dedent(r"""
     #!/bin/sh
     host="${PASEO_HOST#offer:}"; [ -n "$PASEO_HOST" ] || host=local
     echo "paseo $host $*" >> "$FAKE_ROOT/calls.log"
+    [ -n "$PASEO_HOME" ] && [ -n "$PASEO_HOST" ] && { echo "TARGET_AMBIGUOUS" >&2; exit 1; }
+    ws="$FAKE_ROOT/workspaces"; touch "$ws"
+    counter() { n=$(cat "$FAKE_ROOT/$1" 2>/dev/null || echo 0); [ "$n" -gt 0 ] && { echo $((n - 1)) > "$FAKE_ROOT/$1"; return 0; }; return 1; }
     case "$1 $2" in
+      "--fake-ok "*) echo fake ;;
       "reload "*) [ -e "$FAKE_ROOT/fail-reload-$host" ] && { echo "request timed out" >&2; exit 1; }; echo reloaded ;;
-      "workspace create") echo '{"workspaceId":"ws-1"}' ;;
-      "workspace archive") [ -e "$FAKE_ROOT/fail-archive" ] && exit 1; echo archived ;;
-      "terminal create") echo '{"id":"term-1"}' ;;
-      "terminal send-keys") HOME="$FAKE_ROOT/hosts/$host" sh -c "$4" 2>&1 | fold -w 50 > "$FAKE_ROOT/term.out" ;;
-      "terminal capture") cat "$FAKE_ROOT/term.out" ;;
+      "workspace create") id="ws-$(($(wc -l < "$ws") + 1))"; echo "$id loadout-provider-sync" >> "$ws"; echo "{\"workspaceId\":\"$id\"}" ;;
+      "workspace ls") awk 'BEGIN{printf "["} {printf "%s{\"workspaceId\":\"%s\",\"name\":\"%s\"}", (NR>1?",":""), $1, $2} END{print "]"}' "$ws" ;;
+      "workspace archive") [ -e "$FAKE_ROOT/fail-archive" ] && exit 1; grep -v "^$3 " "$ws" > "$ws.tmp"; mv "$ws.tmp" "$ws"; echo archived ;;
+      "terminal create") : > "$FAKE_ROOT/term.out"; echo '{"id":"term-1"}' ;;
+      "terminal send-keys") counter drop-sends && exit 0
+        { printf '$ %s\n' "$4"; HOME="$FAKE_ROOT/hosts/$host" sh -c "$4" 2>&1; } | fold -w 50 >> "$FAKE_ROOT/term.out" ;;
+      "terminal capture") counter quiet-captures && exit 0; [ -s "$FAKE_ROOT/term.out" ] && cat "$FAKE_ROOT/term.out" || echo '$ ' ;;
       "terminal kill") ;;
       *) echo "unexpected: $*" >&2; exit 9 ;;
     esac
-    """)
+    """).lstrip()
 
 HOSTS = {
     "schema_version": 2,
@@ -61,6 +74,14 @@ EXISTING = {
         "opencode": {"models": [{"id": "local/x", "label": "X"}]},
     }},
 }
+
+
+def assert_fakes_run(env, names=("ssh", "paseo")):
+    """A broken fake would let the real binary run, so refuse to continue."""
+    for name in names:
+        done = subprocess.run([name, "--fake-ok"], env=env, capture_output=True, text=True)
+        if done.stdout.strip() != "fake":
+            raise AssertionError(f"fake {name} is not the binary on PATH")
 
 
 class ProviderSyncTest(unittest.TestCase):
@@ -88,7 +109,16 @@ class ProviderSyncTest(unittest.TestCase):
             "HOME": str(self.root / "hosts/laptop"),
             "LOADOUT_FLEET": str(self.fleet),
             "FAKE_ROOT": str(self.root),
+            # An agent session's variables must not reach the relay CLI.
+            "PASEO_HOME": str(self.root / "agent-home"),
+            "PASEO_AGENT_ID": "agent-1",
+            "PASEO_AGENT_CWD": str(self.root),
+            "LOADOUT_RELAY_POLL_SECONDS": "0.05",
+            "LOADOUT_RELAY_READY_SECONDS": "1",
+            "LOADOUT_RELAY_RESEND_SECONDS": "0.3",
+            "LOADOUT_RELAY_WAIT_SECONDS": "3",
         }
+        assert_fakes_run(self.env)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -159,6 +189,46 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertIn("tablet (paseo-relay): write FAILED: required env missing: claude.ANTHROPIC_BASE_URL", out)
         self.assertIn("workspace archive ws-1", self.calls())
         self.assertEqual(self.config("tablet"), {"agents": {"providers": {}}})
+
+    def test_relay_resends_when_input_is_lost(self):
+        (self.root / "quiet-captures").write_text("3")
+        (self.root / "drop-sends").write_text("2")
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 0, out)
+        self.assertIn("tablet (paseo-relay): write CHANGED", out)
+        self.assertEqual(self.calls().count("terminal send-keys"), 3)
+        self.assertEqual((self.root / "workspaces").read_text(), "")
+
+    def test_relay_timeout_explains_and_cleans_up(self):
+        (self.root / "drop-sends").write_text("99")
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 1, out)
+        self.assertIn("relay terminal did not finish within 3s: the shell is up but never received the command after 3 sends", out)
+        self.assertIn("terminal kill term-1", self.calls())
+        self.assertEqual((self.root / "workspaces").read_text(), "")
+        self.assertEqual(self.config("tablet"), EXISTING)
+
+    def test_relay_sweeps_workspaces_left_by_a_killed_run(self):
+        (self.root / "workspaces").write_text("ws-old loadout-provider-sync\nws-keep someone-else\n")
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 0, out)
+        self.assertIn("workspace archive ws-old", self.calls())
+        self.assertEqual((self.root / "workspaces").read_text(), "ws-keep someone-else\n")
+
+    def test_sigterm_still_cleans_up_the_relay_workspace(self):
+        (self.root / "drop-sends").write_text("99")
+        self.env["LOADOUT_RELAY_WAIT_SECONDS"] = "30"
+        proc = subprocess.Popen([sys.executable, str(SCRIPTS / "paseo_providers.py"), "--host", "tablet"],
+                                env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for _ in range(200):
+            if "send-keys" in self.calls():
+                break
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=30)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("terminal kill term-1", self.calls())
+        self.assertEqual((self.root / "workspaces").read_text(), "")
 
     def test_reload_failure_is_reported_apart_from_the_write(self):
         (self.root / "fail-reload-tablet").touch()

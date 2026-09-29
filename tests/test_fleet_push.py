@@ -17,6 +17,7 @@ import fleet  # noqa: E402
 FAKE_SSH = textwrap.dedent("""\
     #!/bin/sh
     while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
+    [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
     host="$1"; shift
     [ -e "$FAKE_ROOT/down-$host" ] && { echo "ssh: connect to host $host: timed out" >&2; exit 255; }
     unset XDG_CONFIG_HOME LOADOUT_FLEET
@@ -55,6 +56,8 @@ class FleetPushTest(unittest.TestCase):
         (bin_dir / "ssh").chmod(0o755)
         self.env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.root / "hosts/laptop"),
                     "FAKE_ROOT": str(self.root)}
+        done = subprocess.run(["ssh", "--fake-ok"], env=self.env, capture_output=True, text=True)
+        self.assertEqual(done.stdout.strip(), "fake", "fake ssh is not the binary on PATH")
 
     def tearDown(self):
         self.tmp.cleanup()
