@@ -48,6 +48,8 @@ FAKE_PASEO = textwrap.dedent(r"""
       "terminal create") [ -e "$FAKE_ROOT/fail-terminal" ] && { echo "terminal failed" >&2; exit 1; }
         : > "$FAKE_ROOT/term.out"; echo '{"id":"term-1"}' ;;
       "terminal send-keys") counter drop-sends && exit 0
+        # Input sent while the shell is still starting is lost, as on a slow relay host.
+        n=$(cat "$FAKE_ROOT/quiet-captures" 2>/dev/null || echo 0); [ "$n" -gt 0 ] && exit 0
         { printf '$ %s\n' "$4"; HOME="$FAKE_ROOT/hosts/$host" sh -c "$4" 2>&1; } | fold -w 50 >> "$FAKE_ROOT/term.out" ;;
       "terminal capture") counter quiet-captures && exit 0; [ -s "$FAKE_ROOT/term.out" ] && cat "$FAKE_ROOT/term.out" || echo '$ ' ;;
       "terminal kill") ;;
@@ -117,6 +119,8 @@ class ProviderSyncTest(unittest.TestCase):
             "PASEO_AGENT_CWD": str(self.root),
             "LOADOUT_RELAY_POLL_SECONDS": "0.05",
             "LOADOUT_RELAY_WAIT_SECONDS": "3",
+            "LOADOUT_RELAY_READY_SECONDS": "2",
+            "LOADOUT_RELAY_SETTLE_SECONDS": "0",
         }
         assert_fakes_run(self.env)
 
@@ -189,6 +193,23 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertIn("tablet (paseo-relay): write FAILED: required env missing: claude.ANTHROPIC_BASE_URL", out)
         self.assertIn("workspace archive ws-1", self.calls())
         self.assertEqual(self.config("tablet"), {"agents": {"providers": {}}})
+
+    def test_relay_waits_for_the_prompt_before_one_send(self):
+        (self.root / "quiet-captures").write_text("4")
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 0, out)
+        self.assertIn("tablet (paseo-relay): write CHANGED", out)
+        self.assertEqual(self.calls().count("terminal send-keys"), 1)
+        calls = self.calls().splitlines()
+        send = next(i for i, line in enumerate(calls) if "send-keys" in line)
+        self.assertEqual(sum("terminal capture" in line for line in calls[:send]), 5)
+
+    def test_relay_never_ready_times_out_and_cleans_up(self):
+        (self.root / "quiet-captures").write_text("999")
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 1, out)
+        self.assertIn("relay terminal did not finish within 3s; last output: (terminal output empty)", out)
+        self.assertEqual((self.root / "workspaces").read_text(), "")
 
     def test_relay_timeout_explains_and_cleans_up(self):
         (self.root / "drop-sends").write_text("99")

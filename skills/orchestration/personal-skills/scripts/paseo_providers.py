@@ -35,6 +35,9 @@ RELAY_TITLE = "loadout-provider-sync"
 # Relay timings; the environment overrides exist for tests.
 RELAY_WAIT_SECONDS = float(os.environ.get("LOADOUT_RELAY_WAIT_SECONDS", 120))
 RELAY_POLL_SECONDS = float(os.environ.get("LOADOUT_RELAY_POLL_SECONDS", 2))
+RELAY_READY_SECONDS = float(os.environ.get("LOADOUT_RELAY_READY_SECONDS", 30))
+RELAY_SETTLE_SECONDS = float(os.environ.get("LOADOUT_RELAY_SETTLE_SECONDS", 1))
+PROMPT = re.compile(r"[$#%>\u276f]\s*$")
 RELOAD_TIMEOUT_SECONDS = 90
 
 
@@ -160,6 +163,9 @@ class Runner:
         done = re.compile(rf"@@LOADOUT-EXIT-{nonce}:(\d+)")
         command = (f"node -e \"{BOOT}\" -- '{program}' '{data}'; "
                    f"printf '\\n@@LOADOUT-EXIT-{nonce}:%s\\n' \"$?\"")
+        # A relay host's new terminal drops input sent before its shell is up, so
+        # wait for a prompt, let the shell settle, then send once.
+        self.wait_for_prompt(terminal)
         self.paseo("terminal", "send-keys", terminal, command, "Enter")
         deadline = time.monotonic() + RELAY_WAIT_SECONDS
         while True:
@@ -169,6 +175,17 @@ class Runner:
             if time.monotonic() > deadline:
                 tail = output.strip()[-200:] or "(terminal output empty)"
                 raise RuntimeError(f"relay terminal did not finish within {int(RELAY_WAIT_SECONDS)}s; last output: {tail}")
+            time.sleep(RELAY_POLL_SECONDS)
+
+    def wait_for_prompt(self, terminal: str) -> bool:
+        deadline = time.monotonic() + RELAY_READY_SECONDS
+        while True:
+            lines = [line for line in self.paseo("terminal", "capture", terminal).splitlines() if line.strip()]
+            if lines and PROMPT.search(lines[-1]):
+                time.sleep(RELAY_SETTLE_SECONDS)
+                return True
+            if time.monotonic() > deadline:
+                return False
             time.sleep(RELAY_POLL_SECONDS)
 
     def stale(self) -> list:
