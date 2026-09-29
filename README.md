@@ -20,6 +20,17 @@ Some packages need an external CLI, connected service, or local credential. Read
 
 See [SKILLS_CATALOG.md](SKILLS_CATALOG.md) for all 25 active packages. There are no archived packages in this public repository.
 
+## Sync a fleet
+
+`personal-skills` syncs skills, global instructions, Paseo plugins, Paseo provider pickers, and Codex and Claude Code settings to every host in a private fleet with one command:
+
+```bash
+python3 skills/orchestration/personal-skills/scripts/sync.py --dry-run   # review the table first
+python3 skills/orchestration/personal-skills/scripts/sync.py
+```
+
+Describe your hosts first: copy `skills/orchestration/personal-skills/fleet/example/` to `~/.config/loadout/fleet/` and edit it (see its `fleet/README.md`). Each host's `sync` list decides which steps it gets. Hosts need `node`, and remote hosts are reached over SSH.
+
 ## Paseo plugins
 
 `plugins/<id>` holds server-only [Paseo](https://paseo.sh) plugins. Each is trusted, unsandboxed code that runs inside a daemon, so read its README before installing it.
