@@ -66,5 +66,95 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(fleet.describe(self.resolve({})), f"fleet: legacy {legacy}")
 
 
+EXAMPLE = Path(__file__).resolve().parent.parent / "skills/orchestration/personal-skills/fleet/example"
+
+
+def fleet_doc(*hosts, **top):
+    doc = {"source_host": "a", "hosts": list(hosts) or [host("a")]}
+    doc.update(top)
+    return doc
+
+
+def host(name, **fields):
+    return {"name": name, "os": "linux", "checkout": None, "clients": ["codex"], **fields}
+
+
+class ValidateTest(unittest.TestCase):
+    def check_error(self, doc, fragment):
+        with self.assertRaises(fleet.FleetError) as caught:
+            fleet.validate(doc)
+        self.assertIn(fragment, str(caught.exception))
+
+    def test_example_is_valid(self):
+        got = fleet.load(EXAMPLE)
+        by_name = {h["name"]: h for h in got["hosts"]}
+        self.assertEqual(got["schema_version"], 2)
+        self.assertEqual(by_name["laptop"]["sync"], ["skills", "plugins", "providers"])
+        self.assertEqual(by_name["desktop"]["sync"], ["skills", "plugins"])
+        self.assertEqual(by_name["devbox"]["sync"], ["skills"])
+        self.assertEqual(by_name["tablet"]["transport"], "paseo-relay")
+        self.assertEqual([h["name"] for h in fleet.hosts_for(got, "skills")], ["laptop", "desktop", "devbox"])
+        self.assertEqual([h["name"] for h in fleet.hosts_for(got, "providers")], ["laptop", "tablet"])
+
+    def test_version_1_keeps_free_text_transport_and_default_sync(self):
+        paseo = {"plugin_root": None, "stage": [], "install": []}
+        got = fleet.validate(fleet_doc(host("a", paseo=paseo), host("b"), transport="ssh over a VPN"))
+        self.assertEqual([(h["transport"], h["sync"]) for h in got["hosts"]],
+                         [("ssh", ["skills", "plugins"]), ("ssh", ["skills"])])
+
+    def test_version_2_rejects_unknown_transport(self):
+        self.check_error(fleet_doc(schema_version=2, transport="ssh over a VPN"), "transport")
+
+    def test_unknown_schema_version(self):
+        self.check_error(fleet_doc(schema_version=3), "schema_version")
+
+    def test_unknown_host_transport(self):
+        self.check_error(fleet_doc(host("a"), host("b", transport="ftp")), "transport 'ftp'")
+
+    def test_unknown_sync_scope(self):
+        self.check_error(fleet_doc(host("a"), host("b", sync=["skills", "secrets"])), "['secrets']")
+
+    def test_empty_or_duplicate_sync(self):
+        self.check_error(fleet_doc(host("a"), host("b", sync=[])), "must not be empty")
+        self.check_error(fleet_doc(host("a"), host("b", sync=["skills", "skills"])), "duplicates")
+
+    def test_unknown_keys(self):
+        self.check_error(fleet_doc(host("a"), host("b", synk=["skills"])), "unknown keys ['synk']")
+        self.check_error(fleet_doc(extra=1), "unknown keys ['extra']")
+
+    def test_relay_host_rules(self):
+        relay = {"name": "r", "os": "linux", "transport": "paseo-relay", "paseo_offer": "r.offer"}
+        self.assertEqual(fleet.validate(fleet_doc(host("a"), {**relay, "sync": ["providers"]}))["hosts"][1]["sync"],
+                         ["providers"])
+        self.check_error(fleet_doc(host("a"), relay), "explicit sync")
+        self.check_error(fleet_doc(host("a"), {**relay, "sync": ["skills", "providers"]}), "no file transport")
+        no_offer = {k: v for k, v in relay.items() if k != "paseo_offer"}
+        self.check_error(fleet_doc(host("a"), {**no_offer, "sync": ["providers"]}), "paseo_offer")
+
+    def test_source_host_must_be_listed_and_local(self):
+        self.check_error(fleet_doc(source_host="z"), "source_host")
+        relay = {"name": "a", "os": "linux", "transport": "paseo-relay", "sync": ["providers"], "paseo_offer": "a.offer"}
+        self.check_error(fleet_doc(relay), "source_host must use the ssh transport")
+
+    def test_skills_scope_needs_clients(self):
+        bare = {"name": "b", "os": "linux", "sync": ["skills"]}
+        self.check_error(fleet_doc(host("a"), bare), "clients")
+        self.check_error(fleet_doc(host("a"), host("b", clients=["cursor"])), "['cursor']")
+
+    def test_plugins_scope_needs_paseo(self):
+        self.check_error(fleet_doc(host("a"), host("b", sync=["plugins"])), "no paseo entry")
+
+    def test_install_subset_of_stage(self):
+        paseo = {"plugin_root": None, "stage": ["x"], "install": ["y"]}
+        self.check_error(fleet_doc(host("a", paseo=paseo)), "subset")
+
+    def test_duplicate_host_and_bad_os(self):
+        self.check_error(fleet_doc(host("a"), host("a")), "listed twice")
+        self.check_error(fleet_doc(host("a", os="beos")), "os 'beos'")
+
+    def test_global_clients(self):
+        self.check_error(fleet_doc(**{"global": {"cursor": "~/x"}}), "unknown keys ['cursor']")
+
+
 if __name__ == "__main__":
     unittest.main()
