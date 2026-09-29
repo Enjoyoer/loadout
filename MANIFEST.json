@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "dbe0e97b2c13a5ea034e9e72acfe8d3945e18a98",
-  "skill_count": 25,
-  "file_count": 100,
+  "source_commit": "a8f130d3e42e6c719843c4230c7596fe2daa0d51",
+  "skill_count": 26,
+  "file_count": 102,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -501,6 +501,20 @@
       "skill": "personal-skills",
       "bytes": 800,
       "sha256": "6aad4db53e9a469dcac1e2ad628aa880499b9f4b250a160bb973b4769d13879f"
+    },
+    {
+      "path": "skills/orchestration/reassign-pm/SKILL.md",
+      "category": "orchestration",
+      "skill": "reassign-pm",
+      "bytes": 1600,
+      "sha256": "f74f995ec3c58de30c115a2eb02c81c490454a86ca6c3320c052ef821ea74c5b"
+    },
+    {
+      "path": "skills/orchestration/reassign-pm/agents/openai.yaml",
+      "category": "orchestration",
+      "skill": "reassign-pm",
+      "bytes": 263,
+      "sha256": "ce74bd083e253976d30b2879026e2d1ae28dfff71eb2d7351dbf917befe9e5a4"
     },
     {
       "path": "skills/orchestration/repo-lessons/SKILL.md",
