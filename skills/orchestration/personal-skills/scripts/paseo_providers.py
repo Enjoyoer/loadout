@@ -34,10 +34,7 @@ AGENT_VARS = ("PASEO_AGENT_ID", "PASEO_AGENT_CWD", "PASEO_HOME")
 RELAY_TITLE = "loadout-provider-sync"
 # Relay timings; the environment overrides exist for tests.
 RELAY_WAIT_SECONDS = float(os.environ.get("LOADOUT_RELAY_WAIT_SECONDS", 120))
-RELAY_READY_SECONDS = float(os.environ.get("LOADOUT_RELAY_READY_SECONDS", 30))
-RELAY_RESEND_SECONDS = float(os.environ.get("LOADOUT_RELAY_RESEND_SECONDS", 15))
 RELAY_POLL_SECONDS = float(os.environ.get("LOADOUT_RELAY_POLL_SECONDS", 2))
-RELAY_SENDS = 3
 RELOAD_TIMEOUT_SECONDS = 90
 
 
@@ -145,79 +142,58 @@ class Runner:
     def write_relay(self, program: str, data: str) -> str:
         if self.host["os"] == "windows":
             raise RuntimeError("paseo-relay provider sync needs a POSIX shell on the host")
-        self.sweep_stale()
-        workspace = terminal = None
+        terminal = None
         try:
+            self.cleanup(None)
             workspace = json.loads(self.paseo("workspace", "create", "--isolation", "local", "--path", "/tmp",
                                               "--title", RELAY_TITLE, "--json"))["workspaceId"]
             terminal = json.loads(self.paseo("terminal", "create", "--workspace", workspace,
                                              "--name", RELAY_TITLE, "--json"))["id"]
             return self.run_in_terminal(terminal, program, data)
         finally:
-            self.cleanup(workspace, terminal)
+            # Every exit path, including a create that failed after the host made
+            # the workspace, ends with no sync workspace left on the host.
+            self.cleanup(terminal)
 
     def run_in_terminal(self, terminal: str, program: str, data: str) -> str:
-        # send-keys does not wait for delivery, and input sent before the shell
-        # starts can be lost, so wait for the shell's first output, then resend
-        # while the nonce has not been echoed. The merge is idempotent.
         nonce = secrets.token_hex(4)
         done = re.compile(rf"@@LOADOUT-EXIT-{nonce}:(\d+)")
         command = (f"node -e \"{BOOT}\" -- '{program}' '{data}'; "
                    f"printf '\\n@@LOADOUT-EXIT-{nonce}:%s\\n' \"$?\"")
-        capture = lambda: self.paseo("terminal", "capture", terminal, "--scrollback")
-        start = time.monotonic()
-        output = capture()
-        while not output.strip() and time.monotonic() - start < RELAY_READY_SECONDS:
-            time.sleep(RELAY_POLL_SECONDS)
-            output = capture()
-        ready = bool(output.strip())
-        sends = 0
-        last_send = 0.0
+        self.paseo("terminal", "send-keys", terminal, command, "Enter")
         deadline = time.monotonic() + RELAY_WAIT_SECONDS
         while True:
+            output = self.paseo("terminal", "capture", terminal, "--scrollback")
             if done.search(output):
                 return output
-            now = time.monotonic()
-            if sends < RELAY_SENDS and nonce not in output and (sends == 0 or now - last_send >= RELAY_RESEND_SECONDS):
-                self.paseo("terminal", "send-keys", terminal, command, "Enter")
-                sends += 1
-                last_send = now
-            elif now > deadline:
-                if not output.strip():
-                    detail = "the terminal stayed empty, so the shell never started or never received input"
-                elif nonce not in output:
-                    detail = "the shell " + ("is up" if ready else "started late") + f" but never received the command after {sends} sends"
-                else:
-                    detail = "the command started but did not finish; last output: " + output.strip()[-200:]
-                raise RuntimeError(f"relay terminal did not finish within {int(RELAY_WAIT_SECONDS)}s: {detail}")
+            if time.monotonic() > deadline:
+                tail = output.strip()[-200:] or "(terminal output empty)"
+                raise RuntimeError(f"relay terminal did not finish within {int(RELAY_WAIT_SECONDS)}s; last output: {tail}")
             time.sleep(RELAY_POLL_SECONDS)
-            output = capture()
 
-    def workspaces(self) -> list:
-        return json.loads(self.paseo("workspace", "ls", "--json") or "[]")
+    def stale(self) -> list:
+        return [entry["workspaceId"] for entry in json.loads(self.paseo("workspace", "ls", "--json") or "[]")
+                if entry.get("name") == RELAY_TITLE]
 
-    def sweep_stale(self) -> None:
-        """Archive sync workspaces a killed earlier run left behind."""
-        for entry in self.workspaces():
-            if entry.get("name") == RELAY_TITLE:
-                self.paseo("workspace", "archive", entry["workspaceId"])
-
-    def cleanup(self, workspace: Optional[str], terminal: Optional[str]) -> None:
+    def cleanup(self, terminal: Optional[str]) -> None:
+        """Kill the sync terminal and archive every sync workspace on the host."""
         if terminal:
             try:
                 self.paseo("terminal", "kill", terminal)
             except (RuntimeError, subprocess.SubprocessError):
                 pass
-        if workspace:
-            for _ in range(5):
-                try:
+        left = ["?"]
+        for _ in range(5):
+            try:
+                left = self.stale()
+                if not left:
+                    return
+                for workspace in left:
                     self.paseo("workspace", "archive", workspace)
-                    if all(entry.get("workspaceId") != workspace for entry in self.workspaces()):
-                        return
-                except (RuntimeError, subprocess.SubprocessError, ValueError):
-                    pass
-                time.sleep(RELAY_POLL_SECONDS)
-            raise RuntimeError(f"relay workspace cleanup failed: {workspace}")
+            except (RuntimeError, subprocess.SubprocessError, ValueError):
+                pass
+            time.sleep(RELAY_POLL_SECONDS)
+        raise RuntimeError(f"relay workspace cleanup failed: {', '.join(left)}")
 
     def reload(self) -> str:
         if self.mode == "local":
