@@ -13,6 +13,8 @@ import argparse
 import json
 import os
 import re
+import secrets
+import signal
 import subprocess
 import sys
 import time
@@ -26,11 +28,16 @@ MERGE_JS = Path(__file__).resolve().parent / "paseo_providers_merge.js"
 BOOT = fleet.BOOT
 pack = fleet.pack
 parse_result = fleet.parse_result
-EXIT = re.compile(r"@@LOADOUT-EXIT:(\d+)")
 CONFIG_KEYS = {"providers", "env", "hosts"}
 HOST_KEYS = {"env", "inherit_env", "required_env"}
 AGENT_VARS = ("PASEO_AGENT_ID", "PASEO_AGENT_CWD", "PASEO_HOME")
-RELAY_WAIT_SECONDS = 120
+RELAY_TITLE = "loadout-provider-sync"
+# Relay timings; the environment overrides exist for tests.
+RELAY_WAIT_SECONDS = float(os.environ.get("LOADOUT_RELAY_WAIT_SECONDS", 120))
+RELAY_READY_SECONDS = float(os.environ.get("LOADOUT_RELAY_READY_SECONDS", 30))
+RELAY_RESEND_SECONDS = float(os.environ.get("LOADOUT_RELAY_RESEND_SECONDS", 15))
+RELAY_POLL_SECONDS = float(os.environ.get("LOADOUT_RELAY_POLL_SECONDS", 2))
+RELAY_SENDS = 3
 RELOAD_TIMEOUT_SECONDS = 90
 
 
@@ -138,25 +145,62 @@ class Runner:
     def write_relay(self, program: str, data: str) -> str:
         if self.host["os"] == "windows":
             raise RuntimeError("paseo-relay provider sync needs a POSIX shell on the host")
+        self.sweep_stale()
         workspace = terminal = None
         try:
             workspace = json.loads(self.paseo("workspace", "create", "--isolation", "local", "--path", "/tmp",
-                                              "--title", "loadout-provider-sync", "--json"))["workspaceId"]
+                                              "--title", RELAY_TITLE, "--json"))["workspaceId"]
             terminal = json.loads(self.paseo("terminal", "create", "--workspace", workspace,
-                                             "--name", "loadout-provider-sync", "--json"))["id"]
-            command = (f"node -e \"{BOOT}\" -- '{program}' '{data}'; "
-                       "printf '\\n@@LOADOUT-EXIT:%s\\n' \"$?\"")
-            self.paseo("terminal", "send-keys", terminal, command, "Enter")
-            deadline = time.monotonic() + RELAY_WAIT_SECONDS
-            while True:
-                output = self.paseo("terminal", "capture", terminal, "--scrollback")
-                if EXIT.search(output):
-                    return output
-                if time.monotonic() > deadline:
-                    raise RuntimeError(f"relay terminal did not finish within {RELAY_WAIT_SECONDS}s")
-                time.sleep(2)
+                                             "--name", RELAY_TITLE, "--json"))["id"]
+            return self.run_in_terminal(terminal, program, data)
         finally:
             self.cleanup(workspace, terminal)
+
+    def run_in_terminal(self, terminal: str, program: str, data: str) -> str:
+        # send-keys does not wait for delivery, and input sent before the shell
+        # starts can be lost, so wait for the shell's first output, then resend
+        # while the nonce has not been echoed. The merge is idempotent.
+        nonce = secrets.token_hex(4)
+        done = re.compile(rf"@@LOADOUT-EXIT-{nonce}:(\d+)")
+        command = (f"node -e \"{BOOT}\" -- '{program}' '{data}'; "
+                   f"printf '\\n@@LOADOUT-EXIT-{nonce}:%s\\n' \"$?\"")
+        capture = lambda: self.paseo("terminal", "capture", terminal, "--scrollback")
+        start = time.monotonic()
+        output = capture()
+        while not output.strip() and time.monotonic() - start < RELAY_READY_SECONDS:
+            time.sleep(RELAY_POLL_SECONDS)
+            output = capture()
+        ready = bool(output.strip())
+        sends = 0
+        last_send = 0.0
+        deadline = time.monotonic() + RELAY_WAIT_SECONDS
+        while True:
+            if done.search(output):
+                return output
+            now = time.monotonic()
+            if sends < RELAY_SENDS and nonce not in output and (sends == 0 or now - last_send >= RELAY_RESEND_SECONDS):
+                self.paseo("terminal", "send-keys", terminal, command, "Enter")
+                sends += 1
+                last_send = now
+            elif now > deadline:
+                if not output.strip():
+                    detail = "the terminal stayed empty, so the shell never started or never received input"
+                elif nonce not in output:
+                    detail = "the shell " + ("is up" if ready else "started late") + f" but never received the command after {sends} sends"
+                else:
+                    detail = "the command started but did not finish; last output: " + output.strip()[-200:]
+                raise RuntimeError(f"relay terminal did not finish within {int(RELAY_WAIT_SECONDS)}s: {detail}")
+            time.sleep(RELAY_POLL_SECONDS)
+            output = capture()
+
+    def workspaces(self) -> list:
+        return json.loads(self.paseo("workspace", "ls", "--json") or "[]")
+
+    def sweep_stale(self) -> None:
+        """Archive sync workspaces a killed earlier run left behind."""
+        for entry in self.workspaces():
+            if entry.get("name") == RELAY_TITLE:
+                self.paseo("workspace", "archive", entry["workspaceId"])
 
     def cleanup(self, workspace: Optional[str], terminal: Optional[str]) -> None:
         if terminal:
@@ -168,9 +212,11 @@ class Runner:
             for _ in range(5):
                 try:
                     self.paseo("workspace", "archive", workspace)
-                    return
-                except (RuntimeError, subprocess.SubprocessError):
-                    time.sleep(2)
+                    if all(entry.get("workspaceId") != workspace for entry in self.workspaces()):
+                        return
+                except (RuntimeError, subprocess.SubprocessError, ValueError):
+                    pass
+                time.sleep(RELAY_POLL_SECONDS)
             raise RuntimeError(f"relay workspace cleanup failed: {workspace}")
 
     def reload(self) -> str:
@@ -260,6 +306,10 @@ def main(argv: Optional[list] = None) -> int:
     if skipped and not args.host:
         print(f"skipped (no providers scope): {', '.join(skipped)}")
 
+    # Turn SIGTERM and SIGHUP into exits so relay cleanup still runs.
+    for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+        if sig is not None:
+            signal.signal(sig, lambda number, _frame: sys.exit(128 + number))
     program = pack(MERGE_JS.read_bytes())
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     ok = True
