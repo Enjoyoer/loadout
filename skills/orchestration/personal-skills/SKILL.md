@@ -26,7 +26,8 @@ Use the repository root `README.md` for the current manifest format, installatio
 - The fleet directory is the user's private fleet: never commit, publish, or quote it into a public file. It is not a package file, so sync never overwrites or removes it, and never replaces a symlinked `fleet/local/` on a host that already has one.
 - `fleet/README.md` defines the format and `fleet/example/` shows a made-up fleet. A user starts by copying `fleet/example/` to the fleet directory and editing it. Never treat the example as a real target.
 - Without a fleet directory, the fleet is the current host only, with no global instructions.
-- Sync every host in the fleet by default unless the user narrows it. Each host resolves its own paths and shell, syncs the clients present, and reports absent clients as skipped.
+- Run `python3 scripts/fleet.py validate` and stop on an invalid fleet. Skill sync covers hosts whose `sync` includes `skills`, and plugin sync hosts whose `sync` includes `plugins`; report every other host as skipped for that scope, not failed. `paseo-relay` hosts have no file transport and never receive files.
+- Sync every eligible host by default unless the user narrows it. Each host resolves its own paths and shell, syncs the clients present, and reports absent clients as skipped.
 - Report each host separately. A blocker stops only that host. Report an unreachable host as an outstanding gap; never report a host as synced until it is verified, and never drop an unreached host from the report.
 - Carry the fleet directory to another host only over the transport the fleet names, and only when that host lacks it or the user asks. Place it in that host's config fleet directory. Never send it to Git or a public service.
 
