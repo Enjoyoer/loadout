@@ -1,0 +1,30 @@
+# Usage limit auto resume
+
+This server plugin keeps the existing usage-limit resume path (five-hour default) and adds a separate retry path for completed turns whose final assistant message is a transient provider error. Both paths obey the host `armed` setting and the `noresume=true` label. The plugin does not send while unarmed.
+
+## Transient retry
+
+The final assistant text must start with `API Error:` and contain `rate limit`, `rate_limit`, `temporarily limiting requests`, `overloaded`, `429`, or `529`. The exact final text `Selected model is at capacity` also qualifies. A normal answer that discusses these terms does not qualify. Explicit usage-limit failures retain the five-hour path.
+
+Every turn that ends as `failed` (not `completed`) is resumed, whatever the error, unless it is an explicit usage limit (five-hour path) or the agent is opted out. The resume is a pure `continue` sent to the same session, never a replay, and it may be sent while the agent is in `error` status. Failed-turn resumes have no attempt cap: they retry immediately, then after 2, 5, and every 15 minutes until a turn completes, a newer user message arrives, or the session changes. Interrupted or cancelled turns are not resumed. The capacity match on completed turns also accepts Codex's `[System Error]` prefix and trailing `Please try a different model.`
+
+The first retry is sent to the same agent immediately, then after 2, 5, and 15 minutes, at most three sends by default for completed-turn errors. If the agent has not settled yet, the immediate retry waits for the next sweep (30 seconds). `transientMaxAttempts` and `transientBackoffSeconds` configure these independently of `maxAttempts` and `baseDelaySeconds`. The plugin resends the last timeline user text exactly. If that text is empty, it asks the agent to continue the last request. It verifies a fresh timeline and agent snapshot before every send, including idle state, permission state, latest user message, model, and session. Ambiguous records become `uncertain` and receive no further automatic sends. A successful retry removes its record.
+
+## Pattern evidence
+
+- Claude has emitted `API Error: Server is temporarily limiting requests (not your usage limit) · This request would exceed your account's rate limit. Please try again later.` as a synthetic assistant message with `apiErrorStatus: 429`.
+- Claude has also emitted `API Error: Request rejected (429)` with `rate_limit_error`.
+- Codex has recorded `Selected model is at capacity`.
+- Anthropic documents `529 overloaded_error` as temporary overload and `429 rate_limit_error` as a rate limit: <https://docs.anthropic.com/en/api/errors>. A 429 can also indicate a spend cap, so explicit usage-limit text takes priority and unknown messages are not retried.
+
+Paseo's [`agent.turn_ended` event](https://paseo.sh/docs/plugins/reference.md#lifecycle-hooks) supplies a complete timeline snapshot and a completed outcome. The SDK's timeline `refetch()` supplies the fresh page used for the final send check.
+
+## Settings and install
+
+Host-scoped settings are stored by Paseo at `<PASEO_HOME>/plugin-settings/usage-limit-auto-resume/auto-resume-config.json` as `{"version":2,"values":{...}}`. A missing file means defaults, and the default is `armed: false`, so a fresh install observes and records but sends nothing. Arm a host only after reviewing `paseo plugin logs usage-limit-auto-resume`, by writing `{"version":2,"values":{"armed":true}}` to that file.
+
+```bash
+npm ci
+npm run check
+paseo plugin install "$PWD"
+```

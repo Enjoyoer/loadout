@@ -1,0 +1,25 @@
+{
+  "name": "merged-worker-archiver",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Paseo server-only plugin that archives worker worktree workspaces (and their agents) once the worker branch is merged into its base. Dry-run by default.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "build": "esbuild index.server.ts --bundle --platform=node --format=cjs --target=node20 --outfile=node_modules/.cache/merged-worker-archiver/index.server.cjs --external:@getpaseo/plugin --external:@getpaseo/plugin/server --external:zod --log-level=warning && echo build ok",
+    "dry-run": "node scripts/dry-run.ts",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@getpaseo/client": "0.9.2"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.9.2",
+    "@getpaseo/protocol": "0.9.2",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  }
+}

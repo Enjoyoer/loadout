@@ -21,9 +21,15 @@ fleet/
   - `os`: `macos`, `windows`, or `linux`.
   - `checkout`: path to a local Git checkout of this repository, or `null`. A host without a checkout receives verified bytes from the source host and reverifies them.
   - `clients`: clients to sync, from `codex`, `claude`, `opencode`. Absent clients are skipped and reported.
+  - `paseo`: optional. Paseo plugin sync for this host's daemon. Omit it to skip plugins on the host.
+    - `plugin_root`: directory where verified plugin sources are staged, one subdirectory per plugin ID. `null` means this host's plugins are managed outside the sync; the sync only reports whether they match the manifest.
+    - `stage`: plugin IDs whose verified source is copied to `plugin_root`, installed with `npm ci`, and checked.
+    - `install`: plugin IDs, a subset of `stage`, authorized for `paseo plugin install` on this daemon. List a plugin here only after its host-local settings and arming have been decided.
 - `global`: optional. Maps each client to where `global/AGENTS.md` is installed.
   - `codex`: normally `$CODEX_HOME/AGENTS.md`.
   - `claude`: normally `~/.claude/CLAUDE.md`; a managed deployment may use the `claudeMd` field of Claude Code managed settings instead.
   - `opencode`: normally `~/.config/opencode/AGENTS.md`.
 
-Omit `global` or `global/AGENTS.md` to sync skills only. Global instructions follow the same preflight: never overwrite a changed target that matches no known prior version.
+Omit `global` or `global/AGENTS.md` to skip global instructions. Global instructions follow the same preflight: never overwrite a changed target that matches no known prior version.
+
+Plugin settings, plugin state, and the daemon's `pluginsEnabled` switch are host-local. The sync never writes them. See the `Paseo plugins` section of `SKILL.md`.

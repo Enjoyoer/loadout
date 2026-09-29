@@ -1,0 +1,7 @@
+{
+  "id": "usage-limit-auto-resume",
+  "description": "Safely resumes same-agent work after a recognized usage-limit failure.",
+  "requirements": {
+    "paseo": ">=0.9.0 <0.10.0"
+  }
+}
