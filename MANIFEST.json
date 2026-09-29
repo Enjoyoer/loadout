@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "hash_basis": "git-blob",
-  "source_commit": "a4d4d95c558e357cda541db7f1fd0374ef1fdfb1",
+  "source_commit": "f375d07d9b2ae07755dfc771187a3ed6a2f6a9af",
   "skill_count": 25,
   "file_count": 97,
   "files": [
@@ -93,8 +93,8 @@
       "path": "skills/operations-integrations/download-to-nas/SKILL.md",
       "category": "operations-integrations",
       "skill": "download-to-nas",
-      "bytes": 6970,
-      "sha256": "8e33f002cbe5081e2b170f67bf5fb155ce78ed59a9ff94c0014cfcf44b7ab7e9"
+      "bytes": 7285,
+      "sha256": "e6a0cc623de0db025f60684d7476e41dbd07d32684e84da23ac19d786d7e0ade"
     },
     {
       "path": "skills/operations-integrations/download-to-nas/agents/openai.yaml",
@@ -114,8 +114,8 @@
       "path": "skills/operations-integrations/download-to-nas/references/subtitles.md",
       "category": "operations-integrations",
       "skill": "download-to-nas",
-      "bytes": 2710,
-      "sha256": "b6c0e51b8fd9cd2669786dce7e3fab655fcc4f74bfe8080ec8f669030f27e7ff"
+      "bytes": 2740,
+      "sha256": "80ac3653007cc870880b543d5531c07b4d6e6ee8b60231e17f857e1bc6f27833"
     },
     {
       "path": "skills/operations-integrations/download-to-nas/scripts/oshash.py",
@@ -128,8 +128,8 @@
       "path": "skills/operations-integrations/download-to-nas/scripts/qbit_status.ps1",
       "category": "operations-integrations",
       "skill": "download-to-nas",
-      "bytes": 920,
-      "sha256": "2b96c3031cab0add5d257c7b86af417f938b02e28f8b24810f44304f8e901098"
+      "bytes": 1318,
+      "sha256": "e2d39e7716a1e3c53fe790854ce2658c8ae1b37ea4f4d9ecf79d56dde7f0d60a"
     },
     {
       "path": "skills/operations-integrations/gmail/SKILL.md",
