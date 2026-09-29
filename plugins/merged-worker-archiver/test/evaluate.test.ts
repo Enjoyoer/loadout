@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { defaultConfig, type ArchiverConfig } from "../server/config.ts";
 import { evaluateWorkspace } from "../server/evaluate.ts";
 import type { AgentView, WorkspaceView } from "../server/types.ts";
-import { agent, fakeFs, fakeRunner, mergedPr, NOW, scenario, workspace, type GitScenario, type Recorded } from "./fakes.ts";
+import { agent, CWD, fakeFs, fakeRunner, mergedPr, NOW, scenario, workspace, type GitScenario, type Recorded } from "./fakes.ts";
 
 async function decide(
   options: {
@@ -40,6 +40,12 @@ describe("merged paths", () => {
     const { decision } = await decide({ git: { ancestors: { "refs/heads/main": 1, "refs/remotes/origin/main": 0 } } });
     assert.equal(decision.action, "archive");
     assert.equal(decision.reason, "merged-ancestry(refs/remotes/origin/main)");
+  });
+
+  it("runs every git and gh command in the workspace directory", async () => {
+    const { calls } = await decide({ git: { gh: mergedPr() } });
+    assert.ok(calls.length > 0);
+    for (const call of calls) assert.equal(call.cwd, CWD, `${call.command} ${call.args.join(" ")}`);
   });
 
   it("never fetches or mutates: only read-only git subcommands", async () => {

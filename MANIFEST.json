@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "8608c06d5d27665be22ff29e7bce758af54ef8b6",
+  "source_commit": "ca9ce452b30b5ea1e995e19bfd287b727dcf78a2",
   "skill_count": 25,
   "file_count": 100,
   "files": [
@@ -826,8 +826,8 @@
     {
       "path": "plugins/merged-worker-archiver/README.md",
       "plugin": "merged-worker-archiver",
-      "bytes": 12200,
-      "sha256": "3662aef357f024ece88e5ac97d21ddc55f0e6d303fcd4a177f31ac834d332978"
+      "bytes": 12287,
+      "sha256": "2c08543d85cabc877f69dae50b927de50a54558f5eabacb983295317dd7a161b"
     },
     {
       "path": "plugins/merged-worker-archiver/index.server.ts",
@@ -886,8 +886,8 @@
     {
       "path": "plugins/merged-worker-archiver/server/merge-check.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 11158,
-      "sha256": "3df965f297320048f53284725f60830420c9bc9138f976817bed54f03df8066c"
+      "bytes": 11345,
+      "sha256": "ea202648d7d812aaf14e17054144be81a82c9f8215dadd10c29618d23009754f"
     },
     {
       "path": "plugins/merged-worker-archiver/server/scheduler.ts",
@@ -916,14 +916,14 @@
     {
       "path": "plugins/merged-worker-archiver/test/evaluate.test.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 11522,
-      "sha256": "5fe2f4f4d5d28cd98c8efae6faef1d8d34f03573a0fe9f1e7368871d64fc24d5"
+      "bytes": 11812,
+      "sha256": "18c3dc963a3440e1e53ca81ee9e5f2c74a7e808d485cf876837846b6eb0481b4"
     },
     {
       "path": "plugins/merged-worker-archiver/test/fakes.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 5371,
-      "sha256": "df5585d04b949ba1bb623f1d94faa9ea6a2cf52b44dbb44c5e70e6e0a6f6dde2"
+      "bytes": 5396,
+      "sha256": "aa08d73bf9eaa7fadf81e003f394cfbc4f8cf2cfd037ae4bef93a3691b0ba123"
     },
     {
       "path": "plugins/merged-worker-archiver/test/scheduler.test.ts",

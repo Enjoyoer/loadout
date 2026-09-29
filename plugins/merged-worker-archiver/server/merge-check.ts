@@ -47,10 +47,11 @@ function gitFailure(label: string, result: CommandResult): string {
 
 async function runGit(
   deps: MergeCheckDeps,
+  directory: string,
   args: readonly string[],
   label: string,
 ): Promise<{ result: CommandResult; failure: string | null }> {
-  const result = await deps.run("git", args, "", deps.timeoutMs);
+  const result = await deps.run("git", args, directory, deps.timeoutMs);
   if (result.code === 0) return { result, failure: null };
   return { result, failure: gitFailure(label, result) };
 }
@@ -59,13 +60,13 @@ function baseName(ref: string): string {
   return ref.replace(/^refs\/heads\//, "");
 }
 
-async function existingRef(deps: MergeCheckDeps, ref: string): Promise<boolean> {
-  const { result } = await runGit(deps, ["rev-parse", "--verify", "-q", `${ref}^{commit}`], `verify ${ref}`);
+async function existingRef(deps: MergeCheckDeps, directory: string, ref: string): Promise<boolean> {
+  const { result } = await runGit(deps, directory, ["rev-parse", "--verify", "-q", `${ref}^{commit}`], `verify ${ref}`);
   return result.code === 0;
 }
 
-async function upstreamRef(deps: MergeCheckDeps): Promise<string | null> {
-  const { result } = await runGit(deps, ["rev-parse", "--symbolic-full-name", "@{upstream}"], "upstream");
+async function upstreamRef(deps: MergeCheckDeps, directory: string): Promise<string | null> {
+  const { result } = await runGit(deps, directory, ["rev-parse", "--symbolic-full-name", "@{upstream}"], "upstream");
   if (result.code !== 0) return null;
   const value = result.stdout.trim();
   return value || null;
@@ -106,12 +107,12 @@ function prReason(pr: PullRequest, number: number, baseRef: string): string {
 }
 
 export async function checkMerged(directory: string, deps: MergeCheckDeps): Promise<MergeCheckResult> {
-  const gitDirResult = await runGit(deps, ["rev-parse", "--absolute-git-dir"], "absolute-git-dir");
+  const gitDirResult = await runGit(deps, directory, ["rev-parse", "--absolute-git-dir"], "absolute-git-dir");
   if (gitDirResult.failure) return { merged: false, branch: null, base: null, reason: gitDirResult.failure };
   const gitDir = gitDirResult.result.stdout.trim();
   if (!gitDir) return { merged: false, branch: null, base: null, reason: "ambiguous(git dir missing)" };
 
-  const branchResult = await runGit(deps, ["symbolic-ref", "--quiet", "--short", "HEAD"], "symbolic-ref");
+  const branchResult = await runGit(deps, directory, ["symbolic-ref", "--quiet", "--short", "HEAD"], "symbolic-ref");
   if (branchResult.failure) {
     if (branchResult.result.code === 1) return { merged: false, branch: null, base: null, reason: "detached-head" };
     return { merged: false, branch: null, base: null, reason: branchResult.failure };
@@ -125,14 +126,14 @@ export async function checkMerged(directory: string, deps: MergeCheckDeps): Prom
     }
   }
 
-  const statusResult = await runGit(deps, ["status", "--porcelain=v1", "--untracked-files=all"], "status");
+  const statusResult = await runGit(deps, directory, ["status", "--porcelain=v1", "--untracked-files=all"], "status");
   if (statusResult.failure) return { merged: false, branch, base: null, reason: statusResult.failure };
   const status = statusCounts(statusResult.result.stdout);
   if (status.changed > 0 || status.untracked > 0) {
     return { merged: false, branch, base: null, reason: `dirty(changed=${status.changed},untracked=${status.untracked})` };
   }
 
-  const reflogResult = await runGit(deps, ["reflog", "show", "--format=%H %gs"], "reflog");
+  const reflogResult = await runGit(deps, directory, ["reflog", "show", "--format=%H %gs"], "reflog");
   if (reflogResult.failure) return { merged: false, branch, base: null, reason: reflogResult.failure };
   if (!reflogResult.result.stdout.trim()) return { merged: false, branch, base: null, reason: "ambiguous(branch reflog empty)" };
   if (!hasBranchCommit(reflogResult.result.stdout)) return { merged: false, branch, base: null, reason: "no-branch-commits" };
@@ -149,15 +150,15 @@ export async function checkMerged(directory: string, deps: MergeCheckDeps): Prom
   const candidates: string[] = [];
   if (exactBase) candidates.push(exactBase);
   if (baseRefName) candidates.push(`refs/heads/${baseRefName}`);
-  const upstream = await upstreamRef(deps);
+  const upstream = await upstreamRef(deps, directory);
   if (upstream) candidates.push(upstream);
   let baseRef: string | null = null;
   let base: string | null = null;
   let ancestorFailure: string | null = null;
   for (const candidate of [...new Set(candidates)]) {
-    if (!(await existingRef(deps, candidate))) continue;
+    if (!(await existingRef(deps, directory, candidate))) continue;
     const candidateBase = baseRefName ?? baseName(candidate);
-    const ancestor = await runGit(deps, ["merge-base", "--is-ancestor", "HEAD", candidate], `is-ancestor ${candidate}`);
+    const ancestor = await runGit(deps, directory, ["merge-base", "--is-ancestor", "HEAD", candidate], `is-ancestor ${candidate}`);
     if (ancestor.result.code === 0) {
       return { merged: true, via: "ancestry", branch, base: candidateBase, reason: `merged-ancestry(${candidate})` };
     }
@@ -177,7 +178,7 @@ export async function checkMerged(directory: string, deps: MergeCheckDeps): Prom
 
   const selectedBaseRef = baseRef;
 
-  const aheadResult = await runGit(deps, ["rev-list", "--count", `${baseRef}..HEAD`], `rev-list ${baseRef}..HEAD`);
+  const aheadResult = await runGit(deps, directory, ["rev-list", "--count", `${baseRef}..HEAD`], `rev-list ${baseRef}..HEAD`);
   if (aheadResult.failure) return { merged: false, branch, base, reason: aheadResult.failure };
   const aheadText = aheadResult.result.stdout.trim();
   const ahead = Number.parseInt(aheadText, 10);
@@ -212,7 +213,7 @@ export async function checkMerged(directory: string, deps: MergeCheckDeps): Prom
   if (typeof pr.headRefOid !== "string" || !pr.headRefOid) {
     return { merged: false, branch, base, reason: `ambiguous(PR #${number} missing headRefOid)` };
   }
-  const contained = await runGit(deps, ["merge-base", "--is-ancestor", "HEAD", pr.headRefOid], `is-ancestor PR #${number} head`);
+  const contained = await runGit(deps, directory, ["merge-base", "--is-ancestor", "HEAD", pr.headRefOid], `is-ancestor PR #${number} head`);
   if (contained.result.code === 0) return { merged: true, via: "pr", branch, base, reason: `merged-pr(#${number})` };
   if (contained.result.code === 1) return { merged: false, branch, base, reason: `unmerged-commits(after PR #${number} head)` };
   if (contained.failure) {

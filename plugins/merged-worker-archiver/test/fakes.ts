@@ -51,11 +51,12 @@ const fail = (code: number, stderr = ""): CommandResult => ({ code, stdout: "", 
 export interface Recorded {
   command: string;
   args: readonly string[];
+  cwd: string;
 }
 
 export function fakeRunner(s: GitScenario, calls: Recorded[] = []): CommandRunner {
-  return async (command, args) => {
-    calls.push({ command, args });
+  return async (command, args, cwd) => {
+    calls.push({ command, args, cwd });
     if (command === "gh") {
       if (!s.gh) return { code: null, stdout: "", stderr: "", timedOut: false, notFound: true };
       return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false, ...s.gh };
