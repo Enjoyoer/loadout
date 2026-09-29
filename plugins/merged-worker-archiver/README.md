@@ -179,7 +179,7 @@ npm run dry-run -- --host 127.0.0.1:6767          # read-only table against a li
 npm run dry-run -- --grace 0 --config <settings.json>
 ```
 
-`scripts/dry-run.ts` forces dry-run and replaces the archive call with a throw.
+`scripts/dry-run.ts` sweeps with `armed: false` and `forceDryRun: true`, so every decision returns at the `would-archive` log line before the archive call is reached.
 
 ## Install and arm (PM, after owner approval)
 
