@@ -252,13 +252,16 @@ def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Opti
     Returns (result dict or None, raw output). Secrets travel only on stdin.
     """
     body = pack(json.dumps(payload).encode())
+    env = None
     if local:
         command = ["node", "-e", BOOT, "--", pack(program.read_bytes())]
+        # Inside an agent session, keep daemon commands off the agent's own identity.
+        env = {k: v for k, v in os.environ.items() if k not in ("PASEO_AGENT_ID", "PASEO_AGENT_CWD")}
     else:
         command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", name,
                    f'node -e "{BOOT}" -- {pack(program.read_bytes())}']
     try:
-        done = subprocess.run(command, input=body, capture_output=True, text=True, timeout=timeout)
+        done = subprocess.run(command, input=body, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return None, f"timed out after {timeout}s"
     output = done.stdout + done.stderr
