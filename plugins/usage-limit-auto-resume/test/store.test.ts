@@ -36,4 +36,28 @@ describe("ResumeStore", () => {
     await store.remove(record.recordId);
     assert.deepEqual(await store.read(), []);
   });
+
+  it("keeps both changes when two updates to one record run concurrently", async () => {
+    // A resumed turn's start (resumeTurnId) and the send receipt (state) land together.
+    const store = new ResumeStore(`/tmp/usage-limit-auto-resume-race-${process.pid}.json`);
+    const record = buildRecord(agent, "out of credits", undefined, config, Date.now(), "turn-1");
+    assert.ok(record);
+    await store.upsert(record);
+    await Promise.all([
+      store.update(record.recordId, (value) => ({ ...value, resumeTurnId: "turn-2" })),
+      store.update(record.recordId, (value) => ({ ...value, state: "verifying" })),
+    ]);
+    const [stored] = await store.read();
+    assert.equal(stored?.resumeTurnId, "turn-2");
+    assert.equal(stored?.state, "verifying");
+    await store.remove(record.recordId);
+  });
+
+  it("keeps every record when upserts for different agents run concurrently", async () => {
+    const store = new ResumeStore(`/tmp/usage-limit-auto-resume-upsert-${process.pid}.json`);
+    const records = ["agent-a", "agent-b", "agent-c"].map((id) => buildRecord({ ...agent, id }, "out of credits", undefined, config, Date.now(), `turn-${id}`)!);
+    await Promise.all(records.map((record) => store.upsert(record)));
+    assert.deepEqual((await store.read()).map((record) => record.agentId).sort(), ["agent-a", "agent-b", "agent-c"]);
+    for (const record of records) await store.remove(record.recordId);
+  });
 });
