@@ -1,0 +1,14 @@
+{
+  "source_host": "laptop",
+  "transport": "ssh",
+  "hosts": [
+    { "name": "laptop", "os": "macos", "checkout": "~/src/loadout", "clients": ["codex", "claude"] },
+    { "name": "desktop", "os": "windows", "checkout": null, "clients": ["codex", "claude"] },
+    { "name": "devbox", "os": "linux", "checkout": null, "clients": ["codex"] }
+  ],
+  "global": {
+    "codex": "$CODEX_HOME/AGENTS.md",
+    "claude": "~/.claude/CLAUDE.md",
+    "opencode": "~/.config/opencode/AGENTS.md"
+  }
+}

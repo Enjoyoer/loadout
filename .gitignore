@@ -8,3 +8,6 @@ __pycache__/
 *.key
 *.pem
 skills/*/*/references/local.md
+/AGENTS.md
+/CLAUDE.md
+skills/*/*/fleet/local/

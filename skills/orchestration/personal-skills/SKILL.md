@@ -5,7 +5,7 @@ description: Sync selected skill packages from this repository into local Codex 
 
 # Personal skills
 
-Use the repository root `README.md` for the current manifest format, installation destinations, and validation steps. The user chooses the packages and target host. There is no built-in machine roster or automatic remote target.
+Use the repository root `README.md` for the current manifest format, installation destinations, and validation steps. The user chooses the packages. Target hosts come from the user's fleet description in `fleet/`; without one, sync only the current host.
 
 ## Source and selection
 
@@ -18,7 +18,16 @@ Use the repository root `README.md` for the current manifest format, installatio
 - Codex: `${CODEX_HOME:-$HOME/.codex}/skills/<skill-name>`.
 - Claude Code: `~/.claude/skills/<skill-name>`.
 - Resolve home directories and path syntax on the target host. A client is present when its binary or skills root exists; skip and report an absent client.
-- This repository installs skill packages only. It does not install global instructions, credentials, model settings, or other agent-client configuration.
+- Skill sync installs skill packages. It installs global instructions only from the user's fleet description, and never installs credentials, model settings, or other agent-client configuration.
+
+## Fleet
+
+- Read `fleet/local/` beside this installed `SKILL.md`. It is the user's private fleet: never commit, publish, or quote it into a public file. It is not a package file, so sync never overwrites or removes it on a host that already has it.
+- `fleet/README.md` defines the format and `fleet/example/` shows a made-up fleet. A user starts by copying `fleet/example/` to `fleet/local/` and editing it. Never treat the example as a real target.
+- Without `fleet/local/`, the fleet is the current host only, with no global instructions.
+- Sync every host in the fleet by default unless the user narrows it. Each host resolves its own paths and shell, syncs the clients present, and reports absent clients as skipped.
+- Report each host separately. A blocker stops only that host. Report an unreachable host as an outstanding gap; never report a host as synced until it is verified, and never drop an unreached host from the report.
+- Carry `fleet/local/` to another host only over the transport the fleet names, and only when that host lacks it or the user asks. Never send it to Git or a public service.
 
 ## Local-edit protection
 
