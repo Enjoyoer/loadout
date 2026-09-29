@@ -5,9 +5,11 @@ A fleet describes the hosts that `personal-skills` syncs. The public `example/` 
 ```
 example/                     public, made up
   hosts.json
+  paseo-providers.json       optional
   global/AGENTS.md           optional
 <fleet directory>/           yours, private (copy example/ here and edit)
   hosts.json
+  paseo-providers.json       optional
   global/AGENTS.md           optional
 ```
 
@@ -51,3 +53,15 @@ With none of these, the fleet is the current host only. To move an existing `fle
 Omit `global` or `global/AGENTS.md` to skip global instructions. Global instructions follow the same preflight: never overwrite a changed target that matches no known prior version.
 
 Plugin settings, plugin state, and the daemon's `pluginsEnabled` switch are host-local. The sync never writes them. See the `Paseo plugins` section of `SKILL.md`.
+
+## paseo-providers.json
+
+Optional. The Paseo provider-picker sync (`python3 scripts/paseo_providers.py`) reads it and updates hosts whose `sync` includes `providers`. It holds router URLs and host settings, so it stays in the private fleet directory.
+
+- `providers`: pinned blocks keyed by Paseo provider, such as `claude` or `codex`. Each block's fields replace the same fields in the host's `agents.providers.<provider>`; other fields there are kept. `models[]` rows need a unique `id` and a `label` that is a name only: no digits and not the model ID.
+- `env`: optional default environment per provider, merged into `agents.providers.<provider>.env` on every host.
+- `hosts`: optional settings by host name, each for a host with the `providers` scope.
+  - `env`: per-provider values layered over the default.
+  - `inherit_env`: `false` skips the default `env`, so the host keeps its own values.
+  - `required_env`: per-provider variable names that must be set after the merge, or the host fails without a write.
+

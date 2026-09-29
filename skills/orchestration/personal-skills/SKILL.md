@@ -1,6 +1,6 @@
 ---
 name: personal-skills
-description: Sync selected skill packages and Paseo plugins from this repository to local Codex, Claude Code, and Paseo daemon installations across a fleet, with committed-blob verification and local-edit protection.
+description: Sync selected skill packages, Paseo plugins, and optional Paseo provider pickers from this repository to local Codex, Claude Code, and Paseo daemon installations across a fleet, with committed-blob verification and local-edit protection.
 ---
 
 # Personal skills
@@ -40,6 +40,15 @@ Plugins live at `plugins/<id>/` and are listed in the manifest's `plugins` and `
 3. **Confirm.** Require `paseo plugin ls` on the host to report the plugin `running` and enabled, and read `paseo plugin logs <id>` for load errors.
 
 Never write plugin settings, plugin state, or `pluginsEnabled` as part of a sync, and never arm a plugin. A plugin with an `armed` setting starts in dry-run when its settings file is absent; a plugin without one acts as soon as it runs, so read its README before listing it in `install`. Preserve every existing settings file. A host with `plugin_root: null` manages its plugins elsewhere: report whether its installed source matches the manifest and change nothing. Report staged, installed, running, blocked, and unreachable plugins per host.
+
+## Paseo provider pickers
+
+Optional, and only when the user asks. `python3 scripts/paseo_providers.py [--dry-run] [--host <name>]` merges the pinned provider rows in `<fleet>/paseo-providers.json` into `~/.paseo/config.json` on each host whose `sync` includes `providers`, then reloads that daemon. It keeps every other provider and host-local field, backs the file up in place as `config.json.bak-loadout-<stamp>`, and checks that the picker labels read back exactly as pinned.
+
+- The source host runs locally. `ssh` hosts run the merge over SSH and reload over SSH, or over their `paseo_offer` when set. `paseo-relay` hosts run it in a temporary Paseo workspace terminal (allow up to two minutes) that is always archived afterward, and reload over the relay.
+- The merge program travels gzip and base64 encoded so it survives `cmd.exe` and terminal quoting. Hosts need `node`; relay hosts need a POSIX shell.
+- Each host reports the write and the reload on separate lines. A relay reload can time out after a successful write; report that as a reload failure, not a failed write, and do not undo the write.
+- Run `--dry-run` first and show the user the result. Never put catalog, router URLs, or offers in this repository.
 
 ## Local-edit protection
 
