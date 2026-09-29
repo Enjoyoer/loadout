@@ -1,7 +1,9 @@
 // Stage, install, and confirm verified Loadout Paseo plugins on this host.
 // Shipped gzip+base64 by plugins_sync.py; stdin is the gzip+base64 JSON payload
-// {dry_run, plugin_root, stage, install, plugins: {id: {pin, files: {rel: {sha256, data, prior}}}}}.
-// Never writes plugin settings, plugin state, or pluginsEnabled, and never arms a plugin.
+// {dry_run, plugin_root, stage, install, migrate_path, plugins: {id: {pin, files: {rel: {sha256, data, prior}}}}}.
+// Never writes plugin settings, plugin state, or pluginsEnabled, and never arms a plugin. The one
+// exception is migrate_path: `paseo plugin remove` deletes <PASEO_HOME>/plugin-settings/<id>, so a
+// migration backs that directory up first and restores the host's own bytes, hash-verified.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execSync } = require("child_process");
 const result = { status: null, plugins: {}, conflicts: [], daemon: null, error: null };
@@ -31,12 +33,12 @@ function checkAncestors(root, file) {
   }
 }
 
-function hashTree(dir, rel = "", out = {}) {
+function hashTree(dir, skip = SKIP, rel = "", out = {}) {
   if (!fs.existsSync(dir)) return out;
   for (const name of fs.readdirSync(dir)) {
-    if (!rel && SKIP.has(name)) continue;
+    if (!rel && skip.has(name)) continue;
     const full = path.join(dir, name), r = rel ? rel + "/" + name : name, st = fs.lstatSync(full);
-    if (st.isDirectory() && !st.isSymbolicLink()) hashTree(full, r, out);
+    if (st.isDirectory() && !st.isSymbolicLink()) hashTree(full, skip, r, out);
     else if (st.isFile()) out[r] = sha(fs.readFileSync(full));
   }
   return out;
@@ -71,9 +73,40 @@ function satisfies(version, range) {
   });
 }
 
+const paseoHome = () => process.env.PASEO_HOME || path.join(home, ".paseo");
 function daemonConfig() {
-  const file = path.join(process.env.PASEO_HOME || path.join(home, ".paseo"), "config.json");
+  const file = path.join(paseoHome(), "config.json");
   return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+}
+
+const sameTree = (a, b) => Object.keys(a).length === Object.keys(b).length && Object.keys(a).every(k => a[k] === b[k]);
+const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
+
+// Move an installed plugin to `dir`: back up its settings, remove, install, restore the same bytes, reload.
+function migrate(id, dir, from) {
+  const settings = path.join(paseoHome(), "plugin-settings", id);
+  const had = fs.existsSync(settings), want = had ? hashTree(settings, new Set()) : {};
+  const backup = path.join(paseoHome(), "plugin-settings.bak-loadout-" + stamp, id);
+  if (had) {
+    fs.cpSync(settings, backup, { recursive: true });
+    if (!sameTree(hashTree(backup, new Set()), want)) throw new Error("settings backup did not verify: " + backup);
+  }
+  const keep = had ? "; settings backup kept at " + backup : "";
+  try {
+    paseo("plugin remove " + id);
+    paseo(`plugin install "${dir}"`);
+  } catch (e) {
+    throw new Error(e.message + keep + "; the plugin may be removed, reinstall it from " + dir);
+  } finally {
+    if (had) {
+      fs.rmSync(settings, { recursive: true, force: true });
+      fs.cpSync(backup, settings, { recursive: true });
+      if (!sameTree(hashTree(settings, new Set()), want)) throw new Error("restored settings did not verify" + keep);
+    }
+  }
+  if (!had) return `migrated from ${from}; no settings to carry`;
+  paseo("plugin reload " + id);
+  return `migrated from ${from}; settings restored (${Object.keys(want).length} files, hashes verified)${keep}`;
 }
 
 try {
@@ -137,10 +170,26 @@ try {
       if (!gate && !satisfies(version, p.plugins[id].pin)) gate = `paseo ${version} is outside ${id}'s pin ${p.plugins[id].pin}`;
   }
 
+  // An install ID already installed from another directory needs migrate_path.
+  const elsewhere = {};
+  for (const id of p.install) {
+    const current = (daemonConfig().plugins || {})[id];
+    if (current && current.path && path.resolve(current.path) !== path.join(root, id)) elsewhere[id] = current;
+  }
+
   if (p.dry_run) {
-    for (const id of p.stage) if (p.install.includes(id)) result.plugins[id].installed = gate ? "blocked: " + gate : "would install or reload";
-    const changed = p.stage.some(id => result.plugins[id].staged === "changed");
-    result.status = gate ? "blocked" : changed ? "would update" : "same";
+    let blockedHere = !!gate, migrating = false;
+    for (const id of p.stage) {
+      if (!p.install.includes(id)) continue;
+      const info = result.plugins[id], from = elsewhere[id];
+      if (gate) info.installed = "blocked: " + gate;
+      else if (from && !p.migrate_path) { info.installed = "blocked: installed from " + from.path + " (use --migrate-path)"; blockedHere = true; }
+      else if (from && from.enabled === false) { info.installed = "blocked: disabled plugin installed from " + from.path; blockedHere = true; }
+      else if (from) { info.installed = "would migrate from " + from.path + " (settings backed up and restored)"; migrating = true; }
+      else info.installed = "would install or reload";
+    }
+    const changed = migrating || p.stage.some(id => result.plugins[id].staged === "changed");
+    result.status = blockedHere ? "blocked" : changed ? "would update" : "same";
     done(0);
   }
 
@@ -174,12 +223,16 @@ try {
     const info = result.plugins[id], dir = path.join(root, id);
     if (typeof info.checked === "string" && info.checked.startsWith("FAILED")) { info.installed = "skipped (check failed)"; continue; }
     if (gate) { info.installed = "blocked: " + gate; blocked = true; continue; }
-    const current = (daemonConfig().plugins || {})[id];
+    const current = (daemonConfig().plugins || {})[id], from = elsewhere[id];
     try {
-      if (current && current.path && path.resolve(current.path) !== dir) {
-        info.installed = "blocked: installed from " + current.path; blocked = true; continue;
+      if (from && !p.migrate_path) {
+        info.installed = "blocked: installed from " + from.path + " (use --migrate-path)"; blocked = true; continue;
       }
-      if (!current) { paseo(`plugin install "${dir}"`); info.installed = "installed"; }
+      if (from && from.enabled === false) {
+        info.installed = "blocked: disabled plugin installed from " + from.path; blocked = true; continue;
+      }
+      if (from) info.installed = migrate(id, dir, from.path);
+      else if (!current) { paseo(`plugin install "${dir}"`); info.installed = "installed"; }
       else if (info.staged === "changed") { paseo("plugin reload " + id); info.installed = "reloaded"; }
       else info.installed = "already installed";
       const listed = JSON.parse(paseo("plugin ls --json")).find(x => x.id === id);
@@ -191,7 +244,8 @@ try {
     }
   }
   const changed = p.stage.some(id => result.plugins[id].staged === "changed")
-    || Object.values(result.plugins).some(x => x.installed === "installed" || x.installed === "reloaded");
+    || Object.values(result.plugins).some(x => x.installed === "installed" || x.installed === "reloaded"
+      || String(x.installed).startsWith("migrated"));
   result.status = failed ? "failed" : blocked ? "blocked" : changed ? "updated" : "same";
   done(failed ? 3 : 0);
 } catch (e) {

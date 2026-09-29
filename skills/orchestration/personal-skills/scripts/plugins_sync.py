@@ -6,7 +6,11 @@ Each host's `paseo` entry authorizes the steps: `stage` copies verified source t
 installs or reloads on the daemon, only when the daemon version is inside the
 plugin's pin and `pluginsEnabled` is already true. A host with
 `plugin_root: null` only reports whether its installed source matches.
-The sync never writes plugin settings, plugin state, or pluginsEnabled.
+The sync never writes plugin settings, plugin state, or pluginsEnabled. The
+exception is --migrate-path, for a plugin installed from another directory:
+`paseo plugin remove` deletes its settings, so the migration backs them up,
+removes, installs from plugin_root, restores the same bytes (hash-verified),
+and reloads.
 """
 
 from __future__ import annotations
@@ -64,7 +68,8 @@ def describe(result: dict) -> list:
     return lines
 
 
-def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Callable[[str], None]) -> dict:
+def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Callable[[str], None],
+        migrate_path: bool = False) -> dict:
     pub = publication.Publication(publication.find_checkout(fleet_doc))
     emit(f"source_commit {pub.source[:12]}")
     statuses = {}
@@ -72,7 +77,7 @@ def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Ca
         name = host["name"]
         paseo = host["paseo"]
         ids = paseo.get("stage", []) or [p["id"] for p in pub.manifest["plugins"]]
-        payload = {"dry_run": dry_run, "plugin_root": paseo.get("plugin_root"),
+        payload = {"dry_run": dry_run, "migrate_path": migrate_path, "plugin_root": paseo.get("plugin_root"),
                    "stage": paseo.get("stage", []) if paseo.get("plugin_root") is not None else [],
                    "install": paseo.get("install", []) if paseo.get("plugin_root") is not None else [],
                    "plugins": plugin_payload(pub, ids)}
@@ -91,6 +96,8 @@ def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true", help="preflight and report without writing")
     parser.add_argument("--host", help="sync only this fleet host")
+    parser.add_argument("--migrate-path", action="store_true",
+                        help="move plugins installed from another directory to plugin_root, keeping their settings")
     args = parser.parse_args(argv)
     source = fleet.resolve()
     print(fleet.describe(source))
@@ -99,7 +106,8 @@ def main(argv: Optional[list] = None) -> int:
             raise fleet.FleetError("no fleet directory")
         fleet_doc = fleet.load(source.path)
         targets = fleet.select(fleet_doc, "plugins", args.host)
-        statuses = run(fleet_doc, source.path, targets, args.dry_run, lambda line: print("  " + line, flush=True))
+        statuses = run(fleet_doc, source.path, targets, args.dry_run, lambda line: print("  " + line, flush=True),
+                       args.migrate_path)
     except fleet.FleetError as error:
         print(f"invalid: {error}", file=sys.stderr)
         return 2 if isinstance(error, fleet.HostSelectionError) else 1

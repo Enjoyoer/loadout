@@ -47,7 +47,7 @@ With none of these, the fleet is the current host only. To move an existing `fle
   - `checkout`: path to a local Git checkout of this repository, or `null` (the default). A host without a checkout receives verified bytes from the source host and reverifies them.
   - `clients`: clients to sync, from `codex`, `claude`, `opencode`. Required when `sync` includes `skills`. Absent clients are skipped and reported.
   - `paseo`: optional. Paseo plugin sync for this host's daemon. Required when `sync` includes `plugins`.
-    - `plugin_root`: directory where verified plugin sources are staged, one subdirectory per plugin ID. `null` means this host's plugins are managed outside the sync; the sync only reports whether they match the manifest.
+    - `plugin_root`: directory where verified plugin sources are staged, one subdirectory per plugin ID. `null` means this host's plugins are managed outside the sync; the sync only reports whether they match the manifest. Changing it for a host with installed plugins needs `sync.py --migrate-path` once.
     - `stage`: plugin IDs whose verified source is copied to `plugin_root`, installed with `npm ci`, and checked.
     - `install`: plugin IDs, a subset of `stage`, authorized for `paseo plugin install` on this daemon. List a plugin here only after its host-local settings and arming have been decided.
 - `global`: optional. Maps each client to where `global/AGENTS.md` is installed.

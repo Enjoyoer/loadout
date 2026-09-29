@@ -46,10 +46,16 @@ FAKE_PASEO = textwrap.dedent(r"""
       "daemon status") [ -e "$FAKE_ROOT/daemon-down" ] && { echo '{"error":{"code":"DAEMON_NOT_RUNNING"}}'; exit 1; }
         printf '{"localDaemon":"running","daemonVersion":"%s"}
 ' "$(cat "$FAKE_ROOT/daemon-version")" ;;
-      "plugin install") node -e '
+      "plugin install") [ -e "$FAKE_ROOT/fail-install" ] && { echo "install failed" >&2; exit 1; }; node -e '
         const fs=require("fs"),path=require("path");const [cfg,dir]=process.argv.slice(1);
         const c=JSON.parse(fs.readFileSync(cfg,"utf8"));const id=JSON.parse(fs.readFileSync(path.join(dir,"paseo-plugin.json"),"utf8")).id;
-        c.plugins=c.plugins||{};c.plugins[id]={source:"local",path:dir,enabled:true};fs.writeFileSync(cfg,JSON.stringify(c));' "$cfg" "$3" ;;
+        c.plugins=c.plugins||{};c.plugins[id]={source:"local",path:dir,enabled:true};fs.writeFileSync(cfg,JSON.stringify(c));
+        const s=path.join(path.dirname(cfg),"plugin-settings",id);if(!fs.existsSync(s)){fs.mkdirSync(s,{recursive:true});
+        fs.writeFileSync(path.join(s,"config.json"),"{\"armed\":false}");}' "$cfg" "$3" ;;
+      "plugin remove") node -e '
+        const fs=require("fs"),path=require("path");const [cfg,id]=process.argv.slice(1);
+        const c=JSON.parse(fs.readFileSync(cfg,"utf8"));delete c.plugins[id];fs.writeFileSync(cfg,JSON.stringify(c));
+        fs.rmSync(path.join(path.dirname(cfg),"plugin-settings",id),{recursive:true,force:true});' "$cfg" "$3" ;;
       "plugin reload") ;;
       "plugin ls") node -e '
         const fs=require("fs");const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const down=fs.existsSync(process.argv[2]);
@@ -112,9 +118,10 @@ class RemotePluginTest(Fixture):
     def staged(self, rel=""):
         return self.home / "plugins/demo" / rel
 
-    def run_remote(self, files=None, stage=("demo",), install=("demo",), root="~/plugins", dry_run=False, pin=">=0.9.2 <0.11.0"):
+    def run_remote(self, files=None, stage=("demo",), install=("demo",), root="~/plugins", dry_run=False, pin=">=0.9.2 <0.11.0",
+                   migrate=False):
         files = files or {rel: blob(data) for rel, data in PLUGIN_FILES.items()}
-        payload = {"dry_run": dry_run, "plugin_root": root, "stage": list(stage), "install": list(install),
+        payload = {"dry_run": dry_run, "migrate_path": migrate, "plugin_root": root, "stage": list(stage), "install": list(install),
                    "plugins": {"demo": {"pin": pin, "files": files}}}
         env = {**self.env, "HOME": str(self.home)}
         done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(plugins_sync.REMOTE_JS.read_bytes())],
@@ -210,7 +217,68 @@ class RemotePluginTest(Fixture):
         cfg["plugins"] = {"demo": {"source": "local", "path": "/somewhere/else", "enabled": True}}
         (self.home / ".paseo/config.json").write_text(json.dumps(cfg))
         got = self.run_remote()
-        self.assertIn("blocked: installed from /somewhere/else", got["plugins"]["demo"]["installed"])
+        self.assertIn("blocked: installed from /somewhere/else (use --migrate-path)", got["plugins"]["demo"]["installed"])
+        self.assertEqual(self.run_remote(dry_run=True)["status"], "blocked")
+        self.assertNotIn("plugin remove", self.calls())
+
+    def install_elsewhere(self, settings=True, enabled=True):
+        cfg = self.config()
+        cfg["plugins"] = {"demo": {"source": "local", "path": "/somewhere/else", "enabled": enabled}}
+        (self.home / ".paseo/config.json").write_text(json.dumps(cfg))
+        armed = self.home / ".paseo/plugin-settings/demo"
+        if settings:
+            (armed / "rules").mkdir(parents=True)
+            (armed / "config.json").write_text('{"armed":true,"owner":"tuned"}')
+            (armed / "rules/a.json").write_text("[1,2]")
+        return armed
+
+    def tree(self, path):
+        return {str(f.relative_to(path)): f.read_bytes() for f in sorted(path.rglob("*")) if f.is_file()}
+
+    def test_migrate_path_keeps_the_hosts_settings(self):
+        armed = self.install_elsewhere()
+        before = self.tree(armed)
+        got = self.run_remote(dry_run=True, migrate=True)
+        self.assertEqual(got["status"], "would update", got)
+        self.assertEqual(got["plugins"]["demo"]["installed"], "would migrate from /somewhere/else (settings backed up and restored)")
+        self.assertNotIn("plugin remove", self.calls())
+        got = self.run_remote(migrate=True)
+        self.assertEqual(got["status"], "updated", got)
+        info = got["plugins"]["demo"]
+        self.assertTrue(info["installed"].startswith("migrated from /somewhere/else; settings restored (2 files, hashes verified)"), info)
+        self.assertTrue(info["running"])
+        self.assertEqual(self.tree(armed), before)
+        self.assertEqual(self.config()["plugins"]["demo"]["path"], str(self.staged()))
+        backups = list((self.home / ".paseo").glob("plugin-settings.bak-loadout-*/demo"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(self.tree(backups[0]), before)
+        calls = [c for c in self.calls().splitlines() if c.startswith("paseo plugin")]
+        self.assertEqual([c.split()[2] for c in calls], ["remove", "install", "reload", "ls"])
+        self.assertEqual(self.run_remote(migrate=True)["status"], "same")
+
+    def test_migrate_path_without_settings(self):
+        self.install_elsewhere(settings=False)
+        got = self.run_remote(migrate=True)
+        self.assertEqual(got["plugins"]["demo"]["installed"], "migrated from /somewhere/else; no settings to carry")
+        self.assertEqual(got["status"], "updated")
+
+    def test_migrate_path_restores_settings_when_install_fails(self):
+        armed = self.install_elsewhere()
+        before = self.tree(armed)
+        (self.root / "fail-install").touch()
+        got = self.run_remote(migrate=True)
+        self.assertEqual(got["status"], "failed", got)
+        self.assertIn("install failed", got["plugins"]["demo"]["installed"])
+        self.assertIn("settings backup kept at", got["plugins"]["demo"]["installed"])
+        self.assertEqual(self.tree(armed), before)
+
+    def test_migrate_path_leaves_a_disabled_plugin_alone(self):
+        armed = self.install_elsewhere(enabled=False)
+        got = self.run_remote(migrate=True)
+        self.assertEqual(got["status"], "blocked")
+        self.assertIn("blocked: disabled plugin installed from /somewhere/else", got["plugins"]["demo"]["installed"])
+        self.assertNotIn("plugin remove", self.calls())
+        self.assertTrue((armed / "config.json").exists())
 
     def test_managed_elsewhere_reports_drift(self):
         src = self.root / "managed/demo"
