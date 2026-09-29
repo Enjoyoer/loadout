@@ -216,20 +216,21 @@ class Runner:
 
 
 def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: bool,
-              emit: Callable[[str], None]) -> bool:
+              emit: Callable[[str], None]) -> str:
+    """Returns "same", "updated", "would update", or "FAILED"."""
     name = f"{runner.name} ({runner.mode})"
     try:
         output = runner.write(program, pack(json.dumps(payload(config, runner.name, stamp, dry_run)).encode()))
         result = parse_result(output)
     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
         emit(f"{name}: write FAILED: {error}")
-        return False
+        return "FAILED"
     if result is None:
         emit(f"{name}: write FAILED: no result from the merge program: {output.strip()[-300:]}")
-        return False
+        return "FAILED"
     if result["error"]:
         emit(f"{name}: write FAILED: {result['error']}")
-        return False
+        return "FAILED"
     state = "CHANGED" if result["changed"] else "unchanged"
     if dry_run and result["changed"]:
         state = "would change (dry run)"
@@ -237,16 +238,25 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
     emit(f"{name}: write {state}; labels {'verified' if result['verified'] else 'MISMATCH'}; "
          f"preserved [{', '.join(result['preserved'])}]{backup}")
     if not result["verified"]:
-        return False
+        return "FAILED"
     if dry_run:
         emit(f"{name}: reload skipped (dry run)")
-        return True
+        return "would update" if result["changed"] else "same"
     try:
         emit(f"{name}: reload {runner.reload()}")
     except (RuntimeError, OSError, subprocess.SubprocessError) as error:
         emit(f"{name}: reload FAILED: {error}")
-        return False
-    return True
+        return "FAILED"
+    return "updated" if result["changed"] else "same"
+
+
+def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Callable[[str], None]) -> dict:
+    config = load_config(fleet_dir / "paseo-providers.json", fleet_doc)
+    program = pack(MERGE_JS.read_bytes())
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return {host["name"]: sync_host(Runner(host, fleet_doc["source_host"], fleet_dir), config, program, stamp,
+                                    dry_run, emit)
+            for host in targets}
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -260,39 +270,22 @@ def main(argv: Optional[list] = None) -> int:
     if source.path is None:
         print("no fleet directory; nothing to sync", file=sys.stderr)
         return 1
-    try:
-        fleet_doc = fleet.load(source.path)
-        config_path = source.path / "paseo-providers.json"
-        config = load_config(config_path, fleet_doc)
-    except fleet.FleetError as error:
-        print(f"invalid: {error}", file=sys.stderr)
-        return 1
-    print(f"providers: {config_path}")
-    targets = fleet.hosts_for(fleet_doc, "providers")
-    if args.host:
-        known = {host["name"] for host in fleet_doc["hosts"]}
-        if args.host not in known:
-            print(f"unknown host: {args.host}", file=sys.stderr)
-            return 2
-        targets = [host for host in targets if host["name"] == args.host]
-        if not targets:
-            print(f"host {args.host} does not have the providers sync scope", file=sys.stderr)
-            return 2
-    skipped = [host["name"] for host in fleet_doc["hosts"] if "providers" not in host["sync"]]
-    if skipped and not args.host:
-        print(f"skipped (no providers scope): {', '.join(skipped)}")
-
     # Turn SIGTERM and SIGHUP into exits so relay cleanup still runs.
     for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
         if sig is not None:
             signal.signal(sig, lambda number, _frame: sys.exit(128 + number))
-    program = pack(MERGE_JS.read_bytes())
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    ok = True
-    for host in targets:
-        runner = Runner(host, fleet_doc["source_host"], source.path)
-        ok = sync_host(runner, config, program, stamp, args.dry_run, lambda line: print("  " + line, flush=True)) and ok
-    return 0 if ok else 1
+    try:
+        fleet_doc = fleet.load(source.path)
+        targets = fleet.select(fleet_doc, "providers", args.host)
+        print(f"providers: {source.path / 'paseo-providers.json'}")
+        skipped = [host["name"] for host in fleet_doc["hosts"] if "providers" not in host["sync"]]
+        if skipped and not args.host:
+            print(f"skipped (no providers scope): {', '.join(skipped)}")
+        statuses = run(fleet_doc, source.path, targets, args.dry_run, lambda line: print("  " + line, flush=True))
+    except fleet.FleetError as error:
+        print(f"invalid: {error}", file=sys.stderr)
+        return 2 if isinstance(error, fleet.HostSelectionError) else 1
+    return 1 if "FAILED" in statuses.values() else 0
 
 
 if __name__ == "__main__":

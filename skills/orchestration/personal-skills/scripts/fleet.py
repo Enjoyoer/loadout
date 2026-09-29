@@ -287,20 +287,22 @@ def describe_push(result: dict) -> str:
     return status + (f" ({' '.join(parts)})" if parts else "")
 
 
-def push(fleet: dict, directory: Path, dry_run: bool, only: Optional[str], emit) -> bool:
+def push(fleet: dict, directory: Path, dry_run: bool, only: Optional[str], emit) -> dict:
+    """Push the fleet to every other ssh host. Returns a status per host."""
     files = fleet_files(directory)
     targets, relays = push_targets(fleet)
-    ok = True
+    statuses = {}
     for host in relays:
         if only in (None, host["name"]):
             emit(f"{host['name']}: fleet not needed ({host['transport']})")
+            statuses[host["name"]] = "not needed"
     for host in targets:
         if only not in (None, host["name"]):
             continue
         result = push_host(host["name"], files, dry_run)
         emit(f"{host['name']}: fleet {describe_push(result)}")
-        ok = ok and result["status"] in ("same", "updated", "would update")
-    return ok
+        statuses[host["name"]] = "FAILED" if result["status"] == "failed" else result["status"]
+    return statuses
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -328,11 +330,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"{args.host}: fleet source (not pushed)")
             return 0
         try:
-            ok = push(fleet, source.path, args.dry_run, args.host, lambda line: print("  " + line, flush=True))
+            statuses = push(fleet, source.path, args.dry_run, args.host, lambda line: print("  " + line, flush=True))
         except FleetError as error:
             print(f"invalid: {error}", file=sys.stderr)
             return 1
-        return 0 if ok else 1
+        return 0 if all(s in ("same", "updated", "would update", "not needed") for s in statuses.values()) else 1
     print(f"schema_version {fleet['schema_version']}, source_host {fleet['source_host']}")
     for host in fleet["hosts"]:
         skipped = [scope for scope in SCOPES if scope not in host["sync"]]

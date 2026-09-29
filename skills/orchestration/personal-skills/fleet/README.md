@@ -1,6 +1,6 @@
 # Fleet format
 
-A fleet describes the hosts that `personal-skills` syncs. The public `example/` folder shows the format with made-up values. Your real fleet lives in a private fleet directory with the same layout, outside this repository.
+A fleet describes the hosts that `personal-skills` syncs. Sync it with `python3 scripts/sync.py --dry-run`, then `python3 scripts/sync.py`; the per-file tools named below are the steps it runs. The public `example/` folder shows the format with made-up values. Your real fleet lives in a private fleet directory with the same layout, outside this repository.
 
 ```
 example/                     public, made up
