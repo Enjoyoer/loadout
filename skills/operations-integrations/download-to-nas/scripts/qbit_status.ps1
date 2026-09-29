@@ -5,7 +5,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
-  throw "Pass -BaseUrl or set QBITTORRENT_BASE_URL to your private qBittorrent WebUI URL."
+  $localConfig = Join-Path (Split-Path -Parent $PSScriptRoot) "references/local.md"
+  if (Test-Path -LiteralPath $localConfig) {
+    $match = Select-String -LiteralPath $localConfig -Pattern 'qBittorrent WebUI:\s*`?(https?://[^\s`]+)' | Select-Object -First 1
+    if ($match) { $BaseUrl = $match.Matches[0].Groups[1].Value }
+  }
+}
+if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
+  throw "Pass -BaseUrl, set QBITTORRENT_BASE_URL, or record 'qBittorrent WebUI: <url>' in references/local.md."
 }
 
 $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession

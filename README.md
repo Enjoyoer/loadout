@@ -14,7 +14,7 @@ Choose the packages you want and follow the `personal-skills` skill or the manif
 
 For a manual install, resolve the `source_commit` in `MANIFEST.json`, verify each selected committed blob's byte count and SHA256, then copy it to the flat destination after checking for local edits and symlink or junction ancestors. `skills/orchestration/personal-skills/SKILL.md` describes the full preflight. A changed installed file that matches no verified prior publication is a conflict; leave it untouched.
 
-Some packages need an external CLI, connected service, or local credential. Read each `SKILL.md` before using it. The `sample` package learns style from examples supplied by the user; this public version contains no personal voice profile.
+Some packages need an external CLI, connected service, or local credential. Read each `SKILL.md` before using it. A package may read an optional private `references/local.md` for host-specific settings; that file is ignored by Git, is not in the manifest, and is never published. The `sample` package learns style from examples supplied by the user; this public version contains no personal voice profile.
 
 ## Packages
 

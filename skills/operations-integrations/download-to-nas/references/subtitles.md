@@ -4,7 +4,7 @@ Use this recipe only after the video is in place and the user asks for subtitle 
 
 1. Probe the MKV for embedded subtitle tracks. If `ffprobe` is unavailable on the NAS host, use the Jellyfin container's bundled binary. Resolve the container's movie mount separately from the NAS host path.
 
-   Run `ffprobe -v error -select_streams s -show_entries stream=index,codec_name:stream_tags=language,title -of default=noprint_wrappers=1` against the movie path inside the Jellyfin container. Set the NAS host, container name, and container movie path from the actual deployment; the container path may differ from the NAS host path.
+   Run `ffprobe -v error -select_streams s -show_entries stream=index,codec_name:stream_tags=language,title -of default=noprint_wrappers=1` against the movie path inside the Jellyfin container. Set the NAS host, container name, and container movie path from the actual deployment (see `local.md` when present); the container path may differ from the NAS host path.
 
    If jellyfin-ffmpeg is unavailable, use `mkvmerge -i` or `mkvinfo` from an mkvtoolnix container, or another container with ffmpeg.
 

@@ -42,7 +42,7 @@ Parse these fields on `/download` and `/download-to-nas` requests. Missing field
 
 ## NAS configuration
 
-Resolve the qBittorrent WebUI URL, NAS host, staging share, media roots, and photo import share from the user's configuration or request. Ask for a missing path before queueing or moving files; do not infer one from this skill. Use a private connection to the WebUI. Do not change backup destinations or move bulk data without explicit approval.
+Read `references/local.md` beside this file when it exists. It is the host's private configuration: never publish it; skill sync leaves it in place because it is not a package file. It may record the qBittorrent WebUI URL, NAS host, staging share, media roots, photo import share, the address the user calls FileBrowser, source preferences, and subtitle deployment details. Values in the request override it. Resolve anything else from the request, and ask for a missing path before queueing or moving files; do not infer one from this skill. Use a private connection to the WebUI. Do not change backup destinations or move bulk data without explicit approval.
 
 ## Workflow
 
