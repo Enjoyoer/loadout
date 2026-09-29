@@ -60,7 +60,7 @@ For hosts whose `sync` includes `providers`, the providers step (`scripts/paseo_
 
 - The source host runs locally. `ssh` hosts run the merge over SSH and reload over SSH, or over their `paseo_offer` when set. `paseo-relay` hosts run it in a temporary Paseo workspace terminal (allow up to two minutes) and reload over the relay. A new relay terminal drops input sent before its shell is up, so the step waits for a prompt, then a three-second settle, then sends. If the command never shows up in the terminal (no echo, so it cannot have run), it resends once. Every exit path, including timeouts, failed creates, and SIGTERM, archives all `loadout-provider-sync` workspaces on the host and confirms none remain; leftovers from a killed run are swept before starting. Paseo agent variables (`PASEO_HOME`, `PASEO_AGENT_ID`, `PASEO_AGENT_CWD`) are removed from relay calls.
 - The merge program travels gzip and base64 encoded so it survives `cmd.exe` and terminal quoting. Hosts need `node`; relay hosts need a POSIX shell.
-- Each host reports the write and the reload on separate lines. A relay reload can time out after a successful write; report that as a reload failure, not a failed write, and do not undo the write.
+- Each host reports the write and the reload on separate lines. A relay reload can time out after a successful write; report that as a reload failure, not a failed write, and do not undo the write. When the write was unchanged, a reload failure is only a warning and the host stays `same`.
 - Never put the catalog, router URLs, or offers in this repository.
 
 ## Client config

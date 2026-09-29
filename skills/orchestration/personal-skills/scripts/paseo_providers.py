@@ -4,7 +4,8 @@
 Reads <fleet>/paseo-providers.json, merges its pinned provider fields into each
 host's ~/.paseo/config.json (every other provider and host-local field is kept,
 and the file is backed up in place), then reloads the daemon. Write and reload
-are reported separately.
+are reported separately; a reload failure after an unchanged write is only a
+warning.
 """
 
 from __future__ import annotations
@@ -270,6 +271,10 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
     try:
         emit(f"{name}: reload {runner.reload()}")
     except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+        if not result["changed"]:
+            # Nothing was written, so the daemon's config is what a prior run left; not a sync failure.
+            emit(f"{name}: reload warning (config unchanged, not a failure): {error}")
+            return "same"
         emit(f"{name}: reload FAILED: {error}")
         return "FAILED"
     return "updated" if result["changed"] else "same"
