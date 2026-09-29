@@ -21,6 +21,8 @@ example/                     public, made up
 2. `${XDG_CONFIG_HOME:-~/.config}/loadout/fleet/`. On Windows, `%APPDATA%\loadout\fleet\`.
 3. `fleet/local/` beside the installed `SKILL.md`, the older location. It is ignored by Git and absent from the manifest.
 
+Edit the fleet only on the source host. `python3 scripts/fleet.py push [--dry-run] [--host <name>]` copies it to `~/.config/loadout/fleet/` (`%APPDATA%\loadout\fleet\` on Windows) on every other `ssh` host, and every sync run does this first. Each copy carries a `.loadout-sync.json` record of the hashes last synced. A host's copy is replaced only while it still matches that record. A hand-edited, added, or unrecorded differing file is a conflict, and nothing is written on that host until you resolve it, usually by deleting the host's copy. `paseo-relay` hosts get no copy. Hosts need `node`.
+
 With none of these, the fleet is the current host only. To move an existing `fleet/local/`, copy it to the config directory, check `fleet.py resolve` reports `config`, then remove the old copy.
 
 ## hosts.json

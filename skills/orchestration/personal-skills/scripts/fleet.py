@@ -4,18 +4,32 @@
 Order: $LOADOUT_FLEET, then the per-user config directory
 (${XDG_CONFIG_HOME:-~/.config}/loadout/fleet, or %APPDATA%\\loadout\\fleet on
 Windows), then the legacy fleet/local/ beside the installed SKILL.md.
+
+`push` carries the source host's fleet directory to every other ssh host, so the
+source host is the only place the fleet is edited.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import gzip
+import hashlib
 import json
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple, Optional
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
+PUSH_JS = Path(__file__).resolve().parent / "fleet_push_remote.js"
+SYNC_RECORD = ".loadout-sync.json"
+SKIP_NAMES = {SYNC_RECORD, ".DS_Store"}
+# Remote programs travel gzip+base64 so they survive cmd.exe and terminal quoting.
+BOOT = "eval(require('zlib').gunzipSync(Buffer.from(process.argv[1],'base64')).toString())"
+RESULT = re.compile(r"@@LOADOUT-RESULT (.*?) @@END", re.S)
 SCHEMA_VERSIONS = {1, 2}
 TRANSPORTS = {"ssh", "paseo-relay"}
 SCOPES = ("skills", "plugins", "providers")
@@ -180,25 +194,114 @@ def hosts_for(fleet: dict, scope: str) -> list:
     return [host for host in fleet["hosts"] if scope in host["sync"]]
 
 
+def pack(data: bytes) -> str:
+    return base64.b64encode(gzip.compress(data)).decode()
+
+
+def parse_result(output: str) -> Optional[dict]:
+    match = RESULT.search(output)
+    if not match:
+        return None
+    return json.loads(match.group(1).replace("\r", "").replace("\n", ""))
+
+
+def fleet_files(directory: Path) -> dict:
+    """Every regular file in the fleet directory, by POSIX relative path."""
+    files = {}
+    for path in sorted(directory.rglob("*")):
+        rel = path.relative_to(directory).as_posix()
+        if path.name in SKIP_NAMES or path.name.endswith(".loadout-tmp"):
+            continue
+        if path.is_symlink():
+            raise FleetError(f"symlink in the source fleet directory: {rel}")
+        if path.is_file():
+            data = path.read_bytes()
+            files[rel] = {"sha256": hashlib.sha256(data).hexdigest(), "data": base64.b64encode(data).decode()}
+    return files
+
+
+def push_targets(fleet: dict) -> tuple:
+    """Hosts that receive the fleet (other ssh hosts) and relay hosts that do not need it."""
+    others = [host for host in fleet["hosts"] if host["name"] != fleet["source_host"]]
+    return ([host for host in others if host["transport"] == "ssh"],
+            [host for host in others if host["transport"] != "ssh"])
+
+
+def push_host(name: str, files: dict, dry_run: bool) -> dict:
+    command = f'node -e "{BOOT}" -- {pack(PUSH_JS.read_bytes())}'
+    body = pack(json.dumps({"dry_run": dry_run, "target": None, "files": files}).encode())
+    done = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", name, command],
+                          input=body, capture_output=True, text=True)
+    result = parse_result(done.stdout)
+    if result is None:
+        tail = (done.stdout + done.stderr).strip()[-300:]
+        return {"status": "failed", "error": f"no result from host (exit {done.returncode}): {tail}"}
+    return result
+
+
+def describe_push(result: dict) -> str:
+    status = result["status"]
+    if status == "conflict":
+        return f"conflict: hand-edited on the host, nothing written: {', '.join(result['conflicts'])}"
+    if status == "failed":
+        return f"FAILED: {result['error']}"
+    parts = [f"{sign}{len(result[key])}" for sign, key in (("+", "added"), ("~", "changed"), ("-", "removed"))
+             if result[key]]
+    return status + (f" ({' '.join(parts)})" if parts else "")
+
+
+def push(fleet: dict, directory: Path, dry_run: bool, only: Optional[str], emit) -> bool:
+    files = fleet_files(directory)
+    targets, relays = push_targets(fleet)
+    ok = True
+    for host in relays:
+        if only in (None, host["name"]):
+            emit(f"{host['name']}: fleet not needed ({host['transport']})")
+    for host in targets:
+        if only not in (None, host["name"]):
+            continue
+        result = push_host(host["name"], files, dry_run)
+        emit(f"{host['name']}: fleet {describe_push(result)}")
+        ok = ok and result["status"] in ("same", "updated", "would update")
+    return ok
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=["resolve", "validate"])
+    parser.add_argument("command", choices=["resolve", "validate", "push"])
+    parser.add_argument("--dry-run", action="store_true", help="push: report without writing")
+    parser.add_argument("--host", help="push: only this host")
     args = parser.parse_args(argv)
     source = resolve()
     print(describe(source))
-    if args.command == "validate" and source.path is not None:
+    if args.command == "resolve":
+        return 0
+    if source.path is None:
+        return 0 if args.command == "validate" else 1
+    try:
+        fleet = load(source.path)
+    except FleetError as error:
+        print(f"invalid: {error}", file=sys.stderr)
+        return 1
+    if args.command == "push":
+        if args.host and args.host not in {host["name"] for host in fleet["hosts"]}:
+            print(f"unknown host: {args.host}", file=sys.stderr)
+            return 2
+        if args.host == fleet["source_host"]:
+            print(f"{args.host}: fleet source (not pushed)")
+            return 0
         try:
-            fleet = load(source.path)
+            ok = push(fleet, source.path, args.dry_run, args.host, lambda line: print("  " + line, flush=True))
         except FleetError as error:
             print(f"invalid: {error}", file=sys.stderr)
             return 1
-        print(f"schema_version {fleet['schema_version']}, source_host {fleet['source_host']}")
-        for host in fleet["hosts"]:
-            skipped = [scope for scope in SCOPES if scope not in host["sync"]]
-            print(f"  {host['name']}: {host['transport']}, sync {','.join(host['sync'])}"
-                  + (f"; skipped {','.join(skipped)}" if skipped else ""))
+        return 0 if ok else 1
+    print(f"schema_version {fleet['schema_version']}, source_host {fleet['source_host']}")
+    for host in fleet["hosts"]:
+        skipped = [scope for scope in SCOPES if scope not in host["sync"]]
+        print(f"  {host['name']}: {host['transport']}, sync {','.join(host['sync'])}"
+              + (f"; skipped {','.join(skipped)}" if skipped else ""))
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

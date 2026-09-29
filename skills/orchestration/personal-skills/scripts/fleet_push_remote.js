@@ -1,0 +1,75 @@
+// Replace this host's fleet directory with the source host's copy.
+// Shipped gzip+base64 by fleet.py push; stdin is the gzip+base64 JSON payload
+// {dry_run, target, files: {relative path: {sha256, data (base64)}}}.
+// A file may change only when it matches the last synced version recorded in
+// .loadout-sync.json; anything else is a hand edit and stops the host.
+const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
+const RECORD = ".loadout-sync.json";
+const result = { status: null, target: null, added: [], changed: [], removed: [], conflicts: [], error: null };
+function done(code) {
+  process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
+  process.exit(code);
+}
+const sha = buf => crypto.createHash("sha256").update(buf).digest("hex");
+function defaultTarget() {
+  if (process.platform === "win32") return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "loadout", "fleet");
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "loadout", "fleet");
+}
+function walk(dir, rel, out) {
+  for (const name of fs.readdirSync(dir)) {
+    const full = path.join(dir, name), r = rel ? rel + "/" + name : name, st = fs.lstatSync(full);
+    if (st.isSymbolicLink()) throw new Error("symlink in fleet directory: " + r);
+    if (st.isDirectory()) walk(full, r, out);
+    else if (st.isFile()) { if (r !== RECORD) out[r] = sha(fs.readFileSync(full)); }
+    else throw new Error("unexpected file type: " + r);
+  }
+  return out;
+}
+try {
+  const p = JSON.parse(zlib.gunzipSync(Buffer.from(fs.readFileSync(0, "utf8").trim(), "base64")).toString());
+  const target = p.target || defaultTarget();
+  result.target = target;
+  const desired = {};
+  for (const [rel, f] of Object.entries(p.files)) {
+    const parts = rel.split("/");
+    if (path.isAbsolute(rel) || parts.some(x => x === "" || x === "." || x === "..") || rel === RECORD)
+      throw new Error("invalid path from source: " + rel);
+    const data = Buffer.from(f.data, "base64");
+    if (sha(data) !== f.sha256) throw new Error("hash mismatch in transfer: " + rel);
+    desired[rel] = { data, sha256: f.sha256 };
+  }
+  // The fleet directory and its loadout parent must be real directories.
+  for (const dir of [path.dirname(target), target])
+    if (fs.existsSync(dir) && !fs.lstatSync(dir).isDirectory()) throw new Error("not a real directory: " + dir);
+  const existing = fs.existsSync(target) ? walk(target, "", {}) : {};
+  const recordPath = path.join(target, RECORD);
+  const record = fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, "utf8")).files || {} : {};
+  for (const rel of new Set([...Object.keys(desired), ...Object.keys(existing)])) {
+    const want = desired[rel] && desired[rel].sha256, have = existing[rel];
+    if (have === want) continue;
+    if (have && have !== record[rel]) { result.conflicts.push(rel); continue; }
+    (!have ? result.added : want ? result.changed : result.removed).push(rel);
+  }
+  const edits = result.added.length + result.changed.length + result.removed.length;
+  if (result.conflicts.length) { result.status = "conflict"; done(5); }
+  result.status = edits ? (p.dry_run ? "would update" : "updated") : "same";
+  if (p.dry_run) done(0);
+  for (const rel of [...result.added, ...result.changed]) {
+    const dest = path.join(target, ...rel.split("/")), tmp = dest + ".loadout-tmp";
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(tmp, desired[rel].data, { mode: 0o600 });
+    fs.renameSync(tmp, dest);
+  }
+  for (const rel of result.removed) fs.unlinkSync(path.join(target, ...rel.split("/")));
+  const after = walk(target, "", {});
+  const expect = Object.fromEntries(Object.entries(desired).map(([k, v]) => [k, v.sha256]));
+  if (JSON.stringify(Object.keys(after).sort().map(k => [k, after[k]])) !== JSON.stringify(Object.keys(expect).sort().map(k => [k, expect[k]])))
+    throw new Error("fleet directory does not match the source after writing");
+  const newRecord = JSON.stringify({ version: 1, files: expect }, null, 2);
+  if (!fs.existsSync(recordPath) || fs.readFileSync(recordPath, "utf8") !== newRecord) fs.writeFileSync(recordPath, newRecord, { mode: 0o600 });
+  done(0);
+} catch (e) {
+  result.status = "failed";
+  result.error = String(e && e.message || e);
+  done(3);
+}
