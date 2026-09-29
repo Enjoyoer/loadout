@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "ab96c27334116e7ab73a9cd790ebb97305e388ff",
+  "source_commit": "dbe0e97b2c13a5ea034e9e72acfe8d3945e18a98",
   "skill_count": 25,
   "file_count": 100,
   "files": [
@@ -711,19 +711,19 @@
   "plugins": [
     {
       "id": "cache-aware-autocompact",
-      "paseo": ">=0.9.2 <0.10.0 || 0.10.1"
+      "paseo": ">=0.9.2 <0.11.0"
     },
     {
       "id": "merged-worker-archiver",
-      "paseo": ">=0.9.1 <0.10.0 || 0.10.1"
+      "paseo": ">=0.9.2 <0.11.0"
     },
     {
       "id": "orphan-project-sweeper",
-      "paseo": ">=0.9.0 <0.10.0 || 0.10.1"
+      "paseo": ">=0.9.2 <0.11.0"
     },
     {
       "id": "usage-limit-auto-resume",
-      "paseo": ">=0.9.0 <0.10.0 || 0.10.1"
+      "paseo": ">=0.9.2 <0.11.0"
     }
   ],
   "plugin_files": [
@@ -754,8 +754,8 @@
     {
       "path": "plugins/cache-aware-autocompact/paseo-plugin.json",
       "plugin": "cache-aware-autocompact",
-      "bytes": 199,
-      "sha256": "c9e8fc76dd55317dacc87f11b701efd66a1b710eadfb385871c2fcb0a1692e9a"
+      "bytes": 189,
+      "sha256": "42f41d9cff4cdbc9f83abfd3b7367f51beca4dbeb677c217e1e4496e14ba8a8d"
     },
     {
       "path": "plugins/cache-aware-autocompact/server/config.ts",
@@ -826,8 +826,8 @@
     {
       "path": "plugins/merged-worker-archiver/README.md",
       "plugin": "merged-worker-archiver",
-      "bytes": 12287,
-      "sha256": "2c08543d85cabc877f69dae50b927de50a54558f5eabacb983295317dd7a161b"
+      "bytes": 12251,
+      "sha256": "1ff86fac6783c71e270089a489bd79c8cbfaae2976a366f98cd9a992086b7548"
     },
     {
       "path": "plugins/merged-worker-archiver/index.server.ts",
@@ -850,8 +850,8 @@
     {
       "path": "plugins/merged-worker-archiver/paseo-plugin.json",
       "plugin": "merged-worker-archiver",
-      "bytes": 222,
-      "sha256": "f40f66de4f7fb98d4f8415a2f09bf0a97cbfaef39455ca2ebf5d27f3e574afed"
+      "bytes": 212,
+      "sha256": "fc2f66c3933703dd1b4e91230517ae979415fcfd3dad6a2bfb7d0d956fa80106"
     },
     {
       "path": "plugins/merged-worker-archiver/scripts/dry-run.ts",
@@ -946,8 +946,8 @@
     {
       "path": "plugins/orphan-project-sweeper/README.md",
       "plugin": "orphan-project-sweeper",
-      "bytes": 3515,
-      "sha256": "bc80664e00b74df028c980a4b51f4b2c1ed2dbdbc38f749b503c47dfc629d75d"
+      "bytes": 3503,
+      "sha256": "a0a344bc4a4460f2ae8cb7f08ba657764dbbe13f999cde07e6f107702902bc1b"
     },
     {
       "path": "plugins/orphan-project-sweeper/index.server.ts",
@@ -970,8 +970,8 @@
     {
       "path": "plugins/orphan-project-sweeper/paseo-plugin.json",
       "plugin": "orphan-project-sweeper",
-      "bytes": 103,
-      "sha256": "4264eb55593592e5b9ce989eb732bf61522b457646256ecaf4e0a2ccce0604b5"
+      "bytes": 93,
+      "sha256": "f61f3d41dce5e3d21ccf03467ac0ac22882487b475b6f34b52bc32eb5ce03bda"
     },
     {
       "path": "plugins/orphan-project-sweeper/server/daemon.ts",
@@ -1018,8 +1018,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/paseo-plugin.json",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 195,
-      "sha256": "b18d6a3be7111511003da86bd07b40a08f133be445fd77f4499d8597e02f8be6"
+      "bytes": 185,
+      "sha256": "841500814b06728be373acefa2b3918a7ded92034e5f31290ad1700632645df1"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/config.ts",
