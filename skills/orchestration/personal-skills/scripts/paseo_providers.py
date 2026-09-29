@@ -36,7 +36,8 @@ RELAY_TITLE = "loadout-provider-sync"
 RELAY_WAIT_SECONDS = float(os.environ.get("LOADOUT_RELAY_WAIT_SECONDS", 120))
 RELAY_POLL_SECONDS = float(os.environ.get("LOADOUT_RELAY_POLL_SECONDS", 2))
 RELAY_READY_SECONDS = float(os.environ.get("LOADOUT_RELAY_READY_SECONDS", 30))
-RELAY_SETTLE_SECONDS = float(os.environ.get("LOADOUT_RELAY_SETTLE_SECONDS", 1))
+RELAY_SETTLE_SECONDS = float(os.environ.get("LOADOUT_RELAY_SETTLE_SECONDS", 3))
+RELAY_RESEND_SECONDS = float(os.environ.get("LOADOUT_RELAY_RESEND_SECONDS", 10))
 PROMPT = re.compile(r"[$#%>\u276f]\s*$")
 RELOAD_TIMEOUT_SECONDS = 90
 
@@ -167,11 +168,18 @@ class Runner:
         # wait for a prompt, let the shell settle, then send once.
         self.wait_for_prompt(terminal)
         self.paseo("terminal", "send-keys", terminal, command, "Enter")
-        deadline = time.monotonic() + RELAY_WAIT_SECONDS
+        sent = time.monotonic()
+        resent = False
+        deadline = sent + RELAY_WAIT_SECONDS
         while True:
             output = self.paseo("terminal", "capture", terminal, "--scrollback")
             if done.search(output):
                 return output
+            # One bounded resend, only when the shell never echoed the command:
+            # without the nonce on screen the first send cannot have run.
+            if not resent and nonce not in output and time.monotonic() - sent >= RELAY_RESEND_SECONDS:
+                self.paseo("terminal", "send-keys", terminal, command, "Enter")
+                resent = True
             if time.monotonic() > deadline:
                 tail = output.strip()[-200:] or "(terminal output empty)"
                 raise RuntimeError(f"relay terminal did not finish within {int(RELAY_WAIT_SECONDS)}s; last output: {tail}")
