@@ -160,10 +160,11 @@ call until a hook runs. The plugin therefore:
   from `@getpaseo/client` (no internal exports), resolved from `PASEO_HOST`, then
   `$PASEO_HOME/paseo.pid`, then `127.0.0.1:6767`.
 
-`paseo-plugin.json` pins `"paseo": ">=0.9.1 <0.10.0"` and `package.json` pins
+`paseo-plugin.json` pins `"paseo": ">=0.9.1 <0.10.0 || 0.10.1"` and `package.json` pins
 `@getpaseo/client` to exactly `0.9.2`: the plugin depends on 0.9.1 archive semantics
 (directory removal, branch kept), the worktree metadata location, and snapshot field
-names. Re-check those before raising the bound.
+names. 0.10.1 is admitted as an exact version after those were re-checked against it;
+0.10.0 and later 0.10 releases stay excluded until they are checked the same way.
 
 Paseo compiles the plugin from source with esbuild and bundles `@getpaseo/client`
 (with `@getpaseo/protocol`), about 8.4 MB, so `npm install` must have run here before

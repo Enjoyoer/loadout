@@ -2,6 +2,6 @@
   "id": "merged-worker-archiver",
   "description": "Archives worker worktree workspaces once their branch is merged into its base. Dry-run by default.",
   "requirements": {
-    "paseo": ">=0.9.1 <0.10.0"
+    "paseo": ">=0.9.1 <0.10.0 || 0.10.1"
   }
 }
