@@ -1,16 +1,25 @@
 # Fleet format
 
-A fleet describes the hosts that `personal-skills` syncs. The public `example/` folder shows the format with made-up values. Your real fleet lives in `local/` with the same layout; it is ignored by Git and absent from the manifest.
+A fleet describes the hosts that `personal-skills` syncs. The public `example/` folder shows the format with made-up values. Your real fleet lives in a private fleet directory with the same layout, outside this repository.
 
 ```
-fleet/
-  example/            public, made up
-    hosts.json
-    global/AGENTS.md  optional
-  local/              yours, private (copy example/ here and edit)
-    hosts.json
-    global/AGENTS.md  optional
+example/                     public, made up
+  hosts.json
+  global/AGENTS.md           optional
+<fleet directory>/           yours, private (copy example/ here and edit)
+  hosts.json
+  global/AGENTS.md           optional
 ```
+
+## Where the fleet lives
+
+`python3 scripts/fleet.py resolve` prints the directory in use. The first match wins:
+
+1. `$LOADOUT_FLEET`, a directory. If it is set but missing, resolution fails instead of falling back.
+2. `${XDG_CONFIG_HOME:-~/.config}/loadout/fleet/`. On Windows, `%APPDATA%\loadout\fleet\`.
+3. `fleet/local/` beside the installed `SKILL.md`, the older location. It is ignored by Git and absent from the manifest.
+
+With none of these, the fleet is the current host only. To move an existing `fleet/local/`, copy it to the config directory, check `fleet.py resolve` reports `config`, then remove the old copy.
 
 ## hosts.json
 

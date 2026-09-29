@@ -5,7 +5,7 @@ description: Sync selected skill packages and Paseo plugins from this repository
 
 # Personal skills
 
-Use the repository root `README.md` for the current manifest format, installation destinations, and validation steps. The user chooses the packages. Target hosts come from the user's fleet description in `fleet/`; without one, sync only the current host.
+Use the repository root `README.md` for the current manifest format, installation destinations, and validation steps. The user chooses the packages. Target hosts come from the user's private fleet directory (see Fleet); without one, sync only the current host.
 
 ## Source and selection
 
@@ -22,12 +22,13 @@ Use the repository root `README.md` for the current manifest format, installatio
 
 ## Fleet
 
-- Read `fleet/local/` beside this installed `SKILL.md`. It is the user's private fleet: never commit, publish, or quote it into a public file. It is not a package file, so sync never overwrites or removes it on a host that already has it.
-- `fleet/README.md` defines the format and `fleet/example/` shows a made-up fleet. A user starts by copying `fleet/example/` to `fleet/local/` and editing it. Never treat the example as a real target.
-- Without `fleet/local/`, the fleet is the current host only, with no global instructions.
+- Resolve the fleet directory with `python3 scripts/fleet.py resolve` beside this `SKILL.md`, or by the same rule by hand: `$LOADOUT_FLEET` (must be a directory), else `${XDG_CONFIG_HOME:-~/.config}/loadout/fleet/` (`%APPDATA%\loadout\fleet\` on Windows), else the legacy `fleet/local/` beside this `SKILL.md`. Start the sync report with the source used, as the script prints it.
+- The fleet directory is the user's private fleet: never commit, publish, or quote it into a public file. It is not a package file, so sync never overwrites or removes it, and never replaces a symlinked `fleet/local/` on a host that already has one.
+- `fleet/README.md` defines the format and `fleet/example/` shows a made-up fleet. A user starts by copying `fleet/example/` to the fleet directory and editing it. Never treat the example as a real target.
+- Without a fleet directory, the fleet is the current host only, with no global instructions.
 - Sync every host in the fleet by default unless the user narrows it. Each host resolves its own paths and shell, syncs the clients present, and reports absent clients as skipped.
 - Report each host separately. A blocker stops only that host. Report an unreachable host as an outstanding gap; never report a host as synced until it is verified, and never drop an unreached host from the report.
-- Carry `fleet/local/` to another host only over the transport the fleet names, and only when that host lacks it or the user asks. Never send it to Git or a public service.
+- Carry the fleet directory to another host only over the transport the fleet names, and only when that host lacks it or the user asks. Place it in that host's config fleet directory. Never send it to Git or a public service.
 
 ## Paseo plugins
 
