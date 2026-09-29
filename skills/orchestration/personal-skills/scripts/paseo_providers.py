@@ -10,8 +10,6 @@ are reported separately.
 from __future__ import annotations
 
 import argparse
-import base64
-import gzip
 import json
 import os
 import re
@@ -25,18 +23,15 @@ from typing import Callable, Optional
 import fleet
 
 MERGE_JS = Path(__file__).resolve().parent / "paseo_providers_merge.js"
-BOOT = "eval(require('zlib').gunzipSync(Buffer.from(process.argv[1],'base64')).toString())"
-RESULT = re.compile(r"@@LOADOUT-RESULT (.*?) @@END", re.S)
+BOOT = fleet.BOOT
+pack = fleet.pack
+parse_result = fleet.parse_result
 EXIT = re.compile(r"@@LOADOUT-EXIT:(\d+)")
 CONFIG_KEYS = {"providers", "env", "hosts"}
 HOST_KEYS = {"env", "inherit_env", "required_env"}
 AGENT_VARS = ("PASEO_AGENT_ID", "PASEO_AGENT_CWD", "PASEO_HOME")
 RELAY_WAIT_SECONDS = 120
 RELOAD_TIMEOUT_SECONDS = 90
-
-
-def pack(data: bytes) -> str:
-    return base64.b64encode(gzip.compress(data)).decode()
 
 
 def _env_map(value, where):
@@ -102,13 +97,6 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool) -> dict:
         "dry_run": dry_run,
         "config_path": None,
     }
-
-
-def parse_result(output: str) -> Optional[dict]:
-    match = RESULT.search(output)
-    if not match:
-        return None
-    return json.loads(match.group(1).replace("\r", "").replace("\n", ""))
 
 
 class Runner:

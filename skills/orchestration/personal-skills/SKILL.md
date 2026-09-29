@@ -29,7 +29,7 @@ Use the repository root `README.md` for the current manifest format, installatio
 - Run `python3 scripts/fleet.py validate` and stop on an invalid fleet. Skill sync covers hosts whose `sync` includes `skills`, and plugin sync hosts whose `sync` includes `plugins`; report every other host as skipped for that scope, not failed. `paseo-relay` hosts have no file transport and never receive files.
 - Sync every eligible host by default unless the user narrows it. Each host resolves its own paths and shell, syncs the clients present, and reports absent clients as skipped.
 - Report each host separately. A blocker stops only that host. Report an unreachable host as an outstanding gap; never report a host as synced until it is verified, and never drop an unreached host from the report.
-- Carry the fleet directory to another host only over the transport the fleet names, and only when that host lacks it or the user asks. Place it in that host's config fleet directory. Never send it to Git or a public service.
+- Edit the fleet only on the source host. Every sync run starts with `python3 scripts/fleet.py push` (after `validate`), which carries the source fleet directory over SSH to the config fleet directory of every other `ssh` host, verifies each file by SHA256, and replaces a host's copy only when it still matches the last synced version recorded in its `.loadout-sync.json`. Report fleet status per host: `same`, `updated`, `conflict`, or `FAILED`. A conflict is a hand edit on that host: nothing is written there; stop that host's sync and report the files. `paseo-relay` hosts do not need the fleet. Never send the fleet to Git or a public service.
 
 ## Paseo plugins
 
