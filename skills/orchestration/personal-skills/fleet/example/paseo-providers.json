@@ -1,0 +1,25 @@
+{
+  "providers": {
+    "claude": {
+      "models": [
+        { "id": "example-large", "label": "Large", "description": "Most capable", "isDefault": true,
+          "thinkingOptions": [ { "id": "low", "label": "Low" }, { "id": "high", "label": "High" } ] },
+        { "id": "example-small", "label": "Small", "description": "Fast and cheap",
+          "thinkingOptions": [ { "id": "low", "label": "Low" } ] }
+      ]
+    },
+    "codex": {
+      "models": [
+        { "id": "example-coder", "label": "Coder", "description": "Default coding model",
+          "thinkingOptions": [ { "id": "medium", "label": "medium" }, { "id": "high", "label": "high" } ] }
+      ]
+    }
+  },
+  "env": {
+    "claude": { "ANTHROPIC_BASE_URL": "https://router.example.test" }
+  },
+  "hosts": {
+    "laptop": { "env": { "claude": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000" } } },
+    "tablet": { "inherit_env": false, "required_env": { "claude": ["ANTHROPIC_BASE_URL"] } }
+  }
+}
