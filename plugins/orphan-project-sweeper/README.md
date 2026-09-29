@@ -37,10 +37,10 @@ unversioned export, for two reasons:
 
 Because that internal surface can change in any minor release, and a plugin that
 deletes rows must fail closed on an unknown Paseo version, `paseo-plugin.json` pins
-`"paseo": ">=0.9.0 <0.10.0 || 0.10.1"` and `package.json` pins `@getpaseo/client` to
-exactly `0.9.2`. 0.10.1 is admitted as an exact version after re-checking it. Admit
-another version only after deliberately re-checking `DaemonClient`, `listProjects()`,
-`fetchWorkspaces()`, and `removeProject()` against it.
+`"paseo": ">=0.9.2 <0.11.0"` and `package.json` pins `@getpaseo/client` to exactly
+`0.9.2`. `DaemonClient`, `listProjects()`, `fetchWorkspaces()`, and `removeProject()`
+were checked against 0.9.2 and 0.10.1; other 0.10 releases are admitted without that
+check. Re-check them before admitting 0.11.
 
 The plugin opens a short-lived local connection per sweep or re-check, the same way the
 Paseo CLI does. The daemon address is resolved from `PASEO_HOST`, then
