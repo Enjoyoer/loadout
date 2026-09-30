@@ -4,6 +4,8 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ## Unreleased
 
+## 0.2.0 (2026-09-30)
+
 ### Fixed
 - `cache-aware-autocompact` now restores idle compaction timers after restart or reload, preserves elapsed idle time with bounded overdue jitter, logs recovery counts, and uses durable checkpoints to prevent repeat sends.
 - `cache-aware-autocompact` skips missing working directories before fetching recovery timelines, suppresses repeated per-agent recovery errors and unchanged recovery summaries, and reports unknown context usage as `context-unknown` while preserving terminal skip behavior.

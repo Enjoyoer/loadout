@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "a5287f3d7a10d24abc13fa3747838174b0c351d5",
+  "source_commit": "b418d6cc105a3f0e8583646420daaeed3df91f17",
   "skill_count": 22,
   "file_count": 108,
   "files": [
@@ -799,13 +799,13 @@
       "path": "plugins/cache-aware-autocompact/package-lock.json",
       "plugin": "cache-aware-autocompact",
       "bytes": 21213,
-      "sha256": "47c05f31bd6daa9eb2d18b263b2fe6f4d8d4adbeab5a2d580285aab83122b2dc"
+      "sha256": "1b79e4dc684012786781debaab84542f3079e54e55604799fde5b13eeb6b70eb"
     },
     {
       "path": "plugins/cache-aware-autocompact/package.json",
       "plugin": "cache-aware-autocompact",
       "bytes": 896,
-      "sha256": "b0ad7b9a7dadb1e3538e19259038909ebbe9863a6c9f9346e3741fbcfb900ef1"
+      "sha256": "60501ed6943608d91ebd54371d37203d0d38cc925db988189d30d26e0b403364"
     },
     {
       "path": "plugins/cache-aware-autocompact/paseo-plugin.json",
@@ -1039,13 +1039,13 @@
       "path": "plugins/orphan-project-sweeper/package-lock.json",
       "plugin": "orphan-project-sweeper",
       "bytes": 21211,
-      "sha256": "92a0d1af3bb8a1567742042e0d0b2344de277dc28298032de6af898040e27776"
+      "sha256": "eeb69c25fa5955d39af76d886f4645813a804515b97eb406ff1a961a3f8b2004"
     },
     {
       "path": "plugins/orphan-project-sweeper/package.json",
       "plugin": "orphan-project-sweeper",
       "bytes": 960,
-      "sha256": "a9cb5a2302097e50bb3f39a376884d180608ff017e4642eec6db7479dd1e22c9"
+      "sha256": "f992f7ba1d8ba57855ecf13278f175200b58f851765ab1b26318e80a06566b90"
     },
     {
       "path": "plugins/orphan-project-sweeper/paseo-plugin.json",
