@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "f88e5ca2fa1f6ddd3e79616b1fb333b4cd96e8fd",
+  "source_commit": "513fc99713d94f98e28eea903e6654e8912997ae",
   "skill_count": 26,
   "file_count": 116,
   "files": [
@@ -226,8 +226,8 @@
       "path": "skills/orchestration/claude-cloud/SKILL.md",
       "category": "orchestration",
       "skill": "claude-cloud",
-      "bytes": 4808,
-      "sha256": "c605efc2732c2bef2e2902b1fe55b8f411aaf2c30a4747ed05a46fa8a0032b82"
+      "bytes": 5104,
+      "sha256": "d63e0b9a0e4fce3747dceee7ec445928926570076a2eedfa8dc5b619359911d1"
     },
     {
       "path": "skills/orchestration/dispatching-parallel-agents/SKILL.md",
@@ -275,8 +275,8 @@
       "path": "skills/orchestration/opc/references/cloud-lane.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 3901,
-      "sha256": "44c1703ad7c27d8b0b86b6d143d36fa4f012a0341ec4e26f0991c122ddd68466"
+      "bytes": 4055,
+      "sha256": "b71577c39da9d4d46d5447b5d4367846aca63ce3443444a686ec91c09844694e"
     },
     {
       "path": "skills/orchestration/opc/references/codex-sites.md",
@@ -366,8 +366,8 @@
       "path": "skills/orchestration/opc/scripts/cloud-lane.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 15208,
-      "sha256": "28e487f96d9b825a7c003c91dc52078ec564d5471fcd0665eb3df99ac336f962"
+      "bytes": 15762,
+      "sha256": "b54671825f6111b525fbdebd407a9b788ca55e9c149933dc8b7661c5dfe2f2f1"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -401,8 +401,8 @@
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 6013,
-      "sha256": "2bf3b02bad4c83dece6de3eb4ebe136d4db8505ba3909a57101947e6a319d25f"
+      "bytes": 6028,
+      "sha256": "edc15f9afe8e6f12624680745b7814212e7c6ecebf4deedfdd97e58a35e16cd1"
     },
     {
       "path": "skills/orchestration/opc/scripts/web-reviewer.mjs",
