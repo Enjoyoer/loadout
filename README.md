@@ -103,6 +103,10 @@ CI runs these on Ubuntu and macOS for every pull request, together with manifest
 
 `MANIFEST.json` records committed Git-blob sizes and SHA256 values for every active skill and plugin file, and each plugin's Paseo version pin. Commit package content first, run `python3 scripts/generate_manifest.py`, then commit the manifest separately. `scripts/verify_manifest.py` checks the complete committed tree. The working tree, generated files, local secrets, and another repository's history are not publication sources.
 
+## Contributing and support
+
+Issues and pull requests are welcome, and every new one is triaged within 7 days. See [CONTRIBUTING.md](CONTRIBUTING.md), report security problems privately as described in [SECURITY.md](SECURITY.md), and follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## License
 
 Original material is licensed under [MIT](LICENSE). `frontend-design` and `playwright` retain their bundled Apache-2.0 licenses; `playwright` also retains its upstream notice. `codebase-design`, `domain-modeling`, `improve-codebase-architecture`, `grilling`, and `wizard` are adapted from Matt Pocock's MIT-licensed skills, and `find-docs` from Context7's MIT-licensed skill; each carries its upstream `LICENSE.txt`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). These package-level terms take precedence for those files.

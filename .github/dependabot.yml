@@ -4,6 +4,9 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
   - package-ecosystem: npm
     directories:
       - /plugins/cache-aware-autocompact
@@ -12,6 +15,13 @@ updates:
       - /plugins/usage-limit-auto-resume
     schedule:
       interval: monthly
+    groups:
+      plugin-dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
     ignore:
       # Paseo packages are pinned to the daemon versions each plugin was checked against.
       - dependency-name: "@getpaseo/*"
+      # Major upgrades are done by hand, since each plugin change also regenerates MANIFEST.json.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

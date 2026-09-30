@@ -1,0 +1,19 @@
+name: Skill request or improvement
+description: Propose a new skill or a change to an existing one.
+labels: [skill, triage]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What should the agent be able to do?
+    validations:
+      required: true
+  - type: input
+    id: existing
+    attributes:
+      label: Existing skill to change, if any
+  - type: textarea
+    id: source
+    attributes:
+      label: Source and license
+      description: If it adapts another project's skill, link it and name its license.
