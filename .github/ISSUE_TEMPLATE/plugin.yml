@@ -1,0 +1,23 @@
+name: Paseo plugin issue or request
+description: Report a problem with, or propose a change to, a Paseo plugin.
+labels: [plugin, triage]
+body:
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Plugin
+      options: [cache-aware-autocompact, merged-worker-archiver, orphan-project-sweeper, usage-limit-auto-resume, New plugin]
+    validations:
+      required: true
+  - type: input
+    id: paseo
+    attributes:
+      label: Paseo version
+      placeholder: output of paseo --version
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened or what you need
+      description: Include relevant `paseo plugin logs <id>` lines with private data removed.
+    validations:
+      required: true
