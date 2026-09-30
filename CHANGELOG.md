@@ -4,6 +4,12 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.1.0 (2026-09-30)
+
+First release: 22 skills, 4 Paseo plugins, and the fleet sync tool.
+
 ### Added
 - Claude Code plugin marketplace (`.claude-plugin/marketplace.json`) with six category plugins.
 - README quickstart, supported-versions table, and `examples/fleet_demo.py`, an offline end-to-end fleet sync demo.
