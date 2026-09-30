@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "d8a6a08889ddc666d0fda249bd22c586cde7c37f",
+  "source_commit": "79f7ad65cec92e1af875c89657866e2e7e2e0d16",
   "skill_count": 22,
   "file_count": 108,
   "files": [
@@ -763,7 +763,7 @@
     }
   ],
   "plugin_count": 4,
-  "plugin_file_count": 56,
+  "plugin_file_count": 60,
   "plugins": [
     {
       "id": "cache-aware-autocompact",
@@ -1002,32 +1002,44 @@
     {
       "path": "plugins/orphan-project-sweeper/README.md",
       "plugin": "orphan-project-sweeper",
-      "bytes": 3503,
-      "sha256": "a0a344bc4a4460f2ae8cb7f08ba657764dbbe13f999cde07e6f107702902bc1b"
+      "bytes": 6725,
+      "sha256": "b6480772d911b4dc8a548a71958a1e3262cb15bc437a66dac9f67767a89aa719"
     },
     {
       "path": "plugins/orphan-project-sweeper/index.server.ts",
       "plugin": "orphan-project-sweeper",
-      "bytes": 1060,
-      "sha256": "c71f284f7f3c9ee24e42e37aa60a454f4fbde237661965d260e829024ba974aa"
+      "bytes": 1905,
+      "sha256": "203eb905ef008b001fc55e45a8e0f3239ffaaa62a7d80a876a5f237b4e450be2"
     },
     {
       "path": "plugins/orphan-project-sweeper/package-lock.json",
       "plugin": "orphan-project-sweeper",
-      "bytes": 6963,
-      "sha256": "8d689ded26e7968fbbb7b8a25788d4a1fdc7afb771acd03859996706a403f438"
+      "bytes": 21211,
+      "sha256": "92a0d1af3bb8a1567742042e0d0b2344de277dc28298032de6af898040e27776"
     },
     {
       "path": "plugins/orphan-project-sweeper/package.json",
       "plugin": "orphan-project-sweeper",
-      "bytes": 508,
-      "sha256": "9ead0d6aeaff867eb1c060e39af6f4171fd6ab4c9b052a07c79a6a9003dd357f"
+      "bytes": 960,
+      "sha256": "a9cb5a2302097e50bb3f39a376884d180608ff017e4642eec6db7479dd1e22c9"
     },
     {
       "path": "plugins/orphan-project-sweeper/paseo-plugin.json",
       "plugin": "orphan-project-sweeper",
       "bytes": 93,
       "sha256": "f61f3d41dce5e3d21ccf03467ac0ac22882487b475b6f34b52bc32eb5ce03bda"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/scripts/dry-run.ts",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 1400,
+      "sha256": "8cb9e6fe11144d98a49101f8b93b6a77822b7e6dfd3982a45c3313bf8b02309a"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/server/config.ts",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 1340,
+      "sha256": "4ad849cdfc51567659ee2cb19b0bcb212e01cd05e524b95fed1862ab0ef26fd6"
     },
     {
       "path": "plugins/orphan-project-sweeper/server/daemon.ts",
@@ -1038,14 +1050,26 @@
     {
       "path": "plugins/orphan-project-sweeper/server/sweeper.ts",
       "plugin": "orphan-project-sweeper",
-      "bytes": 10500,
-      "sha256": "37691e6a348be4397d1ecf1c323b567349929b1589e4dd0b6acecb8dd9d9f6f3"
+      "bytes": 12403,
+      "sha256": "7803c0348da05f3f98ac5690d96e960f257e07d8f370e20f7b5e7bb92e154193"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/test/config.test.ts",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 1713,
+      "sha256": "2a476d4b2a926d4203ab00742055083a7d62b531d15875aed475761065c9ee66"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/test/sweeper.test.ts",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 8255,
+      "sha256": "59ef530ced148b912fe0d32dd7a0a7efbe32a47c99b084012a69c22b62f05b4f"
     },
     {
       "path": "plugins/orphan-project-sweeper/tsconfig.json",
       "plugin": "orphan-project-sweeper",
-      "bytes": 391,
-      "sha256": "20366520105fab77f3b4b724a78991d6c1e1d9f60ef43807afff08c545fc263f"
+      "bytes": 431,
+      "sha256": "71819031dad2e0012a805e45013ae4d0576477a8722e334562f8c9668c27834a"
     },
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
