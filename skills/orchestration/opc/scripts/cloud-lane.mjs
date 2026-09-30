@@ -29,14 +29,22 @@ export function readCloudToggle({ path = defaultTogglePath() } = {}) {
   return value;
 }
 
-// GitHub gives user tokens no way to list App installations, so the owner confirms each repository.
+// GitHub gives user tokens no way to list App installations, so the owner confirms repositories:
+// owner/repo for one, owner/* when the App is installed on every repository of that account.
 export function readCloudRepos({ path = defaultReposPath() } = {}) {
   if (!existsSync(path)) return new Set();
   return new Set(readFileSync(path, 'utf8').split(/\r?\n/).map(line => line.trim()).filter(Boolean));
 }
 
+export function isCloudRepo(repo, { path = defaultReposPath() } = {}) {
+  if (!/^[^/\s*]+\/[^/\s*]+$/.test(repo ?? '')) return false;
+  const repos = new Set([...readCloudRepos({ path })].map(item => item.toLowerCase()));
+  const name = repo.toLowerCase();
+  return repos.has(name) || repos.has(`${name.split('/')[0]}/*`);
+}
+
 export function setCloudRepo(repo, allowed, { path = defaultReposPath() } = {}) {
-  if (!/^[^/\s]+\/[^/\s]+$/.test(repo ?? '')) throw Error('owner/repo required');
+  if (!/^[^/\s*]+\/(?:\*|[^/\s*]+)$/.test(repo ?? '')) throw Error('owner/repo or owner/* required');
   const repos = readCloudRepos({ path });
   if (allowed) repos.add(repo); else repos.delete(repo);
   mkdirSync(dirname(path), { recursive: true });
@@ -220,26 +228,31 @@ function readAuthStatus() {
   return JSON.parse(execFileSync('claude', ['auth', 'status', '--json'], { encoding: 'utf8' }));
 }
 
+function pushToFleet(fleet, args) {
+  if (!fleet) return;
+  const script = '.codex/skills/opc/scripts/cloud-lane.mjs';
+  for (const host of fleet.split(',').filter(Boolean)) {
+    const ssh = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, 'node', script, ...args];
+    try { console.log(`${host}: ${execFileSync('ssh', ssh, { encoding: 'utf8' }).trim()}`); }
+    catch (error) { console.log(`${host}: FAILED ${(error.stderr || error.message).toString().trim().split('\n').at(-1)}`); }
+  }
+}
+
 function main(argv) {
   const [state, ...rest] = argv;
   const flag = name => { const i = rest.indexOf(name); return i === -1 ? null : rest[i + 1]; };
   if (state === 'status') { console.log(`${readCloudToggle()}; repos: ${[...readCloudRepos()].join(', ') || 'none'}`); return; }
   if (state === 'allow' || state === 'disallow') {
-    console.log(`repos: ${[...setCloudRepo(rest[0], state === 'allow')].join(', ') || 'none'}`); return;
+    console.log(`local repos: ${[...setCloudRepo(rest[0], state === 'allow')].join(', ') || 'none'}`);
+    pushToFleet(flag('--fleet'), [state, rest[0]]);
+    return;
   }
   if (state !== 'on' && state !== 'off') {
-    throw Error('usage: cloud-lane.mjs on|off|status [--fleet host,...] | allow|disallow <owner/repo>');
+    throw Error('usage: cloud-lane.mjs on|off|status | allow|disallow <owner/repo|owner/*> [--fleet host,...]');
   }
   setCloudToggle(state, { authStatus: state === 'on' ? readAuthStatus() : null });
   console.log(`local: ${state}`);
-  const fleet = flag('--fleet');
-  if (!fleet) return;
-  const script = '.codex/skills/opc/scripts/cloud-lane.mjs';
-  for (const host of fleet.split(',').filter(Boolean)) {
-    const args = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, 'node', script, state];
-    try { console.log(`${host}: ${execFileSync('ssh', args, { encoding: 'utf8' }).trim()}`); }
-    catch (error) { console.log(`${host}: FAILED ${(error.stderr || error.message).toString().trim().split('\n').at(-1)}`); }
-  }
+  pushToFleet(flag('--fleet'), [state]);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

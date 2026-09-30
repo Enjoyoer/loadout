@@ -83,7 +83,7 @@ export async function validatePackage(root = defaultRoot) {
       'recordPlannerLaunchFailure', 'collectPlanner', 'authorizePlannerFallback'],
     'web-reviewer.mjs': ['buildReviewPrompt', 'prepareReviewLaunch', 'bindReviewAgent',
       'recordReviewLaunchFailure', 'collectReview', 'requireReviewApproval', 'requireReviewDelivery'],
-    'cloud-lane.mjs': ['readCloudToggle', 'setCloudToggle', 'readCloudRepos', 'setCloudRepo', 'classifyCloudFailure', 'checkCloudEligibility', 'resolveCloudWorkerRoute',
+    'cloud-lane.mjs': ['readCloudToggle', 'setCloudToggle', 'readCloudRepos', 'isCloudRepo', 'setCloudRepo', 'classifyCloudFailure', 'checkCloudEligibility', 'resolveCloudWorkerRoute',
       'buildCloudBrief', 'buildCloudLaunchCommand', 'buildCloudHeartbeatRequest', 'assessCloudProgress',
       'recordCloudLaunch', 'recordCloudProgress', 'authorizeCloudFallback'],
     'paseo-worker.mjs': ['managedWorkerNames', 'selectUnattendedMode', 'buildManagedWorkspaceRequest',
