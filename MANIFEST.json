@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "513fc99713d94f98e28eea903e6654e8912997ae",
-  "skill_count": 26,
-  "file_count": 116,
+  "source_commit": "4edbab3542b35bd13534ab26a4d60448fcfe8010",
+  "skill_count": 22,
+  "file_count": 102,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -90,76 +90,6 @@
       "sha256": "7adfbd5631e5d87781e636c4190b1e20353f0c3a56f062f189ee642e0de02e52"
     },
     {
-      "path": "skills/operations-integrations/download-to-nas/SKILL.md",
-      "category": "operations-integrations",
-      "skill": "download-to-nas",
-      "bytes": 7285,
-      "sha256": "e6a0cc623de0db025f60684d7476e41dbd07d32684e84da23ac19d786d7e0ade"
-    },
-    {
-      "path": "skills/operations-integrations/download-to-nas/agents/openai.yaml",
-      "category": "operations-integrations",
-      "skill": "download-to-nas",
-      "bytes": 326,
-      "sha256": "82f4597ab3380c2311afe76914425e1356b9a5220966357404678f482ab9fd7d"
-    },
-    {
-      "path": "skills/operations-integrations/download-to-nas/references/sources.md",
-      "category": "operations-integrations",
-      "skill": "download-to-nas",
-      "bytes": 493,
-      "sha256": "03445060ea9c924e2196f6ed464d1232e998e5d123cba6f70b3ea101c9c059b6"
-    },
-    {
-      "path": "skills/operations-integrations/download-to-nas/references/subtitles.md",
-      "category": "operations-integrations",
-      "skill": "download-to-nas",
-      "bytes": 2740,
-      "sha256": "80ac3653007cc870880b543d5531c07b4d6e6ee8b60231e17f857e1bc6f27833"
-    },
-    {
-      "path": "skills/operations-integrations/download-to-nas/scripts/oshash.py",
-      "category": "operations-integrations",
-      "skill": "download-to-nas",
-      "bytes": 655,
-      "sha256": "472f6d03edebddf950a6e1c947949eb3e4b14260fe3c774c12a7fb10c0f43297"
-    },
-    {
-      "path": "skills/operations-integrations/download-to-nas/scripts/qbit_status.ps1",
-      "category": "operations-integrations",
-      "skill": "download-to-nas",
-      "bytes": 1318,
-      "sha256": "e2d39e7716a1e3c53fe790854ce2658c8ae1b37ea4f4d9ecf79d56dde7f0d60a"
-    },
-    {
-      "path": "skills/operations-integrations/gmail/SKILL.md",
-      "category": "operations-integrations",
-      "skill": "gmail",
-      "bytes": 8205,
-      "sha256": "1a7545611b081997e529f767d822a1177390f82fbded8d4a52abd0b0b89fa9c0"
-    },
-    {
-      "path": "skills/operations-integrations/gmail/agents/openai.yaml",
-      "category": "operations-integrations",
-      "skill": "gmail",
-      "bytes": 178,
-      "sha256": "50dcf3b35ffbd356f0dac7f61c90e22b39d3b3f947088e466275842ad5d73963"
-    },
-    {
-      "path": "skills/operations-integrations/google-sheets/SKILL.md",
-      "category": "operations-integrations",
-      "skill": "google-sheets",
-      "bytes": 1635,
-      "sha256": "05e32482ac202d7db8eb6264d846902cb0c5daa6d95284cafa1eb8884fb90e52"
-    },
-    {
-      "path": "skills/operations-integrations/google-sheets/agents/openai.yaml",
-      "category": "operations-integrations",
-      "skill": "google-sheets",
-      "bytes": 194,
-      "sha256": "4b0349abe584f6a998fc3cd36f2a808630663f052b72c5131bf868d66d23722f"
-    },
-    {
       "path": "skills/operations-integrations/recover-mouse-input/SKILL.md",
       "category": "operations-integrations",
       "skill": "recover-mouse-input",
@@ -172,34 +102,6 @@
       "skill": "recover-mouse-input",
       "bytes": 230,
       "sha256": "4834a17cb5bb048e721e41a3bc357a42543c929c3747c3b252fce28a7a555e08"
-    },
-    {
-      "path": "skills/operations-integrations/todoist-api/SKILL.md",
-      "category": "operations-integrations",
-      "skill": "todoist-api",
-      "bytes": 2319,
-      "sha256": "a21afb482e7ae51bf9ac97a3369a783d3f9c036f5601811f662d3e2763040cd9"
-    },
-    {
-      "path": "skills/operations-integrations/todoist-api/agents/openai.yaml",
-      "category": "operations-integrations",
-      "skill": "todoist-api",
-      "bytes": 168,
-      "sha256": "ddf9de3e35ecc2902397e4a4c94c8f3fc16bab415618cbd920d3c9ee381359b3"
-    },
-    {
-      "path": "skills/operations-integrations/todoist-api/references/api.md",
-      "category": "operations-integrations",
-      "skill": "todoist-api",
-      "bytes": 8523,
-      "sha256": "fc71144e694b37ccb9a33ef48ab2400f6e7159fdcaae729d4fc0e639702bf39c"
-    },
-    {
-      "path": "skills/operations-integrations/todoist-api/scripts/todoist.ps1",
-      "category": "operations-integrations",
-      "skill": "todoist-api",
-      "bytes": 6372,
-      "sha256": "6f6b410622c35540d29fe77a2ab719029912ab67af6600b8768aeae14359ca83"
     },
     {
       "path": "skills/operations-integrations/wizard/SKILL.md",
@@ -471,8 +373,8 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 12568,
-      "sha256": "5792d344413b62a3f04829b1d4fae0598ad8c7b6b014cdc38ddb881b2feffe8c"
+      "bytes": 12971,
+      "sha256": "a5c215562a736c736da6af6964e61056999500a1af60bef2ecd07431da14c010"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
@@ -485,8 +387,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 8374,
-      "sha256": "227ae7928c78bd6196acfb44682cef4bce5d9c65bdda0f76641d257a0a577e05"
+      "bytes": 9349,
+      "sha256": "21d045abc83dd08b7c5d1632751236bdd16bc83849d38a281764c7cdcc725337"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/client-config.json",
@@ -534,8 +436,8 @@
       "path": "skills/orchestration/personal-skills/scripts/fleet.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 14899,
-      "sha256": "c9ea97b8466c6cad138d6a443f596a7803b5b7786c298e06d6245025464ec46e"
+      "bytes": 15086,
+      "sha256": "52b6b79e4f9235edb7ccc380cea3e9b249893f591f4beab0fdec51870e43443c"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/fleet_push_remote.js",
@@ -583,8 +485,8 @@
       "path": "skills/orchestration/personal-skills/scripts/skills_sync.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 4970,
-      "sha256": "c4159c337f865dd85017890e1c520f132b5a5a1bbc013f6e342f5da3e8595680"
+      "bytes": 8369,
+      "sha256": "8028ffd5efd05be1d2ccd763974cde4bb665ea65c53205891014a98f3f0a7ae8"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/skills_sync_remote.js",
