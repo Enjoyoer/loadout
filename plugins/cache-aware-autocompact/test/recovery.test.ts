@@ -1,0 +1,385 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { describe, it } from "node:test";
+import type { PaseoAgent, PaseoClient, PaseoAgentUpdateHandler, PaseoAgentTimelineHandle } from "@getpaseo/client";
+import type { FetchAgentTimelinePayload } from "@getpaseo/client/internal/daemon-client";
+import type { PluginServerContext, PluginLifecycleEvents, PluginHookContext } from "@getpaseo/plugin/server";
+import { defaultConfig } from "../server/config.ts";
+import { recoverTurn, recoveryHistory, recoveryDelay, REARM_JITTER_MIN_MS, REARM_JITTER_MAX_MS } from "../server/recovery.ts";
+import { startScheduler, type Checkpoint } from "../server/runtime.ts";
+import { StateStore } from "../server/store.ts";
+import type { TimerApi } from "../server/timer.ts";
+
+const endedAt = "2026-09-26T08:00:00.000Z";
+const messageAt = "2026-09-26T07:55:00.000Z";
+const endedMs = Date.parse(endedAt);
+const config = defaultConfig({ armed: true });
+function agent(overrides: Partial<PaseoAgent> = {}): PaseoAgent {
+  return { id: "a1", provider: "claude", cwd: "/repo", workspaceId: "w1", model: "model",
+    createdAt: messageAt, updatedAt: endedAt, lastUserMessageAt: messageAt, status: "idle", activeTurn: null,
+    capabilities: { supportsStreaming: true, supportsSessionPersistence: true, supportsDynamicModes: true,
+      supportsMcpServers: true, supportsReasoningStream: true, supportsToolInvocations: true },
+    currentModeId: null, availableModes: [], pendingPermissions: [], persistence: null,
+    lastUsage: { contextWindowUsedTokens: 200_000 }, title: null, labels: {},
+    attentionReason: "finished", attentionTimestamp: endedAt, archivedAt: null, ...overrides };
+}
+function history(a: PaseoAgent, turnId: string | undefined = "t1"): FetchAgentTimelinePayload {
+  return { requestId: "r1", agentId: a.id, agent: a, direction: "tail", projection: "canonical",
+    epoch: "e1", reset: false, staleCursor: false, gap: false, window: { minSeq: 0, maxSeq: 1, nextSeq: 2 },
+    startCursor: null, endCursor: null, hasOlder: false, hasNewer: false, error: null,
+    entries: [{ provider: a.provider, item: { type: "assistant_message", text: "Work completed." },
+      turnId, timestamp: endedAt, seqStart: 1, seqEnd: 1, sourceSeqRanges: [], collapsed: [] }] };
+}
+class FakeTimers implements TimerApi {
+  next = 0;
+  pending = new Map<number, { callback: () => void; ms: number }>();
+  setTimeout(callback: () => void, ms: number) { const id = ++this.next; this.pending.set(id, { callback, ms }); return id; }
+  clearTimeout(id: unknown) { this.pending.delete(id as number); }
+  fire() { const timers = [...this.pending]; this.pending.clear(); for (const [, timer] of timers) timer.callback(); }
+}
+async function until(check: () => boolean) {
+  for (let i = 0; i < 500; i++) { if (check()) return; await new Promise((resolve) => setTimeout(resolve, 2)); }
+  assert.fail("Timed out waiting for scheduler");
+}
+async function fixture(run: (f: ReturnType<typeof harness> & { store: StateStore; file: string }) => Promise<void>) {
+  const root = path.resolve("node_modules/.cache");
+  await mkdir(root, { recursive: true });
+  const dir = await mkdtemp(path.join(root, "rearm-test-"));
+  const file = path.join(dir, "state.json");
+  const f = { ...harness(), file, store: new StateStore(file) };
+  try { await run(f); } finally { f.cleanup(); await rm(dir, { recursive: true, force: true }); }
+}
+function harness() {
+  let snapshots = [agent()];
+  let now = endedMs + 30 * 60_000;
+  let bootstrapFails = false;
+  let cleanup = () => {};
+  let snapshotListener: (() => void) | undefined;
+  const updates = new Set<PaseoAgentUpdateHandler>();
+  const hooks = new Map<string, (event: never, context: PluginHookContext) => unknown>();
+  const logs: { action: string; data: Record<string, unknown> }[] = [];
+  const sends: string[] = [];
+  const timers = new FakeTimers();
+  const histories = new Map<string, FetchAgentTimelinePayload>();
+  let pageSize = 200;
+  let historyGate: Promise<void> | null = null;
+  let historyCalls = 0;
+  const api = {
+    agents: {
+      async list(options: { subscribe?: {}; page?: { cursor?: string } } = {}) {
+        const offset = Number(options.page?.cursor ?? 0);
+        return { entries: snapshots.slice(offset, offset + pageSize).map((a) => ({ agent: a })),
+          pageInfo: { hasMore: offset + pageSize < snapshots.length, nextCursor: offset + pageSize < snapshots.length ? String(offset + pageSize) : null },
+          subscription: { subscribe(observer: { snapshot: () => void }) { snapshotListener = observer.snapshot; observer.snapshot(); return () => {}; } } };
+      },
+      ref(id: string) {
+        return { refresh: async () => ({ agent: snapshots.find((a) => a.id === id) }),
+          timeline: { refetch: async () => { historyCalls++; await historyGate; return histories.get(id) ?? history(snapshots.find((a) => a.id === id)!); } },
+          send: async (text: string) => { sends.push(text); } };
+      },
+      subscribe(listener: PaseoAgentUpdateHandler) { updates.add(listener); return () => { updates.delete(listener); }; },
+    },
+    close: async () => {},
+  } as unknown as PaseoClient;
+  const server = { on(name: string, callback: (event: never, context: PluginHookContext) => unknown) {
+    hooks.set(name, callback); return () => { hooks.delete(name); };
+  } } as unknown as PluginServerContext;
+  return {
+    timers, logs, sends, histories, api,
+    setAgents(agents: PaseoAgent[]) { snapshots = agents; },
+    setNow(value: number) { now = value; },
+    failBootstrap() { bootstrapFails = true; },
+    paginate(size: number) { pageSize = size; },
+    pauseHistory(gate: Promise<void>) { historyGate = gate; },
+    historyCalls() { return historyCalls; },
+    snapshot() { snapshotListener?.(); },
+    update(a: PaseoAgent) { snapshots = snapshots.map((previous) => previous.id === a.id ? a : previous); for (const listener of updates) listener({ kind: "upsert", agent: a }); },
+    event<Name extends keyof PluginLifecycleEvents>(name: Name, event: PluginLifecycleEvents[Name]) {
+      hooks.get(name)?.(event as never, { paseo: api, signal: new AbortController().signal });
+    },
+    start(store: StateStore, armed = true) {
+      cleanup = startScheduler(server, { store, timerApi: timers, metrics: { append: async () => {} },
+        now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed }),
+        openApi: async () => { if (bootstrapFails) throw new Error("Unavailable"); return api; },
+        log: (action, data) => { logs.push({ action, data }); } });
+    },
+    cleanup() { cleanup(); },
+    async recovered() { await until(() => logs.some((line) => line.action === "rearm-summary")); },
+  };
+}
+
+describe("restart recovery", () => {
+  it("re-arms an idle agent with its remaining delay and evaluates through the normal path", async () => fixture(async (f) => {
+    f.start(f.store);
+    await f.recovered();
+    assert.equal(f.timers.pending.size, 1);
+    assert.equal([...f.timers.pending.values()][0]?.ms, 20 * 60_000);
+    assert.deepEqual(f.logs.find((line) => line.action === "re-armed")?.data,
+      { agentId: "a1", provider: "claude", idleSince: endedAt, delayMs: 1_200_000, remainingMs: 1_200_000, jitterApplied: false });
+    f.snapshot();
+    await until(() => f.logs.filter((line) => line.action === "rearm-summary").length >= 2);
+    assert.equal(f.timers.pending.size, 1);
+    f.setNow(endedMs + 50 * 60_000);
+    f.timers.fire();
+    await until(() => f.logs.some((line) => line.action === "compacted"));
+    assert.deepEqual(f.sends, ["/compact"]);
+  }));
+
+  it("re-arms an expired Codex timer with bounded jitter", async () => fixture(async (f) => {
+    f.setAgents([agent({ provider: "codex" })]);
+    f.setNow(endedMs + 6 * 60 * 60_000);
+    f.start(f.store); await f.recovered();
+    const delay = [...f.timers.pending.values()][0]!.ms;
+    assert.ok(delay >= REARM_JITTER_MIN_MS && delay <= REARM_JITTER_MAX_MS);
+    assert.equal(f.logs.find((line) => line.action === "re-armed")?.data.jitterApplied, true);
+    f.timers.fire();
+    await until(() => f.logs.some((line) => line.action === "compacted"));
+    assert.deepEqual(f.sends, ["/compact"]);
+  }));
+
+  it("keeps exact turn identity and end time across cleanup and restart even with cleared attention", async () => fixture(async (f) => {
+    f.setAgents([]);
+    f.setNow(endedMs);
+    f.start(f.store);
+    await f.recovered();
+    const a = agent({ attentionReason: null, attentionTimestamp: null });
+    f.setAgents([a]);
+    f.event("agent.turn_ended", { agent: { ...a, workspaceId: "w1", parentAgentId: null }, turnId: "t1",
+      outcome: { kind: "completed" }, timeline: history(a).entries.map((entry) => entry.item) });
+    await until(() => f.logs.some((line) => line.action === "timer-started"));
+    f.cleanup();
+    assert.equal(f.timers.pending.size, 0);
+    f.logs.length = 0;
+    f.setNow(endedMs + 30 * 60_000);
+    f.start(new StateStore(f.file));
+    await f.recovered();
+    assert.equal([...f.timers.pending.values()][0]?.ms, 20 * 60_000);
+    assert.equal((await f.store.latestTurn("a1"))?.key, "a1:t1");
+  }));
+
+  it("does not send twice after a terminal checkpoint, including provider history without turn IDs", async () => fixture(async (f) => {
+    f.start(f.store);
+    await f.recovered();
+    f.setNow(endedMs + 50 * 60_000);
+    f.timers.fire();
+    await until(() => f.logs.some((line) => line.action === "compacted"));
+    f.cleanup();
+    f.logs.length = 0;
+    const h = history(agent());
+    h.entries[0]!.turnId = undefined;
+    f.histories.set("a1", h);
+    f.start(new StateStore(f.file));
+    await f.recovered();
+    assert.equal(f.timers.pending.size, 0);
+    assert.deepEqual(f.sends, ["/compact"]);
+    assert.equal((f.logs.find((line) => line.action === "rearm-summary")?.data.skipped as Record<string, number>).checkpointed, 1);
+  }));
+
+  it("honors a pre-upgrade checkpoint when restored history omits turn identity", async () => fixture(async (f) => {
+    const a = agent({ attentionTimestamp: "2026-09-26T08:10:00Z" });
+    f.setAgents([a]);
+    const h = history(a); h.entries[0]!.turnId = undefined; f.histories.set("a1", h);
+    await f.store.append({ key: "a1:t1", agentId: "a1", turnId: "t1", lastUserMessageAt: messageAt,
+      createdAt: "2026-09-26T08:05:00Z", outcome: "compacted", reason: "safe-boundary" }, 100);
+    f.start(f.store); await f.recovered();
+    assert.equal(f.timers.pending.size, 0);
+    assert.deepEqual(f.sends, []);
+  }));
+
+  it("skips running, active-turn, other providers, opted-out, archived, and checkpointed agents across pages", async () => fixture(async (f) => {
+    f.paginate(2);
+    f.setAgents([agent({ id: "busy", status: "running" }), agent({ id: "active", activeTurn: { turnId: "t2", startedAt: endedAt } }),
+      agent({ id: "other", provider: "opencode" }), agent({ id: "off", labels: { autocompact: "off" } }),
+      agent({ id: "archived", archivedAt: endedAt }), agent({ id: "handled" })]);
+    await f.store.append({ key: "handled:t1", agentId: "handled", turnId: "t1", lastUserMessageAt: messageAt,
+      createdAt: endedAt, outcome: "would-compact", reason: "disarmed" }, 100);
+    f.start(f.store);
+    await f.recovered();
+    assert.equal(f.timers.pending.size, 0);
+    assert.deepEqual(f.logs.find((line) => line.action === "rearm-summary")?.data,
+      { trigger: "startup", rearmed: 0, skipped: { "not-idle": 2, "unsupported-provider": 1,
+        "opted-out-label": 1, archived: 1, checkpointed: 1 }, skippedCount: 6 });
+  }));
+
+  it("recovers on the first hook when startup cannot connect", async () => fixture(async (f) => {
+    f.failBootstrap();
+    f.start(f.store);
+    await until(() => f.logs.some((line) => line.action === "startup-rearm-failed"));
+    const a = agent();
+    f.event("agent.permission_resolved", { agent: { ...a, workspaceId: "w1", parentAgentId: null }, requestId: "p1", resolution: { behavior: "allow" } });
+    await f.recovered();
+    assert.equal(f.timers.pending.size, 1);
+  }));
+
+  it("preserves dry-run, token, tool, permission, opt-out and fresh busy guards", async () => {
+    for (const reason of ["dry-run", "tokens", "tool", "permission", "off", "busy", "message"]) {
+      await fixture(async (f) => {
+        f.start(f.store, reason !== "dry-run");
+        await f.recovered();
+        const a = agent();
+        if (reason === "tokens") a.lastUsage = { contextWindowUsedTokens: 99_999 };
+        if (reason === "permission") a.pendingPermissions = [{ id: "p1", provider: "claude", name: "tool", kind: "tool" }];
+        if (reason === "off") a.labels = { autocompact: "off" };
+        if (reason === "busy") a.status = "running";
+        if (reason === "message") a.lastUserMessageAt = "2026-09-26T08:05:00Z";
+        if (reason === "tool") {
+          const turn = (await f.store.latestTurn("a1"))!;
+          // A recovered running tool uses the same retry path as a normal turn timer.
+          turn.timeline = [{ type: "tool_call", callId: "tool1", name: "tool", detail: { type: "plain_text", text: "work" }, status: "running", error: null }];
+          await f.store.rememberTurn(turn, 100);
+          f.cleanup(); f.logs.length = 0; f.start(f.store); await f.recovered();
+        }
+        f.setAgents([a]);
+        f.timers.fire();
+        await until(() => f.logs.some((line) => line.action === "skip" || line.action === "would-compact"));
+        assert.deepEqual(f.sends, [], reason);
+        if (reason === "tool" || reason === "busy") assert.equal(f.timers.pending.size, 1, reason);
+      });
+    }
+  });
+
+  it("cancels recovered timers on new turns, changed messages, and cleanup", async () => fixture(async (f) => {
+    f.start(f.store); await f.recovered();
+    f.update(agent({ lastUserMessageAt: "2026-09-26T08:10:00Z" }));
+    assert.equal(f.timers.pending.size, 0);
+    assert.deepEqual(f.sends, []);
+  }));
+
+  it("cancels a recovered timer when a turn starts or an agent becomes busy", async () => {
+    for (const trigger of ["turn", "update", "archive", "cleanup"]) await fixture(async (f) => {
+      f.start(f.store); await f.recovered();
+      const a = agent();
+      if (trigger === "turn") f.event("agent.turn_started", { agent: { ...a, workspaceId: "w1", parentAgentId: null }, turnId: "t2" });
+      if (trigger === "update") f.update(agent({ status: "running" }));
+      if (trigger === "archive") f.event("agent.archived", { agent: { ...a, workspaceId: "w1", parentAgentId: null }, archivedAt: endedAt });
+      if (trigger === "cleanup") f.cleanup();
+      assert.equal(f.timers.pending.size, 0, trigger);
+      f.timers.fire();
+      assert.deepEqual(f.sends, [], trigger);
+    });
+  });
+
+  it("preserves bounded retries across restart", async () => fixture(async (f) => {
+    f.start(f.store); await f.recovered();
+    const turn = (await f.store.latestTurn("a1"))!;
+    turn.timeline = [{ type: "tool_call", callId: "tool1", name: "tool", detail: { type: "plain_text", text: "work" }, status: "running", error: null }];
+    await f.store.rememberTurn(turn, 100);
+    f.cleanup(); f.logs.length = 0;
+    f.setNow(endedMs + 60 * 60_000);
+    f.start(f.store); await f.recovered();
+    f.timers.fire();
+    await until(() => f.logs.some((line) => line.action === "retry-scheduled"));
+    f.cleanup(); f.logs.length = 0;
+    f.start(new StateStore(f.file)); await f.recovered();
+    f.timers.fire();
+    await until(() => f.logs.some((line) => line.action === "retry-scheduled"));
+    assert.equal(f.logs.find((line) => line.action === "retry-scheduled")?.data.retryCount, 2);
+    assert.deepEqual(f.sends, []);
+  }));
+
+  it("does not arm a stale recovery when a new turn begins during history fetch", async () => fixture(async (f) => {
+    let release = () => {};
+    f.pauseHistory(new Promise<void>((resolve) => { release = resolve; }));
+    f.start(f.store);
+    await until(() => f.historyCalls() > 0);
+    const a = agent();
+    f.event("agent.turn_started", { agent: { ...a, workspaceId: "w1", parentAgentId: null }, turnId: "t2" });
+    f.setAgents([agent({ status: "running", activeTurn: { turnId: "t2", startedAt: endedAt } })]);
+    release(); await f.recovered();
+    assert.equal(f.timers.pending.size, 0);
+    assert.deepEqual(f.sends, []);
+  }));
+
+  it("treats a durable pre-send reservation as handled after restart", async () => fixture(async (f) => {
+    await f.store.append({ key: "a1:t1", agentId: "a1", turnId: "t1", lastUserMessageAt: messageAt,
+      createdAt: endedAt, outcome: "compact-requested", reason: "send-reserved" }, 100);
+    f.start(f.store); await f.recovered();
+    assert.equal(f.timers.pending.size, 0);
+    assert.deepEqual(f.sends, []);
+  }));
+
+  it("fails closed on unreadable durable state", async () => fixture(async (f) => {
+    await writeFile(f.file, "invalid json");
+    f.start(f.store); await f.recovered();
+    assert.equal(f.timers.pending.size, 0);
+    assert.deepEqual(f.sends, []);
+  }));
+});
+
+describe("elapsed-delay math", () => {
+  it("subtracts idle time for both providers and clamps future end times", () => {
+    assert.deepEqual(recoveryDelay("claude", endedAt, config, endedMs + 20 * 60_000), { remainingMs: 1_800_000, delayMs: 1_800_000, jitterApplied: false });
+    assert.equal(recoveryDelay("codex", endedAt, config, endedMs + 20 * 60_000).delayMs, 120_000);
+    assert.equal(recoveryDelay("claude", endedAt, config, endedMs - 1).delayMs, 3_000_000);
+  });
+  it("jitters due and expired timers within the documented bounds", () => {
+    for (const elapsed of [50 * 60_000, 6 * 60 * 60_000]) {
+      for (const random of [0, 0.5, 0.999999, 1]) {
+        const delay = recoveryDelay("claude", endedAt, config, endedMs + elapsed, () => random);
+        assert.equal(delay.remainingMs, 0);
+        assert.equal(delay.jitterApplied, true);
+        assert.ok(delay.delayMs >= REARM_JITTER_MIN_MS && delay.delayMs <= REARM_JITTER_MAX_MS);
+      }
+    }
+  });
+  it("evaluates soon after cache expiry even with a longer configured delay", () => {
+    const delay = recoveryDelay("claude", endedAt, defaultConfig({ claudeDelayMinutes: 120 }), endedMs + 61 * 60_000, () => 0);
+    assert.equal(delay.remainingMs, 59 * 60_000);
+    assert.equal(delay.jitterApplied, true);
+    assert.equal(delay.delayMs, REARM_JITTER_MIN_MS);
+  });
+  it("uses configured delays", () => {
+    assert.equal(recoveryDelay("codex", endedAt, defaultConfig({ codexDelayMinutes: 10 }), endedMs + 60_000).delayMs, 9 * 60_000);
+  });
+});
+
+describe("recovered identity", () => {
+  it("keeps exact stored metadata when attention is cleared", () => {
+    const a = agent({ attentionReason: null, attentionTimestamp: null });
+    const turn = recoverTurn(agent(), history(a), null)!;
+    const remembered: Checkpoint = { ...turn, endedAt: "2026-09-26T08:01:00Z" };
+    assert.equal(recoverTurn(a, history(a), remembered), remembered);
+  });
+  it("recovers a stored empty turn with the same user message", () => {
+    const a = agent(); const h = history(a); h.entries = [];
+    const turn = recoverTurn(a, history(a), null)!;
+    assert.equal(recoverTurn(a, h, turn), turn);
+  });
+  it("does not recover an already compacted or empty timeline", () => {
+    const a = agent(); const h = history(a);
+    h.entries[0]!.item = { type: "compaction", status: "completed" };
+    assert.equal(recoverTurn(a, h, null), null);
+    h.entries = [];
+    assert.equal(recoverTurn(a, h, null), null);
+  });
+});
+
+describe("timeline recovery", () => {
+  it("loads older pages of the latest turn to retain a running-tool guard", async () => {
+    const a = agent();
+    const tail = history(a);
+    tail.hasOlder = true;
+    tail.startCursor = { epoch: "e1", seq: 1 };
+    const older = history(a);
+    older.entries = [
+      { ...older.entries[0]!, seqStart: 0, seqEnd: 0, item: { type: "tool_call", callId: "tool1", name: "tool",
+        detail: { type: "plain_text", text: "work" }, status: "running", error: null } },
+    ];
+    const requests: string[] = [];
+    const result = await recoveryHistory({ refetch: async (options) => {
+      requests.push(options?.direction ?? "tail");
+      return options?.direction === "before" ? older : tail;
+    } } as PaseoAgentTimelineHandle);
+    assert.deepEqual(requests, ["tail", "before"]);
+    assert.equal(recoverTurn(a, result!, null)?.timeline[0]?.type, "tool_call");
+  });
+  it("fails closed when timeline pagination changes epoch or has a gap", async () => {
+    const a = agent(); const tail = history(a);
+    tail.hasOlder = true; tail.startCursor = { epoch: "e1", seq: 1 };
+    const older = history(a); older.epoch = "e2";
+    assert.equal(await recoveryHistory({ refetch: async (options) => options?.direction === "before" ? older : tail } as PaseoAgentTimelineHandle), null);
+    tail.gap = true;
+    assert.equal(await recoveryHistory({ refetch: async () => tail } as unknown as PaseoAgentTimelineHandle), null);
+  });
+});
