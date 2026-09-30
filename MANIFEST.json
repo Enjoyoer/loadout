@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "4edbab3542b35bd13534ab26a4d60448fcfe8010",
+  "source_commit": "891e7eea5da88ea2c47e70073a0bb174b6797b45",
   "skill_count": 22,
-  "file_count": 102,
+  "file_count": 108,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -18,6 +18,13 @@
       "skill": "codebase-design",
       "bytes": 2664,
       "sha256": "8e740bf98446dbd4dfdc132ac4346d9a7eedaf93de6a495889171cf7f99f16bd"
+    },
+    {
+      "path": "skills/engineering/codebase-design/LICENSE.txt",
+      "category": "engineering",
+      "skill": "codebase-design",
+      "bytes": 1068,
+      "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
     },
     {
       "path": "skills/engineering/codebase-design/SKILL.md",
@@ -48,6 +55,13 @@
       "sha256": "17ab16ce783e4d2801ee52fd9acdf550cbf44de65ae76797a93943bbedf22a13"
     },
     {
+      "path": "skills/engineering/domain-modeling/LICENSE.txt",
+      "category": "engineering",
+      "skill": "domain-modeling",
+      "bytes": 1068,
+      "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
+    },
+    {
       "path": "skills/engineering/domain-modeling/SKILL.md",
       "category": "engineering",
       "skill": "domain-modeling",
@@ -60,6 +74,13 @@
       "skill": "domain-modeling",
       "bytes": 101,
       "sha256": "f6bf2aa996c6e6f53fdd0708e18a0d16a56aed8322cca59fedbe3c0d2c75f06b"
+    },
+    {
+      "path": "skills/engineering/improve-codebase-architecture/LICENSE.txt",
+      "category": "engineering",
+      "skill": "improve-codebase-architecture",
+      "bytes": 1068,
+      "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
     },
     {
       "path": "skills/engineering/improve-codebase-architecture/SKILL.md",
@@ -102,6 +123,13 @@
       "skill": "recover-mouse-input",
       "bytes": 230,
       "sha256": "4834a17cb5bb048e721e41a3bc357a42543c929c3747c3b252fce28a7a555e08"
+    },
+    {
+      "path": "skills/operations-integrations/wizard/LICENSE.txt",
+      "category": "operations-integrations",
+      "skill": "wizard",
+      "bytes": 1068,
+      "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
     },
     {
       "path": "skills/operations-integrations/wizard/SKILL.md",
@@ -531,6 +559,13 @@
       "sha256": "fd60fa18204967eff3b4056e85a0ea25b1139135e52cbc3ff4d188a580b4bd85"
     },
     {
+      "path": "skills/planning-writing/grilling/LICENSE.txt",
+      "category": "planning-writing",
+      "skill": "grilling",
+      "bytes": 1068,
+      "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
+    },
+    {
       "path": "skills/planning-writing/grilling/SKILL.md",
       "category": "planning-writing",
       "skill": "grilling",
@@ -557,6 +592,13 @@
       "skill": "sample",
       "bytes": 267,
       "sha256": "3b7ba4552b3f9d77b9f730a66d158bd582efb2790f48343bf898ca1e783cdf66"
+    },
+    {
+      "path": "skills/research-docs/find-docs/LICENSE.txt",
+      "category": "research-docs",
+      "skill": "find-docs",
+      "bytes": 1079,
+      "sha256": "85cfb556dc2b22b55d2565674fcdaac82f3f2f6b7a928d27003132721bb6736c"
     },
     {
       "path": "skills/research-docs/find-docs/SKILL.md",
