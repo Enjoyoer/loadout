@@ -62,4 +62,4 @@ python3 -m unittest discover -s tests
 
 ## License
 
-Original material is licensed under [MIT](LICENSE). `frontend-design` and `playwright` retain their bundled Apache-2.0 licenses; `playwright` also retains its upstream notice. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). These package-level terms take precedence for those files.
+Original material is licensed under [MIT](LICENSE). `frontend-design` and `playwright` retain their bundled Apache-2.0 licenses; `playwright` also retains its upstream notice. `codebase-design`, `domain-modeling`, `improve-codebase-architecture`, `grilling`, and `wizard` are adapted from Matt Pocock's MIT-licensed skills, and `find-docs` from Context7's MIT-licensed skill; each carries its upstream `LICENSE.txt`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). These package-level terms take precedence for those files.
