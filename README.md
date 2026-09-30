@@ -4,9 +4,48 @@
 
 A public collection of 22 agent skills for coding, research, writing, browser work, integrations, and orchestration, plus 4 Paseo daemon plugins. Each package lives at `skills/<category>/<name>` and installs flat as `<client skills directory>/<name>`. The repository has its own history and contains no machine credentials or private fleet configuration.
 
+## Quickstart
+
+**Claude Code**, in two commands:
+
+```bash
+claude plugin marketplace add Enjoyoer/loadout
+claude plugin install loadout-engineering@loadout
+```
+
+Skills then appear as `/loadout-engineering:codebase-design` and so on. The marketplace groups the skills into six plugins; install any of them:
+
+| Plugin | Skills |
+|---|---|
+| `loadout-engineering` | `codebase-design`, `domain-modeling`, `improve-codebase-architecture`, `uv-python` |
+| `loadout-orchestration` | `opc`, `opn`, `dispatching-parallel-agents`, `claude-cloud`, `handoff`, `repo-lessons`, `reassign-pm` |
+| `loadout-writing` | `grilling`, `sample` |
+| `loadout-research` | `find-docs`, `liteparse` |
+| `loadout-web` | `frontend-design`, `playwright`, `browse-x`, `pake` |
+| `loadout-ops` | `wizard`, `recover-mouse-input` |
+
+**Codex, or any client that reads a skills folder:** clone, verify, and copy the packages you want:
+
+```bash
+git clone https://github.com/Enjoyoer/loadout && cd loadout
+python3 scripts/verify_manifest.py
+cp -R skills/planning-writing/grilling "${CODEX_HOME:-$HOME/.codex}/skills/"
+```
+
+**Fleet sync, without touching your machine:** `python3 examples/fleet_demo.py` runs a dry run, a sync, a no-op rerun, and a local-edit conflict against two simulated hosts in a temporary folder.
+
+### Supported versions
+
+| Component | Supported |
+|---|---|
+| Claude Code | Current release with plugin marketplaces |
+| Codex | Current release with a `skills` folder |
+| Paseo plugins | Paseo `>=0.9.2 <0.11.0` (pinned in each `paseo-plugin.json`) |
+| Fleet sync and tests | Python 3 and Node on each host; CI runs Python 3.12 and Node 24 on Ubuntu and macOS |
+
 ## Install
 
-Clone this repository to a local filesystem, then verify its committed publication:
+For a verified install that protects local edits, clone this repository to a local filesystem, then verify its committed publication:
 
 ```bash
 python3 scripts/verify_manifest.py
