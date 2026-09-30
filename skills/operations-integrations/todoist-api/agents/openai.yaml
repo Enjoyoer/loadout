@@ -1,4 +1,0 @@
-interface:
-  display_name: "Todoist Api"
-  short_description: "Manage Todoist tasks and projects directly"
-  default_prompt: "Use the todoist-api skill for this task."

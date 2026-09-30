@@ -22,6 +22,7 @@ To sync the fleet, run `python3 scripts/sync.py --dry-run` beside this `SKILL.md
 
 - Resolve an ordinary local Git checkout of this repository. Read `MANIFEST.json` from one immutable commit and its `source_commit` once. Require the documented schema (`schema_version: 2`) and `hash_basis: git-blob`.
 - Select package names from the manifest. Source files live at `skills/<category>/<skill-name>/<file>` and install flat at `<client-home>/skills/<skill-name>/<file>`.
+- Private skills come from the fleet directory's `skills/<skill-name>/` overlay (see `fleet/README.md`). They are selected and installed like published packages, never committed, and a name clash with a published package stops the run.
 - Read every selected file from the recorded `source_commit` with `git cat-file blob`. Verify the manifest byte count and SHA256 before considering a destination.
 
 ## Destinations
@@ -71,7 +72,7 @@ For hosts whose `sync` includes `client-config`, the client-config step (`script
 
 ## Local-edit protection
 
-The skills step (`scripts/skills_sync.py`) implements this for skills and global instructions. It reads blobs from `source_commit`, treats every version in the committed `MANIFEST.json` history as a verified prior publication, and records the global-instruction hashes it installed in each host's `loadout/global-sync.json`, under the config directory from Fleet. It skips each host's `exclude_skills`.
+The skills step (`scripts/skills_sync.py`) implements this for skills and global instructions. It reads blobs from `source_commit`, treats every version in the committed `MANIFEST.json` history as a verified prior publication, and records the global-instruction hashes it installed in each host's `loadout/global-sync.json`, under the config directory from Fleet. Overlay files use the hashes recorded in the overlay's `.loadout-overlay.json`, plus the published history of the same install path, as their verified prior versions. It skips each host's `exclude_skills`.
 
 Preflight every selected destination before writing any file on that host. Reject escaping or duplicate paths, symlink or junction ancestors, unexpected file types, and hash mismatches. An existing file may be replaced only if it matches a verified prior publication of the same source path or the desired blob. Preserve unknown local edits and stop the host without a partial package update. Leave unselected files untouched.
 

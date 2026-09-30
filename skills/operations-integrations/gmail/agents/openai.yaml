@@ -1,4 +1,0 @@
-interface:
-  display_name: "Gmail"
-  short_description: "> CRITICAL: You MUST activate this skill BEFORE composing, se..."
-  default_prompt: "Use the gmail skill for this task."
