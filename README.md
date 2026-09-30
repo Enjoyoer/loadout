@@ -1,6 +1,6 @@
 # Loadout Skills
 
-A public collection of 25 agent skills for coding, research, writing, browser work, integrations, and orchestration, plus 4 Paseo daemon plugins. Each package lives at `skills/<category>/<name>` and installs flat as `<client skills directory>/<name>`. The repository has its own history and contains no machine credentials or private fleet configuration.
+A public collection of 22 agent skills for coding, research, writing, browser work, integrations, and orchestration, plus 4 Paseo daemon plugins. Each package lives at `skills/<category>/<name>` and installs flat as `<client skills directory>/<name>`. The repository has its own history and contains no machine credentials or private fleet configuration.
 
 ## Install
 
@@ -18,7 +18,7 @@ Some packages need an external CLI, connected service, or local credential. Read
 
 ## Packages
 
-See [SKILLS_CATALOG.md](SKILLS_CATALOG.md) for all 25 active packages. There are no archived packages in this public repository.
+See [SKILLS_CATALOG.md](SKILLS_CATALOG.md) for all 22 active packages. There are no archived packages in this public repository.
 
 ## Sync a fleet
 
@@ -30,6 +30,8 @@ python3 skills/orchestration/personal-skills/scripts/sync.py
 ```
 
 Describe your hosts first: copy `skills/orchestration/personal-skills/fleet/example/` to `~/.config/loadout/fleet/` and edit it (see its `fleet/README.md`). Each host's `sync` list decides which steps it gets. Hosts need `node`, and remote hosts are reached over SSH.
+
+Skills you keep private (personal, account-bound, or holding credentials) go in `skills/<name>/` inside your fleet directory. The same sync installs them next to the published ones, and they are never committed or pushed.
 
 After changing a host's `plugin_root`, plugins installed from the old directory report `blocked`; `sync.py --migrate-path` moves them and keeps their settings (see the `personal-skills` skill).
 

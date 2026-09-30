@@ -13,6 +13,7 @@ example/                     public, made up
   paseo-providers.json       optional
   client-config.json         optional
   global/AGENTS.md           optional
+  skills/<name>/SKILL.md     optional private skills (the overlay)
 ```
 
 ## Where the fleet lives
@@ -26,6 +27,15 @@ example/                     public, made up
 Edit the fleet only on the source host. `python3 scripts/fleet.py push [--dry-run] [--host <name>]` copies it to `~/.config/loadout/fleet/` (`%APPDATA%\loadout\fleet\` on Windows) on every other `ssh` host, and every sync run does this first. Each copy carries a `.loadout-sync.json` record of the hashes last synced. A host's copy is replaced only while it still matches that record. A hand-edited, added, or unrecorded differing file is a conflict, and nothing is written on that host until you resolve it, usually by deleting the host's copy. `paseo-relay` hosts get no copy. Hosts need `node`.
 
 With none of these, the fleet is the current host only. To move an existing `fleet/local/`, copy it to the config directory, check `fleet.py resolve` reports `config`, then remove the old copy.
+
+## Private skills
+
+Put skills that must stay private (personal, account-bound, or holding credentials) in `skills/<name>/` inside the fleet directory on the source host, laid out like any installed package with a `SKILL.md`. The skills step installs them with the published ones, with the same `--skills` and `exclude_skills` selection and the same local-edit protection:
+
+- A name that is also a published skill stops the run; rename one of them.
+- Every overlay file hash the sync has sent is recorded in `skills/.loadout-overlay.json`, so a newer version replaces an older installed one while a hand edit on a host stays a conflict. A skill that moved here from the public repository also replaces its last published copy.
+- `__pycache__`, `.pyc`, and `.DS_Store` are skipped; symlinks are errors.
+- The fleet push does not copy `skills/` to other hosts; skill bytes travel only through the skills step.
 
 ## hosts.json
 

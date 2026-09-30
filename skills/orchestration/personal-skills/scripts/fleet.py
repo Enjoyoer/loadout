@@ -225,12 +225,14 @@ def parse_result(output: str) -> Optional[dict]:
 
 
 def fleet_files(directory: Path) -> dict:
-    """Every regular file in the fleet directory, by POSIX relative path."""
+    """Every regular file in the fleet directory except the skills/ overlay, by POSIX relative path."""
     files = {}
     for path in sorted(directory.rglob("*")):
         rel = path.relative_to(directory).as_posix()
         if path.name in SKIP_NAMES or path.name.endswith(".loadout-tmp"):
             continue
+        if rel == "skills" or rel.startswith("skills/"):
+            continue  # the private skill overlay installs through the skills step, not the fleet copy
         if path.is_symlink():
             raise FleetError(f"symlink in the source fleet directory: {rel}")
         if path.is_file():

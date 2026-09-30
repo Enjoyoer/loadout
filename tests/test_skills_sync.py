@@ -202,6 +202,63 @@ class SkillsSyncTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("desktop: skills conflict: local edits, nothing written: claude:handoff/SKILL.md", out)
 
+    def overlay(self, rel, data):
+        path = self.fleet / "skills" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(data)
+
+    def test_private_overlay_installs_updates_and_keeps_hand_edits(self):
+        self.overlay("mine/SKILL.md", "v1")
+        self.overlay("mine/__pycache__/x.pyc", "junk")
+        code, out = self.run_sync("--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertFalse((self.fleet / "skills/.loadout-overlay.json").exists(), "dry run records nothing")
+        done = subprocess.run([sys.executable, str(SCRIPTS / "skills_sync.py"), "--skills", "handoff,mine"],
+                              env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("2 skills selected (1 from the private overlay)", done.stdout)
+        target = self.installed("desktop", ".claude/skills/mine/SKILL.md")
+        self.assertEqual(target.read_text(), "v1")
+        self.assertFalse(self.installed("desktop", ".claude/skills/mine/__pycache__").exists())
+        self.overlay("mine/SKILL.md", "v2")
+        code, out = self.run_sync("--skills", "mine")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(target.read_text(), "v2")
+        history = json.loads((self.fleet / "skills/.loadout-overlay.json").read_text())
+        self.assertEqual(history["mine/SKILL.md"], sorted([sha(b"v1"), sha(b"v2")]))
+        target.write_text("hand edit")
+        self.overlay("mine/SKILL.md", "v3")
+        code, out = self.run_sync("--skills", "mine", "--host", "desktop")
+        self.assertEqual(code, 1, out)
+        self.assertIn("conflict: local edits, nothing written: claude:mine/SKILL.md", out)
+        self.assertEqual(target.read_text(), "hand edit")
+
+    def test_overlay_is_not_pushed_with_the_fleet(self):
+        self.overlay("mine/SKILL.md", "v1")
+        self.assertNotIn("skills/mine/SKILL.md", fleet.fleet_files(self.fleet))
+        self.assertIn("hosts.json", fleet.fleet_files(self.fleet))
+
+    def test_overlay_name_clash_and_missing_skill_md(self):
+        self.overlay("handoff/SKILL.md", "shadow")
+        code, out = self.run_sync()
+        self.assertEqual(code, 1)
+        self.assertIn("overlay skill handoff has the same name as a published skill", out)
+        shutil.rmtree(self.fleet / "skills/handoff")
+        self.overlay("bare/notes.md", "x")
+        code, out = self.run_sync()
+        self.assertEqual(code, 1)
+        self.assertIn("overlay skill bare has no SKILL.md", out)
+
+    def test_moved_skill_replaces_its_last_published_copy(self):
+        class Pub:
+            def prior(self):
+                return {"skills/misc/moved/SKILL.md": [sha(b"published")], "plugins/p/x.js": [sha(b"p")]}
+        by_dest = skills_sync.published_prior_by_dest(Pub())
+        self.assertEqual(by_dest, {"moved/SKILL.md": {sha(b"published")}})
+        self.overlay("moved/SKILL.md", "private")
+        files = skills_sync.overlay_files(self.fleet, {"handoff"}, by_dest, record=False)
+        self.assertEqual(files["moved/SKILL.md"]["prior"], [sha(b"published")])
+
     def test_unknown_skill_and_host(self):
         done = subprocess.run([sys.executable, str(SCRIPTS / "skills_sync.py"), "--skills", "nope"], env=self.env,
                               capture_output=True, text=True)
