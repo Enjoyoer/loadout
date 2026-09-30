@@ -17,4 +17,12 @@ describe("retry policy", () => {
     assert.equal(nextRetryCount("running-tool", MAX_RETRIES), null);
     assert.equal(nextRetryCount("not-idle", MAX_RETRIES), null);
   });
+
+  it("keeps unknown context terminal under both old and new reason strings", () => {
+    for (const reason of ["context-below-threshold(unknown)", "context-unknown"]) {
+      assert.equal(retryableSkip(reason), false);
+      assert.equal(nextRetryCount(reason, 0), null);
+      assert.equal(nextRetryCount(reason, MAX_RETRIES), null);
+    }
+  });
 });
