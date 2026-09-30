@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: npm
+    directories:
+      - /plugins/cache-aware-autocompact
+      - /plugins/merged-worker-archiver
+      - /plugins/orphan-project-sweeper
+      - /plugins/usage-limit-auto-resume
+    schedule:
+      interval: monthly
+    ignore:
+      # Paseo packages are pinned to the daemon versions each plugin was checked against.
+      - dependency-name: "@getpaseo/*"
