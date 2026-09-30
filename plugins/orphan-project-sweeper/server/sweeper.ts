@@ -1,5 +1,11 @@
 import { lstat } from "node:fs/promises";
-import { withDaemon, type DaemonClient } from "./daemon";
+import { withDaemon, type DaemonClient } from "./daemon.ts";
+import { readConfig, type SweeperConfig } from "./config.ts";
+
+export type SweeperApi = Pick<DaemonClient, "listProjects" | "removeProject"> & {
+  // This plugin uses paginated reads only, never the subscription overload.
+  fetchWorkspaces(options?: Parameters<DaemonClient["fetchWorkspaces"]>[0]): ReturnType<DaemonClient["fetchWorkspaces"]>;
+};
 
 const TAG = "[orphan-project-sweeper]";
 
@@ -42,7 +48,7 @@ async function inspectPath(target: string): Promise<PathState> {
  * fetch already excludes archived workspaces; workspaces that are mid-archive
  * (archivingAt set) are still counted as active on purpose. Joins on projectId only.
  */
-async function countActiveWorkspaces(client: DaemonClient): Promise<Map<string, number>> {
+async function countActiveWorkspaces(client: SweeperApi): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   let cursor: string | undefined;
   do {
@@ -73,7 +79,7 @@ async function judge(project: ProjectRow, activeCount: number): Promise<Verdict>
 }
 
 /** Fresh, live evaluation of one project against the daemon and the filesystem. */
-export async function evaluateProject(client: DaemonClient, projectId: string): Promise<Verdict> {
+export async function evaluateProject(client: SweeperApi, projectId: string): Promise<Verdict> {
   const { projects } = await client.listProjects();
   const project = projects.find((row) => row.projectId === projectId);
   if (!project) {
@@ -105,7 +111,23 @@ export class OrphanProjectSweeper {
   private queue: Promise<unknown> = Promise.resolve();
   private stopped = false;
 
-  constructor(private readonly logger: SweeperLogger) {}
+  private readonly connect: <T>(fn: (client: SweeperApi) => Promise<T>) => Promise<T>;
+  private readonly loadConfig: () => Promise<SweeperConfig>;
+  private readonly logger: SweeperLogger;
+
+  constructor(logger: SweeperLogger, options: {
+    withDaemon?: <T>(fn: (client: SweeperApi) => Promise<T>) => Promise<T>;
+    config?: () => Promise<SweeperConfig>;
+  } = {}) {
+    this.logger = logger;
+    this.connect = options.withDaemon ?? withDaemon;
+    this.loadConfig = options.config ?? (async () => readConfig());
+  }
+
+  /** One serialized full sweep, also used by the forced dry-run CLI. */
+  sweep(options: { forceDryRun?: boolean; source?: string } = {}): Promise<void> {
+    return this.exclusive(() => this.runStartupSweep(options));
+  }
 
   /** Serialize daemon work so a sweep and a re-check never race on the same project. */
   private exclusive<T>(fn: () => Promise<T>): Promise<T> {
@@ -119,7 +141,7 @@ export class OrphanProjectSweeper {
     this.logger.log(`${TAG} startup sweep scheduled in ${delayMs}ms`);
     this.startupTimer = setTimeout(() => {
       this.startupTimer = null;
-      void this.exclusive(() => this.runStartupSweep()).catch((error) => {
+      void this.sweep().catch((error) => {
         this.logger.error(`${TAG} startup sweep failed: ${message(error)}`);
       });
     }, delayMs);
@@ -162,10 +184,11 @@ export class OrphanProjectSweeper {
     const attempt = `attempt=${candidate.attempts}/${RECHECK_DELAYS_MS.length}`;
     let outcome: "done" | "retry";
     try {
-      outcome = await withDaemon(async (client) => {
+      const config = await this.loadConfig();
+      outcome = await this.connect(async (client) => {
         const verdict = await evaluateProject(client, projectId);
         if (verdict.kind === "delete") {
-          await this.deleteVerified(client, verdict, `re-check ${attempt}`);
+          await this.deleteVerified(client, verdict, `re-check ${attempt}`, config);
           return "done";
         }
         if (verdict.reason === "project-missing") {
@@ -189,32 +212,48 @@ export class OrphanProjectSweeper {
     this.scheduleRecheck(projectId);
   }
 
-  private async runStartupSweep(): Promise<void> {
+  private async runStartupSweep(options: { forceDryRun?: boolean; source?: string }): Promise<void> {
     if (this.stopped) return;
-    await withDaemon(async (client) => {
+    const config = await this.loadConfig();
+    const source = options.source ?? "startup-sweep";
+    const dryRun = options.forceDryRun === true || config.armed !== true;
+    await this.connect(async (client) => {
       const { projects } = await client.listProjects();
       const counts = await countActiveWorkspaces(client);
       this.logger.log(`${TAG} startup sweep begin projects=${projects.length} activeWorkspaces=${[...counts.values()].reduce((a, b) => a + b, 0)}`);
       let deleted = 0;
+      let wouldDelete = 0;
       for (const project of projects) {
         if (this.stopped) return;
         const verdict = await judge(project, counts.get(project.projectId) ?? 0);
         if (verdict.kind === "skip") {
-          this.logger.log(`${TAG} decision=skip source=startup-sweep ${describe(verdict)}`);
+          this.logger.log(`${TAG} decision=skip source=${source} ${describe(verdict)}`);
           continue;
         }
-        if (await this.deleteVerified(client, verdict, "startup-sweep")) deleted += 1;
+        if (deleted + wouldDelete >= config.maxDeletesPerSweep) {
+          this.logger.log(`${TAG} decision=cap-reached source=${source} ${describe(verdict)} maxDeletesPerSweep=${config.maxDeletesPerSweep}`);
+          continue;
+        }
+        if (await this.deleteVerified(client, verdict, source, config, options.forceDryRun)) {
+          if (dryRun) wouldDelete += 1;
+          else deleted += 1;
+        }
       }
-      this.logger.log(`${TAG} startup sweep end deleted=${deleted}`);
+      this.logger.log(`${TAG} startup sweep end deleted=${deleted} wouldDelete=${wouldDelete}`);
     });
   }
 
   /** Re-verify against live state immediately before deleting, then delete. */
-  private async deleteVerified(client: DaemonClient, verdict: Verdict & { kind: "delete" }, source: string): Promise<boolean> {
+  private async deleteVerified(client: SweeperApi, verdict: Verdict & { kind: "delete" }, source: string, config: SweeperConfig, forceDryRun = false): Promise<boolean> {
     const fresh = await evaluateProject(client, verdict.projectId);
     if (fresh.kind !== "delete") {
       this.logger.log(`${TAG} decision=skip source=${source} (changed on re-verify) ${describe(fresh)}`);
       return false;
+    }
+    if (this.stopped) return false;
+    if (forceDryRun || config.armed !== true) {
+      this.logger.log(`${TAG} decision=would-delete source=${source} ${describe(fresh)}`);
+      return true;
     }
     try {
       const result = await client.removeProject(fresh.projectId);
