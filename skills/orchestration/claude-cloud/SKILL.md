@@ -19,7 +19,7 @@ Keep the task local when it needs local-only files, services, secrets, or hosts,
 
 1. Run `claude auth status`. The CLI must be logged in to the claude.ai account that holds the credits, not a proxy API key. If it is not, stop and ask the owner to run `claude` then `/login` interactively.
 2. Run `git remote -v` in the repository.
-3. **Upload warning.** If there is no Git remote, or the Claude GitHub App is not installed on that repository, the whole local repository is bundled and uploaded. Before offloading a private or secret-bearing repository in that state, stop and get the owner's explicit approval. Prefer pushing to a GitHub remote with the Claude GitHub App installed.
+3. **Upload warning.** If there is no Git remote, or the Claude GitHub App is not installed on that repository, the whole local repository is bundled and uploaded. GitHub tokens cannot list App installations, so the owner records confirmed repositories in `~/.config/opc/cloud-repos`, one `owner/repo` per line, or `owner/*` for every repository of an account. If the GitHub remote matches a line (case-insensitive), the App is confirmed: proceed without asking. Otherwise, before offloading a private or secret-bearing repository, stop and get the owner's explicit approval. Prefer pushing to a GitHub remote with the Claude GitHub App installed.
 4. Commit and push anything the cloud session must see; it does not inherit uncommitted work when working from the remote.
 
 ## Commands

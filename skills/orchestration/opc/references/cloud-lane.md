@@ -1,10 +1,10 @@
 # Cloud lane
 
-The owner's toggle `~/.config/opc/cloud` (`on`/`off`, missing is off) is a standing explicit Worker route: when on, an eligible editing lane runs as one Claude Code cloud session on `claude-opus-5-5[1m]` at `xhigh`, billed to claude.ai cloud credits. Flip it with `node scripts/cloud-lane.mjs on|off|status`; add `--fleet host,...` to flip other hosts over SSH. `on` requires a claude.ai login on that host; it does not assume the account has cloud credits. GitHub tokens cannot list App installations, so the owner confirms repositories with `cloud-lane.mjs allow owner/repo` (`~/.config/opc/cloud-repos`).
+The owner's toggle `~/.config/opc/cloud` (`on`/`off`, missing is off) is a standing explicit Worker route: when on, an eligible editing lane runs as one Claude Code cloud session on `claude-opus-5-5[1m]` at `xhigh`, billed to claude.ai cloud credits. Flip it with `node scripts/cloud-lane.mjs on|off|status`; add `--fleet host,...` to flip other hosts over SSH. `on` requires a claude.ai login on that host; it does not assume the account has cloud credits. GitHub tokens cannot list App installations, so the owner confirms repositories with `cloud-lane.mjs allow owner/repo`, or `allow owner/*` when the App is installed on every repository of that account (`~/.config/opc/cloud-repos`); `--fleet host,...` works here too.
 
 ## Route
 
-Call `readCloudToggle()`. When on, gather facts for `checkCloudEligibility`: a GitHub remote, the repository listed by `readCloudRepos()` (owner-confirmed Claude GitHub App), a self-contained task, and `claude auth status` showing `claude.ai`. Pass both to `resolveCloudWorkerRoute`; a returned route replaces asking for the Worker route. Off or ineligible returns null: record the reasons and use the normal Worker route. Never offload a repository without the App, since the whole local repository would upload.
+Call `readCloudToggle()`. When on, gather facts for `checkCloudEligibility`: a GitHub remote, `isCloudRepo(owner/repo)` (owner-confirmed Claude GitHub App; do not ask the owner again for a confirmed repository), a self-contained task, and `claude auth status` showing `claude.ai`. Pass both to `resolveCloudWorkerRoute`; a returned route replaces asking for the Worker route. Off or ineligible returns null: record the reasons and use the normal Worker route. Never offload a repository without the App, since the whole local repository would upload.
 
 ## Launch
 
