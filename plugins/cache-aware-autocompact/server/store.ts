@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Checkpoint } from "./runtime.ts";
 
 export type StateEntry = {
   key: string;
@@ -7,10 +8,10 @@ export type StateEntry = {
   turnId: string | null;
   lastUserMessageAt: string | null;
   createdAt: string;
-  outcome: "would-compact" | "compacted" | "skip" | "send-failed";
+  outcome: "compact-requested" | "would-compact" | "compacted" | "skip" | "send-failed";
   reason: string;
 };
-type State = { version: 1; entries: StateEntry[] };
+type State = { version: 1; entries: StateEntry[]; turns?: Checkpoint[] };
 
 function home(env: NodeJS.ProcessEnv = process.env): string {
   return env.PASEO_HOME?.trim() || path.join(env.HOME ?? "/tmp", ".paseo");
@@ -22,25 +23,45 @@ export class StateStore {
   constructor(filePath = path.join(home(), "plugin-state", "cache-aware-autocompact", "state.json")) {
     this.filePath = filePath;
   }
-  async read(): Promise<StateEntry[]> {
+  private async readState(): Promise<State> {
     try {
       const state = JSON.parse(await readFile(this.filePath, "utf8")) as State;
-      return state.version === 1 && Array.isArray(state.entries) ? state.entries : [];
-    } catch {
-      return [];
+      if (state.version !== 1 || !Array.isArray(state.entries)) throw new Error("Invalid state");
+      return state;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, entries: [] };
+      throw error;
     }
+  }
+  async read(): Promise<StateEntry[]> { return (await this.readState()).entries; }
+  async latestTurn(agentId: string): Promise<Checkpoint | null> {
+    return (await this.readState()).turns?.find((turn) => turn.agentId === agentId) ?? null;
+  }
+  private async write(state: State): Promise<void> {
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    const temp = `${this.filePath}.${process.pid}.tmp`;
+    await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    await rename(temp, this.filePath);
+  }
+  async rememberTurn(turn: Checkpoint, maxEntries: number): Promise<void> {
+    this.writes = this.writes.then(async () => {
+      const state = await this.readState();
+      // The evaluator only inspects running tools. Keep their guard state, not
+      // whole transcripts, alongside the already-derived checkpoint identity.
+      const durableTurn = { ...turn, timeline: turn.timeline.filter((item) => item.type === "tool_call" && item.status === "running") };
+      const turns = [...(state.turns ?? []).filter((candidate) => candidate.agentId !== turn.agentId), durableTurn].slice(-maxEntries);
+      await this.write({ ...state, turns });
+    });
+    await this.writes;
   }
   async has(key: string): Promise<boolean> {
     return (await this.read()).some((entry) => entry.key === key);
   }
   async append(entry: StateEntry, maxEntries: number): Promise<void> {
     this.writes = this.writes.then(async () => {
-      const entries = await this.read();
-      const next = [...entries.filter((candidate) => candidate.key !== entry.key), entry].slice(-maxEntries);
-      await mkdir(path.dirname(this.filePath), { recursive: true });
-      const temp = `${this.filePath}.${process.pid}.tmp`;
-      await writeFile(temp, `${JSON.stringify({ version: 1, entries: next }, null, 2)}\n`, { mode: 0o600 });
-      await rename(temp, this.filePath);
+      const state = await this.readState();
+      const next = [...state.entries.filter((candidate) => candidate.key !== entry.key), entry].slice(-maxEntries);
+      await this.write({ ...state, entries: next });
     });
     await this.writes;
   }

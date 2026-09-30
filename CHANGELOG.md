@@ -4,6 +4,9 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ## Unreleased
 
+### Fixed
+- `cache-aware-autocompact` now restores idle compaction timers after restart or reload, preserves elapsed idle time with bounded overdue jitter, logs recovery counts, and uses durable checkpoints to prevent repeat sends.
+
 ### Changed
 - `orphan-project-sweeper` now defaults to dry-run until `armed` is true, caps deletions per sweep (default 5), and provides a forced dry-run CLI, safeguard tests, and recovery instructions.
 
