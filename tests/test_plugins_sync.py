@@ -328,7 +328,7 @@ class PluginsSyncDriverTest(Fixture):
                               capture_output=True, text=True, timeout=120)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("desktop: plugins updated", done.stdout)
-        self.assertIn("orphan-project-sweeper: staged changed; check typecheck", done.stdout)
+        self.assertIn("orphan-project-sweeper: staged changed; check check", done.stdout)
         self.assertNotIn("laptop", done.stdout.split("source_commit")[1])
         manifest = json.loads((REPO / "MANIFEST.json").read_text())
         staged = self.root / "hosts/desktop/.local/share/loadout/plugins/orphan-project-sweeper"
