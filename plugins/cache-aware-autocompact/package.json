@@ -1,7 +1,7 @@
 {
   "name": "cache-aware-autocompact",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Dry-run-first cache-aware compaction scheduler for idle Claude and Codex agents.",
   "type": "module",
   "scripts": {
