@@ -1,8 +1,16 @@
-# Loadout Skills
+# Loadout
 
 [![CI](https://github.com/Enjoyoer/loadout/actions/workflows/ci.yml/badge.svg)](https://github.com/Enjoyoer/loadout/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Enjoyoer/loadout)](https://github.com/Enjoyoer/loadout/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A public collection of 22 agent skills for coding, research, writing, browser work, integrations, and orchestration, plus 4 Paseo daemon plugins. Each package lives at `skills/<category>/<name>` and installs flat as `<client skills directory>/<name>`. The repository has its own history and contains no machine credentials or private fleet configuration.
+Agent skills for Claude Code and Codex, a fleet sync that keeps them identical across machines, and plugins for the [Paseo](https://paseo.sh) agent daemon.
+
+- **22 skills** for multi-agent orchestration, project memory and handoffs, architecture and domain modeling, docs lookup, PDFs, frontend design, and browser automation.
+- **Fleet sync**: one command installs verified skills (every file checked against a SHA256 manifest) on every host over SSH, and never overwrites a local edit.
+- **4 Paseo plugins** that resume agents after usage limits, archive merged worker workspaces, compact idle agents before their prompt cache expires, and clean up orphaned projects. Each one only logs what it would do until you arm it.
+
+Each skill lives at `skills/<category>/<name>` and installs flat as `<client skills directory>/<name>`. The repository contains no credentials or private host configuration.
 
 ## Quickstart
 
@@ -43,7 +51,7 @@ cp -R skills/planning-writing/grilling "${CODEX_HOME:-$HOME/.codex}/skills/"
 | Paseo plugins | Paseo `>=0.9.2 <0.11.0` (pinned in each `paseo-plugin.json`) |
 | Fleet sync and tests | Python 3 and Node on each host; CI runs Python 3.12 and Node 24 on Ubuntu and macOS |
 
-## Install
+## Verified install
 
 For a verified install that protects local edits, clone this repository to a local filesystem, then verify its committed publication:
 

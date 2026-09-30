@@ -12,3 +12,7 @@ skills/*/*/references/local.md
 /CLAUDE.md
 skills/*/*/fleet/local/
 plugins/*/node_modules/
+
+# PM memory, kept locally only
+STATUS.html
+LESSONS.md

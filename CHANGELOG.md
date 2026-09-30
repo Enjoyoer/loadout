@@ -9,19 +9,12 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ## 0.1.0 (2026-09-30)
 
-First release: 22 skills, 4 Paseo plugins, and the fleet sync tool.
+First public release.
 
 ### Added
-- Claude Code plugin marketplace (`.claude-plugin/marketplace.json`) with six category plugins.
-- README quickstart, supported-versions table, and `examples/fleet_demo.py`, an offline end-to-end fleet sync demo.
-- CI on Ubuntu and macOS for repo tests, manifest verification, the `opc` validator, and plugin checks; Dependabot.
-- Private skill overlay: the fleet sync also installs skills from `<fleet>/skills/<name>/`, never published.
-- Contributing guide with a 7-day triage promise, security policy, code of conduct, issue and pull request templates.
-- Fleet sync (`sync.py`) across skills, plugins, Paseo provider pickers, and client config; `--migrate-path` for plugins.
-- Cloud offload: `owner/*` entries in the confirmed-repository list.
-
-### Changed
-- Skills adapted from Matt Pocock's skills and Context7 carry their upstream MIT licenses and notices.
-
-### Removed
-- `download-to-nas`, `todoist-api`, `gmail`, and `google-sheets` left the public collection; keep such skills in the private overlay.
+- 22 agent skills in six groups: engineering, orchestration, writing, research, web, and operations.
+- Claude Code plugin marketplace (`claude plugin marketplace add Enjoyoer/loadout`) with six `loadout-*` plugins.
+- Fleet sync (`sync.py`) for skills, Paseo plugins, Paseo provider pickers, and Codex and Claude Code settings, with SHA256 verification, local-edit protection, a private skill overlay, and `--migrate-path` for plugins.
+- Four Paseo plugins: `usage-limit-auto-resume`, `merged-worker-archiver`, `cache-aware-autocompact`, and `orphan-project-sweeper`.
+- An offline fleet sync demo (`examples/fleet_demo.py`), CI on Ubuntu and macOS, a contributing guide with a 7-day triage promise, a security policy, and a code of conduct.
+- Skills adapted from Matt Pocock's skills and Context7 keep their upstream MIT licenses; see `THIRD_PARTY_NOTICES.md`.
