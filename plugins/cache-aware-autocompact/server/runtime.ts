@@ -9,7 +9,7 @@ import { MetricsLog } from "./metrics.ts";
 import { MAX_RETRIES, nextRetryCount, RETRY_DELAY_MS } from "./retry.ts";
 
 import { openDaemonClient } from "./daemon.ts";
-import { recoverTurn, recoveryDelay, rearmSkipReason, recoveryHistory } from "./recovery.ts";
+import { recoverTurn, recoveryDelay, rearmSkipReason, recoveryHistory, recoveryCwdMissing } from "./recovery.ts";
 
 const COMMAND = "/compact";
 
@@ -47,6 +47,8 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   const readConfig = dependencies.readConfig;
   const inFlight = new Set<string>();
   const expectedUserMessage = new Map<string, string | null>();
+  const recoveryFailures = new Map<string, Set<string>>();
+  let lastRecoverySummary: string | null = null;
   let stopped = false;
   const agentSubscriptions = new Map<PaseoApi, () => void>();
 
@@ -250,6 +252,8 @@ export function startScheduler(server: PluginServerContext, dependencies: {
           expectedUserMessage.set(agent.id, agent.lastUserMessageAt ?? null);
           const generation = generations.get(agent.id) ?? 0;
           try {
+            if (await recoveryCwdMissing(agent)) { skip("cwd-missing"); continue; }
+            if (stopped) return;
             const handle = api.agents.ref(agent.id);
             const history = await recoveryHistory(handle.timeline);
             if (stopped) return;
@@ -282,16 +286,29 @@ export function startScheduler(server: PluginServerContext, dependencies: {
             timers.schedule(checkpoint.key, agent.id, delay.delayMs, () => {
               void evaluate(checkpoint, api).catch((error) => log("evaluation-failed", { agentId: agent.id, reason: safeError(error) }));
             });
+            recoveryFailures.delete(agent.id);
             rearmed++;
             log("re-armed", { agentId: agent.id, provider: fresh.provider, idleSince: checkpoint.endedAt, ...delay });
           } catch (error) {
             skip("recovery-failed");
-            log("rearm-failed", { agentId: agent.id, reason: safeError(error) });
+            const message = safeError(error);
+            const failures = recoveryFailures.get(agent.id) ?? new Set<string>();
+            if (!failures.has(message)) log("rearm-failed", { agentId: agent.id, reason: message });
+            // A new turn can arrive while recovery is awaiting the failed call.
+            if (generation === (generations.get(agent.id) ?? 0)) {
+              failures.add(message);
+              recoveryFailures.set(agent.id, failures);
+            }
           }
         }
         cursor = page.pageInfo.hasMore ? page.pageInfo.nextCursor ?? undefined : undefined;
       } while (cursor && !stopped);
-      log("rearm-summary", { trigger, rearmed, skipped, skippedCount: Object.values(skipped).reduce((a, b) => a + b, 0) });
+      const summary = JSON.stringify(Object.entries(skipped).filter(([reason]) => reason !== "already-pending")
+        .sort(([a], [b]) => a.localeCompare(b)));
+      if (rearmed > 0 || summary !== lastRecoverySummary) {
+        log("rearm-summary", { trigger, rearmed, skipped, skippedCount: Object.values(skipped).reduce((a, b) => a + b, 0) });
+        lastRecoverySummary = summary;
+      }
     }).catch((error) => { if (!stopped) log("rearm-failed", { trigger, reason: safeError(error) }); });
   };
   const inFlightHasAgent = (agentId: string) => [...inFlight].some((key) => key.startsWith(`${agentId}:`));
@@ -300,6 +317,9 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     if (stopped || agentSubscriptions.has(api)) return;
     agentSubscriptions.set(api, api.agents.subscribe((update) => {
       if (update.kind !== "upsert") return;
+      if (update.agent.status === "running" || update.agent.activeTurn ||
+        (expectedUserMessage.has(update.agent.id) &&
+          (update.agent.lastUserMessageAt ?? null) !== expectedUserMessage.get(update.agent.id))) recoveryFailures.delete(update.agent.id);
       if (update.agent.status !== "idle" || update.agent.activeTurn || update.agent.archivedAt ||
         (expectedUserMessage.has(update.agent.id) &&
           (update.agent.lastUserMessageAt ?? null) !== expectedUserMessage.get(update.agent.id))) invalidate(update.agent.id);
@@ -330,6 +350,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   const removeTurnEnded = server.on("agent.turn_ended", (event, context) => {
     ensureSubscription(context.paseo);
     invalidate(event.agent.id);
+    recoveryFailures.delete(event.agent.id);
     timers.cancel(event.agent.id);
     log("turn-ended", { agentId: event.agent.id, turnId: event.turnId, outcome: event.outcome.kind });
     void primeAndArm(event, context.paseo).catch((error) => log("arm-failed", { agentId: event.agent.id, reason: safeError(error) }));
@@ -337,6 +358,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   const removeTurnStarted = server.on("agent.turn_started", (event, context) => {
     ensureSubscription(context.paseo);
     invalidate(event.agent.id);
+    recoveryFailures.delete(event.agent.id);
     expectedUserMessage.delete(event.agent.id);
     if (timers.cancel(event.agent.id)) log("timer-canceled", { agentId: event.agent.id, reason: "turn-started" });
   });
@@ -379,5 +401,6 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     agentSubscriptions.clear();
     timers.cancelAll();
     expectedUserMessage.clear();
+    recoveryFailures.clear();
   };
 }

@@ -52,7 +52,8 @@ export function guardDecision(
   if (agent.labels?.autocompact === "off") return { ok: false, reason: "opted-out-label" };
   if ((agent.lastUserMessageAt ?? null) !== expectedLastUserMessageAt) return { ok: false, reason: "new-user-message" };
   const used = agent.lastUsage?.contextWindowUsedTokens;
-  if (typeof used !== "number" || used < config.thresholdTokens) return { ok: false, reason: `context-below-threshold(${used ?? "unknown"})` };
+  if (typeof used !== "number") return { ok: false, reason: "context-unknown" };
+  if (used < config.thresholdTokens) return { ok: false, reason: `context-below-threshold(${used})` };
   return safeBoundary(timeline, strictnessTier(used, config));
 }
 

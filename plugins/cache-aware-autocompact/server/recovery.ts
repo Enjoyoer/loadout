@@ -1,3 +1,4 @@
+import { lstat } from "node:fs/promises";
 import type { PaseoAgent, PaseoAgentTimelineHandle } from "@getpaseo/client";
 import type { FetchAgentTimelinePayload } from "@getpaseo/client/internal/daemon-client";
 import type { AutoCompactConfig } from "./config.ts";
@@ -27,6 +28,17 @@ export function rearmSkipReason(agent: PaseoAgent): string | null {
   if (agent.archivedAt) return "archived";
   if (agent.labels?.autocompact === "off") return "opted-out-label";
   return null;
+}
+
+export async function recoveryCwdMissing(agent: PaseoAgent): Promise<boolean> {
+  try {
+    await lstat(agent.cwd);
+    return false;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return true;
+    throw error;
+  }
 }
 
 export function recoverTurn(agent: PaseoAgent, history: FetchAgentTimelinePayload, remembered: Checkpoint | null): Checkpoint | null {

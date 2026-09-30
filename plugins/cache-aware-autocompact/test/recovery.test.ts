@@ -16,7 +16,7 @@ const messageAt = "2026-09-26T07:55:00.000Z";
 const endedMs = Date.parse(endedAt);
 const config = defaultConfig({ armed: true });
 function agent(overrides: Partial<PaseoAgent> = {}): PaseoAgent {
-  return { id: "a1", provider: "claude", cwd: "/repo", workspaceId: "w1", model: "model",
+  return { id: "a1", provider: "claude", cwd: process.cwd(), workspaceId: "w1", model: "model",
     createdAt: messageAt, updatedAt: endedAt, lastUserMessageAt: messageAt, status: "idle", activeTurn: null,
     capabilities: { supportsStreaming: true, supportsSessionPersistence: true, supportsDynamicModes: true,
       supportsMcpServers: true, supportsReasoningStream: true, supportsToolInvocations: true },
@@ -62,12 +62,16 @@ function harness() {
   const sends: string[] = [];
   const timers = new FakeTimers();
   const histories = new Map<string, FetchAgentTimelinePayload>();
+  const historyErrors = new Map<string, Error>();
+  const metrics: Record<string, unknown>[] = [];
   let pageSize = 200;
   let historyGate: Promise<void> | null = null;
   let historyCalls = 0;
+  let listCalls = 0;
   const api = {
     agents: {
       async list(options: { subscribe?: {}; page?: { cursor?: string } } = {}) {
+        if (!options.subscribe) listCalls++;
         const offset = Number(options.page?.cursor ?? 0);
         return { entries: snapshots.slice(offset, offset + pageSize).map((a) => ({ agent: a })),
           pageInfo: { hasMore: offset + pageSize < snapshots.length, nextCursor: offset + pageSize < snapshots.length ? String(offset + pageSize) : null },
@@ -75,7 +79,11 @@ function harness() {
       },
       ref(id: string) {
         return { refresh: async () => ({ agent: snapshots.find((a) => a.id === id) }),
-          timeline: { refetch: async () => { historyCalls++; await historyGate; return histories.get(id) ?? history(snapshots.find((a) => a.id === id)!); } },
+          timeline: { refetch: async () => {
+            historyCalls++; await historyGate;
+            if (historyErrors.has(id)) throw historyErrors.get(id);
+            return histories.get(id) ?? history(snapshots.find((a) => a.id === id)!);
+          } },
           send: async (text: string) => { sends.push(text); } };
       },
       subscribe(listener: PaseoAgentUpdateHandler) { updates.add(listener); return () => { updates.delete(listener); }; },
@@ -86,20 +94,21 @@ function harness() {
     hooks.set(name, callback); return () => { hooks.delete(name); };
   } } as unknown as PluginServerContext;
   return {
-    timers, logs, sends, histories, api,
+    timers, logs, sends, histories, historyErrors, metrics, api,
     setAgents(agents: PaseoAgent[]) { snapshots = agents; },
     setNow(value: number) { now = value; },
     failBootstrap() { bootstrapFails = true; },
     paginate(size: number) { pageSize = size; },
     pauseHistory(gate: Promise<void>) { historyGate = gate; },
     historyCalls() { return historyCalls; },
+    listCalls() { return listCalls; },
     snapshot() { snapshotListener?.(); },
     update(a: PaseoAgent) { snapshots = snapshots.map((previous) => previous.id === a.id ? a : previous); for (const listener of updates) listener({ kind: "upsert", agent: a }); },
-    event<Name extends keyof PluginLifecycleEvents>(name: Name, event: PluginLifecycleEvents[Name]) {
-      hooks.get(name)?.(event as never, { paseo: api, signal: new AbortController().signal });
+    event<Name extends keyof PluginLifecycleEvents>(name: Name, event: PluginLifecycleEvents[Name], contextApi = api) {
+      hooks.get(name)?.(event as never, { paseo: contextApi, signal: new AbortController().signal });
     },
     start(store: StateStore, armed = true) {
-      cleanup = startScheduler(server, { store, timerApi: timers, metrics: { append: async () => {} },
+      cleanup = startScheduler(server, { store, timerApi: timers, metrics: { append: async (record) => { metrics.push(record); } },
         now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed }),
         openApi: async () => { if (bootstrapFails) throw new Error("Unavailable"); return api; },
         log: (action, data) => { logs.push({ action, data }); } });
@@ -110,6 +119,139 @@ function harness() {
 }
 
 describe("restart recovery", () => {
+  it("skips missing cwd and non-directory parents without fetching timelines", async () => fixture(async (f) => {
+    const blocker = path.join(path.dirname(f.file), "blocker");
+    await writeFile(blocker, "not a directory");
+    f.setAgents([agent({ cwd: path.join(path.dirname(f.file), "missing") }),
+      agent({ id: "a2", cwd: path.join(blocker, "child") })]);
+    f.start(f.store); await f.recovered();
+    assert.equal(f.historyCalls(), 0);
+    assert.equal(f.timers.pending.size, 0);
+    assert.deepEqual(f.logs.find((line) => line.action === "rearm-summary")?.data.skipped, { "cwd-missing": 2 });
+    assert.equal(f.logs.some((line) => line.action === "rearm-failed"), false);
+  }));
+
+  it("logs each distinct recovery error once per agent until recovery succeeds", async () => fixture(async (f) => {
+    f.setAgents([agent({ lastUsage: undefined }), agent({ id: "a2", status: "running" })]);
+    f.historyErrors.set("a1", new Error("History unavailable"));
+    f.start(f.store); await f.recovered();
+    await until(() => f.historyCalls() >= 2);
+    f.snapshot();
+    await until(() => f.historyCalls() >= 3);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(f.logs.filter((line) => line.action === "rearm-failed").length, 1);
+    assert.deepEqual(f.logs.find((line) => line.action === "rearm-summary")?.data.skipped,
+      { "recovery-failed": 1, "not-idle": 1 });
+
+    f.historyErrors.set("a1", new Error("Different history error"));
+    f.snapshot();
+    await until(() => f.logs.filter((line) => line.action === "rearm-failed").length === 2);
+    f.historyErrors.set("a1", new Error("History unavailable"));
+    f.setAgents([agent({ lastUsage: undefined }), agent({ id: "a2", status: "running" }),
+      agent({ id: "a3", provider: "opencode" })]);
+    f.snapshot();
+    await until(() => f.logs.filter((line) => line.action === "rearm-summary").length === 2);
+    assert.equal(f.logs.filter((line) => line.action === "rearm-failed").length, 2);
+    assert.equal((f.logs.at(-1)?.data.skipped as Record<string, number>)["recovery-failed"], 1);
+
+    f.historyErrors.delete("a1");
+    f.snapshot();
+    await until(() => f.logs.some((line) => line.action === "re-armed"));
+    f.timers.fire();
+    await until(() => f.logs.some((line) => line.action === "skip"));
+    f.historyErrors.set("a1", new Error("History unavailable"));
+    f.snapshot();
+    await until(() => f.logs.filter((line) => line.action === "rearm-failed").length === 3);
+  }));
+
+  it("clears cached recovery errors on a new turn, including snapshot updates", async () => {
+    for (const trigger of ["turn-started", "turn-ended", "running-update", "message-update"]) await fixture(async (f) => {
+      f.historyErrors.set("a1", new Error("History unavailable"));
+      f.start(f.store); await f.recovered();
+      await until(() => f.historyCalls() >= 2);
+      const a = agent();
+      const eventAgent = { ...a, workspaceId: "w1", parentAgentId: null };
+      if (trigger === "turn-started") f.event("agent.turn_started", { agent: eventAgent, turnId: "t2" });
+      if (trigger === "turn-ended") {
+        f.event("agent.turn_ended", { agent: eventAgent, turnId: "t2", outcome: { kind: "completed" }, timeline: [] });
+        await until(() => f.logs.some((line) => line.action === "timer-started"));
+        f.timers.fire();
+        await until(() => f.logs.some((line) => line.action === "compacted"));
+      }
+      if (trigger === "running-update") { f.update(agent({ status: "running" })); f.setAgents([a]); }
+      if (trigger === "message-update") f.update(agent({ lastUserMessageAt: "2026-09-26T09:00:00Z" }));
+      f.snapshot();
+      await until(() => f.logs.filter((line) => line.action === "rearm-failed").length === 2);
+    });
+  });
+
+  it("keeps failure suppression and cache clearing independent per agent", async () => fixture(async (f) => {
+    f.setAgents([agent(), agent({ id: "a2" })]);
+    for (const id of ["a1", "a2"]) f.historyErrors.set(id, new Error("History unavailable"));
+    f.start(f.store); await f.recovered();
+    await until(() => f.historyCalls() >= 4);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(f.logs.filter((line) => line.action === "rearm-failed").length, 2);
+    const a = agent();
+    f.event("agent.turn_started", { agent: { ...a, workspaceId: "w1", parentAgentId: null }, turnId: "t2" });
+    f.snapshot();
+    await until(() => f.historyCalls() >= 6);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(f.logs.filter((line) => line.action === "rearm-failed").map((line) => line.data.agentId),
+      ["a1", "a2", "a1"]);
+  }));
+
+  it("suppresses pending-only summaries but logs changed skip counts and new timers", async () => fixture(async (f) => {
+    f.start(f.store); await f.recovered();
+    f.snapshot(); f.snapshot();
+    const a = agent();
+    f.event("agent.permission_resolved", { agent: { ...a, workspaceId: "w1", parentAgentId: null }, requestId: "p1",
+      resolution: { behavior: "allow" } }, { ...f.api });
+    await until(() => f.listCalls() >= 6);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(f.logs.filter((line) => line.action === "rearm-summary").length, 1);
+    assert.equal(f.historyCalls(), 1);
+
+    f.setAgents([agent(), agent({ id: "a2", status: "running" })]);
+    f.snapshot();
+    await until(() => f.logs.filter((line) => line.action === "rearm-summary").length === 2);
+    assert.deepEqual(f.logs.at(-1)?.data.skipped, { "already-pending": 1, "not-idle": 1 });
+    f.setAgents([agent(), agent({ id: "a2", status: "running" }), agent({ id: "a3" })]);
+    f.snapshot();
+    await until(() => f.logs.filter((line) => line.action === "rearm-summary").length === 3);
+    assert.equal(f.logs.at(-1)?.data.rearmed, 1);
+    f.setAgents([agent(), agent({ id: "a3" })]);
+    f.snapshot();
+    await until(() => f.logs.filter((line) => line.action === "rearm-summary").length === 4);
+    assert.deepEqual(f.logs.at(-1)?.data.skipped, { "already-pending": 2 });
+    assert.equal(f.timers.pending.size, 2);
+  }));
+
+  it("records unknown context as a terminal skip with no retry or compaction metric", async () => fixture(async (f) => {
+    f.setAgents([agent({ lastUsage: undefined })]);
+    f.start(f.store); await f.recovered();
+    f.timers.fire();
+    await until(() => f.logs.some((line) => line.action === "skip"));
+    assert.equal(f.logs.find((line) => line.action === "skip")?.data.reason, "context-unknown");
+    const records = await f.store.read();
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.key, "a1:t1");
+    assert.equal(records[0]?.outcome, "skip");
+    assert.equal(records[0]?.reason, "context-unknown");
+    assert.equal(f.timers.pending.size, 0);
+    assert.deepEqual(f.sends, []);
+    assert.deepEqual(f.metrics, []);
+    assert.equal(f.logs.some((line) => line.action === "retry-scheduled"), false);
+    f.snapshot();
+    await until(() => f.logs.some((line) => line.action === "rearm-summary" &&
+      (line.data.skipped as Record<string, number>).checkpointed === 1));
+    assert.equal(f.timers.pending.size, 0);
+    f.cleanup(); f.logs.length = 0;
+    f.start(new StateStore(f.file)); await f.recovered();
+    assert.equal(f.timers.pending.size, 0);
+    assert.deepEqual(f.sends, []);
+  }));
+
   it("re-arms an idle agent with its remaining delay and evaluates through the normal path", async () => fixture(async (f) => {
     f.start(f.store);
     await f.recovered();
@@ -118,7 +260,9 @@ describe("restart recovery", () => {
     assert.deepEqual(f.logs.find((line) => line.action === "re-armed")?.data,
       { agentId: "a1", provider: "claude", idleSince: endedAt, delayMs: 1_200_000, remainingMs: 1_200_000, jitterApplied: false });
     f.snapshot();
-    await until(() => f.logs.filter((line) => line.action === "rearm-summary").length >= 2);
+    await until(() => f.listCalls() >= 3);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(f.logs.filter((line) => line.action === "rearm-summary").length, 1);
     assert.equal(f.timers.pending.size, 1);
     f.setNow(endedMs + 50 * 60_000);
     f.timers.fire();

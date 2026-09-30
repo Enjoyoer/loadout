@@ -53,6 +53,8 @@ describe("all compaction guards", () => {
     check({ labels: { autocompact: "off" } }, "opted-out-label");
     check({ lastUserMessageAt: "2026-09-26T00:03:00.000Z" }, "new-user-message");
     check({ lastUsage: { contextWindowUsedTokens: 99_999 } }, "context-below-threshold(99999)");
+    check({ lastUsage: undefined }, "context-unknown");
+    check({ lastUsage: {} }, "context-unknown");
   });
   it("allows an idle eligible Claude or Codex agent", () => {
     assert.deepEqual(guardDecision(agent(), timeline, config, "2026-09-26T00:00:00.000Z"), { ok: true, reason: "safe-boundary" });
