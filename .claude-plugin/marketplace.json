@@ -1,0 +1,103 @@
+{
+  "name": "loadout",
+  "owner": {
+    "name": "Enjoyoer",
+    "url": "https://github.com/Enjoyoer"
+  },
+  "description": "Loadout: curated agent skills for coding, orchestration, research, writing, and browser work.",
+  "plugins": [
+    {
+      "name": "loadout-engineering",
+      "source": "./",
+      "description": "Design deep modules, sharpen a domain model, review architecture, and manage Python with uv.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "category": "engineering",
+      "repository": "https://github.com/Enjoyoer/loadout",
+      "strict": false,
+      "skills": [
+        "./skills/engineering/codebase-design",
+        "./skills/engineering/domain-modeling",
+        "./skills/engineering/improve-codebase-architecture",
+        "./skills/engineering/uv-python"
+      ]
+    },
+    {
+      "name": "loadout-orchestration",
+      "source": "./",
+      "description": "Multi-agent coding and workstream orchestration, cloud offload, handoffs, and project memory.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "category": "productivity",
+      "repository": "https://github.com/Enjoyoer/loadout",
+      "strict": false,
+      "skills": [
+        "./skills/orchestration/opc",
+        "./skills/orchestration/opn",
+        "./skills/orchestration/dispatching-parallel-agents",
+        "./skills/orchestration/claude-cloud",
+        "./skills/orchestration/handoff",
+        "./skills/orchestration/repo-lessons",
+        "./skills/orchestration/reassign-pm"
+      ]
+    },
+    {
+      "name": "loadout-writing",
+      "source": "./",
+      "description": "Stress-test plans by grilling, and draft messages in a style learned from your own samples.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "category": "productivity",
+      "repository": "https://github.com/Enjoyoer/loadout",
+      "strict": false,
+      "skills": [
+        "./skills/planning-writing/grilling",
+        "./skills/planning-writing/sample"
+      ]
+    },
+    {
+      "name": "loadout-research",
+      "source": "./",
+      "description": "Current library docs through Context7, and PDF parsing with LiteParse.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "category": "productivity",
+      "repository": "https://github.com/Enjoyoer/loadout",
+      "strict": false,
+      "skills": [
+        "./skills/research-docs/find-docs",
+        "./skills/research-docs/liteparse"
+      ]
+    },
+    {
+      "name": "loadout-web",
+      "source": "./",
+      "description": "Frontend design, browser automation with Playwright, public X reading, and Pake desktop apps.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "category": "development",
+      "repository": "https://github.com/Enjoyoer/loadout",
+      "strict": false,
+      "skills": [
+        "./skills/web-browser/frontend-design",
+        "./skills/web-browser/playwright",
+        "./skills/web-browser/browse-x",
+        "./skills/web-browser/pake"
+      ]
+    },
+    {
+      "name": "loadout-ops",
+      "source": "./",
+      "description": "Interactive bash wizards for manual steps, and Windows mouse-input recovery.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "category": "productivity",
+      "repository": "https://github.com/Enjoyoer/loadout",
+      "strict": false,
+      "skills": [
+        "./skills/operations-integrations/wizard",
+        "./skills/operations-integrations/recover-mouse-input"
+      ]
+    }
+  ]
+}
