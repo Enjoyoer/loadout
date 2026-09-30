@@ -4,7 +4,8 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ## Unreleased
 
-Nothing yet.
+### Changed
+- `orphan-project-sweeper` now defaults to dry-run until `armed` is true, caps deletions per sweep (default 5), and provides a forced dry-run CLI, safeguard tests, and recovery instructions.
 
 ## 0.1.0 (2026-09-30)
 

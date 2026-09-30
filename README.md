@@ -85,7 +85,7 @@ After changing a host's `plugin_root`, plugins installed from the old directory 
 | `cache-aware-autocompact` | Sends `/compact` to idle Claude and Codex agents before their prompt cache expires | Dry-run until `armed` |
 | `merged-worker-archiver` | Archives worker worktree workspaces whose branch is merged into its base | Dry-run until `armed` |
 | `usage-limit-auto-resume` | Resumes an agent after a usage limit or a transient provider error | Dry-run until `armed` |
-| `orphan-project-sweeper` | Deletes Paseo project rows with no active workspace and a missing root path | Acts immediately; no dry-run |
+| `orphan-project-sweeper` | Deletes Paseo project rows with no active workspace and a missing root path | Dry-run until `armed` |
 
 Every plugin pins a Paseo version range in `paseo-plugin.json`. To install one manually, run `npm ci` and `npm run check` (or `npm run typecheck`) in its folder, confirm the daemon's `pluginsEnabled` is `true`, then run `paseo plugin install "$PWD"`. `personal-skills` stages and installs plugins across a fleet; see its `Paseo plugins` section. Plugin settings stay host-local and are never part of this repository.
 
