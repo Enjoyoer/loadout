@@ -1,5 +1,7 @@
 # Loadout Skills
 
+[![CI](https://github.com/Enjoyoer/loadout/actions/workflows/ci.yml/badge.svg)](https://github.com/Enjoyoer/loadout/actions/workflows/ci.yml)
+
 A public collection of 22 agent skills for coding, research, writing, browser work, integrations, and orchestration, plus 4 Paseo daemon plugins. Each package lives at `skills/<category>/<name>` and installs flat as `<client skills directory>/<name>`. The repository has its own history and contains no machine credentials or private fleet configuration.
 
 ## Install
@@ -55,6 +57,8 @@ Every plugin pins a Paseo version range in `paseo-plugin.json`. To install one m
 ```bash
 python3 -m unittest discover -s tests
 ```
+
+CI runs these on Ubuntu and macOS for every pull request, together with manifest verification, the `opc` package validator, and each plugin's `npm run check` (or `typecheck`).
 
 ## Publication integrity
 
