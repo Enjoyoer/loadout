@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b418d6cc105a3f0e8583646420daaeed3df91f17",
+  "source_commit": "76d25f58e8ac07d8929edf905aed6fe46f43fe18",
   "skill_count": 22,
-  "file_count": 108,
+  "file_count": 109,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -534,8 +534,8 @@
       "path": "skills/orchestration/reassign-pm/SKILL.md",
       "category": "orchestration",
       "skill": "reassign-pm",
-      "bytes": 1600,
-      "sha256": "f74f995ec3c58de30c115a2eb02c81c490454a86ca6c3320c052ef821ea74c5b"
+      "bytes": 4423,
+      "sha256": "4317164ec350b19a72f45269702d89e020559a03288adc6fbd3988a73293c739"
     },
     {
       "path": "skills/orchestration/reassign-pm/agents/openai.yaml",
@@ -543,6 +543,13 @@
       "skill": "reassign-pm",
       "bytes": 263,
       "sha256": "ce74bd083e253976d30b2879026e2d1ae28dfff71eb2d7351dbf917befe9e5a4"
+    },
+    {
+      "path": "skills/orchestration/reassign-pm/references/native-relocation.md",
+      "category": "orchestration",
+      "skill": "reassign-pm",
+      "bytes": 2606,
+      "sha256": "6eec081632a10c40315e6d136d96df82d03071e2e9da8b2b6efe3a59ebddd30e"
     },
     {
       "path": "skills/orchestration/repo-lessons/SKILL.md",
