@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "af7357b677707da39fbe121004277824279d5331",
+  "source_commit": "3bb97ea4070a3f7bdc5647d490f58eecaa489c64",
   "skill_count": 22,
-  "file_count": 121,
+  "file_count": 122,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 14121,
-      "sha256": "161f44668e7e7438a31626546f6532d23d3fd8cd95c41971643f88a1ea5faf78"
+      "bytes": 15207,
+      "sha256": "ffb46d848ab87227df488beb9f9f06bd632850dca0e5c4b9d4ccf6fb5ace41e2"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/client-config.json",
@@ -566,11 +566,18 @@
       "sha256": "570dee9ee766ed184d030045346334402c720d60b8126256480b86b75a1f41aa"
     },
     {
+      "path": "skills/orchestration/personal-skills/scripts/pi/picker-launch.ps1",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 478,
+      "sha256": "08c708856ba88a23cd4dbad9a2ed7207be844df161bbf873561d8422bbc3ccd7"
+    },
+    {
       "path": "skills/orchestration/personal-skills/scripts/pi/picker-patch.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 3109,
-      "sha256": "a655ddf45f9027d15f4bd9e1cc1b486bc85ddf86d14c62f248e5e193cc192ecd"
+      "bytes": 3934,
+      "sha256": "9f73080362d59c4045c531ed354e77fae627fcf71427435851149407d69c6a59"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/plugins_sync.py",

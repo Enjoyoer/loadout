@@ -39,6 +39,17 @@ if(JSON.stringify([definitions,snapshots])!==before)throw Error('provider input 
             picker.run(root,'reapply');picker.run(root,'rollback')
             self.assertEqual(p.read_text(),BUNDLE+'// app update\n')
 
+    def test_preference_bootstrap_upgrade_preserves_original_rollback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);p=root/'index-original.js';p.write_text(BUNDLE)
+            picker.run(root,'apply')
+            migration="localStorage.setItem('example', 'pi')"
+            picker.run(root,'apply',migration)
+            self.assertIn(migration,p.read_text())
+            self.assertFalse(picker.run(root,'reapply',migration)['changed'])
+            picker.run(root,'rollback')
+            self.assertEqual(p.read_text(),BUNDLE)
+
     def test_unsupported_client_is_rejected_without_mutation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);p=root/'index-unsupported.js';p.write_text('buildSelectableProviderSelectorProviders=function unsupported')
