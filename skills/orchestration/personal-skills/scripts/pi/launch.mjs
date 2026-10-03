@@ -1,6 +1,6 @@
 // Stock Paseo 0.10.3 interim: each real agent gets a private, scoped mcp.json.
 import { spawn } from 'node:child_process';
-import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,6 +28,8 @@ if (caller) {
   for (const file of ['models.json', 'settings.json']) {
     writeFileSync(join(home, file), readFileSync(join(root, 'agent', file)), { mode: 0o600 });
   }
+  if (existsSync(join(root, 'agent/AGENTS.md')))
+    writeFileSync(join(home, 'AGENTS.md'), readFileSync(join(root, 'agent/AGENTS.md')), { mode: 0o600 });
   const url = new URL(spec.paseoMcp.url);
   if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw Error('Paseo MCP must use loopback');
   url.searchParams.set('callerAgentId', caller);

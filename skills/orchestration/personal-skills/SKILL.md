@@ -29,6 +29,7 @@ To sync the fleet, run `python3 scripts/sync.py --dry-run` beside this `SKILL.md
 
 - Codex: `${CODEX_HOME:-$HOME/.codex}/skills/<skill-name>`.
 - Claude Code: `~/.claude/skills/<skill-name>`.
+- Configured official Loadout Pi: `<runtime-root>/agent/skills/<skill-name>`, discovered from the host provider command. It receives the same selected verified blobs and global instructions as the other clients, with the same conflict protection. Generated settings point to this directory; per-agent homes copy the synced AGENTS.md.
 - Resolve home directories and path syntax on the target host. A client is present when its binary or skills root exists; skip and report an absent client.
 - Skill sync installs skill packages. It installs global instructions only from the user's fleet description, and never installs credentials, model settings, or other agent-client configuration.
 

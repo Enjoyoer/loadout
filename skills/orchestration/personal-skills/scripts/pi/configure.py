@@ -29,10 +29,11 @@ def build(spec, root):
     if not isinstance(base, str) or not base.startswith(("http://", "https://")):
         raise ValueError("route base URL required")
     helper = "!" + " ".join(quote(v) for v in [spec.get("python", sys.executable), str(root / "credential.py"), str(root / "runtime.json")])
-    if {'codemode', 'defaultTools', 'extensions'} & spec.get('settings', {}).keys():
+    if {'codemode', 'defaultTools', 'extensions', 'skills'} & spec.get('settings', {}).keys():
         raise ValueError('Codemode and its runtime check are fixed, not overridable settings')
     settings = {"codemode": {"mode": "on"}, "defaultTools": ["+codemode"], "enableInstallTelemetry": False,
-                "defaultProjectTrust": "never", "cacheWarming": "off", "extensions": [str(root / "fleet-routing.mjs")]}
+                "defaultProjectTrust": "never", "cacheWarming": "off", "extensions": [str(root / "fleet-routing.mjs")],
+                "skills": [str(root / 'agent/skills')]}
     settings.update(spec.get("settings", {}))
     validate_settings(settings)
     required_settings = {"defaultProvider", "defaultModel", "defaultThinkingLevel"}
