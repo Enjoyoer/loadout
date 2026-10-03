@@ -114,3 +114,9 @@ Optional. `python3 scripts/client_config.py [--dry-run] [--host <name>] [--updat
 
 Only these keys are written. Everything else stays host-local. A missing client is skipped. Each changed file is backed up in place as `<file>.bak-loadout-<stamp>` and replaced atomically; a second run reports `unchanged`.
 
+
+### Desktop picker defaults and update guard
+
+Generate `client-preferences.js` with `pi/app-defaults.mjs` from the same catalog rows used for the host. Pass it to `picker-patch.py APP_DIST apply --preferences-script client-preferences.js`. The renderer carries the previous provider's catalog label and thinking onto Pi before loading saved form preferences. It keeps a localStorage backup for the rollback script emitted by `app-defaults.mjs --rollback`. Bundle rollback restores the exact original bytes; preference rollback must run in each affected client origin.
+
+On Windows, point the existing Desktop shortcut to `picker-launch.ps1 -AppRoot APP_ROOT -PreferencesScript SCRIPT`. This checks and reapplies the supported picker patch before launch after an app update, and stops if the new bundle shape is unsupported. Back up the shortcut before changing it and restore it on rollback. The app updater's immediate internal restart can bypass an OS shortcut; rerun this launch guard after that restart. Do not change daemon availability or native-agent settings to hide providers.
