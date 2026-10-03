@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b563bf8adf677f3ea61b41aee8bada3f281594db",
+  "source_commit": "2e216e40ad185eac9c3f55f8a3edcb41503259e5",
   "skill_count": 22,
-  "file_count": 120,
+  "file_count": 121,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -541,8 +541,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/deploy.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 6088,
-      "sha256": "264b1b2b5293193ba58d3ca45309e9867c7afad9220e1853d64493bfbb0f5ef8"
+      "bytes": 6304,
+      "sha256": "d951a6fa3348f967c293f9c2ef644924fa9ea5a53034d100839ca338f0ee3a46"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
@@ -564,6 +564,13 @@
       "skill": "personal-skills",
       "bytes": 5109,
       "sha256": "570dee9ee766ed184d030045346334402c720d60b8126256480b86b75a1f41aa"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/pi/picker-patch.py",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 3109,
+      "sha256": "a655ddf45f9027d15f4bd9e1cc1b486bc85ddf86d14c62f248e5e193cc192ecd"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/plugins_sync.py",

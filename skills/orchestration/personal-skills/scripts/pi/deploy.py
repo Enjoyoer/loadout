@@ -18,8 +18,14 @@ def daemon_env(home):
     return env
 
 
+def paseo_command():
+    command = shutil.which('paseo.cmd' if os.name == 'nt' else 'paseo')
+    if not command: raise ValueError('Paseo CLI is unavailable on this host')
+    return command
+
+
 def version_gate(home):
-    result = subprocess.run(['paseo','daemon','status','--json'], env=daemon_env(home), capture_output=True, text=True, check=True)
+    result = subprocess.run([paseo_command(),'daemon','status','--json'], env=daemon_env(home), capture_output=True, text=True, check=True)
     status = json.loads(result.stdout)
     if status.get('daemonVersion') != '0.10.3' or status.get('connectedDaemon') != 'reachable':
         raise ValueError('a reachable stock Paseo 0.10.3 daemon is required')
@@ -40,7 +46,7 @@ def restore(record, home, activate):
         if previous is None: target.unlink(missing_ok=True)
         else:
             target.write_bytes(base64.b64decode(previous)); target.chmod(0o600)
-    if activate: subprocess.run(['paseo','reload'], env=daemon_env(home), check=True)
+    if activate: subprocess.run([paseo_command(),'reload'], env=daemon_env(home), check=True)
     if sha(path.read_bytes()) != record['before_sha256']: raise ValueError('rollback readback failed')
     print(json.dumps({'rollback':'verified', 'runtime_install_retained':True, 'config':str(path)}))
 
@@ -97,7 +103,7 @@ def main():
     configure(spec, root)
     temp = config.with_name(config.name + '.pi-next'); temp.write_bytes(after); temp.chmod(0o600); temp.replace(config)
     if config.read_bytes() != after: raise ValueError('config readback failed')
-    if args.activate: subprocess.run(['paseo','reload'], env=daemon_env(home),check=True)
+    if args.activate: subprocess.run([paseo_command(),'reload'], env=daemon_env(home),check=True)
     print(json.dumps({'apply':'verified','state':str(state),'rollback':'use rollback --state with this same file',
                       'ui_preferences':'not applied by daemon config; apply in each UI client'}))
 

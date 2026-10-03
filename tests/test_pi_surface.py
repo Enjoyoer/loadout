@@ -194,6 +194,15 @@ vm.runInNewContext(appDefaultsScript('route/example','high',true),{localStorage}
             with self.assertRaisesRegex(ValueError,'symlink'):
                 safe_target(root,root/'agent/settings.json')
 
+    def test_windows_deployment_resolves_the_cmd_launcher(self):
+        sys.path.insert(0,str(PI))
+        import deploy
+        with patch.object(deploy.os, 'name', 'nt'), patch.object(deploy.shutil, 'which', return_value='launcher.cmd') as find:
+            self.assertEqual(deploy.paseo_command(), 'launcher.cmd')
+            find.assert_called_once_with('paseo.cmd')
+        with patch.object(deploy.shutil, 'which', return_value=None):
+            with self.assertRaisesRegex(ValueError, 'CLI is unavailable'): deploy.paseo_command()
+
     def test_deploy_gate_apply_and_exact_rollback(self):
         sys.path.insert(0,str(PI))
         import deploy
@@ -206,7 +215,7 @@ vm.runInNewContext(appDefaultsScript('route/example','high',true),{localStorage}
             runtime={'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'ROUTE_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'},'models':[{'id':'example','name':'Astra'}],'settings':{'defaultProvider':'fleet','defaultModel':'example','defaultThinkingLevel':'high'}}
             spec=base/'proposal.json';spec.write_text(json.dumps({'root':str(root),'runtime':runtime,'provider':{'models':[{'id':'fleet/example','label':'Astra'}]},'catalog_model_id':'fleet/example'}))
             state=base/'state.json'
-            with patch.object(deploy.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout='{"daemonVersion":"0.10.2","connectedDaemon":"reachable"}')):
+            with patch.object(deploy,'paseo_command',return_value='paseo'), patch.object(deploy.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout='{"daemonVersion":"0.10.2","connectedDaemon":"reachable"}')):
                 with self.assertRaisesRegex(ValueError,'0.10.3'):deploy.version_gate(home)
             status={'daemonVersion':'0.10.3','connectedDaemon':'reachable','home':str(home)}
             with patch.object(deploy,'version_gate',return_value=status),patch.object(sys,'argv',['deploy','apply','--spec',str(spec),'--state',str(state)]):deploy.main()
