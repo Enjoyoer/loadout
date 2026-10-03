@@ -57,6 +57,7 @@ def main():
     if args.action == 'rollback':
         restore(json.loads(state.read_text()), home, args.activate); return
     proposal = json.loads(expand(args.spec).read_text())
+    if 'agentProfiles' in proposal: raise ValueError('Pi deployment does not manage agent profiles')
     root = expand(proposal['root']); spec = proposal['runtime']
     config = (home or Path(status['home'])) / 'config.json'
     before = config.read_bytes(); cfg = json.loads(before)
@@ -68,8 +69,6 @@ def main():
         'command':[shutil.which('node') or 'node', str(root / 'launch.mjs')]}
     daemon = cfg.setdefault('daemon', {})
     daemon['mcp'] = {**daemon.get('mcp', {}), 'enabled':True, 'injectIntoAgents':True}
-    profiles = proposal.get('agentProfiles', [])
-    daemon['agentProfiles'] = [row for row in daemon.get('agentProfiles', []) if not any(want['id']==row['id'] for want in profiles)] + profiles
     after = (json.dumps(cfg, indent=2)+'\n').encode()
     plan = configure(spec, root, dry_run=True)
     if args.action == 'plan':

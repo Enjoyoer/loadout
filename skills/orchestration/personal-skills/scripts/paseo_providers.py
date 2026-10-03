@@ -29,8 +29,8 @@ MERGE_JS = Path(__file__).resolve().parent / "paseo_providers_merge.js"
 BOOT = fleet.BOOT
 pack = fleet.pack
 parse_result = fleet.parse_result
-CONFIG_KEYS = {"providers", "env", "hosts", "agentProfiles", "pi"}
-HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "agentProfiles", "pi"}
+CONFIG_KEYS = {"providers", "env", "hosts", "pi"}
+HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi"}
 AGENT_VARS = ("PASEO_AGENT_ID", "PASEO_AGENT_CWD", "PASEO_HOME")
 RELAY_TITLE = "loadout-provider-sync"
 # Relay timings; the environment overrides exist for tests.
@@ -72,21 +72,6 @@ def _providers(providers, where):
                 raise fleet.FleetError(f"providers.{name}.{model_id}: label {label!r} must be a name only")
 
 
-def _profiles(profiles, where):
-    if not isinstance(profiles, list):
-        raise fleet.FleetError(f"{where} must be a list")
-    ids = set()
-    for row in profiles:
-        if not isinstance(row, dict) or any(not isinstance(row.get(key), str) or not row[key] for key in ("id", "name", "provider")) or row["id"] in ids:
-            raise fleet.FleetError(f"{where} needs unique profile ids, names and providers")
-        ids.add(row["id"])
-        for key in ("model", "thinkingOptionId", "modeId", "icon", "color", "notes"):
-            if key in row and not isinstance(row[key], str):
-                raise fleet.FleetError(f"{where}.{key} must be a string")
-        if "featureValues" in row and not isinstance(row["featureValues"], dict):
-            raise fleet.FleetError(f"{where}.featureValues must be an object")
-
-
 def _pi(value, where):
     if not isinstance(value, dict): raise fleet.FleetError(f"{where} must be an object")
     fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider"}, where)
@@ -106,7 +91,6 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
     if not isinstance(providers, dict) or not providers:
         raise fleet.FleetError("providers must be a non-empty object")
     _providers(providers, "providers")
-    if "agentProfiles" in data: _profiles(data["agentProfiles"], "agentProfiles")
     if "pi" in data: _pi(data["pi"], "pi")
     _env_map(data.get("env", {}), "env")
     scoped = {host["name"] for host in fleet.hosts_for(fleet_doc, "providers")}
@@ -116,7 +100,6 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
         fleet._keys(settings, HOST_KEYS, f"hosts.{name}")
         if "pi" in settings: _pi(settings["pi"], f"hosts.{name}.pi")
         _providers(settings.get("providers", {}), f"hosts.{name}.providers")
-        if "agentProfiles" in settings: _profiles(settings["agentProfiles"], f"hosts.{name}.agentProfiles")
         _env_map(settings.get("env", {}), f"hosts.{name}.env")
         if not isinstance(settings.get("inherit_env", True), bool):
             raise fleet.FleetError(f"hosts.{name}.inherit_env must be true or false")
@@ -147,7 +130,6 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool) -> dict:
         "pi_files": ({f.name: f.read_text() for f in (Path(__file__).parent / 'pi').glob('*') if f.suffix in {'.py', '.mjs'}} if generated else {}),
         "host": host,
         "providers": providers,
-        "agentProfiles": settings.get("agentProfiles", config.get("agentProfiles")),
         "env": env,
         "required_env": settings.get("required_env", {}),
         "stamp": stamp,

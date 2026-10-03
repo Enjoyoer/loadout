@@ -12,6 +12,43 @@ PI = ROOT / 'skills/orchestration/personal-skills/scripts/pi'
 
 
 class PiSurfaceTest(unittest.TestCase):
+    def test_codemode_is_fixed_validated_and_fail_closed_at_runtime(self):
+        sys.path.insert(0, str(PI))
+        from configure import build, validate_settings
+        spec = {'baseUrl': 'https://router.example.test/v1', 'credential': {'kind': 'env', 'name': 'EXISTING_KEY'},
+                'models': [{'id': 'current', 'name': 'Sol'}],
+                'settings': {'defaultProvider': 'fleet', 'defaultModel': 'current', 'defaultThinkingLevel': 'high'}}
+        settings = build(spec, Path('/tmp/example-pi'))['agent/settings.json']
+        validate_settings(settings)
+        for value in [{'codemode': {'mode': 'off'}}, {'codemode': {'mode': 'on'}}, {'defaultTools': ['read']}, {'extensions': []}]:
+            with self.assertRaisesRegex(ValueError, 'Codemode'):
+                build({**spec, 'settings': {**spec['settings'], **value}}, Path('/tmp/example-pi'))
+        with self.assertRaisesRegex(ValueError, 'Codemode'):
+            validate_settings({**settings, 'defaultTools': []})
+        script = r"""
+import assert from 'node:assert/strict';
+const {default:extension,validateCodemode,enforceCodemode}=await import(process.argv[1]);
+const handlers={};const entries=[];let tools=['read','codemode'];let mode='on';
+const pi={getSettings:()=>({codemode:{mode}}),getActiveTools:()=>tools,on:(event,fn)=>handlers[event]=fn,appendEntry:(type,data)=>entries.push({type,data})};
+assert.equal(validateCodemode(pi).codemode,'on');extension(pi);
+handlers.session_start({}, {sessionManager:{getSessionId:()=> 'session'}});
+assert.equal(entries[0].type,'loadout-codemode-check');assert(entries[0].data.activeTools.includes('codemode'));
+for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}]){
+ tools=state.tools;mode=state.mode;let code;
+ assert.throws(()=>enforceCodemode(pi,value=>code=value),/requires Codemode/);assert.equal(code,78);
+}
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); (root/'agent').mkdir()
+            (root/'launch.mjs').write_bytes((PI/'launch.mjs').read_bytes())
+            (root/'runtime.json').write_text('{}')
+            (root/'agent/settings.json').write_text(json.dumps({**settings, 'codemode': {'mode': 'off'}}))
+            launch = subprocess.run(['node', str(root/'launch.mjs')], capture_output=True, text=True)
+            self.assertNotEqual(launch.returncode, 0)
+            self.assertIn('requires fixed Codemode', launch.stderr)
+
     def test_all_role_and_worker_rules_preserve_model_and_thinking(self):
         script=r"""
 import assert from 'node:assert/strict';
@@ -57,11 +94,11 @@ assert.equal(after.resolveAgentSurface('scout',{},next).model,'route/new-catalog
         import paseo_providers
         source={'codex':{'models':[{'id':'backend-current','label':'Luna','isDefault':True,'thinkingOptions':[{'id':'max','label':'Max','isDefault':True}]}]},'claude':{'models':[{'id':'native[1m]','apiModelId':'backend-fable','label':'Fable','thinkingOptions':[{'id':'high','label':'High'}]}]}}
         with tempfile.TemporaryDirectory() as tmp:
-            base=Path(tmp);root=base/'pi';config=base/'config.json';config.write_text('{"agents":{"providers":{"codex":{"enabled":true}}}}')
+            base=Path(tmp);root=base/'pi';config=base/'config.json';config.write_text('{"agents":{"providers":{"codex":{"enabled":true}}},"daemon":{"agentProfiles":[{"id":"native","provider":"codex"}]}}')
             package=root/'app/node_modules/@earendil-works/pi-coding-agent/package.json';package.parent.mkdir(parents=True);package.write_text('{"version":"1.0.0"}')
             bin_dir=base/"bin";bin_dir.mkdir();paseo=bin_dir/"paseo";paseo.write_text("#!/bin/sh\necho '{\"daemonVersion\":\"0.10.3\",\"connectedDaemon\":\"reachable\"}'\n");paseo.chmod(0o755)
             pi={'root':str(root),'runtime':{'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'EXISTING_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'}}}
-            cfg={'providers':source,'pi':pi,'agentProfiles':[{'id':'pi-codemode','name':'Pi Codemode','provider':'pi'}]}
+            cfg={'providers':source,'pi':pi}
             data=paseo_providers.payload(cfg,'example', 'test',False);data['config_path']=str(config)
             packed=base64.b64encode(gzip.compress(json.dumps(data).encode())).decode()
             env={**os.environ,'PATH':str(bin_dir)+os.pathsep+os.environ['PATH']}
@@ -71,6 +108,8 @@ assert.equal(after.resolveAgentSurface('scout',{},next).model,'route/new-catalog
             self.assertEqual([row['label'] for row in picker],[row['name'] for row in models])
             self.assertEqual([row['id'] for row in picker],['fleet/backend-fable','fleet/backend-current'])
             self.assertEqual(json.loads((root/'agent/settings.json').read_text())['defaultThinkingLevel'],'max')
+            self.assertEqual(json.loads((root/'agent/settings.json').read_text())['defaultTools'],['+codemode'])
+            self.assertEqual(json.loads(config.read_text())['daemon']['agentProfiles'],[{'id':'native','provider':'codex'}])
             source['codex']['models'][0]['id']='backend-next'
             churn=derive(source,pi);self.assertEqual(churn['catalog_model_id'],'fleet/backend-next')
             self.assertEqual(churn['runtime']['settings']['defaultModel'],'backend-next')

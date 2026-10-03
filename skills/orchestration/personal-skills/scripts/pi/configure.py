@@ -6,6 +6,10 @@ from credential import expand
 
 FILES = ("credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs")
 
+def validate_settings(settings):
+    if settings.get('codemode') != {'mode': 'on'} or settings.get('defaultTools') != ['+codemode']:
+        raise ValueError('Pi requires fixed Codemode on and defaultTools +codemode')
+
 def quote(value):
     # Pi runs !commands in the host shell. Reject shell expansions rather than guess.
     if any(char in value for char in "\n\r`$%!"):
@@ -25,11 +29,12 @@ def build(spec, root):
     if not isinstance(base, str) or not base.startswith(("http://", "https://")):
         raise ValueError("route base URL required")
     helper = "!" + " ".join(quote(v) for v in [spec.get("python", sys.executable), str(root / "credential.py"), str(root / "runtime.json")])
-    settings = {"codemode": {"mode": "on"}, "enableInstallTelemetry": False,
+    if {'codemode', 'defaultTools', 'extensions'} & spec.get('settings', {}).keys():
+        raise ValueError('Codemode and its runtime check are fixed, not overridable settings')
+    settings = {"codemode": {"mode": "on"}, "defaultTools": ["+codemode"], "enableInstallTelemetry": False,
                 "defaultProjectTrust": "never", "cacheWarming": "off", "extensions": [str(root / "fleet-routing.mjs")]}
     settings.update(spec.get("settings", {}))
-    if settings["codemode"] != {"mode": "on"}:
-        raise ValueError("Pi workers require Codemode on")
+    validate_settings(settings)
     required_settings = {"defaultProvider", "defaultModel", "defaultThinkingLevel"}
     if not required_settings <= settings.keys():
         raise ValueError("existing model and thinking defaults must be supplied")
@@ -75,6 +80,7 @@ def configure(spec, root, dry_run=False):
             safe_target(root, temp)
             temp.write_bytes(contents[name]); temp.chmod(0o600); temp.replace(target)
             if target.read_bytes() != contents[name]: raise ValueError("Pi write verification failed")
+        validate_settings(json.loads((root / 'agent/settings.json').read_text()))
     return {"changed": changed, "dry_run": dry_run, "root": str(root)}
 
 if __name__ == "__main__":

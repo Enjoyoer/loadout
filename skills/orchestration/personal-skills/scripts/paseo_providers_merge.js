@@ -25,7 +25,6 @@ try {
     : Array.isArray(value) ? value.map(visit) : value && typeof value === 'object'
       ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, visit(v)])) : value;
   p.providers = visit(p.providers);
-  p.agentProfiles = visit(p.agentProfiles);
   if (p.pi) {
     const {spawnSync} = require('child_process');
     const runtimeRoot = expand(p.pi.root);
@@ -63,9 +62,7 @@ try {
     for (const key of p.required_env[k]) if (!((merged[k] || {}).env || {})[key]) missing.push(k + "." + key);
   if (missing.length) throw new Error("required env missing: " + missing.join(", "));
   result.preserved = Object.keys(prev).filter(k => !(k in p.providers) && !(k in p.env));
-  const previousProfiles = cfg.daemon?.agentProfiles || [];
-  const profiles = p.agentProfiles ? [...previousProfiles.filter(row => !p.agentProfiles.some(want => want.id === row.id)), ...p.agentProfiles] : previousProfiles;
-  result.changed = Boolean(result.pi?.changed?.length) || JSON.stringify(prev) !== JSON.stringify(merged) || JSON.stringify(profiles) !== JSON.stringify(previousProfiles);
+  result.changed = Boolean(result.pi?.changed?.length) || JSON.stringify(prev) !== JSON.stringify(merged);
   if (result.changed && !p.dry_run) {
     const bak = cfgPath + ".bak-loadout-" + p.stamp;
     fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
@@ -73,7 +70,6 @@ try {
     if (fs.readFileSync(bak, "utf8") !== raw) throw new Error("backup failed: " + bak);
     result.backup = path.basename(bak);
     cfg.agents.providers = merged;
-    if (p.agentProfiles) { cfg.daemon ||= {}; cfg.daemon.agentProfiles = profiles; }
     const next = cfgPath + ".loadout-next";
     fs.writeFileSync(next, JSON.stringify(cfg, null, 2), { mode: 0o600 });
     fs.renameSync(next, cfgPath);

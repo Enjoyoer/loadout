@@ -2,6 +2,21 @@
 import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+export function validateCodemode(pi) {
+  const tools = pi.getActiveTools();
+  if (pi.getSettings().codemode?.mode !== 'on' || !tools.includes('codemode'))
+    throw Error('Pi requires Codemode on in the effective session and active tool list');
+  return { codemode: 'on', activeTools: tools };
+}
+export function enforceCodemode(pi, terminate = code => process.exit(code)) {
+  try { return validateCodemode(pi); }
+  catch (error) {
+    process.stderr.write(error.message + '\n');
+    // Pi reports extension exceptions and continues, so throwing alone is insufficient.
+    terminate(78);
+    throw error;
+  }
+}
 export function preparePayload(payload, { model, sessionId, turnId, cwd, fastRequested }) {
   if (!payload || typeof payload !== 'object') return payload;
   const result = structuredClone(payload);
@@ -34,8 +49,15 @@ export default function(pi) {
   const record = row => {
     if(process.env.PI_CODING_AGENT_DIR) appendFileSync(join(process.env.PI_CODING_AGENT_DIR,'route-evidence.jsonl'),JSON.stringify(row)+'\n',{mode:0o600});
   };
-  pi.on('before_agent_start',async()=>{turnId=randomUUID();fastRequested=await requestedFast();});
+  pi.on('session_start',(_event,ctx)=>{
+    const check = enforceCodemode(pi);
+    const evidence = { event: 'codemode-check', ...check, sessionId: ctx.sessionManager.getSessionId() };
+    record(evidence);
+    pi.appendEntry('loadout-codemode-check', evidence);
+  });
+  pi.on('before_agent_start',async()=>{enforceCodemode(pi);turnId=randomUUID();fastRequested=await requestedFast();});
   pi.on('before_provider_request',(event,ctx)=>{
+    enforceCodemode(pi);
     const result=preparePayload(event.payload,{model:ctx.model,sessionId:ctx.sessionManager.getSessionId(),turnId,cwd:ctx.cwd,fastRequested});
     record({event:'request',model:ctx.model?.id,thinking:ctx.thinkingLevel,fastRequested,service_tier:result?.service_tier,turnId});
     return result;

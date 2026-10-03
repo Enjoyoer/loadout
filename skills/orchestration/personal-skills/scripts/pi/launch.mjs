@@ -6,6 +6,12 @@ import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const spec = JSON.parse(readFileSync(join(root, 'runtime.json'), 'utf8'));
+const settings = JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8'));
+if (settings.codemode?.mode !== 'on' || JSON.stringify(settings.defaultTools) !== '["+codemode"]'
+    || !settings.extensions?.includes(join(root, 'fleet-routing.mjs')))
+  throw Error('Pi requires fixed Codemode on');
+if (process.argv.slice(2).some(arg => /^(--(?:no-)?codemode|--no-extensions)(=|$)/.test(arg)))
+  throw Error('Pi Codemode cannot be overridden per agent');
 const cli = join(root, 'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');
 const piPackage = JSON.parse(readFileSync(join(dirname(dirname(cli)), '../package.json'), 'utf8'));
 if (piPackage.version !== '1.0.0') throw Error('official Pi 1.0.0 required');
