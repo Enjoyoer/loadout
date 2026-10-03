@@ -28,3 +28,7 @@ npm ci
 npm run check
 paseo plugin install "$PWD"
 ```
+
+## Pi coverage
+
+Model tests cover Pi snapshots with high and medium reasoning, usage-limit and failed-turn records, same-session verification, and resume gates. Live Pi retry timing and provider-specific quota recognition still require host validation. A Pi failure that does not emit a recognized usage-limit signal may follow the generic failed-turn path instead. Keep existing host settings unchanged. If automatic resume is unavailable, send one explicit `continue` to the same Pi agent and verify its session/model/thinking; use an explicitly selected native Codex or Claude route if a new fallback session is needed. This package does not select or substitute models.

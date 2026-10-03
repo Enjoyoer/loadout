@@ -29,8 +29,8 @@ MERGE_JS = Path(__file__).resolve().parent / "paseo_providers_merge.js"
 BOOT = fleet.BOOT
 pack = fleet.pack
 parse_result = fleet.parse_result
-CONFIG_KEYS = {"providers", "env", "hosts"}
-HOST_KEYS = {"env", "inherit_env", "required_env"}
+CONFIG_KEYS = {"providers", "env", "hosts", "pi"}
+HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi"}
 AGENT_VARS = ("PASEO_AGENT_ID", "PASEO_AGENT_CWD", "PASEO_HOME")
 RELAY_TITLE = "loadout-provider-sync"
 # Relay timings; the environment overrides exist for tests.
@@ -52,6 +52,35 @@ def _env_map(value, where):
     return value
 
 
+def _providers(providers, where):
+    if not isinstance(providers, dict):
+        raise fleet.FleetError(f"{where} must be an object")
+    for name, block in providers.items():
+        models = block.get("models") if isinstance(block, dict) else None
+        if not isinstance(models, list) or not models:
+            raise fleet.FleetError(f"providers.{name}.models must be a non-empty list")
+        ids = set()
+        for model in models:
+            if not isinstance(model, dict): raise fleet.FleetError("model must be an object")
+            model_id, label = model.get("id"), model.get("label")
+            if not isinstance(model_id, str) or not model_id or model_id in ids:
+                raise fleet.FleetError(f"providers.{name}: model ids must be unique non-empty strings")
+            ids.add(model_id)
+            # Picker labels are names only: no model IDs or version numbers.
+            if not isinstance(label, str) or not label.strip() or re.search(r"\d", label) \
+                    or model_id.lower() in label.lower():
+                raise fleet.FleetError(f"providers.{name}.{model_id}: label {label!r} must be a name only")
+
+
+def _pi(value, where):
+    if not isinstance(value, dict): raise fleet.FleetError(f"{where} must be an object")
+    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider"}, where)
+    if not isinstance(value.get("root"), str) or not isinstance(value.get("runtime"), dict):
+        raise fleet.FleetError(f"{where} requires root and runtime")
+    if "models" in value["runtime"]: raise fleet.FleetError("Pi models must derive from the shared catalog")
+    fleet._strings(value.get("catalogSources", ["claude", "codex"]), f"{where}.catalogSources")
+
+
 def load_config(path: Path, fleet_doc: dict) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -61,26 +90,16 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
     providers = data.get("providers")
     if not isinstance(providers, dict) or not providers:
         raise fleet.FleetError("providers must be a non-empty object")
-    for name, block in providers.items():
-        models = block.get("models") if isinstance(block, dict) else None
-        if not isinstance(models, list) or not models:
-            raise fleet.FleetError(f"providers.{name}.models must be a non-empty list")
-        ids = set()
-        for model in models:
-            model_id, label = model.get("id"), model.get("label")
-            if not isinstance(model_id, str) or not model_id or model_id in ids:
-                raise fleet.FleetError(f"providers.{name}: model ids must be unique non-empty strings")
-            ids.add(model_id)
-            # Picker labels are names only: no model IDs or version numbers.
-            if not isinstance(label, str) or not label.strip() or re.search(r"\d", label) \
-                    or model_id.lower() in label.lower():
-                raise fleet.FleetError(f"providers.{name}.{model_id}: label {label!r} must be a name only")
+    _providers(providers, "providers")
+    if "pi" in data: _pi(data["pi"], "pi")
     _env_map(data.get("env", {}), "env")
     scoped = {host["name"] for host in fleet.hosts_for(fleet_doc, "providers")}
     for name, settings in data.get("hosts", {}).items():
         if name not in scoped:
             raise fleet.FleetError(f"hosts.{name} is not a fleet host with the providers scope")
         fleet._keys(settings, HOST_KEYS, f"hosts.{name}")
+        if "pi" in settings: _pi(settings["pi"], f"hosts.{name}.pi")
+        _providers(settings.get("providers", {}), f"hosts.{name}.providers")
         _env_map(settings.get("env", {}), f"hosts.{name}.env")
         if not isinstance(settings.get("inherit_env", True), bool):
             raise fleet.FleetError(f"hosts.{name}.inherit_env must be true or false")
@@ -97,9 +116,20 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool) -> dict:
     env = {k: dict(v) for k, v in config.get("env", {}).items()} if settings.get("inherit_env", True) else {}
     for provider, values in settings.get("env", {}).items():
         env.setdefault(provider, {}).update(values)
+    providers = {**config["providers"], **settings.get("providers", {})}
+    pi = settings.get("pi", config.get("pi"))
+    generated = None
+    if pi:
+        sys.path.insert(0, str(Path(__file__).parent / 'pi'))
+        from catalog import derive
+        generated = derive(providers, pi)
+        providers['pi'] = generated['provider']
+        env.setdefault('pi', {})['LOADOUT_PI_ROOT'] = pi['root']
     return {
+        "pi": generated,
+        "pi_files": ({f.name: f.read_text() for f in (Path(__file__).parent / 'pi').glob('*') if f.suffix in {'.py', '.mjs'}} if generated else {}),
         "host": host,
-        "providers": config["providers"],
+        "providers": providers,
         "env": env,
         "required_env": settings.get("required_env", {}),
         "stamp": stamp,
@@ -178,11 +208,11 @@ class Runner:
                 return output
             # One bounded resend, only when the shell never echoed the command:
             # without the nonce on screen the first send cannot have run.
-            if not resent and nonce not in output and time.monotonic() - sent >= RELAY_RESEND_SECONDS:
+            if not resent and nonce not in "".join(output.split()) and time.monotonic() - sent >= RELAY_RESEND_SECONDS:
                 self.paseo("terminal", "send-keys", terminal, command, "Enter")
                 resent = True
             if time.monotonic() > deadline:
-                tail = output.strip()[-200:] or "(terminal output empty)"
+                tail = "".join(output.strip().split())[-200:] or "(terminal output empty)"
                 raise RuntimeError(f"relay terminal did not finish within {int(RELAY_WAIT_SECONDS)}s; last output: {tail}")
             time.sleep(RELAY_POLL_SECONDS)
 

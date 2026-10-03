@@ -45,6 +45,11 @@ function validateWorker(worker, task) {
   if (worker.status === 'finished' && !worker.thread_id) throw Error('finished Worker lacks thread identity');
 }
 
+function catalogRound(round, label, role) {
+  return round.role === role && round.catalog_label === label && typeof round.catalog_model_id === 'string' &&
+    round.catalog_model_id.length > 0 && ['pi', 'codex', 'claude'].some(provider => round.provider === `${provider}/${round.catalog_model_id}`);
+}
+
 function validatePlanner(planner) {
   if (planner == null) return;
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -58,13 +63,14 @@ function validatePlanner(planner) {
   const ids = new Set(), agents = new Set();
   for (const [index, round] of planner.rounds.entries()) {
     if (!object(round) || !uuid(round.id) ||
-        !['codex/chatgpt-web/pro', 'claude/claude-fable-5-1[1m]'].includes(round.provider) ||
+        !(catalogRound(round, index === 0 ? 'Web Pro' : 'Fable', index === 0 ? 'planner' : 'planner_fallback') ||
+          (round.role === undefined && ['codex/chatgpt-web/pro', 'claude/claude-fable-5-1[1m]'].includes(round.provider))) ||
         !['launching', 'running', 'uncertain', 'failed', 'planned'].includes(round.status)) {
       throw Error('invalid planner round');
     }
     if (ids.has(round.id)) throw Error('duplicate planner round identity');
     ids.add(round.id);
-    if (round.provider === 'codex/chatgpt-web/pro') {
+    if (round.role === 'planner' || round.provider === 'codex/chatgpt-web/pro') {
       if (index !== 0 || Object.hasOwn(round, 'effort')) throw Error('invalid Pro planner route');
     } else if (index !== 1 || round.effort !== 'high' ||
         planner.rounds[0]?.status !== 'failed' || authorization?.after_round !== planner.rounds[0].id) {
@@ -105,7 +111,7 @@ function validateReviewer(reviewer, task) {
   for (const [index, round] of reviewer.rounds.entries()) {
     if (!object(round) || !uuid(round.id) || !positive(round.pr) ||
         typeof round.head !== 'string' || !/^[0-9a-f]{40}$/.test(round.head) ||
-        round.provider !== 'codex/chatgpt-web/pro' ||
+        !(catalogRound(round, 'Web Pro', 'reviewer') || (round.role === undefined && round.provider === 'codex/chatgpt-web/pro')) ||
         !['launching', 'running', 'uncertain', 'failed', 'approved', 'changes_requested'].includes(round.status)) {
       throw Error('invalid reviewer round');
     }

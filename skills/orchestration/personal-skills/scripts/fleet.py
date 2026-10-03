@@ -36,7 +36,7 @@ SCOPES = ("skills", "plugins", "providers", "client-config")
 # Scopes that move files or secrets, so they need an ssh transport.
 SSH_SCOPES = {"skills", "plugins", "client-config"}
 OSES = {"macos", "windows", "linux"}
-CLIENTS = {"codex", "claude", "opencode"}
+CLIENTS = {"codex", "claude", "opencode", "pi"}
 TOP_KEYS = {"schema_version", "source_host", "transport", "notes", "hosts", "global"}
 HOST_KEYS = {"name", "os", "checkout", "clients", "paseo", "transport", "sync", "paseo_offer", "exclude_skills"}
 PASEO_KEYS = {"plugin_root", "stage", "install"}

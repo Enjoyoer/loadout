@@ -29,6 +29,7 @@ To sync the fleet, run `python3 scripts/sync.py --dry-run` beside this `SKILL.md
 
 - Codex: `${CODEX_HOME:-$HOME/.codex}/skills/<skill-name>`.
 - Claude Code: `~/.claude/skills/<skill-name>`.
+- Configured official Loadout Pi: `<runtime-root>/agent/skills/<skill-name>`, discovered from the host provider command. It receives the same selected verified blobs and global instructions as the other clients, with the same conflict protection. Generated settings point to this directory; per-agent homes copy the synced AGENTS.md.
 - Resolve home directories and path syntax on the target host. A client is present when its binary or skills root exists; skip and report an absent client.
 - Skill sync installs skill packages. It installs global instructions only from the user's fleet description, and never installs credentials, model settings, or other agent-client configuration.
 
@@ -65,6 +66,8 @@ For hosts whose `sync` includes `providers`, the providers step (`scripts/paseo_
 - The merge program travels gzip and base64 encoded so it survives `cmd.exe` and terminal quoting. Hosts need `node`; relay hosts need a POSIX shell.
 - Each host reports the write and the reload on separate lines. A relay reload can time out after a successful write; report that as a reload failure, not a failed write, and do not undo the write. When the write was unchanged, a reload failure is only a warning and the host stays `same`.
 - Never put the catalog, router URLs, or offers in this repository.
+
+Pi providers use the same fleet rows, generated during this step. See [the Pi surface format](fleet/README.md#pi-surface-on-stock-paseo-0103). Install the pinned package with the reviewed host-specific apply script before syncing its runtime. A provider model default does not select a provider in every UI client; carry client preferences separately using the documented script.
 
 ## Client config
 

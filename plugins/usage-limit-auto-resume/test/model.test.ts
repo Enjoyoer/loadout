@@ -275,3 +275,22 @@ describe("continuation identity", () => {
     assert.equal(buildRecord(agent({ persistence: null }), "out of credits", undefined, config, NOW, "turn-1"), null);
   });
 });
+
+describe("Pi stock daemon session identity", () => {
+  for (const thinking of ["high", "medium"]) {
+    it(`retains Pi model and ${thinking} thinking across a failed-turn resume`, () => {
+      const pi = agent({provider:"pi", model:"route/example-model", currentModeId:null,
+        thinkingOptionId:thinking, persistence:{provider:"pi",sessionId:"pi-session",nativeHandle:"pi-session.jsonl"}});
+      const failed = buildFailedTransientRecord(pi, timeline(""), {message:"provider temporarily unavailable"}, config, NOW, "pi-turn")!;
+      assert.ok(failed);
+      assert.deepEqual(shouldResume(failed, {...pi,status:"error"}, config, Date.parse(failed.notBefore)), {ok:true});
+      assert.equal(isSameAgentAndSession(failed, {...pi,thinkingOptionId:thinking === "high" ? "medium" : "high"}), false);
+      assert.equal(isSameAgentAndSession(failed, {...pi,persistence:{provider:"pi",sessionId:"replacement",nativeHandle:"other"}}), false);
+      const sent = {...failed,state:"verifying" as const,resumeTurnId:"resume-pi",resumeFinishedAt:new Date(NOW+1000).toISOString(),verificationDeadlineAt:new Date(NOW+10000).toISOString()};
+      assert.deepEqual(verificationDecision(sent,pi,NOW+2000),{state:"done",reason:"resumed-turn-completed"});
+      const usage = buildRecord(pi,"insufficient_quota",undefined,config,NOW,"pi-usage")!;
+      assert.ok(usage);assert.equal(usage.provider,"pi");assert.equal(usage.thinkingOptionId,thinking);
+      assert.deepEqual(shouldResume(usage,pi,config,Date.parse(usage.notBefore)),{ok:true});
+    });
+  }
+});

@@ -1,0 +1,36 @@
+{
+  "pi": {
+    "root": "~/.local/share/loadout-pi-1.0.0",
+    "catalogSources": [
+      "claude",
+      "codex"
+    ],
+    "defaultSourceProvider": "codex",
+    "runtime": {
+      "route": {
+        "path": "~/.codex/config.toml",
+        "keys": [
+          "model_providers",
+          "example_router",
+          "base_url"
+        ]
+      },
+      "credential": {
+        "kind": "toml",
+        "path": "~/.codex/config.toml",
+        "keys": [
+          "model_providers",
+          "example_router",
+          "http_headers",
+          "X-Api-Key"
+        ]
+      },
+      "credentialHeaders": [
+        "X-Api-Key"
+      ],
+      "paseoMcp": {
+        "url": "http://127.0.0.1:6767/mcp/agents"
+      }
+    }
+  }
+}

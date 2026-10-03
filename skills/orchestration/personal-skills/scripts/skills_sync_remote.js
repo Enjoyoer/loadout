@@ -55,6 +55,25 @@ function plan(file, root, want, allowed) {
 
 try {
   const p = JSON.parse(zlib.gunzipSync(Buffer.from(fs.readFileSync(0, "utf8").trim(), "base64")).toString());
+  // A configured Loadout Pi receives the same selected, verified skill blobs.
+  // Discover its home from the host's provider command, not a second fleet list.
+  const cfgPath = path.join(home, '.paseo', 'config.json');
+  if (fs.existsSync(cfgPath)) {
+    const provider = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).agents?.providers?.pi;
+    const launcher = provider?.command?.find(arg => path.basename(arg) === 'launch.mjs');
+    if (launcher) {
+      const runtimeRoot = path.dirname(expand(launcher));
+      const agentHome = path.join(runtimeRoot, 'agent');
+      const pkg = path.join(runtimeRoot, 'app', 'node_modules', '@earendil-works', 'pi-coding-agent', 'package.json');
+      checkAncestors(home, path.join(agentHome, 'skills', 'probe'));
+      if (fs.existsSync(pkg) && JSON.parse(fs.readFileSync(pkg, 'utf8')).version === '1.0.0') {
+        CLIENT_HOMES.pi = agentHome;
+        SKILL_ROOTS.pi = path.join(agentHome, 'skills');
+        p.clients = [...new Set([...p.clients, 'pi'])];
+        if (p.global) p.global.targets.pi = path.join(agentHome, 'AGENTS.md');
+      }
+    }
+  }
   const data = {};
   for (const [rel, f] of Object.entries(p.files)) {
     const parts = rel.split("/");
@@ -71,7 +90,7 @@ try {
     else writes.push({ file, label, kind, data: bytes, global: isGlobal });
   };
   for (const client of p.clients) {
-    if (!fs.existsSync(CLIENT_HOMES[client])) { result.clients[client] = "absent"; continue; }
+    if (!CLIENT_HOMES[client] || !fs.existsSync(CLIENT_HOMES[client])) { result.clients[client] = "absent"; continue; }
     const root = SKILL_ROOTS[client];
     result.clients[client] = root ? "present" : "no skill directory";
     if (root)

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { buildDelegatedBrief, FIXED_ROLE_ROUTES, MAX_CHATGPT_BROWSER_TABS, resolveAgentRoute } from './agent-routing.mjs';
-import { selectUnattendedMode } from './paseo-worker.mjs';
+import { buildDelegatedBrief, FIXED_ROLE_ROUTES, MAX_CHATGPT_BROWSER_TABS, resolveAgentSurface } from './agent-routing.mjs';
+import { selectUnattendedMode, selectPiMode } from './paseo-worker.mjs';
 import { assertRepository, readTask, updateTask } from './task-state.mjs';
 
 export { MAX_CHATGPT_BROWSER_TABS };
@@ -32,14 +32,14 @@ function available(task) {
   const previous = latest(task);
   if (previous && !terminal.has(previous.status)) throw Error('planner lane is active or uncertain');
   if (previous?.status === 'planned') throw Error('planner is one-shot and already completed');
-  if (previous?.provider === FIXED_ROLE_ROUTES.planner_fallback.provider) throw Error('planner fallback is terminal; ask the owner how to proceed');
+  if ((previous?.role === 'planner_fallback' || previous?.provider?.startsWith('claude/'))) throw Error('planner fallback is terminal; ask the owner how to proceed');
 }
 
 export function authorizePlannerFallback(taskPath, { answer }) {
   if (answer !== 'yes') throw Error('planner fallback requires the owner to explicitly answer yes');
   return updateTask(taskPath, task => {
     const failed = latest(task);
-    if (!failed || failed.provider !== FIXED_ROLE_ROUTES.planner.provider || failed.status !== 'failed') {
+    if (!failed || (failed.role !== 'planner' && !failed.provider?.startsWith('codex/')) || failed.status !== 'failed') {
       throw Error('owner approval may be recorded only after the Pro planner failure');
     }
     task.planner.fallback_authorization = { answer: 'yes', after_round: failed.id };
@@ -48,21 +48,20 @@ export function authorizePlannerFallback(taskPath, { answer }) {
 
 // Prepare the exact MCP create_agent request. The PM calls that tool directly,
 // then binds its response below. Planner rounds are never steered.
-export function preparePlannerLaunch(taskPath, { contextPack, capabilities }) {
+export function preparePlannerLaunch(taskPath, { contextPack, capabilities, surface = 'pi' }) {
   const task = readTask(taskPath);
   available(task);
   const previous = latest(task);
   const fallback = previous?.status === 'failed';
-  const route = fallback
-    ? resolveAgentRoute('planner_fallback', { plannerFailure: previous, fallbackAuthorization: task.planner?.fallback_authorization })
-    : resolveAgentRoute('planner');
+  const role = fallback ? 'planner_fallback' : 'planner';
+  const route = resolveAgentSurface(role, fallback ? { plannerFailure: previous, fallbackAuthorization: task.planner?.fallback_authorization } : {}, capabilities.models, surface);
   const requestedSettings = fallback ? { thinkingOptionId: route.effort } : {};
-  const modeId = selectUnattendedMode(capabilities);
+  const modeId = route.provider.startsWith('pi/') ? selectPiMode(capabilities) : selectUnattendedMode(capabilities);
   const round = {
-    id: randomUUID(), provider: route.provider, status: 'launching', agent_id: null,
+    id: randomUUID(), role, catalog_label: route.label, catalog_model_id: route.model, provider: route.provider, status: 'launching', agent_id: null,
     ...(fallback ? { effort: route.effort } : {}),
   };
-  const initialPrompt = buildPlannerPrompt({ contextPack, route });
+  const initialPrompt = buildPlannerPrompt({ contextPack, route: FIXED_ROLE_ROUTES[role] });
   updateTask(taskPath, current => {
     available(current);
     if (latest(current)?.id !== previous?.id) throw Error('planner round changed during launch');
@@ -77,7 +76,7 @@ export function preparePlannerLaunch(taskPath, { contextPack, capabilities }) {
       initialPrompt,
       notifyOnFinish: true,
       labels: { 'opc.planner-round': round.id, 'opc.run': task.id },
-      settings: { ...requestedSettings, modeId },
+      settings: { ...requestedSettings, ...(modeId ? { modeId } : {}) },
     }),
   });
 }

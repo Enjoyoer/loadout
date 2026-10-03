@@ -67,6 +67,26 @@ class RemotePreflightTest(unittest.TestCase):
         self.assertEqual(self.skill("demo/SKILL.md").read_bytes(), b"v2")
         self.assertEqual(self.run_remote(files)["status"], "same")
 
+    def test_configured_pi_receives_same_skills_globals_and_conflict_protection(self):
+        root = self.home/'pi-runtime'; agent = root/'agent'; agent.mkdir(parents=True)
+        pkg = root/'app/node_modules/@earendil-works/pi-coding-agent/package.json'
+        pkg.parent.mkdir(parents=True); pkg.write_text('{"version":"1.0.0"}')
+        cfg = self.home/'.paseo/config.json';cfg.parent.mkdir()
+        cfg.write_text(json.dumps({'agents':{'providers':{'pi':{'command':['node',str(root/'launch.mjs')]}}}}))
+        files = {'demo/SKILL.md': entry(b'same verified skill')}
+        glob = {**entry(b'same global'), 'targets': {'claude': '~/.claude/CLAUDE.md'}}
+        self.assertEqual(self.run_remote(files,glob=glob,dry_run=True)['status'],'would update')
+        self.assertFalse((agent/'skills').exists())
+        got = self.run_remote(files,glob=glob)
+        self.assertEqual(got['clients']['pi'],'present')
+        self.assertEqual((agent/'skills/demo/SKILL.md').read_bytes(),self.skill('demo/SKILL.md').read_bytes())
+        self.assertEqual((agent/'AGENTS.md').read_bytes(),b'same global')
+        (agent/'skills/demo/SKILL.md').write_bytes(b'private edit')
+        changed = {'demo/SKILL.md': entry(b'next',[sha(b'same verified skill')])}
+        got = self.run_remote(changed)
+        self.assertEqual(got['status'],'conflict')
+        self.assertEqual(self.skill('demo/SKILL.md').read_bytes(),b'same verified skill')
+
     def test_prior_publication_is_replaced(self):
         self.skill("demo").mkdir(parents=True)
         self.skill("demo/SKILL.md").write_bytes(b"v1")

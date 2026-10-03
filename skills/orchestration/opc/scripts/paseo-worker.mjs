@@ -1,3 +1,4 @@
+import { resolveWorkerSurface } from './agent-routing.mjs';
 import { createHash } from 'node:crypto';
 
 const lanePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -60,6 +61,14 @@ export function selectUnattendedMode(capabilities) {
   return unattended[0].id;
 }
 
+export function selectPiMode(capabilities) {
+  if (capabilities?.enabled !== true || capabilities.status !== 'available' ||
+      !Array.isArray(capabilities.modes) || capabilities.modes.length !== 0) {
+    throw Error('available Pi with no selectable modes required');
+  }
+  return null;
+}
+
 function managedPrompt(initialPrompt, { workspaceId, worktreePath, branchName }) {
   const prompt = required(initialPrompt, 'initial prompt');
   return `${prompt}\n\nManaged Worker placement:\n` +
@@ -83,16 +92,20 @@ export function buildManagedWorkspaceRequest({ taskId, lane, sourcePath, baseBra
 }
 
 export function buildManagedWorkerRequest({ taskId, lane, title, provider, initialPrompt,
-  agentSettings = {}, workerLabels = {}, workspace, capabilities }) {
+  agentSettings = {}, workerLabels = {}, workspace, capabilities, role = 'worker', route, surface = 'pi' }) {
   const names = managedWorkerNames({ taskId, lane });
   const agentTitle = required(title, 'Worker title');
-  const agentProvider = required(provider, 'Worker provider');
-  const requestedSettings = settings(agentSettings);
+  const mappedRoute = resolveWorkerSurface({ provider, agentSettings, role, route, surface, catalog: capabilities?.models });
+  const agentProvider = mappedRoute.provider;
+  const requestedSettings = settings(mappedRoute.agentSettings);
   if (!workspace?.workspaceId || typeof workspace.workspaceId !== 'string' ||
       !workspace.cwd || typeof workspace.cwd !== 'string') {
     throw Error('Paseo create_workspace returned no managed workspace identity');
   }
-  const modeId = selectUnattendedMode(capabilities);
+  // Pi exposes no modes and executes its tools without a permission-mode selector.
+  // This exception applies only to advertised, available Pi, never other providers.
+  const modeId = agentProvider.split('/')[0] === 'pi'
+    ? selectPiMode(capabilities) : selectUnattendedMode(capabilities);
   const prompt = managedPrompt(initialPrompt, {
     workspaceId: workspace.workspaceId, worktreePath: workspace.cwd, branchName: names.branchName,
   });
@@ -108,8 +121,9 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
       workspaceId: workspace.workspaceId,
       initialPrompt: prompt,
       notifyOnFinish: true,
-      settings: { ...requestedSettings, modeId },
-      labels: { ...labels(workerLabels), 'opc.worker-task': taskId, 'opc.worker-lane': lane },
+      settings: { ...requestedSettings, ...(modeId ? { modeId } : {}) },
+      labels: { ...labels(workerLabels), 'opc.worker-task': taskId, 'opc.worker-lane': lane,
+        ...(route ? { 'opc.fast-requested': String(route.fastMode) } : {}) },
     }),
   });
 }

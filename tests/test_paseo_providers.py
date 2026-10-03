@@ -345,7 +345,7 @@ class ConfigValidationTest(unittest.TestCase):
 
     def test_labels_are_names_only(self):
         def versioned(d): d["providers"]["claude"]["models"][0]["label"] = "Large 2"
-        def with_id(d): d["providers"]["claude"]["models"][0]["label"] = "Example-Large"
+        def with_id(d): d["providers"]["claude"]["models"][0]["label"] = d["providers"]["claude"]["models"][0]["id"]
         self.check(versioned, "must be a name only")
         self.check(with_id, "must be a name only")
 
