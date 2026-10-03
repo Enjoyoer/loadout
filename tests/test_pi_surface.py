@@ -194,6 +194,22 @@ vm.runInNewContext(appDefaultsScript('route/example','high',true),{localStorage}
             with self.assertRaisesRegex(ValueError,'symlink'):
                 safe_target(root,root/'agent/settings.json')
 
+    def test_windows_runtime_grants_the_user_sid_after_acl_backup(self):
+        sys.path.insert(0,str(PI))
+        import configure
+        root=Path('/tmp/example-runtime')
+        identity=subprocess.CompletedProcess([],0,stdout='"HOST\\person","S-1-5-21-100-200-300-1000"\n')
+        with patch.object(configure.os,'name','nt'), patch.object(configure.subprocess,'run',return_value=identity) as run:
+            configure.secure_windows_user(root)
+            calls=run.call_args_list
+            self.assertEqual(calls[0].args[0],['whoami','/user','/fo','csv','/nh'])
+            self.assertIn('/save',calls[1].args[0])
+            self.assertIn('*S-1-5-21-100-200-300-1000:(OI)(CI)F',calls[2].args[0])
+            self.assertNotIn('Everyone',str(calls))
+        with patch.object(configure.os,'name','nt'), patch.object(configure.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout='"host","bad"')) as run:
+            with self.assertRaisesRegex(ValueError,'SID unavailable'): configure.secure_windows_user(root)
+            self.assertEqual(run.call_count,1)
+
     def test_windows_deployment_resolves_the_cmd_launcher(self):
         sys.path.insert(0,str(PI))
         import deploy
