@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "2e216e40ad185eac9c3f55f8a3edcb41503259e5",
+  "source_commit": "af7357b677707da39fbe121004277824279d5331",
   "skill_count": 22,
   "file_count": 121,
   "files": [
@@ -527,8 +527,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/configure.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 5498,
-      "sha256": "4e0e8e8da7093abd982a30be9531e91be26d2936bf0900b988b4618b83bfee37"
+      "bytes": 6479,
+      "sha256": "686666bdadc7e561afb2a81f04d4b2727e8dcd870cdd2c61f8424aceea6f446f"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/credential.py",
