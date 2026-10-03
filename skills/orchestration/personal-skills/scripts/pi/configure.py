@@ -1,5 +1,5 @@
 """Stage or apply the pinned Pi agent home. No credential contents are written."""
-import argparse, copy, json, os, shutil, subprocess, sys, tomllib
+import argparse, copy, csv, io, json, os, re, shutil, subprocess, sys, tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from credential import expand
@@ -62,6 +62,21 @@ def safe_target(root, target):
         if part == root: break
 
 
+def secure_windows_user(root):
+    if os.name != 'nt': return
+    # Elevated SSH creates mode-0700 directories owned by Administrators. The
+    # daemon's normal token needs its own SID, rather than an owner-group grant.
+    identity = subprocess.run(['whoami', '/user', '/fo', 'csv', '/nh'],
+                              capture_output=True, text=True, check=True)
+    sid = next(csv.reader(io.StringIO(identity.stdout)))[1].strip()
+    if not re.fullmatch(r'S-1-5-(?:\d+-)*\d+', sid): raise ValueError('Windows user SID unavailable')
+    backup = root / ('acl-before-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ') + '.txt')
+    subprocess.run(['icacls', str(root), '/save', str(backup), '/T', '/Q'],
+                   capture_output=True, text=True, check=True)
+    subprocess.run(['icacls', str(root), '/grant', '*' + sid + ':(OI)(CI)F', '/T', '/Q'],
+                   capture_output=True, text=True, check=True)
+
+
 def configure(spec, root, dry_run=False):
     contents = {name: (json.dumps(value, indent=2) + "\n").encode() for name, value in build(spec, root).items()}
     contents.update({name: (Path(__file__).parent / name).read_bytes() for name in FILES})
@@ -81,6 +96,7 @@ def configure(spec, root, dry_run=False):
             safe_target(root, temp)
             temp.write_bytes(contents[name]); temp.chmod(0o600); temp.replace(target)
             if target.read_bytes() != contents[name]: raise ValueError("Pi write verification failed")
+        secure_windows_user(root)
         validate_settings(json.loads((root / 'agent/settings.json').read_text()))
     return {"changed": changed, "dry_run": dry_run, "root": str(root)}
 
