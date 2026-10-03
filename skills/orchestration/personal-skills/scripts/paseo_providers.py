@@ -74,7 +74,12 @@ def _providers(providers, where):
 
 def _pi(value, where):
     if not isinstance(value, dict): raise fleet.FleetError(f"{where} must be an object")
-    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider"}, where)
+    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly"}, where)
+    if value.get('catalogOnly') is True:
+        if 'root' in value or 'runtime' in value: raise fleet.FleetError('catalogOnly cannot configure a Pi runtime')
+        fleet._strings(value.get('catalogSources', ['claude', 'codex']), f'{where}.catalogSources')
+        return
+    if 'catalogOnly' in value and not isinstance(value['catalogOnly'], bool): raise fleet.FleetError('catalogOnly must be boolean')
     if not isinstance(value.get("root"), str) or not isinstance(value.get("runtime"), dict):
         raise fleet.FleetError(f"{where} requires root and runtime")
     if "models" in value["runtime"]: raise fleet.FleetError("Pi models must derive from the shared catalog")
@@ -122,9 +127,13 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool) -> dict:
     if pi:
         sys.path.insert(0, str(Path(__file__).parent / 'pi'))
         from catalog import derive
-        generated = derive(providers, pi)
-        providers['pi'] = generated['provider']
-        env.setdefault('pi', {})['LOADOUT_PI_ROOT'] = pi['root']
+        if pi.get('catalogOnly'):
+            catalog = derive(providers, {**pi, 'root': 'catalog-only', 'runtime': {}})
+            providers['pi'] = {'models': catalog['provider']['models']}
+        else:
+            generated = derive(providers, pi)
+            providers['pi'] = generated['provider']
+            env.setdefault('pi', {})['LOADOUT_PI_ROOT'] = pi['root']
     return {
         "pi": generated,
         "pi_files": ({f.name: f.read_text() for f in (Path(__file__).parent / 'pi').glob('*') if f.suffix in {'.py', '.mjs'}} if generated else {}),

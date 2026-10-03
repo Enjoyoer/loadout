@@ -210,6 +210,22 @@ vm.runInNewContext(appDefaultsScript('route/example','high',true),{localStorage}
             with self.assertRaisesRegex(ValueError,'SID unavailable'): configure.secure_windows_user(root)
             self.assertEqual(run.call_count,1)
 
+    def test_catalog_only_emits_models_without_runtime_or_activation(self):
+        import sys
+        sys.path.insert(0, str(PI.parent))
+        import paseo_providers as pp
+        config={'providers': {'codex': {'models': [{'id':'example-sol','label':'Sol','isDefault':True}]}},
+                'hosts': {'tablet': {'pi': {'catalogOnly':True, 'catalogSources':['codex']}}}}
+        pp._pi(config['hosts']['tablet']['pi'], 'test')
+        output=pp.payload(config,'tablet','stamp',True)
+        self.assertIsNone(output['pi'])
+        self.assertEqual(output['pi_files'],{})
+        self.assertEqual(output['providers']['pi']['models'][0]['id'],'fleet/example-sol')
+        self.assertEqual(set(output['providers']['pi']),{'models'})
+        self.assertNotIn('pi',output['env'])
+        with self.assertRaisesRegex(Exception,'cannot configure'):
+            pp._pi({'catalogOnly':True,'root':'example'},'test')
+
     def test_windows_deployment_resolves_the_cmd_launcher(self):
         sys.path.insert(0,str(PI))
         import deploy
