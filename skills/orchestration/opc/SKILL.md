@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.17"
+  version: "7.18"
 ---
 
 # OPC
@@ -25,7 +25,7 @@ Choose the smallest useful topology, splitting only independent questions or imp
 
 ## 3. Worker
 
-Record the owner's exact Worker model, effort, and Fast choice; ask if missing. If the cloud toggle is on, read the [cloud lane](references/cloud-lane.md "branch:cloud") first. Preserve that route through repairs and resumes. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Give each non-overlapping lane one durable Worker lineage, placed and briefed through the execution mechanics.
+Record the owner's Worker model, effort, and Fast choice; ask if missing. The default surface is Pi with Codemode when its target catalog serves the chosen model and effort; otherwise retain the rule's route. Codex remains an explicit fallback. If the cloud toggle is on, read the [cloud lane](references/cloud-lane.md "branch:cloud") first. Preserve that route through repairs and resumes. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Give each non-overlapping lane one durable Worker lineage, placed and briefed through the execution mechanics.
 
 All repository source and test edits, including small repairs, belong to Workers. The PM stays in its checkout and remains sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 

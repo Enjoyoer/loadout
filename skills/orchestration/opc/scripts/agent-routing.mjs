@@ -8,13 +8,31 @@ export function isValidModelId(value) {
 }
 
 export const FIXED_ROLE_ROUTES = Object.freeze({
-  scout: Object.freeze({ provider: 'codex/gpt-5.6-luna', model: 'gpt-5.6-luna', effort: 'max', fastMode: true }),
-  planner: Object.freeze({ provider: 'codex/chatgpt-web/pro', model: 'chatgpt-web/pro', effort: null, fastMode: false }),
-  planner_fallback: Object.freeze({ provider: 'claude/claude-fable-5-1[1m]', model: 'claude-fable-5-1[1m]', effort: 'high', fastMode: false }),
-  reviewer: Object.freeze({ provider: 'codex/chatgpt-web/pro', model: 'chatgpt-web/pro', effort: null, fastMode: false }),
+  scout: Object.freeze({ label: 'Luna', fallbackProvider: 'codex', effort: 'max', fastMode: true }),
+  planner: Object.freeze({ label: 'Web Pro', fallbackProvider: 'codex', effort: null, fastMode: false }),
+  planner_fallback: Object.freeze({ label: 'Fable', fallbackProvider: 'claude', effort: 'high', fastMode: false }),
+  reviewer: Object.freeze({ label: 'Web Pro', fallbackProvider: 'codex', effort: null, fastMode: false }),
 });
 
-const routeText = route => `model=${route.model}; effort=${route.effort ?? 'model-fixed'}; Fast=${route.fastMode ? 'on' : 'off'}`;
+export function resolveCatalogLabel(catalog, label) {
+  const matches = catalog?.filter(row => row.label === label) || [];
+  if (matches.length !== 1) throw Error(`catalog label ${label} must have exactly one row (found ${matches.length})`);
+  return matches[0];
+}
+
+export function materializeFixedRoute(role, catalog, surface = 'pi') {
+  const rule = FIXED_ROLE_ROUTES[role];
+  if (!rule) throw Error(`unknown fixed role: ${role}`);
+  const provider = surface === 'pi' ? 'pi' : rule.fallbackProvider;
+  const rows = Array.isArray(catalog) && surface === 'pi' ? catalog : catalog?.[provider];
+  const row = resolveCatalogLabel(rows, rule.label);
+  if (rule.effort && !row.thinkingOptions?.some(option => option.id === rule.effort)) {
+    throw Error(`${rule.label} does not serve required thinking ${rule.effort}; use an explicitly selected fallback catalog`);
+  }
+  return { ...rule, model: row.id, provider: `${provider}/${row.id}` };
+}
+
+const routeText = route => `model=${route.model ?? route.label}; effort=${route.effort ?? 'model-fixed'}; Fast=${route.fastMode ? 'on' : 'off'}`;
 
 function validateExplicitRoute(role, route) {
   const keys = ['role', 'source', 'model', 'effort', 'fastMode'];
@@ -29,7 +47,7 @@ function validateExplicitRoute(role, route) {
 
 function validateFixedRoute(role, route) {
   const fixed = FIXED_ROLE_ROUTES[role];
-  const keys = ['provider', 'model', 'effort', 'fastMode'];
+  const keys = ['label', 'fallbackProvider', 'effort', 'fastMode'];
   if (!fixed || !route || typeof route !== 'object' || Array.isArray(route) ||
       Object.keys(route).length !== keys.length || keys.some(key => route[key] !== fixed[key])) {
     throw Error(`${role} must use the exact fixed OPC role route`);
@@ -88,4 +106,37 @@ export function selectTopology({ scale, independentQuestions = 0, findingsConver
       : findingsConverged ? 'scout findings converge into an implementable plan'
         : scale === 'trivial' ? 'trivial or localized work' : 'no material synthesis ambiguity',
   });
+}
+
+// Model and thinking rules above remain authoritative. Only the execution surface changes.
+export function mapRouteToPi(route, catalog, { fallbackProvider = 'codex', surface = 'pi' } = {}) {
+  if (!route || !isValidModelId(route.model)) throw Error('selected OPC route required');
+  if (!Array.isArray(catalog)) throw Error('target Pi catalog required');
+  const originalProvider = route.provider?.split('/')[0] ?? fallbackProvider;
+  const original = { ...route, provider: route.provider ?? `${originalProvider}/${route.model}` };
+  if (surface === 'codex') return original;
+  if (surface !== 'pi') throw Error('surface must be pi or codex');
+  const candidates = catalog.filter(row => row.id === route.model ||
+    row.id?.slice(row.id.indexOf('/') + 1) === route.model);
+  const supported = candidates.filter(row => route.effort == null ||
+    row.thinkingOptions?.some(option => option.id === route.effort));
+  if (!supported.length) return original;
+  if (supported.length !== 1) throw Error('ambiguous Pi catalog model mapping');
+  return { ...route, provider: `pi/${supported[0].id}` };
+}
+
+export function resolveAgentSurface(role, options, catalog, surface = 'pi') {
+  const route = resolveAgentRoute(role, options);
+  return role === 'worker' ? mapRouteToPi(route, Array.isArray(catalog) ? catalog : catalog.pi, { surface }) : materializeFixedRoute(role, catalog, surface);
+}
+
+export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'worker', route, catalog, surface = 'pi' } = {}) {
+  if (provider) return { provider, agentSettings };
+  const selected = validateRoleRoute(role, route);
+  const mapped = role === 'worker' ? mapRouteToPi(selected, Array.isArray(catalog) ? catalog : catalog.pi, { surface }) : materializeFixedRoute(role, catalog, surface);
+  if (Object.keys(agentSettings).length) throw Error('materialize settings from the selected rule or pass an explicit provider');
+  return { provider: mapped.provider, agentSettings: {
+    ...(mapped.effort ? { thinkingOptionId: mapped.effort } : {}),
+    ...(mapped.provider.startsWith('codex/') ? { features: { fast_mode: mapped.fastMode } } : {}),
+  } };
 }

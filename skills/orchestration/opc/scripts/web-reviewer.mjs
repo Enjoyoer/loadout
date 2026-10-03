@@ -1,12 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { buildDelegatedBrief, FIXED_ROLE_ROUTES, MAX_CHATGPT_BROWSER_TABS } from './agent-routing.mjs';
-import { selectUnattendedMode } from './paseo-worker.mjs';
+import { buildDelegatedBrief, FIXED_ROLE_ROUTES, MAX_CHATGPT_BROWSER_TABS, resolveAgentSurface } from './agent-routing.mjs';
+import { selectUnattendedMode, selectPiMode } from './paseo-worker.mjs';
 import { assertRepository, git, gitEnvironment, readTask, updateTask } from './task-state.mjs';
 
 export { MAX_CHATGPT_BROWSER_TABS };
-const WEB_PROVIDER = FIXED_ROLE_ROUTES.reviewer.provider;
 const terminal = new Set(['approved', 'changes_requested', 'failed']);
 const latest = task => task.reviewer?.rounds?.at(-1);
 const login = value => typeof value === 'string' ? value.toLowerCase() : '';
@@ -66,15 +65,16 @@ function available(task) {
 
 // Prepare the exact MCP create_agent request. The PM calls that tool directly,
 // then binds its response below. There is no prompt-again, resume, or steering operation.
-export function prepareReviewLaunch(taskPath, { pr, contextPack, capabilities, query = github }) {
+export function prepareReviewLaunch(taskPath, { pr, contextPack, capabilities, query = github, surface = 'pi' }) {
   const task = readTask(taskPath);
   available(task);
   const { repo, state, head } = target(task, pr, query);
-  const modeId = selectUnattendedMode(capabilities);
+  const route = resolveAgentSurface('reviewer', {}, capabilities.models, surface);
+  const modeId = route.provider.startsWith('pi/') ? selectPiMode(capabilities) : selectUnattendedMode(capabilities);
   const previous = latest(task);
   if (previous && previous.status !== 'failed' && previous.head === head) throw Error('a new review round requires a repaired head');
   const round = {
-    id: randomUUID(), pr, head, provider: WEB_PROVIDER,
+    id: randomUUID(), pr, head, role: 'reviewer', catalog_label: route.label, catalog_model_id: route.model, provider: route.provider,
     status: 'launching', agent_id: null,
   };
   const initialPrompt = buildReviewPrompt({ repo, pr, head, base: state.base.sha, author: state.user.login, contextPack, roundId: round.id });
@@ -89,7 +89,7 @@ export function prepareReviewLaunch(taskPath, { pr, contextPack, capabilities, q
     request: Object.freeze({
       title: `OPC Simplifier PR ${pr} ${head.slice(0, 12)}`,
       provider: round.provider, initialPrompt, notifyOnFinish: true,
-      settings: { modeId },
+      settings: modeId ? { modeId } : {},
       labels: { 'opc.review-round': round.id, 'opc.run': task.id },
     }),
   });

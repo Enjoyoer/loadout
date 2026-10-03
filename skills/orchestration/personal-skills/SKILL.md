@@ -66,6 +66,8 @@ For hosts whose `sync` includes `providers`, the providers step (`scripts/paseo_
 - Each host reports the write and the reload on separate lines. A relay reload can time out after a successful write; report that as a reload failure, not a failed write, and do not undo the write. When the write was unchanged, a reload failure is only a warning and the host stays `same`.
 - Never put the catalog, router URLs, or offers in this repository.
 
+Pi providers use the same fleet rows, generated during this step. See [the Pi surface format](fleet/README.md#pi-surface-on-stock-paseo-0103). Install the pinned package with the reviewed host-specific apply script before syncing its runtime. A provider model default does not select a provider in every UI client; carry client preferences separately using the documented script.
+
 ## Client config
 
 For hosts whose `sync` includes `client-config`, the client-config step (`scripts/client_config.py`) writes only the managed Codex `config.toml` and Claude Code `settings.json` keys from `<fleet>/client-config.json`, backing up each changed file first. The source host runs locally and other hosts over SSH. A secret from `token_file` travels only on SSH stdin and is never printed. Report each client per host, the host-local `reportOnly` values, and the Claude Code version against `minVersion`.

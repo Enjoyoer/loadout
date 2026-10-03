@@ -1,0 +1,85 @@
+"""Stage or apply the pinned Pi agent home. No credential contents are written."""
+import argparse, copy, json, os, shutil, subprocess, sys, tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+from credential import expand
+
+FILES = ("credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs")
+
+def quote(value):
+    # Pi runs !commands in the host shell. Reject shell expansions rather than guess.
+    if any(char in value for char in "\n\r`$%!"):
+        raise ValueError("unsafe helper command path")
+    return '"' + value.replace('"', '\\"') + '"'
+
+def build(spec, root):
+    credential = spec["credential"]
+    if "value" in credential or "apiKey" in spec:
+        raise ValueError("credentials must reference existing sources")
+    base = spec.get("baseUrl")
+    if not base:
+        route = spec["route"]
+        doc = tomllib.loads(expand(route["path"]).read_text())
+        for key in route["keys"]: doc = doc[key]
+        base = doc
+    if not isinstance(base, str) or not base.startswith(("http://", "https://")):
+        raise ValueError("route base URL required")
+    helper = "!" + " ".join(quote(v) for v in [spec.get("python", sys.executable), str(root / "credential.py"), str(root / "runtime.json")])
+    settings = {"codemode": {"mode": "on"}, "enableInstallTelemetry": False,
+                "defaultProjectTrust": "never", "cacheWarming": "off", "extensions": [str(root / "fleet-routing.mjs")]}
+    settings.update(spec.get("settings", {}))
+    if settings["codemode"] != {"mode": "on"}:
+        raise ValueError("Pi workers require Codemode on")
+    required_settings = {"defaultProvider", "defaultModel", "defaultThinkingLevel"}
+    if not required_settings <= settings.keys():
+        raise ValueError("existing model and thinking defaults must be supplied")
+    models = copy.deepcopy(spec["models"])
+    if not models or any("apiKey" in model for model in models):
+        raise ValueError("host model catalog required without embedded credentials")
+    if settings["defaultModel"] not in {row["id"] for row in models}:
+        raise ValueError("inherited default absent from host catalog")
+    for row in models:
+        # Anthropic's SDK appends /v1/messages, unlike the Responses client.
+        if row.get("api") == "anthropic-messages": row["baseUrl"] = base.rstrip('/').removesuffix('/v1')
+    headers = {name: helper for name in spec.get("credentialHeaders", [])}
+    model = {"providers": {spec.get("modelProvider", "fleet"): {"baseUrl": base, "apiKey": helper,
+        "headers": headers, "api": "openai-responses", "models": models}}}
+    mcp = {"autoEnableCodemode": True, "mcpServers": {"paseo": {
+           "command": spec.get("python", sys.executable), "args": [str(root / "mcp_bridge.py")], "exposure": "codemode",
+           "env": {"LOADOUT_PI_MCP_URL": "${LOADOUT_PI_MCP_URL}", "LOADOUT_PI_PARENT_MODEL": "${LOADOUT_PI_PARENT_MODEL}", "LOADOUT_PI_PARENT_THINKING": "${LOADOUT_PI_PARENT_THINKING}"}}}}
+    return {"runtime.json": spec, "agent/models.json": model, "agent/settings.json": settings, "agent/mcp.json": mcp}
+
+def safe_target(root, target):
+    for part in (target, *target.parents):
+        if part.is_symlink() or getattr(part, "is_junction", lambda: False)():
+            raise ValueError("symlink or junction runtime target")
+        if part == root: break
+
+
+def configure(spec, root, dry_run=False):
+    contents = {name: (json.dumps(value, indent=2) + "\n").encode() for name, value in build(spec, root).items()}
+    contents.update({name: (Path(__file__).parent / name).read_bytes() for name in FILES})
+    for name in contents: safe_target(root, root / name)
+    changed = [name for name, data in contents.items() if not (root / name).exists() or (root / name).read_bytes() != data]
+    # Back up all affected files before the first write. Caller provides a new root for install.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    if not dry_run:
+        for name in changed:
+            target = root / name
+            safe_target(root, target)
+            if target.exists(): shutil.copy2(target, target.with_name(target.name + ".bak-" + stamp))
+        for name in changed:
+            target = root / name
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            temp = target.with_name(target.name + ".next")
+            safe_target(root, temp)
+            temp.write_bytes(contents[name]); temp.chmod(0o600); temp.replace(target)
+            if target.read_bytes() != contents[name]: raise ValueError("Pi write verification failed")
+    return {"changed": changed, "dry_run": dry_run, "root": str(root)}
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--spec", required=True); p.add_argument("--root", required=True)
+    p.add_argument("--dry-run", action="store_true")
+    a = p.parse_args()
+    print(json.dumps(configure(json.loads(expand(a.spec).read_text()), expand(a.root), a.dry_run)))
