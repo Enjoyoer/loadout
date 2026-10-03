@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "5146dfbdeed18dcf68a2d9ff3576ed86e073af22",
+  "source_commit": "9242e26a3602a95078cfd864f5cc2702da7548db",
   "skill_count": 22,
   "file_count": 120,
   "files": [
@@ -499,8 +499,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/app-defaults.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 2930,
-      "sha256": "f117859371da157a6ac11761152844a1faab74d76b3dc021d645de4d1de9a863"
+      "bytes": 2972,
+      "sha256": "ffbb846acd60b45527fc401874e3d2e4916eb827079075a304ac3aa8b9c023c5"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/apply.ps1",
