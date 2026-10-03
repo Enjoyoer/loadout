@@ -8,7 +8,7 @@ export function carryPreferences(previous, catalogs) {
   const prefs = previous.providerPreferences?.[provider] || {};
   const old = oldCatalog.find(row => row.id === prefs.model) || oldCatalog.find(row => row.isDefault) || oldCatalog[0];
   if (!old) throw Error('previous provider catalog required');
-  const pi = (catalogs.pi || []).filter(row => row.id === old.id || row.id.slice(row.id.indexOf('/') + 1) === old.id);
+  const pi = (catalogs.pi || []).filter(row => row.id === old.id || row.id.slice(row.id.indexOf('/') + 1) === old.id || (row.label && row.label === old.label));
   if (pi.length !== 1) throw Error('previous model has no unique Pi catalog mapping; retain original route');
   const thinking = prefs.thinkingByModel?.[old.id] || old.defaultThinkingOptionId || old.thinkingOptions?.find(row => row.isDefault)?.id;
   if (thinking && !pi[0].thinkingOptions?.some(row => row.id === thinking)) throw Error('previous thinking unavailable on Pi; retain original route');

@@ -188,6 +188,7 @@ const catalogs={codex:[{id:'example',isDefault:true,defaultThinkingOptionId:'hig
 assert.deepEqual(carryPreferences({},catalogs),{modelId:'route/example',thinking:'high'});
 assert.deepEqual(carryPreferences({provider:'codex',providerPreferences:{codex:{model:'example',thinkingByModel:{example:'medium'}}}},catalogs),{modelId:'route/example',thinking:'medium'});
 assert.throws(()=>carryPreferences({provider:'claude'},catalogs));
+assert.deepEqual(carryPreferences({provider:'claude'},{claude:[{id:'native[1m]',label:'Opus',defaultThinkingOptionId:'high'}],pi:[{id:'route/backend',label:'Opus',thinkingOptions:[{id:'high'}]}]}),{modelId:'route/backend',thinking:'high'});
 """
         done=subprocess.run(['node','--input-type=module','-e',script,(PI/'app-defaults.mjs').as_uri()],capture_output=True,text=True)
         self.assertEqual(done.returncode,0,done.stderr)
