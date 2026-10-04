@@ -62,8 +62,11 @@ export function resolveTierIntent(labels = {}) {
 }
 // catalogTiers: the model's catalog service_tiers ids, or null when the catalog could not be read.
 export function tierDecision(intent, model, catalogTiers) {
-  if (intent?.error) return { status: 'invalid', error: intent.error };
   const codexRoute = model?.api === 'openai-responses' && !model.id.startsWith('chatgpt-web/');
+  // A failed or unfinished label lookup must never fall back to a stale or inherited tier.
+  // Routes without a service tier send none either way, so they are not refused for it.
+  if (intent?.lookupFailed) return codexRoute ? { status: 'lookup-failed', error: intent.error } : { status: 'lookup-failed-untiered' };
+  if (intent?.error) return { status: 'invalid', error: intent.error };
   if (!intent || intent.tier === 'inherit') return { status: 'inherited', header: codexRoute ? 'inherit' : undefined };
   if (!codexRoute) return { status: 'unsupported', error: `service tier "${intent.tier}" is not supported for ${model?.id}: this route has no service tier` };
   if (intent.tier === 'standard') return { status: 'explicit', wire: TIER_WIRE.standard, header: 'standard' };
@@ -83,8 +86,9 @@ async function agentLabels() {
 export const EXTENSION_SHA256 = (() => { try { return createHash('sha256').update(readFileSync(fileURLToPath(import.meta.url))).digest('hex'); } catch { return null; } })();
 export const BLOCKED_MODEL_PREFIX = 'fleet-service-tier-refused';
 export function blockedPayload(payload, error) {
-  const base = payload && typeof payload === 'object' ? structuredClone(payload) : {};
   const reason = String(error).toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/^-|-$/g, '').slice(0, 120);
+  let base = {};
+  try { base = payload && typeof payload === 'object' ? structuredClone(payload) : {}; } catch {}
   return { ...base, model: `${BLOCKED_MODEL_PREFIX}:${reason}` };
 }
 const catalogCache = new Map();
@@ -115,8 +119,10 @@ export default function(pi) {
   const slot={id:null,payload:false,headers:false};
   const requestId=()=>slot.id??=randomUUID();
   const settle=part=>{slot[part]=true;if(slot.payload&&slot.headers){slot.id=null;slot.payload=slot.headers=false;}};
+  // Diagnostics are best effort: an evidence write failure must never escape a hook,
+  // because Pi swallows hook exceptions and would send the unmodified request.
   const record = row => {
-    if(process.env.PI_CODING_AGENT_DIR) appendFileSync(join(process.env.PI_CODING_AGENT_DIR,'route-evidence.jsonl'),JSON.stringify(row)+'\n',{mode:0o600});
+    try { if(process.env.PI_CODING_AGENT_DIR) appendFileSync(join(process.env.PI_CODING_AGENT_DIR,'route-evidence.jsonl'),JSON.stringify(row)+'\n',{mode:0o600}); } catch {}
   };
   pi.on('session_start',(_event,ctx)=>{
     const check = enforceCodemode(pi);
@@ -126,21 +132,35 @@ export default function(pi) {
   });
   pi.on('before_agent_start',async(_event,ctx)=>{
     enforceCodemode(pi);turnId=randomUUID();
-    intent=resolveTierIntent(await agentLabels());
-    tiers=ctx?.model?await catalogTiers(ctx):null;
+    // Fail closed for this turn until its own lookup succeeds; never keep the previous turn's tier.
+    intent={tier:null,source:'opc labels',lookupFailed:true,error:'agent label lookup did not complete'};tiers=null;
+    try{intent=resolveTierIntent(await agentLabels());}
+    catch(error){intent={tier:null,source:'opc labels',lookupFailed:true,error:`agent label lookup failed: ${String(error?.message??error).slice(0,80)}`};}
+    try{tiers=ctx?.model?await catalogTiers(ctx):null;}catch{tiers=null;}
   });
   pi.on('before_provider_request',(event,ctx)=>{
     enforceCodemode(pi);
-    const tier=tierDecision(intent,ctx.model,tiers);
-    const id=requestId();
-    record({event:'request',requestId:id,turnId,sessionId:ctx.sessionManager.getSessionId(),model:ctx.model?.id,thinking:ctx.thinkingLevel,
-      tierIntent:intent.tier,tierSource:intent.source,tierStatus:tier.status,service_tier:tier.wire??null,catalogTiers:tiers,error:tier.error});
-    settle('payload');
     // Pi swallows handler exceptions and would send the original payload, which then inherits
-    // the fleet default: a silent mapping. Fail closed instead with a model id the proxy rejects,
-    // so the turn errors visibly and nothing reaches the provider.
-    if(tier.error){pi.appendEntry('loadout-service-tier-refused',{requestId:id,error:tier.error});return blockedPayload(event.payload,tier.error);}
-    return preparePayload(event.payload,{model:ctx.model,sessionId:ctx.sessionManager.getSessionId(),turnId,cwd:ctx.cwd,tier,requestId:id});
+    // the fleet default: a silent mapping. Every refusal or failure below returns a model id the
+    // proxy rejects, so the turn errors visibly and nothing reaches the provider.
+    let id=null;
+    try{
+      id=requestId();settle('payload');
+      const tier=tierDecision(intent,ctx.model,tiers);
+      const row={event:'request',requestId:id,turnId,sessionId:ctx.sessionManager.getSessionId(),model:ctx.model?.id,thinking:ctx.thinkingLevel,
+        tierIntent:intent.tier,tierSource:intent.source,tierStatus:tier.status,service_tier:tier.wire??null,catalogTiers:tiers,error:tier.error};
+      if(tier.error){
+        const blocked=blockedPayload(event.payload,tier.error);
+        record(row);try{pi.appendEntry('loadout-service-tier-refused',{requestId:id,error:tier.error});}catch{}
+        return blocked;
+      }
+      const prepared=preparePayload(event.payload,{model:ctx.model,sessionId:ctx.sessionManager.getSessionId(),turnId,cwd:ctx.cwd,tier,requestId:id});
+      record(row);
+      return prepared;
+    }catch(error){
+      record({event:'request',requestId:id,turnId,tierStatus:'routing-error'});
+      return blockedPayload(event.payload,'fleet routing failed before the request');
+    }
   });
   pi.on('before_provider_headers',(event,ctx)=>{
     const tier=tierDecision(intent,ctx?.model,tiers);
