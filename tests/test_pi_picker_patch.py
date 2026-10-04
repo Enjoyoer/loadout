@@ -18,6 +18,22 @@ e.useModelBrowser=function(t){const {autoFocusSearch:h,profiles:v,serverId:b}=t,
 '''
 
 class PickerPatchTests(unittest.TestCase):
+    def test_free_opencode_models_remain_first_class_in_both_picker_builders(self):
+        fixture = BUNDLE.replace('c=()=>null,u=()=>null', 'c=(id,label,models)=>models,u=row=>row.models')
+        script = picker.patch_text(fixture) + '''
+const models=[{id:'opencode/space-bunny-free',label:'SBF'},{id:'opencode/muse-spark-1.3-contributor-free',label:'MS'}];
+const definitions=['pi','codex','claude','opencode'].map(id=>({id,label:id}));
+const snapshots=definitions.map(row=>({provider:row.id,enabled:true,models:row.id==='opencode'?models:[]}));
+const a=e.buildProviderSelectorProviders({providerDefinitions:definitions,modelsByProvider:new Map([['opencode',models]])});
+const b=e.buildSelectableProviderSelectorProviders(snapshots);
+for(const rows of [a,b]) {
+ if(JSON.stringify(rows.map(row=>row.id))!=='["pi","opencode"]')throw Error('OpenCode hidden');
+ if(JSON.stringify(rows.find(row=>row.id==='opencode').modelSelection)!==JSON.stringify(models))throw Error('free rows altered');
+}
+'''
+        result = subprocess.run(['node', '--input-type=module', '-e', script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_native_profiles_cannot_bypass_picker_filter(self):
         script = picker.patch_text(BUNDLE + PROFILE_BROWSER) + '''
 const profiles=['pi','codex','claude','opencode'].map(provider=>({provider}));

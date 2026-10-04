@@ -1,0 +1,10 @@
+{
+  "providers": {
+    "opencode": {
+      "models": [
+        {"id": "opencode/space-bunny-free", "label": "SBF"},
+        {"id": "opencode/muse-spark-1.3-contributor-free", "label": "MS"}
+      ]
+    }
+  }
+}
