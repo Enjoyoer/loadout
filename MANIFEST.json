@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "c6b464a9ad4c93ace142af23d34fe88951285b44",
+  "source_commit": "0ceb984d08ae6e606b904c83d4f0e5f53d952a4b",
   "skill_count": 22,
-  "file_count": 122,
+  "file_count": 123,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 15743,
-      "sha256": "b4b70d361a05365598651f806ac7d7e7b9d0aafe5381cb226c5145e385da9d68"
+      "bytes": 18882,
+      "sha256": "b59e999ceaac73b6a18ef8644898a6b1a6afd7955f87152279a278372877afd1"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/client-config.json",
@@ -438,6 +438,13 @@
       "skill": "personal-skills",
       "bytes": 1203,
       "sha256": "5724b767da46659321e32eff01ad5861856b6159167642dd83a1e1a27236b0f5"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/fleet/example/opencode-free-overlay.json",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 210,
+      "sha256": "68923590971c7aee0cb7fc2353a7cb032442f4f4aa45c87ef9a6101c72de29ac"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/paseo-providers.json",
@@ -485,8 +492,8 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 19641,
-      "sha256": "5d3f69bd21c033732fb9ef8ae6a4d8fb04500a336fcde00b581aaebe81584482"
+      "bytes": 20147,
+      "sha256": "88d884bfca4f34119983ebbb3bd1bd9f1a3b439d88d56d1460e8326f0f924134"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",
@@ -548,8 +555,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 11544,
-      "sha256": "7fe35c30c2b7081e13c1746c4c9178206b78e5ec18975a27baff57f8bdd40330"
+      "bytes": 12031,
+      "sha256": "2fc10b4f4daca368fc9979eec3ce5b70741ee960d648ec721d55a4503a8824b1"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
