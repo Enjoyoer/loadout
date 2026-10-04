@@ -1,0 +1,7 @@
+{
+  "id": "pi-fast-toggle",
+  "description": "Per-agent Fast request toggle for tier-capable Pi models",
+  "requirements": {
+    "paseo": ">=0.10.3 <0.11.0"
+  }
+}

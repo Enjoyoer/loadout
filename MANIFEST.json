@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "70c75ac7495b37d4bf7bcd8486d89e2ebaee4da5",
+  "source_commit": "c6b464a9ad4c93ace142af23d34fe88951285b44",
   "skill_count": 22,
   "file_count": 122,
   "files": [
@@ -860,8 +860,8 @@
       "sha256": "aa3fdff5d0e4556177f4dfd5f04117e772aa54f94b6a2e34b6c0edf629c6b9b5"
     }
   ],
-  "plugin_count": 4,
-  "plugin_file_count": 64,
+  "plugin_count": 5,
+  "plugin_file_count": 79,
   "plugins": [
     {
       "id": "cache-aware-autocompact",
@@ -874,6 +874,10 @@
     {
       "id": "orphan-project-sweeper",
       "paseo": ">=0.9.2 <0.11.0"
+    },
+    {
+      "id": "pi-fast-toggle",
+      "paseo": ">=0.10.3 <0.11.0"
     },
     {
       "id": "usage-limit-auto-resume",
@@ -1192,6 +1196,96 @@
       "plugin": "orphan-project-sweeper",
       "bytes": 431,
       "sha256": "71819031dad2e0012a805e45013ae4d0576477a8722e334562f8c9668c27834a"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/README.md",
+      "plugin": "pi-fast-toggle",
+      "bytes": 7009,
+      "sha256": "4166ef0a229f92afce5029048ba56ed596da0e155422d876ecda20c16ab2003f"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/client/pills.ts",
+      "plugin": "pi-fast-toggle",
+      "bytes": 3816,
+      "sha256": "ca679c67a37546e291fac73daf5a9a683404475cd8b1efc97c341579dea0517f"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/index.client.tsx",
+      "plugin": "pi-fast-toggle",
+      "bytes": 218,
+      "sha256": "c7f27c684f75fa945c7232fa745fb46b24a2fb7722920e18b518d7c63fdc2633"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/index.server.ts",
+      "plugin": "pi-fast-toggle",
+      "bytes": 2341,
+      "sha256": "81330c62c20564fabd27b6a149f30bfe40f56ebb85fbed5451ae35541325fbed"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/package-lock.json",
+      "plugin": "pi-fast-toggle",
+      "bytes": 162283,
+      "sha256": "1ba8928d4e51b1758302d4ad2c7e0b680a3bfc01a1f737b26533acb20256b23f"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/package.json",
+      "plugin": "pi-fast-toggle",
+      "bytes": 679,
+      "sha256": "b6b6f2f744c0d41959b70e313c78c5530ea1f494d310c5feab55a85cfe7f38b1"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/paseo-plugin.json",
+      "plugin": "pi-fast-toggle",
+      "bytes": 163,
+      "sha256": "69250f78ba0dcdf1d4d8f353394501a9b861b046ee244e1cf98902374aca9e32"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/server/routing.ts",
+      "plugin": "pi-fast-toggle",
+      "bytes": 3693,
+      "sha256": "e44c828fbd763d93b64841a177c9753f62a773e674ea55bec6a420e61a3d1cb9"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/shared/contracts.ts",
+      "plugin": "pi-fast-toggle",
+      "bytes": 595,
+      "sha256": "e2f017c5f3b0900ce7369b1e4bdadd10e2322648dc4deb46237844812a00ffff"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/shared/model.ts",
+      "plugin": "pi-fast-toggle",
+      "bytes": 633,
+      "sha256": "2ff07d8bef035fca6aa0aba5ec5570b20b188351b45f9542eef59411f5c03eee"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/test/model.test.ts",
+      "plugin": "pi-fast-toggle",
+      "bytes": 1420,
+      "sha256": "86d969f04b00f368c0832a7a9dd78b875a0808086af50303b0c333c8ab25977a"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/test/pagination.test.ts",
+      "plugin": "pi-fast-toggle",
+      "bytes": 1700,
+      "sha256": "7afb9f840a173a6d8736731beb22f5b6c1a58f7c37b194d306a3032a45143815"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/test/pills.test.ts",
+      "plugin": "pi-fast-toggle",
+      "bytes": 3387,
+      "sha256": "5b7bb7c60a3381774056f4572e2fff65d6f951402b94cbc6ba378901fde7d7f1"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/test/server.test.ts",
+      "plugin": "pi-fast-toggle",
+      "bytes": 3571,
+      "sha256": "0202b153f2c3b622dad652b242f2e8707cedf11456ab0c032840c67859b2ad64"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/tsconfig.json",
+      "plugin": "pi-fast-toggle",
+      "bytes": 403,
+      "sha256": "1ebd881bd817d11247010016d182294c858febe29459b219a7d085400fa65803"
     },
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
