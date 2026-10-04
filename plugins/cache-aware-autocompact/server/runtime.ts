@@ -11,6 +11,8 @@ import { MAX_RETRIES, nextRetryCount, RETRY_DELAY_MS } from "./retry.ts";
 import { openDaemonClient } from "./daemon.ts";
 import { recoverTurn, recoveryDelay, rearmSkipReason, recoveryHistory, recoveryCwdMissing } from "./recovery.ts";
 
+import { compactionResult } from "./compaction.ts";
+
 const COMMAND = "/compact";
 
 export type Checkpoint = {
@@ -67,6 +69,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     reason: string,
     config: AutoCompactConfig,
     terminal = true,
+    attemptedAt?: string,
   ) => {
     await store.append({
       key: stateKey(checkpoint, terminal),
@@ -74,6 +77,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       turnId: checkpoint.turnId,
       lastUserMessageAt: checkpoint.lastUserMessageAt,
       createdAt: new Date(now()).toISOString(),
+      ...(attemptedAt ? { attemptedAt } : {}),
       outcome,
       reason,
     }, config.maxStateEntries);
@@ -127,6 +131,29 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         log("skip", { agentId: checkpoint.agentId, reason: "agent-unavailable", strictnessTier: "safe" });
         return;
       }
+      const baseline = await handle.timeline.refetch({ direction: "tail", limit: 200, projection: "canonical" }).catch(async error => {
+        await record(checkpoint, "compaction-failed", safeError(error), config);
+        log("compaction-failed", { agentId: agent.id, reason: safeError(error) });
+        return null;
+      });
+      if (!baseline) return;
+      if (baseline.error || baseline.gap || baseline.staleCursor) {
+        await record(checkpoint, "skip", "timeline-unavailable", config);
+        log("skip", { agentId: agent.id, reason: "timeline-unavailable" });
+        return;
+      }
+      const attempts = (await store.read()).filter(entry => entry.agentId === agent.id &&
+        ["compact-requested", "compaction-failed", "send-failed"].includes(entry.outcome));
+      const lastAttempt = attempts.at(-1);
+      const latestUser = baseline.entries.findLast(entry => entry.item.type === "user_message");
+      const realUserAfterAttempt = lastAttempt && latestUser?.item.type === "user_message" &&
+        latestUser.item.text.trim() !== COMMAND && Date.parse(latestUser.timestamp) > Date.parse(lastAttempt.attemptedAt ?? lastAttempt.createdAt);
+      // Snapshot timestamps alone cannot distinguish a real turn from /compact.
+      // Missing user history stays backed off rather than guessing that a turn is real.
+      if (lastAttempt && !realUserAfterAttempt) {
+        log("skip", { agentId: agent.id, reason: "compaction-backoff" });
+        return;
+      }
       const tier = strictnessTier(agent.lastUsage?.contextWindowUsedTokens, config);
       const decision = guardDecision(agent, checkpoint.timeline, config, checkpoint.lastUserMessageAt);
       if (!decision.ok) {
@@ -147,9 +174,10 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         log("skip", { agentId: checkpoint.agentId, reason: "became-busy-before-send", strictnessTier: tier });
         return;
       }
+      const attemptedAt = new Date(now()).toISOString();
       try {
         // Reserve durably before sending, including a crash between send and acknowledgement.
-        await record(checkpoint, "compact-requested", "send-reserved", config);
+        await record(checkpoint, "compact-requested", "send-reserved", config, true, attemptedAt);
         if (stopped || generation !== (generations.get(checkpoint.agentId) ?? 0)) return;
         const beforeSend = (await handle.refresh())?.agent;
         if (stopped || generation !== (generations.get(checkpoint.agentId) ?? 0)) return;
@@ -160,20 +188,35 @@ export function startScheduler(server: PluginServerContext, dependencies: {
           log("skip", { agentId: checkpoint.agentId, reason, strictnessTier: tier });
           return;
         }
+        const afterSeq = baseline.entries.at(-1)?.seqEnd ?? -1;
+        if (stopped || generation !== (generations.get(checkpoint.agentId) ?? 0)) return;
         await handle.send(COMMAND);
-        await record(checkpoint, "compacted", decision.reason, config);
+        await handle.waitForFinish(300_000);
+        await compactionResult(handle.timeline, afterSeq, lifetime.signal);
+        await record(checkpoint, "compacted", decision.reason, config, true, attemptedAt);
         void metrics.append({ event: "compacted", agentId: checkpoint.agentId, provider: agent.provider, model: agent.model ?? null, usage: agent.lastUsage ?? null });
         log("compacted", { agentId: checkpoint.agentId, reason: decision.reason, command: COMMAND, strictnessTier: tier });
       } catch (error) {
-        await record(checkpoint, "send-failed", safeError(error), config);
-        log("send-failed", { agentId: checkpoint.agentId, reason: safeError(error), strictnessTier: tier });
+        await record(checkpoint, "compaction-failed", safeError(error), config, true, attemptedAt);
+        log("compaction-failed", { agentId: checkpoint.agentId, reason: safeError(error), strictnessTier: tier });
       }
     } finally {
       inFlight.delete(checkpoint.key);
+      const deferred = deferredTurns.get(checkpoint.agentId);
+      deferredTurns.delete(checkpoint.agentId);
+      if (deferred && !stopped) void primeAndArm(deferred.event, deferred.api).catch(error =>
+        log("arm-failed", { agentId: checkpoint.agentId, reason: safeError(error) }));
     }
   };
 
   const primeAndArm = async (event: { agent: { id: string; provider: string; model?: string | null }; turnId: string | null; timeline: readonly AgentTimelineItem[] }, api: PaseoApi) => {
+    // Automatic compact turns must not create a fresh timer, including failed turns.
+    const latestUser = event.timeline.findLast(item => item.type === "user_message");
+    if (latestUser?.type === "user_message" && latestUser.text.trim() === COMMAND) return;
+    if (inFlightHasAgent(event.agent.id)) {
+      deferredTurns.set(event.agent.id, { event, api });
+      return;
+    }
     const endedAt = new Date(now()).toISOString();
     const generation = generations.get(event.agent.id) ?? 0;
     if (["claude", "codex", "pi"].includes(event.agent.provider)) {
@@ -197,7 +240,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     }
     const minutes = providerDelayMinutes(refreshed.agent.provider, config, refreshed.agent.model);
     if (minutes === null) {
-      log("skip", { agentId: event.agent.id, reason: refreshed.agent.provider === "pi" ? "unsupported-pi-model" : `provider-${refreshed.agent.provider}` });
+      log("skip", { agentId: event.agent.id, reason: refreshed.agent.provider === "pi" && refreshed.agent.model?.startsWith("fleet/gpt-") ? "pi-gpt-disabled" : refreshed.agent.provider === "pi" ? "unsupported-pi-model" : `provider-${refreshed.agent.provider}` });
       return;
     }
     const checkpoint: Checkpoint = {
@@ -230,6 +273,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     });
   };
 
+  const deferredTurns = new Map<string, { event: Parameters<typeof primeAndArm>[0]; api: PaseoApi }>();
   const generations = new Map<string, number>();
   const invalidate = (agentId: string) => generations.set(agentId, (generations.get(agentId) ?? 0) + 1);
   let recoveryQueue = Promise.resolve();
@@ -246,7 +290,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         const page = await api.agents.list({ page: { limit: 200, cursor }, signal: lifetime.signal });
         for (const { agent } of page.entries) {
           if (stopped) return;
-          const reason = rearmSkipReason(agent);
+          const reason = rearmSkipReason(agent) ?? (providerDelayMinutes(agent.provider, config, agent.model) === null ? "pi-gpt-disabled" : null);
           if (reason) { skip(reason); continue; }
           if (timers.has(agent.id) || inFlightHasAgent(agent.id)) { skip("already-pending"); continue; }
           expectedUserMessage.set(agent.id, agent.lastUserMessageAt ?? null);
@@ -400,6 +444,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     for (const remove of agentSubscriptions.values()) remove();
     agentSubscriptions.clear();
     timers.cancelAll();
+    deferredTurns.clear();
     expectedUserMessage.clear();
     recoveryFailures.clear();
   };

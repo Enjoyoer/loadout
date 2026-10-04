@@ -6,6 +6,8 @@ export const ConfigSchema = z.object({
   /** Delay after a completed turn. Defaults are cache TTL minus a safety margin. */
   claudeDelayMinutes: z.number().min(1).max(120).default(50),
   codexDelayMinutes: z.number().min(1).max(120).default(22),
+  /** Pi GPT idle compaction is opt-in pending cache-cost measurements. Native Codex is unchanged. */
+  piGptEnabled: z.boolean().default(false),
   /** Latest reported context usage required before a timer is eligible. */
   thresholdTokens: z.number().int().min(1).max(10_000_000).default(100_000),
   /** Context size at which boundary checks favor recall over precision. */

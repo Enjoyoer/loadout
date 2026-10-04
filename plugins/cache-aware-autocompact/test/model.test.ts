@@ -37,8 +37,10 @@ describe("Pi cache families", () => {
       assert.equal(providerDelayMinutes("pi", config, model), 50);
       assert.equal(guardDecision(agent({ provider: "pi", model }), timeline, config, agent().lastUserMessageAt!).ok, true);
     }
-    assert.equal(providerDelayMinutes("pi", config, "fleet/gpt-6.1-sol"), 22);
-    assert.equal(providerDelayMinutes("pi", defaultConfig({ codexDelayMinutes: 30 }), "fleet/gpt-6.1-sol"), 30);
+    assert.equal(providerDelayMinutes("pi", config, "fleet/gpt-6.1-sol"), null);
+    assert.equal(providerDelayMinutes("pi", defaultConfig({ piGptEnabled: true }), "fleet/gpt-6.1-sol"), 22);
+    assert.deepEqual(guardDecision(agent({ provider: "pi", model: "fleet/gpt-6.1-sol" }), timeline, config, agent().lastUserMessageAt!), { ok: false, reason: "pi-gpt-disabled" });
+    assert.equal(providerDelayMinutes("pi", defaultConfig({ codexDelayMinutes: 30, piGptEnabled: true }), "fleet/gpt-6.1-sol"), 30);
     for (const model of [null, undefined, "", "fleet/chatgpt-web-pro", "chatgpt-web/gpt-6", "other/gpt-6", "fleet/unknown"]) {
       assert.equal(providerDelayMinutes("pi", config, model), null);
       assert.deepEqual(guardDecision(agent({ provider: "pi", model: model ?? null }), timeline, config, agent().lastUserMessageAt!), { ok: false, reason: "unsupported-pi-model" });

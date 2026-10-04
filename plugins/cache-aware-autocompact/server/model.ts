@@ -20,6 +20,7 @@ export function cacheFamily(provider: string, model?: string | null): "claude" |
 }
 
 export function providerDelayMinutes(provider: string, config: AutoCompactConfig, model?: string | null): number | null {
+  if (provider === "pi" && cacheFamily(provider, model) === "codex" && !config.piGptEnabled) return null;
   const family = cacheFamily(provider, model);
   if (family === "claude") return config.claudeDelayMinutes;
   if (family === "codex") return config.codexDelayMinutes;
@@ -49,6 +50,7 @@ export function guardDecision(
   expectedLastUserMessageAt: string | null,
 ): Decision {
   if (!cacheFamily(agent.provider, agent.model)) return { ok: false, reason: agent.provider === "pi" ? "unsupported-pi-model" : `provider-${agent.provider}` };
+  if (providerDelayMinutes(agent.provider, config, agent.model) === null) return { ok: false, reason: "pi-gpt-disabled" };
   if (agent.status !== "idle" || agent.activeTurn) return { ok: false, reason: "not-idle" };
   if (agent.archivedAt) return { ok: false, reason: "archived" };
   if ((agent.pendingPermissions?.length ?? 0) > 0) return { ok: false, reason: "pending-permission" };

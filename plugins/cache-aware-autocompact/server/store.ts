@@ -8,7 +8,9 @@ export type StateEntry = {
   turnId: string | null;
   lastUserMessageAt: string | null;
   createdAt: string;
-  outcome: "compact-requested" | "would-compact" | "compacted" | "skip" | "send-failed";
+  /** Original request time, retained when a late result replaces the reservation. */
+  attemptedAt?: string;
+  outcome: "compact-requested" | "would-compact" | "compacted" | "compaction-failed" | "skip" | "send-failed";
   reason: string;
 };
 type State = { version: 1; entries: StateEntry[]; turns?: Checkpoint[] };

@@ -1,5 +1,7 @@
 # Usage limit auto resume
 
+Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.pid` runtime listen metadata. An explicit non-default `PASEO_HOME` without valid endpoint metadata refuses to connect instead of falling back to another daemon. Invalid explicit hosts also fail closed. The standard local endpoint is a fallback only for an unset home or `~/.paseo`.
+
 This server plugin keeps the existing usage-limit resume path (five-hour default) and adds a separate retry path for completed turns whose final assistant message is a transient provider error. Both paths obey the host `armed` setting and the `noresume=true` label. The plugin does not send while unarmed.
 
 ## Transient retry

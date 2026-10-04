@@ -32,5 +32,5 @@ it("rejects unknown keys and non-boolean armed (fails closed as invalid settings
 
 it("resolves the fallback daemon from PASEO_HOST, then the default", () => {
   assert.equal(resolveDaemonTarget({ PASEO_HOST: "127.0.0.1:7788" }).url, "ws://127.0.0.1:7788/ws");
-  assert.equal(resolveDaemonTarget({ PASEO_HOME: "/nonexistent-home" }).source, "default");
+  assert.throws(() => resolveDaemonTarget({ PASEO_HOME: "/nonexistent-home" }), /Refusing default-daemon fallback/);
 });
