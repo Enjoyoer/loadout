@@ -13,8 +13,40 @@ BUNDLE = '''const c=()=>null,u=()=>null,e={};
 e.buildProviderSelectorProviders=function(o){return o.providerDefinitions.map(n=>({id:n.id,label:n.label,modelSelection:c(n.id,n.label,o.modelsByProvider.has(n.id)?o.modelsByProvider.get(n.id)??[]:null)}))};
 e.buildSelectableProviderSelectorProviders=function(o){return(o??[]).filter(o=>o.enabled).map(o=>{const n=o.label??o.provider;return{id:o.provider,label:n,modelSelection:u(o,n)}})};
 '''
+PROFILE_BROWSER = '''const I={isWeb:true};
+e.useModelBrowser=function(t){const {autoFocusSearch:h,profiles:v,serverId:b}=t,y=void 0===h?I.isWeb:h,P=void 0===v?null:v,S=void 0===b?null:b,{t:x}={t:()=>""};return P};
+'''
 
 class PickerPatchTests(unittest.TestCase):
+    def test_native_profiles_cannot_bypass_picker_filter(self):
+        script = picker.patch_text(BUNDLE + PROFILE_BROWSER) + '''
+const profiles=['pi','codex','claude','opencode'].map(provider=>({provider}));
+const applyProfile=()=>{};const input={rows:profiles,applyProfile};
+const before=JSON.stringify(profiles);const rows=e.useModelBrowser({profiles:input});
+if(JSON.stringify(rows.rows.map(x=>x.provider))!=='["pi","opencode"]')throw Error('native profile bypass');
+if(rows.applyProfile!==applyProfile)throw Error('profile callback changed');
+if(JSON.stringify(profiles)!==before)throw Error('daemon profiles mutated');
+if(e.useModelBrowser({})!==null)throw Error('absent profiles changed');
+if(e.useModelBrowser({profiles:null})!==null)throw Error('loading profiles changed');
+'''
+        r=subprocess.run(['node','--input-type=module','-e',script],capture_output=True,text=True)
+        self.assertEqual(r.returncode,0,r.stderr)
+
+    def test_unknown_profile_browser_layout_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, 'profile browser'):
+            picker.patch_text(BUNDLE+'e.useModelBrowser=function(t){return t.profiles};')
+
+    def test_entry_busts_renderer_cache_and_rolls_back_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);p=root/'index-original.js';p.write_text(BUNDLE+PROFILE_BROWSER)
+            entry=root/'index.html';before='<script src="/index-original.js" defer></script>';entry.write_text(before)
+            picker.run(root,'apply');self.assertIn('?loadout-picker=',entry.read_text())
+            self.assertFalse(picker.run(root,'reapply')['changed'])
+            entry.write_text(before)
+            with self.assertRaisesRegex(ValueError,'removed the patch'):picker.run(root,'check')
+            picker.run(root,'reapply');picker.run(root,'rollback')
+            self.assertEqual(entry.read_text(),before);self.assertEqual(p.read_text(),BUNDLE+PROFILE_BROWSER)
+
     def test_client_filters_only_native_rows_without_changing_inputs(self):
         script = picker.patch_text(BUNDLE) + '''
 const ids=['pi','codex','claude','opencode'];const definitions=ids.map(id=>({id,label:id}));
