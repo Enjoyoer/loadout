@@ -1,6 +1,6 @@
 # merged-worker-archiver
 
-Server-only Paseo plugin for Paseo 0.9.1. It archives worker **worktree** workspaces,
+Server-only Paseo plugin for Paseo >=0.9.2 <0.11.0. It archives worker **worktree** workspaces,
 and through Paseo's own workspace archive the agents in them, once the worker branch
 is merged into its base. It is **event-driven**: every finished agent turn (PM or
 worker) evaluates the worktrees of that agent's project and repository within seconds.
@@ -163,8 +163,20 @@ call until a hook runs. The plugin therefore:
 `paseo-plugin.json` pins `"paseo": ">=0.9.2 <0.11.0"` and `package.json` pins
 `@getpaseo/client` to exactly `0.9.2`: the plugin depends on 0.9.1 archive semantics
 (directory removal, branch kept), the worktree metadata location, and snapshot field
-names. Those were checked against 0.9.2 and 0.10.1; other 0.10 releases are admitted
-without that check. Re-check them before admitting 0.11.
+names. Those were checked against 0.9.2, 0.10.1, and 0.10.3. Re-check them before
+admitting 0.11.
+
+The 0.10.3 check used its installed client and plugin type declarations and a
+credential-free, disposable daemon with a fake ACP provider and scratch git repository.
+With no settings file, both the startup fallback client and a real `agent.turn_ended`
+hook logged `would-archive` for a clean, locally merged worker. After arming only the
+scratch daemon's settings, a completed fixture turn triggered a fresh-state recheck
+and the official archive action. The worker agent and workspace were archived, the
+Paseo-owned directory and git worktree entry were removed, and the branch remained.
+An unmerged worker in the same project was skipped and its directory remained.
+No runtime or dependency change was needed for 0.10.3; the existing manifest range
+already includes it. This check does not establish compatibility with 0.11 or exercise
+the GitHub squash-merge path, project teardown scripts, or concurrent live-agent races.
 
 Paseo compiles the plugin from source with esbuild and bundles `@getpaseo/client`
 (with `@getpaseo/protocol`), about 8.4 MB, so `npm install` must have run here before
