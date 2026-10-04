@@ -83,6 +83,10 @@ def _providers(providers, where):
             if not isinstance(model_id, str) or not model_id or model_id in ids:
                 raise fleet.FleetError(f"providers.{name}: model ids must be unique non-empty strings")
             ids.add(model_id)
+            if name == 'opencode' and model_id in {
+                'opencode/space-bunny-free', 'opencode/muse-spark-1.3-contributor-free'
+            } and 'service_tiers' in model:
+                raise fleet.FleetError(f'providers.{name}.{model_id}: Zen free models must remain untiered')
             # Picker labels are names only: no model IDs or version numbers.
             if not isinstance(label, str) or not label.strip() or re.search(r"\d", label) \
                     or model_id.lower() in label.lower():
@@ -92,6 +96,8 @@ def _providers(providers, where):
 def _pi(value, where):
     if not isinstance(value, dict): raise fleet.FleetError(f"{where} must be an object")
     fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly"}, where)
+    if isinstance(value.get('catalogSources'), list) and 'opencode' in value['catalogSources']:
+        raise fleet.FleetError('OpenCode Zen free models require the native opencode picker, not Pi catalogSources')
     if value.get('catalogOnly') is True:
         if 'root' in value or 'runtime' in value: raise fleet.FleetError('catalogOnly cannot configure a Pi runtime')
         fleet._strings(value.get('catalogSources', ['claude', 'codex']), f'{where}.catalogSources')

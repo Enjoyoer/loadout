@@ -22,6 +22,11 @@ export function enforceCodemode(pi, terminate = code => process.exit(code)) {
 export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, requestId }) {
   if (!payload || typeof payload !== 'object') return payload;
   const result = structuredClone(payload);
+  if (model?.provider === 'opencode') {
+    // Zen is direct, never a router route, even for its Responses model.
+    delete result.service_tier;
+    return result;
+  }
   if (model?.api === 'openai-responses') {
     const metadata = { thread_id: sessionId, turn_id: turnId, sandbox: 'none', workspaces: { [cwd]: {} } };
     result.client_metadata = { ...result.client_metadata, 'x-codex-turn-metadata': JSON.stringify(metadata),
@@ -62,12 +67,14 @@ export function resolveTierIntent(labels = {}) {
 }
 // catalogTiers: the model's catalog service_tiers ids, or null when the catalog could not be read.
 export function tierDecision(intent, model, catalogTiers) {
-  const codexRoute = model?.api === 'openai-responses' && !model.id.startsWith('chatgpt-web/');
+  const zenFree = model?.provider === 'opencode' && ['space-bunny-free', 'muse-spark-1.3-contributor-free'].includes(model.id);
+  const codexRoute = !zenFree && model?.api === 'openai-responses' && !model.id.startsWith('chatgpt-web/');
   // A failed or unfinished label lookup must never fall back to a stale or inherited tier.
-  // Routes without a service tier send none either way, so they are not refused for it.
-  if (intent?.lookupFailed) return codexRoute ? { status: 'lookup-failed', error: intent.error } : { status: 'lookup-failed-untiered' };
+  // Known Zen free IDs also fail closed: a missing lookup could hide explicit Fast.
+  if (intent?.lookupFailed) return codexRoute || zenFree ? { status: 'lookup-failed', error: intent.error } : { status: 'lookup-failed-untiered' };
   if (intent?.error) return { status: 'invalid', error: intent.error };
   if (!intent || intent.tier === 'inherit') return { status: 'inherited', header: codexRoute ? 'inherit' : undefined };
+  if (zenFree && intent.tier === 'standard') return { status: 'explicit-untiered' };
   if (!codexRoute) return { status: 'unsupported', error: `service tier "${intent.tier}" is not supported for ${model?.id}: this route has no service tier` };
   if (intent.tier === 'standard') return { status: 'explicit', wire: TIER_WIRE.standard, header: 'standard' };
   if (catalogTiers && !catalogTiers.includes(CATALOG_TIER[intent.tier]))
@@ -94,6 +101,7 @@ export function blockedPayload(payload, error) {
 const catalogCache = new Map();
 async function catalogTiers(ctx) {
   const model = ctx.model;
+  if (model?.provider === 'opencode') return [];
   if (model?.api !== 'openai-responses' || model.id.startsWith('chatgpt-web/') || !model.baseUrl) return null;
   const cached = catalogCache.get(model.baseUrl);
   let catalog = cached && Date.now() - cached.at < 10 * 60_000 ? cached.catalog : undefined;
@@ -165,7 +173,7 @@ export default function(pi) {
   pi.on('before_provider_headers',(event,ctx)=>{
     const tier=tierDecision(intent,ctx?.model,tiers);
     if(tier.header) event.headers['X-Fleet-Service-Tier']=tier.header;
-    if(ctx?.model?.api==='openai-responses') event.headers['X-Client-Request-Id']=requestId();
+    if(ctx?.model?.api==='openai-responses' && ctx.model.provider !== 'opencode') event.headers['X-Client-Request-Id']=requestId();
     settle('headers');
   });
   pi.on('provider_stream_event',event=>{
