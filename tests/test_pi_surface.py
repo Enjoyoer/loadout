@@ -102,6 +102,47 @@ for(const order of ['payload-first','headers-first']){
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_service_tier_fails_closed_on_lookup_and_diagnostic_errors(self):
+        script=r"""
+import assert from 'node:assert/strict';
+import http from 'node:http';import {mkdtempSync,mkdirSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+let mode={kind:'labels',labels:{}};
+const server=http.createServer((req,res)=>{let b='';req.on('data',c=>b+=c);req.on('end',()=>{
+ if(req.url.startsWith('/v1/models')){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({models:[{slug:'gpt-6.1-sol',service_tiers:[{id:'priority'}]}]}));}
+ if(mode.kind==='http500'){res.writeHead(500);return res.end('unavailable');}
+ res.writeHead(200,{'content-type':'application/json'});
+ if(mode.kind==='isError')return res.end(JSON.stringify({jsonrpc:'2.0',id:1,result:{isError:true}}));
+ res.end(JSON.stringify({jsonrpc:'2.0',id:1,result:{structuredContent:{snapshot:{labels:mode.labels}}}}));});});
+await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`;
+process.env.LOADOUT_PI_MCP_URL=base+'/mcp';process.env.PASEO_AGENT_ID='synthetic';
+const m=await import(process.argv[1]);
+const sol={api:'openai-responses',id:'gpt-6.1-sol',baseUrl:base+'/v1'},opus={api:'anthropic-messages',id:'claude-opus-5-5'};
+const registry={getApiKeyAndHeaders:async()=>({ok:true,headers:{}})};
+function boot(){const h={};const pi={getSettings:()=>({codemode:{mode:'on'}}),getActiveTools:()=>['codemode'],on:(e,f)=>h[e]=f,appendEntry:()=>{}};m.default(pi);return h;}
+const ctx=model=>({model,modelRegistry:registry,thinkingLevel:'medium',cwd:'/w',sessionManager:{getSessionId:()=> 's'}});
+const base_payload={model:'gpt-6.1-sol',input:[],reasoning:{effort:'medium'}};
+async function turn(h,model,kind,labels){mode={kind,labels};await h.before_agent_start({},ctx(model));const p=h.before_provider_request({payload:{...base_payload,model:model.id}},ctx(model));const hd={headers:{}};h.before_provider_headers(hd,ctx(model));return {p,hd:hd.headers};}
+const refused=p=>p.model.startsWith(m.BLOCKED_MODEL_PREFIX+':');
+// initial lookup failure refuses on a tiered route (never inherits)
+for(const kind of ['http500','isError']){const r=await turn(boot(),sol,kind);assert.ok(refused(r.p),kind);assert.equal(r.p.service_tier,undefined);assert.equal(r.hd['X-Fleet-Service-Tier'],undefined);}
+// Fast on turn 1, then a failed lookup on turn 2 refuses (never reuses stale Fast)
+{const h=boot();const a=await turn(h,sol,'labels',{'opc.service-tier':'fast'});assert.equal(a.p.service_tier,'priority');assert.ok(!refused(a.p));
+ const b=await turn(h,sol,'http500');assert.ok(refused(b.p));assert.equal(b.hd['X-Fleet-Service-Tier'],undefined);
+ const c=await turn(h,sol,'labels',{'opc.service-tier':'standard'});assert.equal(c.p.service_tier,'default');assert.equal(c.hd['X-Fleet-Service-Tier'],'standard');}
+// untiered route (Opus) is not refused for a lookup failure and gets no tier
+{const r=await turn(boot(),opus,'http500');assert.ok(!refused(r.p));assert.equal(r.p.service_tier,undefined);}
+// evidence write failure cannot bypass the refusal
+{const dir=mkdtempSync(join(tmpdir(),'ev-'));mkdirSync(join(dir,'route-evidence.jsonl'));process.env.PI_CODING_AGENT_DIR=dir;
+ const h=boot();const r=await turn(h,sol,'labels',{'opc.service-tier':'ultrafast'});assert.ok(refused(r.p));
+ const ok=await turn(h,sol,'labels',{'opc.service-tier':'fast'});assert.equal(ok.p.service_tier,'priority');delete process.env.PI_CODING_AGENT_DIR;}
+// any exception inside request preparation fails closed
+{const h=boot();mode={kind:'labels',labels:{'opc.service-tier':'standard'}};await h.before_agent_start({},ctx(sol));
+ const bad={...ctx(sol),sessionManager:{getSessionId:()=>{throw Error('boom')}}};const p=h.before_provider_request({payload:base_payload},bad);assert.ok(refused(p));}
+server.close();
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_all_role_and_worker_rules_preserve_model_and_thinking(self):
         script=r"""
 import assert from 'node:assert/strict';
