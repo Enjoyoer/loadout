@@ -49,6 +49,59 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
             self.assertNotEqual(launch.returncode, 0)
             self.assertIn('requires fixed Codemode', launch.stderr)
 
+    def test_service_tier_intent_eligibility_and_wire(self):
+        script=r"""
+import assert from 'node:assert/strict';
+const m=await import(process.argv[1]);
+const sol={api:'openai-responses',id:'gpt-6.1-sol'},opus={api:'anthropic-messages',id:'claude-opus-5-5'},web={api:'openai-responses',id:'chatgpt-web/pro'};
+const R=m.resolveTierIntent,D=m.tierDecision;
+assert.deepEqual(R({}),{tier:'inherit',source:'fleet-default'});
+assert.equal(R({'opc.fast-requested':'true'}).tier,'fast');
+assert.equal(R({'opc.fast-requested':'false'}).tier,'standard');
+assert.equal(R({'opc.service-tier':'Standard','opc.fast-requested':'true'}).tier,'standard');
+assert.equal(R({'opc.service-tier':'priority'}).tier,'fast');
+assert.equal(R({'opc.service-tier':'default'}).tier,'standard');
+assert.match(R({'opc.service-tier':'turbo'}).error,/unsupported opc.service-tier/);
+const cat=['priority'];
+assert.deepEqual(D(R({'opc.service-tier':'fast'}),sol,cat),{status:'explicit',wire:'priority',header:'fast'});
+assert.deepEqual(D(R({'opc.service-tier':'standard'}),sol,cat),{status:'explicit',wire:'default',header:'standard'});
+for(const c of [[],null,['priority']])assert.deepEqual(D(R({'opc.service-tier':'standard'}),sol,c),{status:'explicit',wire:'default',header:'standard'});
+assert.deepEqual(D(R({'opc.fast-requested':'false'}),sol,[]),{status:'explicit',wire:'default',header:'standard'});
+assert.deepEqual(D(R({}),sol,cat),{status:'inherited',header:'inherit'});
+assert.deepEqual(D(R({}),opus,null),{status:'inherited',header:undefined});
+assert.equal(D(R({'opc.service-tier':'ultrafast'}),sol,cat).status,'unsupported');
+assert.equal(D(R({'opc.service-tier':'fast'}),sol,[]).status,'unsupported');
+assert.equal(D(R({'opc.service-tier':'fast'}),opus,null).status,'unsupported');
+assert.equal(D(R({'opc.service-tier':'standard'}),web,null).status,'unsupported');
+assert.equal(D(R({'opc.service-tier':'fast'}),sol,null).status,'explicit-unverified');
+assert.equal(D(R({'opc.service-tier':'turbo'}),sol,cat).status,'invalid');
+const base={model:'gpt-6.1-sol',input:[],reasoning:{effort:'medium'},service_tier:'priority'};
+const ctx={model:sol,sessionId:'s',turnId:'t',cwd:'/w',requestId:'r1'};
+const inherit=m.preparePayload(base,{...ctx,tier:D(R({}),sol,cat)});
+assert.equal('service_tier' in inherit,false);assert.equal(inherit.reasoning.effort,'medium');
+assert.equal(inherit.client_metadata['x-fleet-request-id'],'r1');
+assert.equal(m.preparePayload(base,{...ctx,tier:D(R({'opc.service-tier':'standard'}),sol,cat)}).service_tier,'default');
+const blocked=m.blockedPayload(base,'service tier "ultrafast" is not supported');
+assert.ok(blocked.model.startsWith(m.BLOCKED_MODEL_PREFIX+':'));assert.equal(base.model,'gpt-6.1-sol');
+assert.match(m.EXTENSION_SHA256,/^[0-9a-f]{64}$/);
+// Runtime: both hook orders share one request id; refusal never sends a real model.
+for(const order of ['payload-first','headers-first']){
+ const h={};const entries=[];
+ const pi={getSettings:()=>({codemode:{mode:'on'}}),getActiveTools:()=>['codemode'],on:(e,f)=>h[e]=f,appendEntry:(type,data)=>entries.push({type,data})};
+ m.default(pi);
+ const rctx={model:sol,thinkingLevel:'medium',cwd:'/w',sessionManager:{getSessionId:()=> 'sess'}};
+ await h.before_agent_start({},{model:undefined});
+ const hdr={headers:{}};let payload;
+ if(order==='payload-first'){payload=h.before_provider_request({payload:base},rctx);h.before_provider_headers(hdr,rctx);}
+ else{h.before_provider_headers(hdr,rctx);payload=h.before_provider_request({payload:base},rctx);}
+ assert.equal(hdr.headers['X-Fleet-Service-Tier'],'inherit');
+ assert.equal(hdr.headers['X-Client-Request-Id'],payload.client_metadata['x-fleet-request-id']);
+ assert.equal('service_tier' in payload,false);
+}
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_all_role_and_worker_rules_preserve_model_and_thinking(self):
         script=r"""
 import assert from 'node:assert/strict';
