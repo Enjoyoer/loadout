@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "33f52922460f2d0041ce76730b131d659e09ac73",
+  "source_commit": "768cab2f2e6e9619cde91055c88d36e928ce439c",
   "skill_count": 22,
   "file_count": 122,
   "files": [
@@ -576,8 +576,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/picker-patch.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 3934,
-      "sha256": "9f73080362d59c4045c531ed354e77fae627fcf71427435851149407d69c6a59"
+      "bytes": 5864,
+      "sha256": "c1e6b5583c9b37bbfc01c80d6c95281a91dfc3d93575d0c503c4ec9707227b29"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/plugins_sync.py",
