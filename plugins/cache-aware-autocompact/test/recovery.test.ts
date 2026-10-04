@@ -6,7 +6,7 @@ import type { PaseoAgent, PaseoClient, PaseoAgentUpdateHandler, PaseoAgentTimeli
 import type { FetchAgentTimelinePayload } from "@getpaseo/client/internal/daemon-client";
 import type { PluginServerContext, PluginLifecycleEvents, PluginHookContext } from "@getpaseo/plugin/server";
 import { defaultConfig } from "../server/config.ts";
-import { recoverTurn, recoveryHistory, recoveryDelay, REARM_JITTER_MIN_MS, REARM_JITTER_MAX_MS } from "../server/recovery.ts";
+import { rearmSkipReason, recoverTurn, recoveryHistory, recoveryDelay, REARM_JITTER_MIN_MS, REARM_JITTER_MAX_MS } from "../server/recovery.ts";
 import { startScheduler, type Checkpoint } from "../server/runtime.ts";
 import { StateStore } from "../server/store.ts";
 import type { TimerApi } from "../server/timer.ts";
@@ -117,6 +117,29 @@ function harness() {
     async recovered() { await until(() => logs.some((line) => line.action === "rearm-summary")); },
   };
 }
+
+describe("Pi scheduler", () => {
+  it("recovers both cache families and skips web routes", async () => fixture(async (f) => {
+    f.setAgents([agent({ provider: "pi", model: "fleet/claude-opus-5-5" }),
+      agent({ id: "a2", provider: "pi", model: "fleet/gpt-6.1-sol" }),
+      agent({ id: "a3", provider: "pi", model: "fleet/chatgpt-web-pro" })]);
+    assert.equal(rearmSkipReason(agent({ provider: "pi", model: null })), "unsupported-pi-model");
+    f.start(f.store); await f.recovered();
+    assert.equal(f.timers.pending.size, 2);
+    assert.deepEqual([...f.timers.pending.values()].map(t => t.ms).sort((a, b) => a - b), [4500, 20 * 60_000]);
+    assert.equal((f.logs.find(l => l.action === "rearm-summary")!.data.skipped as Record<string, number>)["unsupported-pi-model"], 1);
+    f.timers.fire(); await until(() => f.logs.filter(l => l.action === "compacted").length === 2);
+    assert.deepEqual(f.sends, ["/compact", "/compact"]);
+  }));
+  it("arms turn-end timers from the refreshed model rather than event model", async () => fixture(async (f) => {
+    const pi = agent({ provider: "pi", model: "fleet/gpt-6.1-sol" });
+    f.setAgents([pi]); f.start(f.store); await f.recovered();
+    f.event("agent.turn_started", { agent: { ...pi, parentAgentId: null }, turnId: "new" } as PluginLifecycleEvents["agent.turn_started"]);
+    f.event("agent.turn_ended", { agent: { ...pi, parentAgentId: null, model: "fleet/claude-opus-5-5" }, turnId: "new", timeline: [{ type: "assistant_message", text: "Done" }], outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"]);
+    await until(() => f.logs.some(l => l.action === "timer-started"));
+    assert.equal(f.logs.find(l => l.action === "timer-started")!.data.delayMinutes, 22);
+  }));
+});
 
 describe("restart recovery", () => {
   it("skips missing cwd and non-directory parents without fetching timelines", async () => fixture(async (f) => {
@@ -455,6 +478,9 @@ describe("elapsed-delay math", () => {
   it("subtracts idle time for both providers and clamps future end times", () => {
     assert.deepEqual(recoveryDelay("claude", endedAt, config, endedMs + 20 * 60_000), { remainingMs: 1_800_000, delayMs: 1_800_000, jitterApplied: false });
     assert.equal(recoveryDelay("codex", endedAt, config, endedMs + 20 * 60_000).delayMs, 120_000);
+    assert.equal(recoveryDelay("pi", endedAt, config, endedMs + 20 * 60_000, () => 0, "fleet/gpt-6.1-sol").delayMs, 120_000);
+    assert.equal(recoveryDelay("pi", endedAt, config, endedMs + 20 * 60_000, () => 0, "fleet/claude-opus-5-5").delayMs, 1_800_000);
+    assert.equal(recoveryDelay("pi", endedAt, defaultConfig({ claudeDelayMinutes: 120 }), endedMs + 61 * 60_000, () => 0, "fleet/claude-opus-5-5").jitterApplied, true);
     assert.equal(recoveryDelay("claude", endedAt, config, endedMs - 1).delayMs, 3_000_000);
   });
   it("jitters due and expired timers within the documented bounds", () => {

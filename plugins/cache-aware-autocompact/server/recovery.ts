@@ -2,7 +2,7 @@ import { lstat } from "node:fs/promises";
 import type { PaseoAgent, PaseoAgentTimelineHandle } from "@getpaseo/client";
 import type { FetchAgentTimelinePayload } from "@getpaseo/client/internal/daemon-client";
 import type { AutoCompactConfig } from "./config.ts";
-import { checkpointKey, providerDelayMinutes } from "./model.ts";
+import { cacheFamily, checkpointKey, providerDelayMinutes } from "./model.ts";
 import type { Checkpoint } from "./runtime.ts";
 
 // Expired timers are spread over a small window, independently per agent.
@@ -11,11 +11,11 @@ export const REARM_JITTER_MAX_MS = 7_000;
 // The cache windows underlying the plugin's default provider delays.
 const CACHE_TTL_MS: Record<string, number> = { claude: 60 * 60_000, codex: 30 * 60_000 };
 
-export function recoveryDelay(provider: string, endedAt: string, config: AutoCompactConfig, now: number, random = Math.random) {
-  const configuredMs = (providerDelayMinutes(provider, config) ?? 0) * 60_000;
+export function recoveryDelay(provider: string, endedAt: string, config: AutoCompactConfig, now: number, random = Math.random, model?: string | null) {
+  const configuredMs = (providerDelayMinutes(provider, config, model) ?? 0) * 60_000;
   const elapsedMs = Math.max(0, now - Date.parse(endedAt));
   const remainingMs = Math.max(0, configuredMs - elapsedMs);
-  const jitterApplied = remainingMs === 0 || elapsedMs >= (CACHE_TTL_MS[provider] ?? 0);
+  const jitterApplied = remainingMs === 0 || elapsedMs >= (CACHE_TTL_MS[cacheFamily(provider, model) ?? ""] ?? 0);
   const delayMs = jitterApplied
     ? REARM_JITTER_MIN_MS + Math.floor(Math.min(1, Math.max(0, random())) * (REARM_JITTER_MAX_MS - REARM_JITTER_MIN_MS))
     : remainingMs;
@@ -23,7 +23,7 @@ export function recoveryDelay(provider: string, endedAt: string, config: AutoCom
 }
 
 export function rearmSkipReason(agent: PaseoAgent): string | null {
-  if (agent.provider !== "claude" && agent.provider !== "codex") return "unsupported-provider";
+  if (!cacheFamily(agent.provider, agent.model)) return agent.provider === "pi" ? "unsupported-pi-model" : "unsupported-provider";
   if (agent.status !== "idle" || agent.activeTurn) return "not-idle";
   if (agent.archivedAt) return "archived";
   if (agent.labels?.autocompact === "off") return "opted-out-label";

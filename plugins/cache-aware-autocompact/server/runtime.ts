@@ -173,10 +173,10 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     }
   };
 
-  const primeAndArm = async (event: { agent: { id: string; provider: string }; turnId: string | null; timeline: readonly AgentTimelineItem[] }, api: PaseoApi) => {
+  const primeAndArm = async (event: { agent: { id: string; provider: string; model?: string | null }; turnId: string | null; timeline: readonly AgentTimelineItem[] }, api: PaseoApi) => {
     const endedAt = new Date(now()).toISOString();
     const generation = generations.get(event.agent.id) ?? 0;
-    if (event.agent.provider === "claude" || event.agent.provider === "codex") {
+    if (["claude", "codex", "pi"].includes(event.agent.provider)) {
       const snapshot = await api.agents.ref(event.agent.id).refresh().catch(() => null);
       void metrics.append({
         event: "turn-ended",
@@ -190,14 +190,14 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     }
     const config = await readConfig();
     if (!config || stopped) return;
-    const minutes = providerDelayMinutes(event.agent.provider, config);
-    if (minutes === null) {
-      log("skip", { agentId: event.agent.id, reason: `provider-${event.agent.provider}` });
-      return;
-    }
     const refreshed = await api.agents.ref(event.agent.id).refresh();
     if (!refreshed?.agent) {
       log("skip", { agentId: event.agent.id, reason: "agent-unavailable" });
+      return;
+    }
+    const minutes = providerDelayMinutes(refreshed.agent.provider, config, refreshed.agent.model);
+    if (minutes === null) {
+      log("skip", { agentId: event.agent.id, reason: refreshed.agent.provider === "pi" ? "unsupported-pi-model" : `provider-${refreshed.agent.provider}` });
       return;
     }
     const checkpoint: Checkpoint = {
@@ -218,7 +218,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       return;
     }
     if (stopped || generation !== (generations.get(event.agent.id) ?? 0)) return;
-    // Delay is derived from the event provider so a later provider mutation cannot retarget it.
+    // Use the current snapshot model, not a remembered picker label or service tier.
     timers.schedule(checkpoint.key, checkpoint.agentId, minutes * 60_000, () => {
       void evaluate(checkpoint, api).catch((error) => log("evaluation-failed", { agentId: checkpoint.agentId, reason: safeError(error) }));
     });
@@ -281,7 +281,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
             await store.rememberTurn(checkpoint, config.maxStateEntries);
             if (stopped) return;
             if (generation !== (generations.get(agent.id) ?? 0) || timers.has(agent.id)) { skip("changed-during-recovery"); continue; }
-            const delay = recoveryDelay(fresh.provider, checkpoint.endedAt, config, now(), random);
+            const delay = recoveryDelay(fresh.provider, checkpoint.endedAt, config, now(), random, fresh.model);
             expectedUserMessage.set(agent.id, checkpoint.lastUserMessageAt);
             timers.schedule(checkpoint.key, agent.id, delay.delayMs, () => {
               void evaluate(checkpoint, api).catch((error) => log("evaluation-failed", { agentId: agent.id, reason: safeError(error) }));
