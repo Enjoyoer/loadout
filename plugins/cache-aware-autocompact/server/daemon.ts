@@ -34,9 +34,13 @@ export function resolveDaemonTarget(env: NodeJS.ProcessEnv = process.env): Daemo
   if (explicit) {
     const stripped = explicit.replace(/^tcp:\/\//, "").replace(/\?.*$/, "");
     if (HOST_PORT.test(stripped)) return { url: hostPortToUrl(stripped), source: "PASEO_HOST" };
+    throw new Error("Invalid PASEO_HOST: expected a TCP host:port endpoint; refusing fallback");
   }
   const pidListen = readPidListen(env);
   if (pidListen && HOST_PORT.test(pidListen)) return { url: hostPortToUrl(pidListen), source: "paseo.pid" };
+  if (path.resolve(paseoHome(env)) !== path.resolve(homedir(), ".paseo")) {
+    throw new Error(`No valid daemon endpoint metadata in ${paseoHome(env)}/paseo.pid; set PASEO_HOST explicitly. Refusing default-daemon fallback for non-default PASEO_HOME`);
+  }
   return { url: hostPortToUrl(DEFAULT_LISTEN), source: "default" };
 }
 

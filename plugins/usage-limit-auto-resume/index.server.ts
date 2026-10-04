@@ -216,7 +216,7 @@ export default function contribute(server: PluginServerContext) {
           }
           if ((event.outcome.kind === "completed" && isUsageLimitAssistantText(assistant)) || (event.outcome.kind === "failed" && !failedTransient)) {
             const agent = await fetchAgent(context.paseo, event.agent.id);
-            const usage = agent && buildRecord(agent, assistant, undefined, currentConfig, Date.now(), event.turnId);
+            const usage = agent && buildRecord(agent, assistant, undefined, currentConfig, Date.now(), event.turnId, event.outcome.kind === "failed");
             if (!usage || !isSameAgentAndSession(active, agent!)) {
               await store.update(active.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: "usage-handoff-ambiguous", updatedAt: new Date().toISOString() }));
               log(`retry-uncertain agentId=${event.agent.id} reason=usage-handoff-ambiguous`);
@@ -258,7 +258,7 @@ export default function contribute(server: PluginServerContext) {
       if (!agent) return;
       const finalText = event.outcome.kind === "completed" ? turnText(event.timeline).assistant : null;
       const record = event.outcome.kind === "failed"
-        ? buildRecord(agent, event.outcome.error.message, event.outcome.error.code, currentConfig, Date.now(), event.turnId)
+        ? buildRecord(agent, event.outcome.error.message, event.outcome.error.code, currentConfig, Date.now(), event.turnId, true)
           ?? buildFailedTransientRecord(agent, event.timeline, event.outcome.error, currentConfig, Date.now(), event.turnId)
         : finalText && isUsageLimitAssistantText(finalText)
           ? buildRecord(agent, finalText, undefined, currentConfig, Date.now(), event.turnId)

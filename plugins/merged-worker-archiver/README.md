@@ -1,5 +1,7 @@
 # merged-worker-archiver
 
+Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.pid` runtime listen metadata. An explicit non-default `PASEO_HOME` without valid endpoint metadata refuses to connect instead of falling back to another daemon. Invalid explicit hosts also fail closed. The standard local endpoint is a fallback only for an unset home or `~/.paseo`.
+
 Server-only Paseo plugin for Paseo >=0.9.2 <0.11.0. It archives worker **worktree** workspaces,
 and through Paseo's own workspace archive the agents in them, once the worker branch
 is merged into its base. It is **event-driven**: every finished agent turn (PM or
@@ -158,7 +160,7 @@ call until a hook runs. The plugin therefore:
   docs state it lives as long as the plugin subprocess), and
 - otherwise opens a short-lived connection with the **public** `createPaseoClient()`
   from `@getpaseo/client` (no internal exports), resolved from `PASEO_HOST`, then
-  `$PASEO_HOME/paseo.pid`, then `127.0.0.1:6767`.
+  `$PASEO_HOME/paseo.pid`, then `127.0.0.1:6767` only for the default home. A non-default home without valid listen metadata refuses to connect.
 
 `paseo-plugin.json` pins `"paseo": ">=0.9.2 <0.11.0"` and `package.json` pins
 `@getpaseo/client` to exactly `0.9.2`: the plugin depends on 0.9.1 archive semantics

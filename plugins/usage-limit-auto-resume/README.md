@@ -1,5 +1,7 @@
 # Usage limit auto resume
 
+Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.pid` runtime listen metadata. An explicit non-default `PASEO_HOME` without valid endpoint metadata refuses to connect instead of falling back to another daemon. Invalid explicit hosts also fail closed. The standard local endpoint is a fallback only for an unset home or `~/.paseo`.
+
 This server plugin keeps the existing usage-limit resume path (five-hour default) and adds a separate retry path for completed turns whose final assistant message is a transient provider error. Both paths obey the host `armed` setting and the `noresume=true` label. The plugin does not send while unarmed.
 
 ## Transient retry
@@ -31,4 +33,10 @@ paseo plugin install "$PWD"
 
 ## Pi coverage
 
-Model tests cover Pi snapshots with high and medium reasoning, usage-limit and failed-turn records, same-session verification, and resume gates. Live Pi retry timing and provider-specific quota recognition still require host validation. A Pi failure that does not emit a recognized usage-limit signal may follow the generic failed-turn path instead. Keep existing host settings unchanged. If automatic resume is unavailable, send one explicit `continue` to the same Pi agent and verify its session/model/thinking; use an explicitly selected native Codex or Claude route if a new fallback session is needed. This package does not select or substitute models.
+Paseo 0.10.3 Pi failures are not ordinary completed assistant finals. Pi emits an assistant message with `stopReason: "error"` and `errorMessage`; Paseo's `latestPiErrorMessage` formats the error with `(stopReason=error, model=<provider>/<model>)`, then `completeTurn` emits `turn_failed`. The daemon timeline displays a `[System Error]` row, and the plugin receives `outcome.kind: "failed"` with `outcome.error.message`. Detection therefore uses the failed outcome, not `turnText()` or the display prefix.
+
+A credential-free Pi RPC fixture on a disposable Paseo 0.10.3 daemon emitted `You've hit your usage limit. Try again in 1 second.` and verified detection as **usage**, no immediate generic retry, a delayed same-session/model continuation, and a completed resume. This wording (including the typographic apostrophe variant) is now recognized alongside `usage_limit_exceeded`, `out of credits`, and existing explicit quota patterns. Generic 429/rate limits remain on the failed-turn path, not the five-hour usage path. Normal completed answers remain `not-resumable/unrecognized-final`.
+
+Usage records originating from a failed outcome now carry `usageFailedOutcome`, allowing a due continuation from `error` status and its error attention marker. This is separate from generic `failedOutcome`: usage failures retain `baseDelaySeconds` (five hours by default), reset buffer, and `maxAttempts`, rather than uncapped transient retries. Completed usage records do not gain this error-status exception. Permissions, active turns, identity/model/thinking/session changes, opt-outs, and newer user messages still block sends.
+
+Model tests cover Pi snapshots with high and medium reasoning, formatted quota errors, default five-hour timing, attempt caps, same-session verification, and resume gates. The daemon action fixture used a 60-second test delay; actual provider quota resets and live retry timing were not measured. A Pi failure that does not emit a recognized usage-limit signal may follow the generic failed-turn path instead. Keep existing host settings unchanged. If automatic resume is unavailable, send one explicit `continue` to the same Pi agent and verify its session/model/thinking; use an explicitly selected native Codex or Claude route if a new fallback session is needed. This package does not select or substitute models.

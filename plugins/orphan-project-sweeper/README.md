@@ -1,5 +1,7 @@
 # orphan-project-sweeper
 
+Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.pid` runtime listen metadata. An explicit non-default `PASEO_HOME` without valid endpoint metadata refuses to connect instead of falling back to another daemon. Invalid explicit hosts also fail closed. The standard local endpoint is a fallback only for an unset home or `~/.paseo`.
+
 Server-only Paseo plugin (Paseo >=0.9.2 <0.11.0) that deletes an orphaned Paseo project row.
 A project is orphaned only when both hold at evaluation time:
 
@@ -47,7 +49,7 @@ have not been exercised for this safeguard change. Re-check before admitting 0.1
 
 The plugin opens a short-lived local connection per sweep or re-check, the same way the
 Paseo CLI does. The daemon address is resolved from `PASEO_HOST`, then
-`$PASEO_HOME/paseo.pid`, then `127.0.0.1:6767`. esbuild bundles `@getpaseo/client`
+`$PASEO_HOME/paseo.pid`, then `127.0.0.1:6767` only for the default home. A non-default home without valid listen metadata refuses to connect. esbuild bundles `@getpaseo/client`
 into the server bundle (only the plugin SDK specifiers and `zod` stay external), so
 `npm install` must have run in this directory before `paseo plugin install` or `reload`.
 

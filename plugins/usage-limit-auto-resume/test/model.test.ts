@@ -59,6 +59,30 @@ function transient(overrides = {}) {
   return { ...value, ...overrides };
 }
 
+describe("Pi native failed usage outcomes", () => {
+  it("parks formatted Pi errors for five hours then resumes error status with an attempt cap", () => {
+    const pi = agent({ provider: "pi", model: "fleet/gpt-6.1-sol", status: "error", requiresAttention: true, attentionReason: "error", persistence: { provider: "pi", sessionId: "pi-session" } });
+    for (const text of ["usage_limit_exceeded", "You've hit your usage limit. Try again in 1 hour.", "You’ve hit your usage limit.", "You are out of credits"]) {
+      const error = `${text} (stopReason=error, model=fleet/gpt-6.1-sol)`;
+      const usage = buildRecord(pi, error, undefined, config, NOW, "pi-failure", true);
+      assert.ok(usage);
+      assert.notEqual(usage.kind, "transient");
+      assert.equal(usage.failedOutcome, undefined);
+      assert.equal(usage.notBefore, new Date(NOW + 18000 * 1000).toISOString());
+      assert.deepEqual(shouldResume(usage, pi, config, NOW), { ok: false, reason: "not-due" });
+      assert.deepEqual(shouldResume(usage, pi, config, NOW + 18000 * 1000), { ok: true });
+      assert.deepEqual(shouldResume({ ...usage, attempts: Array(3).fill({ at: "", messageId: "", result: "sent" }) }, pi, config, NOW + 18000 * 1000), { ok: false, reason: "max-attempts" });
+      assert.equal(buildFailedTransientRecord(pi, timeline(""), { message: error }, config, NOW, "pi-failure"), null);
+    }
+    const completed = buildRecord(pi, "usage_limit_exceeded", undefined, config, NOW, "completed")!;
+    assert.deepEqual(shouldResume(completed, pi, config, NOW + 18000 * 1000), { ok: false, reason: "agent-status=error" });
+  });
+  it("does not treat ordinary assistant prose as a quota stop", () => {
+    assert.equal(isUsageLimitAssistantText("You've hit your usage limit. This is an example."), false);
+    assert.equal(failureSignature("429 rate_limit_error (stopReason=error, model=fleet/claude-opus-5-5)"), null);
+  });
+});
+
 describe("failure classification", () => {
   it("recognizes explicit usage-limit failures", () => {
     assert.equal(typeof failureSignature("usage_limit_exceeded"), "string");

@@ -13,6 +13,8 @@ export type ResumeRecord = {
   version: 2;
   kind?: "usage" | "transient";
   failedOutcome?: boolean;
+  // Usage failures also leave Pi in error, but retain the usage delay/attempt cap.
+  usageFailedOutcome?: boolean;
   retryPrompt?: string;
   expectedUserText?: string;
   expectedUserMessageId?: string | null;
@@ -80,6 +82,7 @@ export type AgentSnapshot = {
 
 const FAILURE_PATTERNS: readonly RegExp[] = [
   /\busage[_ -]?limit[_ -]?(?:exceeded|reached)\b/i,
+  /\b(?:you(?:'|’)?ve|you have) hit your usage limit\b/i,
   /\binsufficient[_ -]?quota\b/i,
   /\bout of credits\b/i,
   /\bweekly limit reached\b/i,
@@ -201,7 +204,7 @@ export function isSameAgentAndSession(record: ResumeRecord, agent: AgentSnapshot
     agent.archivedAt == null;
 }
 
-export function buildRecord(eventAgent: AgentSnapshot, failureMessage: string, code: string | undefined, config: ResumeConfig, now = Date.now(), sourceTurnId?: string | null): ResumeRecord | null {
+export function buildRecord(eventAgent: AgentSnapshot, failureMessage: string, code: string | undefined, config: ResumeConfig, now = Date.now(), sourceTurnId?: string | null, usageFailedOutcome = false): ResumeRecord | null {
   if (!sourceTurnId) return null;
   const signature = failureSignature(failureMessage, code);
   if (!signature || isOptedOut(eventAgent, config) || eventAgent.archivedAt) return null;
@@ -217,6 +220,7 @@ export function buildRecord(eventAgent: AgentSnapshot, failureMessage: string, c
     version: 2,
     recordId,
     sourceTurnId,
+    usageFailedOutcome,
     agentId: eventAgent.id,
     workspaceId: eventAgent.workspaceId ?? null,
     provider: eventAgent.provider,
@@ -340,11 +344,11 @@ export function shouldResume(record: ResumeRecord, agent: AgentSnapshot, config:
   if (!record.failedOutcome && record.attempts.length >= (record.kind === "transient" ? (config.transientMaxAttempts ?? 3) : config.maxAttempts)) return { ok: false, reason: "max-attempts" };
   if (Date.parse(record.notBefore) > now) return { ok: false, reason: "not-due" };
   // A failed turn leaves the agent in "error"; a send starts a fresh turn in the same session.
-  if (agent.status !== "idle" && !(record.failedOutcome && agent.status === "error")) return { ok: false, reason: `agent-status=${agent.status}` };
+  if (agent.status !== "idle" && !((record.failedOutcome || record.usageFailedOutcome) && agent.status === "error")) return { ok: false, reason: `agent-status=${agent.status}` };
   if (agent.activeTurn) return { ok: false, reason: "active-turn" };
   if ((agent.pendingPermissions?.length ?? 0) > 0) return { ok: false, reason: "pending-permission" };
   // "finished" and "error" are Paseo's unread markers after a turn ends (an errored agent always carries "error"); only input requests block a resume.
-  if (agent.requiresAttention && agent.attentionReason !== "finished" && !(record.failedOutcome && agent.attentionReason === "error")) return { ok: false, reason: "requires-attention" };
+  if (agent.requiresAttention && agent.attentionReason !== "finished" && !((record.failedOutcome || record.usageFailedOutcome) && agent.attentionReason === "error")) return { ok: false, reason: "requires-attention" };
   if (agent.archivedAt) return { ok: false, reason: "archived" };
   if (isOptedOut(agent, config)) return { ok: false, reason: "opted-out" };
   if (!isSameAgentAndSession(record, agent)) return { ok: false, reason: "identity-changed" };

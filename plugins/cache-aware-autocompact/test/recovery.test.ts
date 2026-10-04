@@ -6,7 +6,7 @@ import type { PaseoAgent, PaseoClient, PaseoAgentUpdateHandler, PaseoAgentTimeli
 import type { FetchAgentTimelinePayload } from "@getpaseo/client/internal/daemon-client";
 import type { PluginServerContext, PluginLifecycleEvents, PluginHookContext } from "@getpaseo/plugin/server";
 import { defaultConfig } from "../server/config.ts";
-import { recoverTurn, recoveryHistory, recoveryDelay, REARM_JITTER_MIN_MS, REARM_JITTER_MAX_MS } from "../server/recovery.ts";
+import { rearmSkipReason, recoverTurn, recoveryHistory, recoveryDelay, REARM_JITTER_MIN_MS, REARM_JITTER_MAX_MS } from "../server/recovery.ts";
 import { startScheduler, type Checkpoint } from "../server/runtime.ts";
 import { StateStore } from "../server/store.ts";
 import type { TimerApi } from "../server/timer.ts";
@@ -54,6 +54,8 @@ function harness() {
   let snapshots = [agent()];
   let now = endedMs + 30 * 60_000;
   let bootstrapFails = false;
+  let compactFails = false;
+  let sendGate: Promise<void> | null = null;
   let cleanup = () => {};
   let snapshotListener: (() => void) | undefined;
   const updates = new Set<PaseoAgentUpdateHandler>();
@@ -84,7 +86,16 @@ function harness() {
             if (historyErrors.has(id)) throw historyErrors.get(id);
             return histories.get(id) ?? history(snapshots.find((a) => a.id === id)!);
           } },
-          send: async (text: string) => { sends.push(text); } };
+          waitForFinish: async () => {},
+          send: async (text: string) => {
+            sends.push(text);
+            await sendGate;
+            const page = histories.get(id) ?? history(snapshots.find(a => a.id === id)!);
+            const seq = (page.entries.at(-1)?.seqEnd ?? 0) + 1;
+            page.entries.push({ ...page.entries[0]!, seqStart: seq, seqEnd: seq, item: { type: "compaction", status: "completed" } });
+            if (compactFails) page.entries.push({ ...page.entries[0]!, seqStart: seq + 1, seqEnd: seq + 1, item: { type: "assistant_message", text: "[Error] Failed to compact context: Server is temporarily limiting requests" } });
+            histories.set(id, page);
+          } };
       },
       subscribe(listener: PaseoAgentUpdateHandler) { updates.add(listener); return () => { updates.delete(listener); }; },
     },
@@ -98,6 +109,8 @@ function harness() {
     setAgents(agents: PaseoAgent[]) { snapshots = agents; },
     setNow(value: number) { now = value; },
     failBootstrap() { bootstrapFails = true; },
+    failCompact() { compactFails = true; },
+    pauseSend(gate: Promise<void> | null) { sendGate = gate; },
     paginate(size: number) { pageSize = size; },
     pauseHistory(gate: Promise<void>) { historyGate = gate; },
     historyCalls() { return historyCalls; },
@@ -107,9 +120,9 @@ function harness() {
     event<Name extends keyof PluginLifecycleEvents>(name: Name, event: PluginLifecycleEvents[Name], contextApi = api) {
       hooks.get(name)?.(event as never, { paseo: contextApi, signal: new AbortController().signal });
     },
-    start(store: StateStore, armed = true) {
+    start(store: StateStore, armed = true, piGptEnabled = false) {
       cleanup = startScheduler(server, { store, timerApi: timers, metrics: { append: async (record) => { metrics.push(record); } },
-        now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed }),
+        now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed, piGptEnabled }),
         openApi: async () => { if (bootstrapFails) throw new Error("Unavailable"); return api; },
         log: (action, data) => { logs.push({ action, data }); } });
     },
@@ -117,6 +130,84 @@ function harness() {
     async recovered() { await until(() => logs.some((line) => line.action === "rearm-summary")); },
   };
 }
+
+describe("Pi scheduler", () => {
+  it("retains the request time and re-arms a real user turn racing a failed result", async () => fixture(async (f) => {
+    let release = () => {};
+    f.pauseSend(new Promise<void>(resolve => { release = resolve; }));
+    f.failCompact(); f.start(f.store); await f.recovered();
+    f.timers.fire(); await until(() => f.sends.length === 1);
+    const next = agent({ lastUserMessageAt: "2026-09-26T08:31:00.000Z" });
+    f.setNow(endedMs + 32 * 60_000); f.update(next);
+    const page = history(next, "real-user");
+    page.entries[0] = { ...page.entries[0]!, timestamp: next.lastUserMessageAt!, item: { type: "user_message", text: "New real request" } };
+    f.histories.set(next.id, page);
+    f.event("agent.turn_ended", { agent: { ...next, parentAgentId: null }, turnId: "real-user", timeline: [page.entries[0]!.item], outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"]);
+    f.pauseSend(null); release();
+    await until(() => f.logs.some(l => l.action === "compaction-failed") && f.timers.pending.size === 1);
+    const failed = (await f.store.read()).find(entry => entry.outcome === "compaction-failed")!;
+    assert.equal(failed.attemptedAt, "2026-09-26T08:30:00.000Z");
+    assert.equal(failed.createdAt, "2026-09-26T08:32:00.000Z");
+    f.timers.fire(); await until(() => f.logs.filter(l => l.action === "compaction-failed").length === 2);
+  }));
+  it("does not treat an automatic compact user row as a new real user turn", async () => fixture(async (f) => {
+    await f.store.append({ key: "a1:old", agentId: "a1", turnId: "old", lastUserMessageAt: messageAt,
+      createdAt: "2026-09-26T08:10:00Z", outcome: "compaction-failed", reason: "canceled" }, 100);
+    const a = agent({ lastUserMessageAt: "2026-09-26T08:11:00Z", attentionTimestamp: "2026-09-26T08:12:00Z" });
+    const page = history(a); page.entries[0] = { ...page.entries[0]!, timestamp: "2026-09-26T08:12:00Z", item: { type: "user_message", text: "/compact" } };
+    f.setAgents([a]); f.histories.set(a.id, page); f.start(f.store); await f.recovered();
+    f.timers.fire(); await until(() => f.logs.some(l => l.data.reason === "compaction-backoff"));
+    assert.deepEqual(f.sends, []);
+    f.cleanup(); f.start(f.store); await until(() => f.timers.pending.size === 1);
+    f.timers.fire(); await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(f.sends, []);
+  }));
+  it("skips GPT by default and backs off native compact failure until a real user turn", async () => fixture(async (f) => {
+    f.setAgents([agent({ provider: "pi", model: "fleet/gpt-6.1-sol" })]);
+    f.start(f.store); await f.recovered();
+    assert.equal(f.timers.pending.size, 0);
+    f.cleanup();
+    f.setAgents([agent({ provider: "pi", model: "fleet/claude-opus-5-5" })]);
+    f.failCompact(); f.start(f.store); await until(() => f.timers.pending.size === 1);
+    f.timers.fire(); await until(() => f.logs.some(l => l.action === "compaction-failed"));
+    assert.equal((await f.store.read()).at(-1)?.outcome, "compaction-failed");
+    assert.equal(f.logs.some(l => l.action === "compacted"), false);
+    f.event("agent.turn_ended", { agent: { ...agent({ provider: "pi", model: "fleet/claude-opus-5-5" }), parentAgentId: null }, turnId: "automatic", timeline: [], outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"]);
+    await until(() => f.timers.pending.size === 1);
+    f.timers.fire(); await until(() => f.logs.some(l => l.data.reason === "compaction-backoff"));
+    f.snapshot(); await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(f.sends, ["/compact"]);
+    const next = agent({ provider: "pi", model: "fleet/claude-opus-5-5", lastUserMessageAt: "2026-09-26T10:00:00Z" });
+    f.update(next);
+    const nextHistory = history(next, "real-user");
+    nextHistory.entries[0] = { ...nextHistory.entries[0]!, timestamp: next.lastUserMessageAt!, item: { type: "user_message", text: "Next real request" } };
+    f.histories.set(next.id, nextHistory);
+    f.event("agent.turn_ended", { agent: { ...agent(), parentAgentId: null }, turnId: "real-user", timeline: [], outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"]);
+    await until(() => f.timers.pending.size === 1); f.timers.fire();
+    await until(() => f.logs.filter(l => l.action === "compaction-failed").length === 2);
+    assert.equal(f.sends.length, 2);
+  }));
+  it("recovers both cache families and skips web routes", async () => fixture(async (f) => {
+    f.setAgents([agent({ provider: "pi", model: "fleet/claude-opus-5-5" }),
+      agent({ id: "a2", provider: "pi", model: "fleet/gpt-6.1-sol" }),
+      agent({ id: "a3", provider: "pi", model: "fleet/chatgpt-web-pro" })]);
+    assert.equal(rearmSkipReason(agent({ provider: "pi", model: null })), "unsupported-pi-model");
+    f.start(f.store, true, true); await f.recovered();
+    assert.equal(f.timers.pending.size, 2);
+    assert.deepEqual([...f.timers.pending.values()].map(t => t.ms).sort((a, b) => a - b), [4500, 20 * 60_000]);
+    assert.equal((f.logs.find(l => l.action === "rearm-summary")!.data.skipped as Record<string, number>)["unsupported-pi-model"], 1);
+    f.timers.fire(); await until(() => f.logs.filter(l => l.action === "compacted").length === 2);
+    assert.deepEqual(f.sends, ["/compact", "/compact"]);
+  }));
+  it("arms turn-end timers from the refreshed model rather than event model", async () => fixture(async (f) => {
+    const pi = agent({ provider: "pi", model: "fleet/gpt-6.1-sol" });
+    f.setAgents([pi]); f.start(f.store, true, true); await f.recovered();
+    f.event("agent.turn_started", { agent: { ...pi, parentAgentId: null }, turnId: "new" } as PluginLifecycleEvents["agent.turn_started"]);
+    f.event("agent.turn_ended", { agent: { ...pi, parentAgentId: null, model: "fleet/claude-opus-5-5" }, turnId: "new", timeline: [{ type: "assistant_message", text: "Done" }], outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"]);
+    await until(() => f.logs.some(l => l.action === "timer-started"));
+    assert.equal(f.logs.find(l => l.action === "timer-started")!.data.delayMinutes, 22);
+  }));
+});
 
 describe("restart recovery", () => {
   it("skips missing cwd and non-directory parents without fetching timelines", async () => fixture(async (f) => {
@@ -176,7 +267,7 @@ describe("restart recovery", () => {
         f.event("agent.turn_ended", { agent: eventAgent, turnId: "t2", outcome: { kind: "completed" }, timeline: [] });
         await until(() => f.logs.some((line) => line.action === "timer-started"));
         f.timers.fire();
-        await until(() => f.logs.some((line) => line.action === "compacted"));
+        await until(() => f.logs.some((line) => line.action === "compaction-failed"));
       }
       if (trigger === "running-update") { f.update(agent({ status: "running" })); f.setAgents([a]); }
       if (trigger === "message-update") f.update(agent({ lastUserMessageAt: "2026-09-26T09:00:00Z" }));
@@ -455,6 +546,9 @@ describe("elapsed-delay math", () => {
   it("subtracts idle time for both providers and clamps future end times", () => {
     assert.deepEqual(recoveryDelay("claude", endedAt, config, endedMs + 20 * 60_000), { remainingMs: 1_800_000, delayMs: 1_800_000, jitterApplied: false });
     assert.equal(recoveryDelay("codex", endedAt, config, endedMs + 20 * 60_000).delayMs, 120_000);
+    assert.equal(recoveryDelay("pi", endedAt, defaultConfig({ piGptEnabled: true }), endedMs + 20 * 60_000, () => 0, "fleet/gpt-6.1-sol").delayMs, 120_000);
+    assert.equal(recoveryDelay("pi", endedAt, config, endedMs + 20 * 60_000, () => 0, "fleet/claude-opus-5-5").delayMs, 1_800_000);
+    assert.equal(recoveryDelay("pi", endedAt, defaultConfig({ claudeDelayMinutes: 120 }), endedMs + 61 * 60_000, () => 0, "fleet/claude-opus-5-5").jitterApplied, true);
     assert.equal(recoveryDelay("claude", endedAt, config, endedMs - 1).delayMs, 3_000_000);
   });
   it("jitters due and expired timers within the documented bounds", () => {

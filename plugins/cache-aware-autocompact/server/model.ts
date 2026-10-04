@@ -10,9 +10,20 @@ export function strictnessTier(contextUsedTokens: number | undefined, config: Au
   return typeof contextUsedTokens === "number" && contextUsedTokens >= config.softThreshold ? "recall" : "safe";
 }
 
-export function providerDelayMinutes(provider: string, config: AutoCompactConfig): number | null {
-  if (provider === "claude") return config.claudeDelayMinutes;
-  if (provider === "codex") return config.codexDelayMinutes;
+// Pi is a harness, not a cache family. Only known fleet routes are eligible;
+// web routes and unknown/missing models deliberately fail closed.
+export function cacheFamily(provider: string, model?: string | null): "claude" | "codex" | null {
+  if (provider === "claude" || provider === "codex") return provider;
+  if (provider === "pi" && model?.startsWith("fleet/claude-")) return "claude";
+  if (provider === "pi" && model?.startsWith("fleet/gpt-")) return "codex";
+  return null;
+}
+
+export function providerDelayMinutes(provider: string, config: AutoCompactConfig, model?: string | null): number | null {
+  if (provider === "pi" && cacheFamily(provider, model) === "codex" && !config.piGptEnabled) return null;
+  const family = cacheFamily(provider, model);
+  if (family === "claude") return config.claudeDelayMinutes;
+  if (family === "codex") return config.codexDelayMinutes;
   return null;
 }
 
@@ -38,7 +49,8 @@ export function guardDecision(
   config: AutoCompactConfig,
   expectedLastUserMessageAt: string | null,
 ): Decision {
-  if (agent.provider !== "claude" && agent.provider !== "codex") return { ok: false, reason: `provider-${agent.provider}` };
+  if (!cacheFamily(agent.provider, agent.model)) return { ok: false, reason: agent.provider === "pi" ? "unsupported-pi-model" : `provider-${agent.provider}` };
+  if (providerDelayMinutes(agent.provider, config, agent.model) === null) return { ok: false, reason: "pi-gpt-disabled" };
   if (agent.status !== "idle" || agent.activeTurn) return { ok: false, reason: "not-idle" };
   if (agent.archivedAt) return { ok: false, reason: "archived" };
   if ((agent.pendingPermissions?.length ?? 0) > 0) return { ok: false, reason: "pending-permission" };
