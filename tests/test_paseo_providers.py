@@ -8,6 +8,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -23,6 +24,8 @@ FAKE_SSH = textwrap.dedent("""\
     [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
     host="$1"; shift
     echo "ssh $host" >> "$FAKE_ROOT/calls.log"
+    [ -e "$FAKE_ROOT/cmd-limit" ] && [ "${#*}" -gt 8191 ] && { echo 'The command line is too long' >&2; exit 1; }
+    [ -e "$FAKE_ROOT/corrupt-stdin" ] && { printf corrupt | HOME="$FAKE_ROOT/hosts/$host" sh -c "$*"; exit $?; }
     HOME="$FAKE_ROOT/hosts/$host" exec sh -c "$*"
     """)
 
@@ -47,10 +50,15 @@ FAKE_PASEO = textwrap.dedent(r"""
       "workspace archive") [ -e "$FAKE_ROOT/fail-archive" ] && exit 1; grep -v "^$3 " "$ws" > "$ws.tmp"; mv "$ws.tmp" "$ws"; echo archived ;;
       "terminal create") [ -e "$FAKE_ROOT/fail-terminal" ] && { echo "terminal failed" >&2; exit 1; }
         : > "$FAKE_ROOT/term.out"; echo '{"id":"term-1"}' ;;
-      "terminal send-keys") counter drop-sends && exit 0
+      "terminal send-keys")
+        [ -e "$FAKE_ROOT/input-limit" ] && [ "${#4}" -gt 3000 ] && { echo 'relay input timeout' >&2; exit 1; }
+        counter drop-sends && exit 0
         [ -e "$FAKE_ROOT/echo-only" ] && { printf '$ %s\n' "$4" | fold -w 50 >> "$FAKE_ROOT/term.out"; exit 0; }
         # Input sent while the shell is still starting is lost, as on a slow relay host.
         n=$(cat "$FAKE_ROOT/quiet-captures" 2>/dev/null || echo 0); [ "$n" -gt 0 ] && exit 0
+        case "$4" in *'exec 3<'*)
+          [ -e "$FAKE_ROOT/corrupt-relay" ] && for file in "$TMPDIR"/loadout-provider-*; do printf corrupt > "$file"; done ;;
+        esac
         { printf '$ %s\n' "$4"; HOME="$FAKE_ROOT/hosts/$host" sh -c "$4" 2>&1; } | fold -w 50 >> "$FAKE_ROOT/term.out" ;;
       "terminal capture") counter quiet-captures && exit 0; [ -s "$FAKE_ROOT/term.out" ] && cat "$FAKE_ROOT/term.out" || echo '$ ' ;;
       "terminal kill") ;;
@@ -114,6 +122,7 @@ class ProviderSyncTest(unittest.TestCase):
             "HOME": str(self.root / "hosts/laptop"),
             "LOADOUT_FLEET": str(self.fleet),
             "FAKE_ROOT": str(self.root),
+            "TMPDIR": str(self.root),
             # An agent session's variables must not reach the relay CLI.
             "PASEO_HOME": str(self.root / "agent-home"),
             "PASEO_AGENT_ID": "agent-1",
@@ -143,6 +152,71 @@ class ProviderSyncTest(unittest.TestCase):
     def calls(self):
         path = self.root / "calls.log"
         return path.read_text() if path.exists() else ""
+
+    def long_payload(self):
+        catalog = json.loads((self.fleet / "paseo-providers.json").read_text())
+        # Incompressible metadata models the generated runtime source payload.
+        catalog["providers"]["codex"]["models"][0]["description"] = os.urandom(24000).hex()
+        (self.fleet / "paseo-providers.json").write_text(json.dumps(catalog))
+        return catalog
+
+    def test_long_payload_windows_cmd_uses_stdin_and_is_idempotent(self):
+        hosts = json.loads((self.fleet / "hosts.json").read_text())
+        hosts["hosts"][1]["os"] = "windows"
+        (self.fleet / "hosts.json").write_text(json.dumps(hosts))
+        (self.root / "cmd-limit").touch()
+        catalog = self.long_payload()
+        code, out = self.run_sync("--host", "desktop", "--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.config("desktop"), EXISTING)
+        code, out = self.run_sync("--host", "desktop")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.config("desktop")["agents"]["providers"]["codex"]["models"],
+                         catalog["providers"]["codex"]["models"])
+        code, out = self.run_sync("--host", "desktop")
+        self.assertEqual(code, 0, out)
+        self.assertIn("write unchanged", out)
+
+    def test_corrupt_ssh_payload_never_merges_or_reloads(self):
+        (self.root / "corrupt-stdin").touch()
+        code, out = self.run_sync("--host", "desktop")
+        self.assertEqual(code, 1, out)
+        self.assertIn("provider transport failed", out)
+        self.assertEqual(self.config("desktop"), EXISTING)
+        self.assertNotIn("reload", self.calls())
+
+    def test_long_relay_payload_is_bounded_verified_and_idempotent(self):
+        (self.root / "input-limit").touch()
+        catalog = self.long_payload()
+        # First chunk is lost, then resent safely before later chunks run.
+        (self.root / "drop-sends").write_text("1")
+        with patch.dict(os.environ, self.env):
+            runner = paseo_providers.Runner(HOSTS["hosts"][2], "laptop", self.fleet)
+            program = fleet.pack(paseo_providers.MERGE_JS.read_bytes())
+            data = fleet.pack(json.dumps(paseo_providers.payload(catalog, "tablet", "test", False)).encode())
+            # Module constants were loaded before the subprocess test overrides.
+            with patch.multiple(paseo_providers, RELAY_POLL_SECONDS=0.01, RELAY_WAIT_SECONDS=3,
+                                RELAY_SETTLE_SECONDS=0, RELAY_RESEND_SECONDS=0.05):
+                out = runner.write(program, data)
+                self.assertTrue(fleet.parse_result(out)["changed"], out)
+                out = runner.write(program, data)
+                self.assertFalse(fleet.parse_result(out)["changed"], out)
+        self.assertEqual(self.config("tablet")["agents"]["providers"]["codex"]["models"],
+                         catalog["providers"]["codex"]["models"])
+        self.assertEqual((self.root / "workspaces").read_text(), "")
+        self.assertIn("conv=notrunc", self.calls())
+        self.assertEqual(list(self.root.glob("loadout-provider-*")), [])
+
+    def test_corrupt_long_relay_payload_is_removed_without_merge(self):
+        (self.root / "input-limit").touch()
+        (self.root / "corrupt-relay").touch()
+        self.long_payload()
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.config("tablet"), EXISTING)
+        self.assertNotIn("reload", self.calls())
+        self.assertEqual(list(self.root.glob("loadout-provider-*")), [])
+        self.assertEqual((self.root / "workspaces").read_text(), "")
 
     def test_dry_run_writes_nothing(self):
         code, out = self.run_sync("--dry-run")

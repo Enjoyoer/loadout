@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "bf5242c7774ab82ffac98fec4969add1225a80f7",
+  "source_commit": "77a37d7c66493a5c43f0edf11a1841937350369e",
   "skill_count": 22,
   "file_count": 122,
   "files": [
@@ -401,8 +401,8 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 13686,
-      "sha256": "e5f7b9203e01b766cef99dd95909e2c16a075f7ced7f4778e882c057e0975d8f"
+      "bytes": 14300,
+      "sha256": "8c040428f1ae07c3938bf520ec4548c8421a4ade366915041cba916a7bef807a"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
@@ -485,8 +485,8 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 17633,
-      "sha256": "7c6fe7a6995d4659864ab79163b5395b63e7a7861942fe3a5d8b9d9e8619003e"
+      "bytes": 19641,
+      "sha256": "5d3f69bd21c033732fb9ef8ae6a4d8fb04500a336fcde00b581aaebe81584482"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",

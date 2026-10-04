@@ -11,6 +11,8 @@ warning.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import re
@@ -41,6 +43,21 @@ RELAY_SETTLE_SECONDS = float(os.environ.get("LOADOUT_RELAY_SETTLE_SECONDS", 3))
 RELAY_RESEND_SECONDS = float(os.environ.get("LOADOUT_RELAY_RESEND_SECONDS", 10))
 PROMPT = re.compile(r"[$#%>\u276f]\s*$")
 RELOAD_TIMEOUT_SECONDS = 90
+RELAY_INLINE_LIMIT = 4000
+RELAY_CHUNK_SIZE = 2000
+
+
+def staged_payload(program: str, data: str) -> tuple[str, str]:
+    """ASCII envelope and a short, cmd.exe-safe stdin reader with integrity gate."""
+    raw = base64.b64encode(json.dumps([program, data]).encode()).decode()
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    boot = ("const r=require('fs').readFileSync(0,'utf8');"
+            f"if(require('crypto').createHash('sha256').update(r).digest('hex')!=='{digest}')"
+            "throw Error('provider transfer digest mismatch');"
+            "const p=JSON.parse(Buffer.from(r,'base64').toString());"
+            "process.argv[2]=p[1];"
+            "eval(require('zlib').gunzipSync(Buffer.from(p[0],'base64')).toString())")
+    return raw, boot
 
 
 def _env_map(value, where):
@@ -173,13 +190,14 @@ class Runner:
         return done.stdout
 
     def write(self, program: str, data: str) -> str:
-        if self.mode == "local":
-            done = subprocess.run(["node", "-e", BOOT, "--", program, data], capture_output=True, text=True)
-            return done.stdout + done.stderr
-        if self.mode == "ssh":
-            command = f'node -e "{BOOT}" -- {program} {data}'
-            done = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", self.name, command],
-                                  capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        if self.mode in {"local", "ssh"}:
+            raw, boot = staged_payload(program, data)
+            command = (["node", "-e", boot] if self.mode == "local" else
+                       ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", self.name,
+                        f'node -e "{boot}"'])
+            done = subprocess.run(command, input=raw, capture_output=True, text=True)
+            if done.returncode and "@@LOADOUT-RESULT" not in done.stdout:
+                raise RuntimeError(f"provider transport failed (exit {done.returncode})")
             return done.stdout + done.stderr
         return self.write_relay(program, data)
 
@@ -200,20 +218,39 @@ class Runner:
             self.cleanup(terminal)
 
     def run_in_terminal(self, terminal: str, program: str, data: str) -> str:
+        self.wait_for_prompt(terminal)
+        inline = f"node -e \"{BOOT}\" -- '{program}' '{data}'"
+        if len(inline) <= RELAY_INLINE_LIMIT:
+            return self.terminal_command(terminal, inline)
+        raw, boot = staged_payload(program, data)
+        path = '"${TMPDIR:-/tmp}/loadout-provider-' + secrets.token_hex(16) + '"'
+        try:
+            for offset in range(0, len(raw), RELAY_CHUNK_SIZE):
+                chunk = raw[offset:offset + RELAY_CHUNK_SIZE]
+                # Offset writes make the bounded no-echo resend idempotent.
+                self.terminal_command(terminal, f"umask 077; printf %s '{chunk}' | "
+                                      f"dd of={path} bs=1 seek={offset} conv=notrunc 2>/dev/null",
+                                      require_success=True)
+            # Open first, then unlink before evaluating any merge code.
+            return self.terminal_command(terminal, f"(exec 3<{path}; rm -f {path}; "
+                                         f"node -e \"{boot}\" <&3)")
+        finally:
+            self.terminal_command(terminal, f"rm -f {path}", require_success=True)
+
+    def terminal_command(self, terminal: str, body: str, require_success: bool = False) -> str:
         nonce = secrets.token_hex(4)
         done = re.compile(rf"@@LOADOUT-EXIT-{nonce}:(\d+)")
-        command = (f"node -e \"{BOOT}\" -- '{program}' '{data}'; "
-                   f"printf '\\n@@LOADOUT-EXIT-{nonce}:%s\\n' \"$?\"")
-        # A relay host's new terminal drops input sent before its shell is up, so
-        # wait for a prompt, let the shell settle, then send once.
-        self.wait_for_prompt(terminal)
+        command = body + f"; printf '\\n@@LOADOUT-EXIT-{nonce}:%s\\n' \"$?\""
         self.paseo("terminal", "send-keys", terminal, command, "Enter")
         sent = time.monotonic()
         resent = False
         deadline = sent + RELAY_WAIT_SECONDS
         while True:
             output = self.paseo("terminal", "capture", terminal, "--scrollback")
-            if done.search(output):
+            match = done.search(output)
+            if match:
+                if require_success and match[1] != "0":
+                    raise RuntimeError(f"relay staging command failed (exit {match[1]})")
                 return output
             # One bounded resend, only when the shell never echoed the command:
             # without the nonce on screen the first send cannot have run.
