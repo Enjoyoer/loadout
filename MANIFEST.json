@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "77a37d7c66493a5c43f0edf11a1841937350369e",
+  "source_commit": "70c75ac7495b37d4bf7bcd8486d89e2ebaee4da5",
   "skill_count": 22,
   "file_count": 122,
   "files": [
@@ -1004,8 +1004,8 @@
     {
       "path": "plugins/merged-worker-archiver/README.md",
       "plugin": "merged-worker-archiver",
-      "bytes": 12251,
-      "sha256": "1ff86fac6783c71e270089a489bd79c8cbfaae2976a366f98cd9a992086b7548"
+      "bytes": 13144,
+      "sha256": "a54c17f85813759778f4c0dc587b9743ed2696e8974847eaba419878bceee507"
     },
     {
       "path": "plugins/merged-worker-archiver/index.server.ts",
