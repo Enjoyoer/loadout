@@ -9,7 +9,7 @@ async function fixture(){
   let body='';for await(const c of req)body+=c;const value=JSON.parse(body);writes++;assert.equal(value.params.name,'update_agent');assert.deepEqual(Object.keys(value.params.arguments),['agentId','labels']);assert.deepEqual(Object.keys(value.params.arguments.labels),['opc.service-tier']);
   agent.labels={...agent.labels,...value.params.arguments.labels};res.end(JSON.stringify({jsonrpc:'2.0',id:value.id,result:{structuredContent:{}}}));
  });await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+(server.address() as any).port;
- await writeFile(join(root,'runtime.json'),JSON.stringify({paseoMcp:{url:base+'/mcp'},python:process.env.PYTHON??'python3'}));await writeFile(join(root,'credential.py'),'print("fixture-key")\n');
+ await writeFile(join(root,'runtime.json'),JSON.stringify({paseoMcp:{url:base+'/mcp'},python:process.env.PYTHON??(process.platform==='win32'?'python':'python3')}));await writeFile(join(root,'credential.py'),'print("fixture-key")\n');
  await writeFile(join(root,'agent/models.json'),JSON.stringify({providers:{fleet:{api:'openai-responses',baseUrl:base,models:[{id:'example-sol'}]}}}));
  const handlers=new Map<string,any>();let configured=true;
  contribute({registerSettings(){return {read:async()=>({status:'ready',values:{runtimeRoot:configured?root:''}})}},handle(contract:any,fn:any){handlers.set(contract.name,fn)}} as any);

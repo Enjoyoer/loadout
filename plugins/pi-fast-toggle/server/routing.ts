@@ -29,7 +29,7 @@ export async function catalog(root: string, route: Awaited<ReturnType<typeof run
 }
 async function fetchCatalog(root: string, route: Awaited<ReturnType<typeof runtime>>) {
   // Same credential helper and router endpoint used by fleet-routing.mjs. Never log either.
-  const { stdout } = await exec(route.spec.python ?? "python3", [join(root, "credential.py"), join(root, "runtime.json")], { timeout: 10000, maxBuffer: 65536 });
+  const { stdout } = await exec(route.spec.python ?? (process.platform === "win32" ? "python" : "python3"), [join(root, "credential.py"), join(root, "runtime.json")], { timeout: 10000, maxBuffer: 65536 });
   const headers: Record<string, string> = { Accept: "application/json", Authorization: `Bearer ${stdout.trim()}` };
   for (const name of route.spec.credentialHeaders ?? []) headers[name] = stdout.trim();
   const response = await fetch(`${route.baseUrl.replace(/\/$/, "")}/models?client_version=0.160.0`, { headers, signal: AbortSignal.timeout(10000) });
