@@ -5,17 +5,15 @@ import type { AutoCompactConfig } from "./config.ts";
 import { cacheFamily, checkpointKey, providerDelayMinutes } from "./model.ts";
 import type { Checkpoint } from "./runtime.ts";
 
-// Expired timers are spread over a small window, independently per agent.
+// Overdue but still warm timers are spread independently over a small window.
 export const REARM_JITTER_MIN_MS = 2_000;
 export const REARM_JITTER_MAX_MS = 7_000;
-// The cache windows underlying the plugin's default provider delays.
-const CACHE_TTL_MS: Record<string, number> = { claude: 60 * 60_000, codex: 30 * 60_000 };
 
 export function recoveryDelay(provider: string, endedAt: string, config: AutoCompactConfig, now: number, random = Math.random, model?: string | null) {
   const configuredMs = (providerDelayMinutes(provider, config, model) ?? 0) * 60_000;
   const elapsedMs = Math.max(0, now - Date.parse(endedAt));
   const remainingMs = Math.max(0, configuredMs - elapsedMs);
-  const jitterApplied = remainingMs === 0 || elapsedMs >= (CACHE_TTL_MS[cacheFamily(provider, model) ?? ""] ?? 0);
+  const jitterApplied = remainingMs === 0;
   const delayMs = jitterApplied
     ? REARM_JITTER_MIN_MS + Math.floor(Math.min(1, Math.max(0, random())) * (REARM_JITTER_MAX_MS - REARM_JITTER_MIN_MS))
     : remainingMs;
