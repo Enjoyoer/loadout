@@ -2,7 +2,7 @@
 
 Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.pid` runtime listen metadata. An explicit non-default `PASEO_HOME` without valid endpoint metadata refuses to connect instead of falling back to another daemon. Invalid explicit hosts also fail closed. The standard local endpoint is a fallback only for an unset home or `~/.paseo`.
 
-Server-only Paseo plugin for Paseo >=0.9.2 <0.11.0. It archives worker **worktree** workspaces,
+Server-only Paseo plugin for Paseo >=0.10.3 <0.11.0. It archives worker **worktree** workspaces,
 and through Paseo's own workspace archive the agents in them, once the worker branch
 is merged into its base. It is **event-driven**: every finished agent turn (PM or
 worker) evaluates the worktrees of that agent's project and repository within seconds.
@@ -162,8 +162,10 @@ call until a hook runs. The plugin therefore:
   from `@getpaseo/client` (no internal exports), resolved from `PASEO_HOST`, then
   `$PASEO_HOME/paseo.pid`, then `127.0.0.1:6767` only for the default home. A non-default home without valid listen metadata refuses to connect.
 
-`paseo-plugin.json` pins `"paseo": ">=0.9.2 <0.11.0"` and `package.json` pins
-`@getpaseo/client` to exactly `0.9.2`: the plugin depends on 0.9.1 archive semantics
+`paseo-plugin.json` pins `"paseo": ">=0.10.3 <0.11.0"` and `package.json` pins
+`@getpaseo/client`, `@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.10.3`
+(moved from 0.9.2 after a review found the 0.10.3 plugin types identical and the
+client and protocol changes additive only). The plugin depends on 0.9.1 archive semantics
 (directory removal, branch kept), the worktree metadata location, and snapshot field
 names. Those were checked against 0.9.2, 0.10.1, and 0.10.3. Re-check them before
 admitting 0.11.

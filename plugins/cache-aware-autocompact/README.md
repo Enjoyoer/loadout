@@ -1,6 +1,6 @@
 # cache-aware-autocompact
 
-Server-only Paseo 0.9.2 plugin. It starts one timer per completed Claude, Codex, or supported Pi turn and, after a configurable cache-preserving delay, evaluates the latest idle snapshot. The default is **dry-run**: it logs `would-compact` decisions and never sends anything. Only `config.armed=true` permits a `/compact` send.
+Server-only Paseo plugin for Paseo >=0.10.3 <0.11.0, built against the exact 0.10.3 `@getpaseo/*` packages. It starts one timer per completed Claude, Codex, or supported Pi turn and, after a configurable cache-preserving delay, evaluates the latest idle snapshot. The default is **dry-run**: it logs `would-compact` decisions and never sends anything. Only `config.armed=true` permits a `/compact` send.
 
 ## Design
 
