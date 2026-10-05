@@ -2,7 +2,7 @@ import type { PaseoApi, PaseoClient } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { AutoCompactConfig } from "./config.ts";
-import { checkpointKey, guardDecision, providerDelayMinutes, strictnessTier } from "./model.ts";
+import { cacheExpired, checkpointKey, guardDecision, providerDelayMinutes, strictnessTier } from "./model.ts";
 import { StateStore, type StateEntry } from "./store.ts";
 import { AgentTimers, realTimers, type TimerApi } from "./timer.ts";
 import { MetricsLog } from "./metrics.ts";
@@ -131,6 +131,11 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         log("skip", { agentId: checkpoint.agentId, reason: "agent-unavailable", strictnessTier: "safe" });
         return;
       }
+      if (cacheExpired(agent.provider, agent.model, checkpoint.endedAt, now())) {
+        await record(checkpoint, "skip", "cache-expired", config);
+        log("skip", { agentId: checkpoint.agentId, reason: "cache-expired", retryCount: checkpoint.retryCount });
+        return;
+      }
       const baseline = await handle.timeline.refetch({ direction: "tail", limit: 200, projection: "canonical" }).catch(async error => {
         await record(checkpoint, "compaction-failed", safeError(error), config);
         log("compaction-failed", { agentId: agent.id, reason: safeError(error) });
@@ -181,7 +186,9 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         if (stopped || generation !== (generations.get(checkpoint.agentId) ?? 0)) return;
         const beforeSend = (await handle.refresh())?.agent;
         if (stopped || generation !== (generations.get(checkpoint.agentId) ?? 0)) return;
-        const sendDecision = beforeSend && guardDecision(beforeSend, checkpoint.timeline, config, checkpoint.lastUserMessageAt);
+        const sendDecision = beforeSend && (cacheExpired(beforeSend.provider, beforeSend.model, checkpoint.endedAt, now())
+          ? { ok: false, reason: "cache-expired" }
+          : guardDecision(beforeSend, checkpoint.timeline, config, checkpoint.lastUserMessageAt));
         if (!sendDecision || !sendDecision.ok) {
           const reason = sendDecision ? sendDecision.reason : "agent-unavailable";
           await record(checkpoint, "skip", reason, config);
@@ -325,6 +332,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
             await store.rememberTurn(checkpoint, config.maxStateEntries);
             if (stopped) return;
             if (generation !== (generations.get(agent.id) ?? 0) || timers.has(agent.id)) { skip("changed-during-recovery"); continue; }
+            if (cacheExpired(fresh.provider, fresh.model, checkpoint.endedAt, now())) { skip("cache-expired"); continue; }
             const delay = recoveryDelay(fresh.provider, checkpoint.endedAt, config, now(), random, fresh.model);
             expectedUserMessage.set(agent.id, checkpoint.lastUserMessageAt);
             timers.schedule(checkpoint.key, agent.id, delay.delayMs, () => {

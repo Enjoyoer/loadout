@@ -192,9 +192,10 @@ describe("Pi scheduler", () => {
       agent({ id: "a2", provider: "pi", model: "fleet/gpt-6.1-sol" }),
       agent({ id: "a3", provider: "pi", model: "fleet/chatgpt-web-pro" })]);
     assert.equal(rearmSkipReason(agent({ provider: "pi", model: null })), "unsupported-pi-model");
+    f.setNow(endedMs + 29 * 60_000);
     f.start(f.store, true, true); await f.recovered();
     assert.equal(f.timers.pending.size, 2);
-    assert.deepEqual([...f.timers.pending.values()].map(t => t.ms).sort((a, b) => a - b), [4500, 20 * 60_000]);
+    assert.deepEqual([...f.timers.pending.values()].map(t => t.ms).sort((a, b) => a - b), [4500, 21 * 60_000]);
     assert.equal((f.logs.find(l => l.action === "rearm-summary")!.data.skipped as Record<string, number>)["unsupported-pi-model"], 1);
     f.timers.fire(); await until(() => f.logs.filter(l => l.action === "compacted").length === 2);
     assert.deepEqual(f.sends, ["/compact", "/compact"]);
@@ -207,6 +208,50 @@ describe("Pi scheduler", () => {
     await until(() => f.logs.some(l => l.action === "timer-started"));
     assert.equal(f.logs.find(l => l.action === "timer-started")!.data.delayMinutes, 22);
   }));
+});
+
+describe("cache TTL guards", () => {
+  const routes = [
+    { provider: "claude", model: "model", ttl: 60 },
+    { provider: "codex", model: "model", ttl: 30 },
+    { provider: "pi", model: "fleet/claude-opus-5-5", ttl: 60 },
+    { provider: "pi", model: "fleet/gpt-6.1-sol", ttl: 30 },
+  ];
+  for (const route of routes) {
+    it(`skips cold ${route.provider}/${route.model} recovery at and beyond TTL`, async () => {
+      await fixture(async f => {
+        f.setAgents([agent(route)]); f.setNow(endedMs + route.ttl * 60_000);
+        f.start(f.store, true, true); await f.recovered();
+        assert.equal(f.timers.pending.size, 0);
+        assert.equal((f.logs.find(l => l.action === "rearm-summary")!.data.skipped as Record<string, number>)["cache-expired"], 1);
+        f.timers.fire(); assert.deepEqual(f.sends, []);
+        await new Promise(resolve => setTimeout(resolve, 25));
+      });
+    });
+    it(`refuses a late ${route.provider}/${route.model} timer at TTL`, async () => fixture(async f => {
+      f.setAgents([agent(route)]); f.setNow(endedMs + (route.ttl - 1) * 60_000);
+      f.start(f.store, true, true); await f.recovered();
+      assert.equal(f.timers.pending.size, 1);
+      f.setNow(endedMs + route.ttl * 60_000); f.timers.fire();
+      await until(() => f.logs.some(l => l.data.reason === "cache-expired"));
+      assert.deepEqual(f.sends, []);
+      assert.equal((await f.store.read()).at(-1)?.reason, "cache-expired");
+      assert.equal(f.timers.pending.size, 0);
+    }));
+    it(`refuses a ${route.provider}/${route.model} retry crossing TTL`, async () => fixture(async f => {
+      const a = agent(route); const page = history(a);
+      page.entries[0]!.item = { type: "tool_call", callId: "tool1", name: "tool", detail: { type: "plain_text", text: "work" }, status: "running", error: null };
+      f.setAgents([a]); f.histories.set(a.id, page);
+      f.setNow(endedMs + (route.ttl - 1) * 60_000);
+      f.start(f.store, true, true); await f.recovered(); f.timers.fire();
+      await until(() => f.logs.some(l => l.action === "retry-scheduled"));
+      f.setNow(endedMs + (route.ttl + 1) * 60_000); f.timers.fire();
+      await until(() => f.logs.some(l => l.data.reason === "cache-expired"));
+      assert.deepEqual(f.sends, []);
+      assert.equal(f.timers.pending.size, 0);
+      assert.equal((await f.store.read()).at(-1)?.reason, "cache-expired");
+    }));
+  }
 });
 
 describe("restart recovery", () => {
@@ -363,7 +408,7 @@ describe("restart recovery", () => {
 
   it("re-arms an expired Codex timer with bounded jitter", async () => fixture(async (f) => {
     f.setAgents([agent({ provider: "codex" })]);
-    f.setNow(endedMs + 6 * 60 * 60_000);
+    f.setNow(endedMs + 29 * 60_000);
     f.start(f.store); await f.recovered();
     const delay = [...f.timers.pending.values()][0]!.ms;
     assert.ok(delay >= REARM_JITTER_MIN_MS && delay <= REARM_JITTER_MAX_MS);
@@ -501,7 +546,7 @@ describe("restart recovery", () => {
     turn.timeline = [{ type: "tool_call", callId: "tool1", name: "tool", detail: { type: "plain_text", text: "work" }, status: "running", error: null }];
     await f.store.rememberTurn(turn, 100);
     f.cleanup(); f.logs.length = 0;
-    f.setNow(endedMs + 60 * 60_000);
+    f.setNow(endedMs + 55 * 60_000);
     f.start(f.store); await f.recovered();
     f.timers.fire();
     await until(() => f.logs.some((line) => line.action === "retry-scheduled"));
@@ -548,11 +593,11 @@ describe("elapsed-delay math", () => {
     assert.equal(recoveryDelay("codex", endedAt, config, endedMs + 20 * 60_000).delayMs, 120_000);
     assert.equal(recoveryDelay("pi", endedAt, defaultConfig({ piGptEnabled: true }), endedMs + 20 * 60_000, () => 0, "fleet/gpt-6.1-sol").delayMs, 120_000);
     assert.equal(recoveryDelay("pi", endedAt, config, endedMs + 20 * 60_000, () => 0, "fleet/claude-opus-5-5").delayMs, 1_800_000);
-    assert.equal(recoveryDelay("pi", endedAt, defaultConfig({ claudeDelayMinutes: 120 }), endedMs + 61 * 60_000, () => 0, "fleet/claude-opus-5-5").jitterApplied, true);
+    assert.equal(recoveryDelay("pi", endedAt, defaultConfig({ claudeDelayMinutes: 120 }), endedMs + 55 * 60_000, () => 0, "fleet/claude-opus-5-5").jitterApplied, false);
     assert.equal(recoveryDelay("claude", endedAt, config, endedMs - 1).delayMs, 3_000_000);
   });
-  it("jitters due and expired timers within the documented bounds", () => {
-    for (const elapsed of [50 * 60_000, 6 * 60 * 60_000]) {
+  it("jitters overdue but warm timers within the documented bounds", () => {
+    for (const elapsed of [50 * 60_000, 59 * 60_000]) {
       for (const random of [0, 0.5, 0.999999, 1]) {
         const delay = recoveryDelay("claude", endedAt, config, endedMs + elapsed, () => random);
         assert.equal(delay.remainingMs, 0);
@@ -561,11 +606,11 @@ describe("elapsed-delay math", () => {
       }
     }
   });
-  it("evaluates soon after cache expiry even with a longer configured delay", () => {
-    const delay = recoveryDelay("claude", endedAt, defaultConfig({ claudeDelayMinutes: 120 }), endedMs + 61 * 60_000, () => 0);
-    assert.equal(delay.remainingMs, 59 * 60_000);
-    assert.equal(delay.jitterApplied, true);
-    assert.equal(delay.delayMs, REARM_JITTER_MIN_MS);
+  it("keeps a longer configured delay for a warm cache", () => {
+    const delay = recoveryDelay("claude", endedAt, defaultConfig({ claudeDelayMinutes: 120 }), endedMs + 55 * 60_000, () => 0);
+    assert.equal(delay.remainingMs, 65 * 60_000);
+    assert.equal(delay.jitterApplied, false);
+    assert.equal(delay.delayMs, 65 * 60_000);
   });
   it("uses configured delays", () => {
     assert.equal(recoveryDelay("codex", endedAt, defaultConfig({ codexDelayMinutes: 10 }), endedMs + 60_000).delayMs, 9 * 60_000);

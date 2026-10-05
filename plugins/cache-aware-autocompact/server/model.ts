@@ -19,6 +19,13 @@ export function cacheFamily(provider: string, model?: string | null): "claude" |
   return null;
 }
 
+/** Reference cache lifetime, shared by recovery and every pre-send evaluation. */
+export function cacheExpired(provider: string, model: string | null | undefined, endedAt: string, now: number): boolean {
+  const family = cacheFamily(provider, model);
+  const ttlMs = family === "claude" ? 60 * 60_000 : family === "codex" ? 30 * 60_000 : null;
+  return ttlMs !== null && now - Date.parse(endedAt) >= ttlMs;
+}
+
 export function providerDelayMinutes(provider: string, config: AutoCompactConfig, model?: string | null): number | null {
   if (provider === "pi" && cacheFamily(provider, model) === "codex" && !config.piGptEnabled) return null;
   const family = cacheFamily(provider, model);
