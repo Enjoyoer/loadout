@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "07a7b193ed7a4d94fee6ec01eb8d0ce4c15cded4",
+  "source_commit": "0c732e2c1e685929cf144589c417a9338d8deddf",
   "skill_count": 22,
   "file_count": 123,
   "files": [
@@ -1279,8 +1279,8 @@
     {
       "path": "plugins/pi-fast-toggle/server/routing.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 3693,
-      "sha256": "e44c828fbd763d93b64841a177c9753f62a773e674ea55bec6a420e61a3d1cb9"
+      "bytes": 3737,
+      "sha256": "816f4a5581244db01d4111bfe5816bba2348dd0098469a028785e7f7e8b6c21a"
     },
     {
       "path": "plugins/pi-fast-toggle/shared/contracts.ts",
@@ -1315,8 +1315,8 @@
     {
       "path": "plugins/pi-fast-toggle/test/server.test.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 3571,
-      "sha256": "0202b153f2c3b622dad652b242f2e8707cedf11456ab0c032840c67859b2ad64"
+      "bytes": 3609,
+      "sha256": "9f1853c0e1107344e97cbc1ec67fe6e361e9b9f27b5f99a54eb48574b1840047"
     },
     {
       "path": "plugins/pi-fast-toggle/tsconfig.json",
