@@ -12,6 +12,32 @@ PI = ROOT / 'skills/orchestration/personal-skills/scripts/pi'
 
 
 class PiSurfaceTest(unittest.TestCase):
+    def test_gmail_is_optional_hidden_and_read_only(self):
+        sys.path.insert(0, str(PI))
+        from configure import build, GMAIL_READ_TOOLS
+        spec = {'baseUrl': 'https://router.example.test/v1', 'credential': {'kind': 'env', 'name': 'EXISTING_KEY'},
+                'models': [{'id': 'current', 'name': 'Sol'}],
+                'settings': {'defaultProvider': 'fleet', 'defaultModel': 'current', 'defaultThinkingLevel': 'high'}}
+        root = Path('/tmp/example-pi')
+        self.assertNotIn('gmail', build(spec, root)['agent/mcp.json']['mcpServers'])
+        server = build({**spec, 'gmail': {'email': 'owner@example.test', 'home': '/tmp/example-pi/gmail-mcp'}}, root)['agent/mcp.json']['mcpServers']['gmail']
+        self.assertEqual(server['exposure'], 'hidden')
+        self.assertEqual(set(server['toolExposure']), set(GMAIL_READ_TOOLS))
+        self.assertEqual(set(server['toolExposure'].values()), {'codemode'})
+        self.assertIn('--read-only', server['args'])
+        blocked = server['args'][server['args'].index('--disabled-tools') + 1:]
+        for name in ('send_gmail_message', 'draft_gmail_message', 'modify_gmail_message_labels', 'start_google_auth'):
+            self.assertIn(name, blocked); self.assertNotIn(name, server['toolExposure'])
+        self.assertTrue(all(not any(w in t for w in ('send', 'draft', 'modify', 'manage')) for t in server['toolExposure']))
+        self.assertEqual(server['env']['WORKSPACE_MCP_HOST'], '127.0.0.1')
+        self.assertTrue(server['description'])
+        self.assertFalse(any('secret' in v.lower() and not v.endswith('client_secret.json') for v in server['env'].values()))
+        for bad in [{'email': 'owner@example.test'}, {'email': 'x', 'home': '/h'},
+                    {'email': 'owner@example.test', 'home': '/h', 'scopes': ['gmail.send']},
+                    {'email': 'owner@example.test', 'home': '/h', 'port': 80}]:
+            with self.assertRaisesRegex(ValueError, 'gmail'):
+                build({**spec, 'gmail': bad}, root)
+
     def test_codemode_is_fixed_validated_and_fail_closed_at_runtime(self):
         sys.path.insert(0, str(PI))
         from configure import build, validate_settings
