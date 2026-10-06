@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "5bd97d53a7af7356b3361fc681fc80c8b570fe15",
+  "source_commit": "977109263d3b6745792121c7677385a87e50acbe",
   "skill_count": 22,
   "file_count": 123,
   "files": [
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 19472,
-      "sha256": "9e3db32f5a4def8f0d89523d9fd9e5912d9d9c6ad11bf2b1697d632a9ed8f531"
+      "bytes": 20056,
+      "sha256": "5d350c7956fa714f348cb854d371029d31463ef0a7a4bd8004ff7dd591ecc76a"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/client-config.json",
@@ -534,8 +534,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/configure.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 6479,
-      "sha256": "686666bdadc7e561afb2a81f04d4b2727e8dcd870cdd2c61f8424aceea6f446f"
+      "bytes": 8663,
+      "sha256": "e131f3689b9c4e248580f3f42566f7a2f4a6b26523b6b8f943fe73876ebeeaa3"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/credential.py",
