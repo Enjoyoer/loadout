@@ -6,6 +6,31 @@ from credential import expand
 
 FILES = ("credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs")
 
+# Optional read-only Gmail (workspace-mcp). Read-only is enforced three times: the
+# server's --read-only mode (gmail.readonly scope, write tools removed), an explicit
+# --disabled-tools list, and a Pi allowlist on a hidden server. Only `email`, `home`
+# and `port` are configurable; the token and client JSON stay in `home`, owner-only.
+GMAIL_READ_TOOLS = ("search_gmail_messages", "get_gmail_message_content", "get_gmail_messages_content_batch",
+                    "get_gmail_thread_content", "get_gmail_threads_content_batch", "get_gmail_attachment_content",
+                    "list_gmail_labels")
+GMAIL_BLOCKED_TOOLS = ("start_google_auth", "send_gmail_message", "draft_gmail_message", "modify_gmail_message_labels",
+                       "batch_modify_gmail_message_labels", "manage_gmail_label", "manage_gmail_filter")
+
+def gmail_server(cfg):
+    if not isinstance(cfg, dict) or not {"email", "home"} <= cfg.keys() or cfg.keys() - {"email", "home", "port"}:
+        raise ValueError("gmail needs exactly email, home and optional port")
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", cfg["email"]): raise ValueError("gmail email invalid")
+    port = cfg.get("port", 47863)
+    if not isinstance(port, int) or not 1024 < port < 65536: raise ValueError("gmail port invalid")
+    home = expand(cfg["home"])
+    exe = home / "venv" / ("Scripts/workspace-mcp.exe" if os.name == "nt" else "bin/workspace-mcp")
+    return {"command": str(exe),
+            "args": ["--single-user", "--tools", "gmail", "--read-only", "--disabled-tools", *GMAIL_BLOCKED_TOOLS],
+            "exposure": "hidden", "toolExposure": {name: "codemode" for name in GMAIL_READ_TOOLS},
+            "description": "Read-only Gmail for " + cfg["email"] + ": search and read messages, threads, attachments and labels. Cannot send, draft, label or delete.",
+            "env": {"GOOGLE_CLIENT_SECRET_PATH": str(home / "client_secret.json"), "WORKSPACE_MCP_CREDENTIALS_DIR": str(home / "credentials"),
+                    "USER_GOOGLE_EMAIL": cfg["email"], "WORKSPACE_MCP_HOST": "127.0.0.1", "WORKSPACE_MCP_PORT": str(port)}}
+
 def validate_settings(settings):
     if settings.get('codemode') != {'mode': 'on'} or settings.get('defaultTools') != ['+codemode']:
         raise ValueError('Pi requires fixed Codemode on and defaultTools +codemode')
@@ -53,6 +78,7 @@ def build(spec, root):
     mcp = {"autoEnableCodemode": True, "mcpServers": {"paseo": {
            "command": spec.get("python", sys.executable), "args": [str(root / "mcp_bridge.py")], "exposure": "codemode",
            "env": {"LOADOUT_PI_MCP_URL": "${LOADOUT_PI_MCP_URL}", "LOADOUT_PI_PARENT_MODEL": "${LOADOUT_PI_PARENT_MODEL}", "LOADOUT_PI_PARENT_THINKING": "${LOADOUT_PI_PARENT_THINKING}"}}}}
+    if "gmail" in spec: mcp["mcpServers"]["gmail"] = gmail_server(spec["gmail"])
     return {"runtime.json": spec, "agent/models.json": model, "agent/settings.json": settings, "agent/mcp.json": mcp}
 
 def safe_target(root, target):
