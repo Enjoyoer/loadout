@@ -31,6 +31,45 @@ def gmail_server(cfg):
             "env": {"GOOGLE_CLIENT_SECRET_PATH": str(home / "client_secret.json"), "WORKSPACE_MCP_CREDENTIALS_DIR": str(home / "credentials"),
                     "USER_GOOGLE_EMAIL": cfg["email"], "WORKSPACE_MCP_HOST": "127.0.0.1", "WORKSPACE_MCP_PORT": str(port)}}
 
+# Optional direct providers: unauthenticated OpenAI-compatible endpoints (for example a
+# local model gate) that bypass the router. Each model is listed once here; the Paseo
+# picker rows derive from the same list. No credentials, headers or compat flags.
+DIRECT_API = "openai-completions"
+DIRECT_NO_AUTH_KEY = "local-no-auth"  # dummy key Pi needs to list the model; the endpoint ignores it
+LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+DIRECT_MODEL_KEYS = {"id", "name", "reasoning", "input", "contextWindow", "maxTokens", "cost", "thinkingLevelMap"}
+RESERVED_PROVIDERS = {"fleet", "opencode", "llama.cpp", "llama-cpp", "llamacpp"}
+
+def direct_providers(spec):
+    providers = spec.get("directProviders", {})
+    if not isinstance(providers, dict): raise ValueError("directProviders must be an object")
+    out = {}
+    for name, cfg in providers.items():
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", name) or name in RESERVED_PROVIDERS | {spec.get("modelProvider", "fleet")}:
+            raise ValueError("direct provider name invalid or reserved: " + name)
+        if not isinstance(cfg, dict) or set(cfg) != {"baseUrl", "api", "auth", "models"}:
+            raise ValueError("direct provider needs exactly baseUrl, api, auth and models")
+        if not re.fullmatch(r"https?://[^\s/]+(/\S*)?", cfg["baseUrl"]): raise ValueError("direct provider baseUrl invalid")
+        if cfg["api"] != DIRECT_API: raise ValueError("direct provider api must be " + DIRECT_API)
+        if cfg["auth"] != "none": raise ValueError("direct provider auth must be none")
+        models = cfg["models"]
+        if not isinstance(models, list) or not models: raise ValueError("direct provider models required")
+        rows = []
+        for model in models:
+            if not isinstance(model, dict) or set(model) != DIRECT_MODEL_KEYS:
+                raise ValueError("direct model needs exactly " + ", ".join(sorted(DIRECT_MODEL_KEYS)))
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", model["id"]) or not model["name"].strip():
+                raise ValueError("direct model id or name invalid")
+            levels = model["thinkingLevelMap"]
+            if not isinstance(levels, dict) or set(levels) != set(LEVELS) or not all(v is None or isinstance(v, str) for v in levels.values()):
+                raise ValueError("direct model thinkingLevelMap must map every level to a string or null")
+            if bool(model["reasoning"]) != any(levels[l] for l in LEVELS if l != "off"):
+                raise ValueError("direct model reasoning must match its thinking levels")
+            rows.append(copy.deepcopy(model))
+        if len({m["id"] for m in rows}) != len(rows): raise ValueError("duplicate direct model id")
+        out[name] = {"baseUrl": cfg["baseUrl"], "api": DIRECT_API, "apiKey": DIRECT_NO_AUTH_KEY, "models": rows}
+    return out
+
 def validate_settings(settings):
     if settings.get('codemode') != {'mode': 'on'} or settings.get('defaultTools') != ['+codemode']:
         raise ValueError('Pi requires fixed Codemode on and defaultTools +codemode')
@@ -75,6 +114,7 @@ def build(spec, root):
     headers = {name: helper for name in spec.get("credentialHeaders", [])}
     model = {"providers": {spec.get("modelProvider", "fleet"): {"baseUrl": base, "apiKey": helper,
         "headers": headers, "api": "openai-responses", "models": models}}}
+    model["providers"].update(direct_providers(spec))
     mcp = {"autoEnableCodemode": True, "mcpServers": {"paseo": {
            "command": spec.get("python", sys.executable), "args": [str(root / "mcp_bridge.py")], "exposure": "codemode",
            "env": {"LOADOUT_PI_MCP_URL": "${LOADOUT_PI_MCP_URL}", "LOADOUT_PI_PARENT_MODEL": "${LOADOUT_PI_PARENT_MODEL}", "LOADOUT_PI_PARENT_THINKING": "${LOADOUT_PI_PARENT_THINKING}"}}}}

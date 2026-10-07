@@ -1,7 +1,9 @@
 """Derive Pi runtime models and picker rows from the existing fleet catalog."""
 import copy
+from configure import LEVELS, direct_providers
 
 CANONICAL = {'Opus','Sonnet','Fable','Astra','Sol','Luna','Web Extra','Web Pro'}
+LEVEL_LABELS = {'off':'Off','minimal':'Minimal','low':'Low','medium':'Medium','high':'High','xhigh':'Extra High','max':'Max'}
 
 
 def derive(providers, pi):
@@ -38,6 +40,16 @@ def derive(providers, pi):
                 if default:raise ValueError('source catalog has multiple default models')
                 default=(source,row)
     if not rows:raise ValueError('empty Pi source catalog')
+    # Direct providers add picker rows from their single model list, after the fleet rows.
+    for name,provider in direct_providers(runtime).items():
+        for model in provider['models']:
+            if model['name'] in labels or model['name'] in CANONICAL:
+                raise ValueError('direct model name collides with a picker label')
+            labels.add(model['name'])
+            options=[{'id':level,'label':LEVEL_LABELS[level]} for level in LEVELS if model['thinkingLevelMap'][level]]
+            if options:
+                preferred=next((x for x in options if x['id']=='medium'),options[0]);preferred['isDefault']=True
+            rows.append({'id':name+'/'+model['id'],'label':model['name'],'isDefault':False,'thinkingOptions':options})
     if not default:
         source=providers.get(default_source,{}).get('models',[None])[0]
         if not source:raise ValueError('default provider catalog missing')
