@@ -38,6 +38,44 @@ class PiSurfaceTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'gmail'):
                 build({**spec, 'gmail': bad}, root)
 
+    def test_direct_provider_adds_unauthenticated_models_and_picker_rows(self):
+        sys.path.insert(0, str(PI))
+        from configure import build
+        from catalog import derive
+        levels = {'off': None, 'minimal': None, 'low': 'low', 'medium': 'medium', 'high': 'high', 'xhigh': 'xhigh', 'max': None}
+        model = {'id': 'example-27b', 'name': 'Example', 'reasoning': True, 'input': ['text'], 'contextWindow': 32768,
+                 'maxTokens': 8192, 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}, 'thinkingLevelMap': levels}
+        direct = {'local': {'baseUrl': 'http://gate.example.test:8080/v1', 'api': 'openai-completions', 'auth': 'none', 'models': [model]}}
+        spec = {'baseUrl': 'https://router.example.test/v1', 'credential': {'kind': 'env', 'name': 'EXISTING_KEY'},
+                'models': [{'id': 'current', 'name': 'Sol'}],
+                'settings': {'defaultProvider': 'fleet', 'defaultModel': 'current', 'defaultThinkingLevel': 'high'}}
+        root = Path('/tmp/example-pi')
+        self.assertEqual(list(build(spec, root)['agent/models.json']['providers']), ['fleet'])
+        built = build({**spec, 'directProviders': direct}, root)
+        local = built['agent/models.json']['providers']['local']
+        self.assertEqual(local, {'baseUrl': 'http://gate.example.test:8080/v1', 'api': 'openai-completions', 'apiKey': 'local-no-auth', 'models': [model]})
+        self.assertNotIn('compat', local['models'][0])
+        self.assertEqual(built['agent/settings.json']['defaultModel'], 'current')
+        source = {'codex': {'models': [{'id': 'current', 'label': 'Sol', 'isDefault': True, 'thinkingOptions': [{'id': 'high', 'label': 'High', 'isDefault': True}]}]}}
+        pi = {'root': str(root), 'catalogSources': ['codex'], 'runtime': {**{k: v for k, v in spec.items() if k not in ('models', 'settings')}, 'directProviders': direct}}
+        rows = derive(source, pi)['provider']['models']
+        self.assertEqual([r['id'] for r in rows], ['fleet/current', 'local/example-27b'])
+        row = rows[1]
+        self.assertEqual((row['label'], row['isDefault']), ('Example', False))
+        self.assertEqual([o['id'] for o in row['thinkingOptions']], ['low', 'medium', 'high', 'xhigh'])
+        self.assertEqual([o['id'] for o in row['thinkingOptions'] if o.get('isDefault')], ['medium'])
+        self.assertEqual(derive(source, pi)['catalog_model_id'], 'fleet/current')
+        bad_provider = [{'local': {**direct['local'], 'apiKey': 'x'}}, {'local': {**direct['local'], 'auth': 'bearer'}},
+                        {'local': {**direct['local'], 'api': 'openai-responses'}}, {'llama.cpp': direct['local']}, {'fleet': direct['local']},
+                        {'local': {**direct['local'], 'models': [{**model, 'compat': {'x': True}}]}},
+                        {'local': {**direct['local'], 'models': [{**model, 'reasoning': False}]}},
+                        {'local': {**direct['local'], 'models': [model, model]}}]
+        for bad in bad_provider:
+            with self.assertRaisesRegex(ValueError, 'direct'):
+                build({**spec, 'directProviders': bad}, root)
+        with self.assertRaisesRegex(ValueError, 'collides'):
+            derive(source, {**pi, 'runtime': {**pi['runtime'], 'directProviders': {'local': {**direct['local'], 'models': [{**model, 'name': 'Sol'}]}}}})
+
     def test_codemode_is_fixed_validated_and_fail_closed_at_runtime(self):
         sys.path.insert(0, str(PI))
         from configure import build, validate_settings
