@@ -1,5 +1,6 @@
 """Derive Pi runtime models and picker rows from the existing fleet catalog."""
 import copy
+import re
 from configure import LEVELS, direct_providers
 
 CANONICAL = {'Opus','Sonnet','Fable','Astra','Sol','Luna','Web Extra','Web Pro'}
@@ -50,6 +51,23 @@ def derive(providers, pi):
             if options:
                 preferred=next((x for x in options if x['id']=='medium'),options[0]);preferred['isDefault']=True
             rows.append({'id':name+'/'+model['id'],'label':model['name'],'isDefault':False,'thinkingOptions':options})
+    # Optional pinned API-key route: a second picker entry per Claude model, "<label> <suffix>", whose
+    # model id carries the router prefix that pins it to the API key. Same transport, window and thinking.
+    route=pi.get('claudeApiKeyRoute')
+    if route is not None:
+        if not isinstance(route,dict) or set(route)!={'prefix','labelSuffix'} or not re.fullmatch(r'[a-z][a-z0-9-]{0,15}',str(route['prefix'])) \
+                or not re.fullmatch(r'[A-Za-z0-9]{1,16}',str(route['labelSuffix'])):
+            raise ValueError('claudeApiKeyRoute needs exactly a prefix and a one-word labelSuffix')
+        if 'claude' not in sources:raise ValueError('claudeApiKeyRoute requires the claude catalog source')
+        for source in providers.get('claude',{}).get('models',[]):
+            base=next(m for m in models if m['name']==source['label']);label=source['label']+' '+route['labelSuffix']
+            if label in labels:raise ValueError('claudeApiKeyRoute label collides with a picker label')
+            labels.add(label)
+            model=copy.deepcopy(base);model['id']=route['prefix']+'/'+base['id'];model['name']=label
+            row=copy.deepcopy(next(r for r in rows if r['label']==source['label']))
+            row.update(id=namespace+'/'+model['id'],label=label,isDefault=False)
+            if row.get('description'):row['description']=row['description'].rstrip('.')+'. Billed to API credits.'
+            models.append(model);rows.append(row)
     if not default:
         source=providers.get(default_source,{}).get('models',[None])[0]
         if not source:raise ValueError('default provider catalog missing')

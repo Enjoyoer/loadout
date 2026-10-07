@@ -95,7 +95,7 @@ def _providers(providers, where):
 
 def _pi(value, where):
     if not isinstance(value, dict): raise fleet.FleetError(f"{where} must be an object")
-    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly"}, where)
+    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly", "claudeApiKeyRoute"}, where)
     if isinstance(value.get('catalogSources'), list) and 'opencode' in value['catalogSources']:
         raise fleet.FleetError('OpenCode Zen free models require the native opencode picker, not Pi catalogSources')
     if value.get('catalogOnly') is True:

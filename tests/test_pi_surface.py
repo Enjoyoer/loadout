@@ -76,6 +76,31 @@ class PiSurfaceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'collides'):
             derive(source, {**pi, 'runtime': {**pi['runtime'], 'directProviders': {'local': {**direct['local'], 'models': [{**model, 'name': 'Sol'}]}}}})
 
+    def test_claude_api_key_route_adds_prefixed_pi_entries_after_all_rows(self):
+        sys.path.insert(0, str(PI))
+        from catalog import derive
+        claude = [{'id': n + '[1m]', 'apiModelId': n, 'label': l, 'description': 'Example ' + l + '.', 'thinkingOptions': [{'id': 'high', 'label': 'High', 'isDefault': True}, {'id': 'ultracode', 'label': 'U'}]}
+                  for n, l in [('backend-opus', 'Opus'), ('backend-sonnet', 'Sonnet')]]
+        source = {'claude': {'models': claude}, 'codex': {'models': [{'id': 'current', 'label': 'Sol', 'isDefault': True, 'thinkingOptions': [{'id': 'high', 'label': 'High', 'isDefault': True}]}]}}
+        runtime = {'baseUrl': 'https://router.example.test/v1', 'credential': {'kind': 'env', 'name': 'EXISTING_KEY'}}
+        pi = {'root': '/tmp/example-pi', 'runtime': runtime}
+        plain = derive(source, pi)
+        out = derive(source, {**pi, 'claudeApiKeyRoute': {'prefix': 'api', 'labelSuffix': 'API'}})
+        rows, models = out['provider']['models'], out['runtime']['models']
+        self.assertEqual(rows[:3], plain['provider']['models'])
+        self.assertEqual([(r['id'], r['label']) for r in rows[3:]], [('fleet/api/backend-opus', 'Opus API'), ('fleet/api/backend-sonnet', 'Sonnet API')])
+        self.assertTrue(all(r['isDefault'] is False for r in rows[3:]) and rows[3]['description'].endswith('Billed to API credits.'))
+        self.assertEqual(rows[3]['thinkingOptions'], rows[0]['thinkingOptions'])
+        base, api = models[0], models[3]
+        self.assertEqual({**api, 'id': base['id'], 'name': base['name']}, base)
+        self.assertEqual((api['id'], api['name'], api['contextWindow']), ('api/backend-opus', 'Opus API', 1000000))
+        self.assertEqual(out['catalog_model_id'], plain['catalog_model_id'])
+        for bad in [{'prefix': 'api'}, {'prefix': 'API!', 'labelSuffix': 'API'}, {'prefix': 'api', 'labelSuffix': 'two words'}]:
+            with self.assertRaisesRegex(ValueError, 'claudeApiKeyRoute'):
+                derive(source, {**pi, 'claudeApiKeyRoute': bad})
+        with self.assertRaisesRegex(ValueError, 'claude catalog source'):
+            derive(source, {**pi, 'catalogSources': ['codex'], 'claudeApiKeyRoute': {'prefix': 'api', 'labelSuffix': 'API'}})
+
     def test_codemode_is_fixed_validated_and_fail_closed_at_runtime(self):
         sys.path.insert(0, str(PI))
         from configure import build, validate_settings
