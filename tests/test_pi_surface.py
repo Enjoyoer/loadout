@@ -87,11 +87,13 @@ class PiSurfaceTest(unittest.TestCase):
         plain = derive(source, pi)
         out = derive(source, {**pi, 'claudeApiKeyRoute': {'prefix': 'api', 'labelSuffix': 'API'}})
         rows, models = out['provider']['models'], out['runtime']['models']
-        self.assertEqual(rows[:3], plain['provider']['models'])
-        self.assertEqual([(r['id'], r['label']) for r in rows[3:]], [('fleet/api/backend-opus', 'Opus API'), ('fleet/api/backend-sonnet', 'Sonnet API')])
-        self.assertTrue(all(r['isDefault'] is False for r in rows[3:]) and rows[3]['description'].endswith('Billed to API credits.'))
-        self.assertEqual(rows[3]['thinkingOptions'], rows[0]['thinkingOptions'])
-        base, api = models[0], models[3]
+        self.assertEqual([r['label'] for r in rows], ['Opus', 'Opus API', 'Sonnet', 'Sonnet API', 'Sol'])
+        self.assertEqual([r for r in rows if not r['label'].endswith(' API')], plain['provider']['models'])
+        self.assertEqual([(r['id'], r['label']) for r in rows[1:4:2]], [('fleet/api/backend-opus', 'Opus API'), ('fleet/api/backend-sonnet', 'Sonnet API')])
+        self.assertTrue(all(r['isDefault'] is False for r in rows[1:4:2]) and rows[1]['description'].endswith('Billed to API credits.'))
+        self.assertEqual(rows[1]['thinkingOptions'], rows[0]['thinkingOptions'])
+        self.assertEqual([m['name'] for m in models], ['Opus', 'Opus API', 'Sonnet', 'Sonnet API', 'Sol'])
+        base, api = models[0], models[1]
         self.assertEqual({**api, 'id': base['id'], 'name': base['name']}, base)
         self.assertEqual((api['id'], api['name'], api['contextWindow']), ('api/backend-opus', 'Opus API', 1000000))
         self.assertEqual(out['catalog_model_id'], plain['catalog_model_id'])

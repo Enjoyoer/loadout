@@ -67,7 +67,8 @@ def derive(providers, pi):
             row=copy.deepcopy(next(r for r in rows if r['label']==source['label']))
             row.update(id=namespace+'/'+model['id'],label=label,isDefault=False)
             if row.get('description'):row['description']=row['description'].rstrip('.')+'. Billed to API credits.'
-            models.append(model);rows.append(row)
+            # Sit directly after the base entry, so each pair stays together and direct providers stay last.
+            models.insert(models.index(base)+1,model);rows.insert(rows.index(next(r for r in rows if r['label']==source['label']))+1,row)
     if not default:
         source=providers.get(default_source,{}).get('models',[None])[0]
         if not source:raise ValueError('default provider catalog missing')
