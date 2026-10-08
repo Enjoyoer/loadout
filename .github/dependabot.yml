@@ -12,6 +12,7 @@ updates:
       - /plugins/cache-aware-autocompact
       - /plugins/merged-worker-archiver
       - /plugins/orphan-project-sweeper
+      - /plugins/pm-native-worker-guard
       - /plugins/usage-limit-auto-resume
     schedule:
       interval: monthly
