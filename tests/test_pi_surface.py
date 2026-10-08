@@ -103,6 +103,26 @@ class PiSurfaceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'claude catalog source'):
             derive(source, {**pi, 'catalogSources': ['codex'], 'claudeApiKeyRoute': {'prefix': 'api', 'labelSuffix': 'API'}})
 
+    def test_label_order_is_pi_only_and_keeps_api_pairs_and_direct_rows_last(self):
+        sys.path.insert(0, str(PI))
+        from catalog import derive
+        claude = [{'id': n, 'label': l, 'thinkingOptions': [{'id': 'high', 'label': 'High', 'isDefault': True}]} for n, l in [('o', 'Opus'), ('s', 'Sonnet'), ('f', 'Fable')]]
+        source = {'claude': {'models': claude}, 'codex': {'models': [{'id': 'c', 'label': 'Sol', 'isDefault': True, 'thinkingOptions': []}]}}
+        runtime = {'baseUrl': 'https://router.example.test/v1', 'credential': {'kind': 'env', 'name': 'EXISTING_KEY'},
+                   'directProviders': {'local': {'baseUrl': 'http://gate.example.test/v1', 'api': 'openai-completions', 'auth': 'none', 'models': [{'id': 'm', 'name': 'Local', 'reasoning': False, 'input': ['text'], 'contextWindow': 8000, 'maxTokens': 1000, 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}, 'thinkingLevelMap': {k: None for k in ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']}}]}}}
+        pi = {'root': '/tmp/example-pi', 'runtime': runtime, 'claudeApiKeyRoute': {'prefix': 'api', 'labelSuffix': 'API'}}
+        plain = derive(source, pi)
+        out = derive(source, {**pi, 'labelOrder': ['Fable', 'Opus', 'Sonnet']})
+        self.assertEqual([r['label'] for r in out['provider']['models']], ['Fable', 'Fable API', 'Opus', 'Opus API', 'Sonnet', 'Sonnet API', 'Sol', 'Local'])
+        self.assertEqual([m['name'] for m in out['runtime']['models']], ['Fable', 'Fable API', 'Opus', 'Opus API', 'Sonnet', 'Sonnet API', 'Sol'])
+        key = lambda r: r['id']
+        self.assertEqual(sorted(out['provider']['models'], key=key), sorted(plain['provider']['models'], key=key))
+        self.assertEqual(out['catalog_model_id'], plain['catalog_model_id'])
+        self.assertEqual([r['label'] for r in derive(source, {**pi, 'labelOrder': ['Sonnet']})['provider']['models']][:4], ['Sonnet', 'Sonnet API', 'Opus', 'Opus API'])
+        for bad in [['Fable', 'Fable'], ['Local'], ['Fable API'], 'Fable']:
+            with self.assertRaisesRegex(ValueError, 'labelOrder'):
+                derive(source, {**pi, 'labelOrder': bad})
+
     def test_codemode_is_fixed_validated_and_fail_closed_at_runtime(self):
         sys.path.insert(0, str(PI))
         from configure import build, validate_settings
