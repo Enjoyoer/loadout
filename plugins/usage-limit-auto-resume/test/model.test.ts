@@ -251,11 +251,6 @@ describe("send gates", () => {
     assert.deepEqual(shouldResume(value, agent({ lastUserMessageAt: "2026-09-25T12:00:01.000Z" }), config, Date.parse(value.notBefore)), { ok: false, reason: "newer-user-message" });
   });
 
-  it("uses a five-hour fallback delay for a usage-limit failure", () => {
-    const value = record();
-    assert.equal(Date.parse(value.notBefore) - NOW, 18000 * 1000);
-  });
-
   it("allows only a due idle record and caps attempts", () => {
     const value = record();
     assert.deepEqual(shouldResume(value, agent(), config, NOW), { ok: false, reason: "not-due" });

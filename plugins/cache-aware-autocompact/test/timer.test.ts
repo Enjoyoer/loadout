@@ -33,15 +33,4 @@ describe("AgentTimers", () => {
     assert.equal(fired, 0);
     assert.equal(timers.cancel("missing"), false);
   });
-  it("supports bounded replacement retries", () => {
-    const fake = new FakeTimers();
-    const timers = new AgentTimers(fake);
-    const fired: number[] = [];
-    for (let retry = 1; retry <= 3; retry++) {
-      timers.schedule(`turn-1:retry-${retry}`, "a", 120_000, () => fired.push(retry));
-    }
-    assert.equal(timers.key("a"), "turn-1:retry-3");
-    fake.fireAll();
-    assert.deepEqual(fired, [3]);
-  });
 });

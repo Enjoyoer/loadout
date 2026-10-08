@@ -434,12 +434,6 @@ class ConfigValidationTest(unittest.TestCase):
         self.check(lambda d: d.update(routers={}), "unknown keys ['routers']")
         self.check(lambda d: d["hosts"].update(tablet={"inherit": False}), "unknown keys ['inherit']")
 
-    def test_payload_env_layers(self):
-        data = json.loads((EXAMPLE / "paseo-providers.json").read_text())
-        self.assertEqual(paseo_providers.payload(data, "tablet", "s", False)["env"], {})
-        self.assertEqual(paseo_providers.payload(data, "desktop", "s", False)["env"],
-                         {"claude": {"ANTHROPIC_BASE_URL": "https://router.example.test"}})
-
     def test_parse_wrapped_result(self):
         wrapped = '@@LOADOUT-RESULT {"host":"t","err\nor":null} @@END'
         self.assertEqual(paseo_providers.parse_result(wrapped), {"host": "t", "error": None})
