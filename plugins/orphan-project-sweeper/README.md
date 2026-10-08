@@ -2,7 +2,7 @@
 
 Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.pid` runtime listen metadata. An explicit non-default `PASEO_HOME` without valid endpoint metadata refuses to connect instead of falling back to another daemon. Invalid explicit hosts also fail closed. The standard local endpoint is a fallback only for an unset home or `~/.paseo`.
 
-Server-only Paseo plugin (Paseo >=0.10.3 <0.11.0) that deletes an orphaned Paseo project row.
+Server-only Paseo plugin (Paseo >=0.10.3 <0.12.0) that deletes an orphaned Paseo project row.
 A project is orphaned only when both hold at evaluation time:
 
 1. it has zero active (non-archived) workspaces, joined on `projectId`, and
@@ -41,13 +41,16 @@ unversioned export, for two reasons:
 
 Because that internal surface can change in any minor release, and a plugin that
 deletes rows must fail closed on an unknown Paseo version, `paseo-plugin.json` pins
-`"paseo": ">=0.10.3 <0.11.0"` and `package.json` pins `@getpaseo/client`,
-`@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.10.3`. `DaemonClient`,
+`"paseo": ">=0.10.3 <0.12.0"` and `package.json` pins `@getpaseo/client`,
+`@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.11.1`. `DaemonClient`,
 `listProjects()`, `fetchWorkspaces()`, and `removeProject()` keep the same signatures
-from 0.9.2 to 0.10.3; the 0.10.3 client only adds optional daemon password auth.
+from 0.9.2 to 0.11.1; the 0.10.3 client only adds optional daemon password auth, and the
+0.11.1 client only adds usage reports and a connection wait for file uploads.
 Recovery and settings behavior below were verified against the 0.9.2 server source and
-local CLI help, and the plugin's tests pass against the 0.10.3 packages. Re-check before
-admitting 0.11.
+local CLI help, and the plugin's tests pass against the 0.11.1 packages. The same build
+was proven on disposable 0.10.3 and 0.11.1 daemons: unarmed it logged `would-delete` for
+a fixture project with no active workspace and a removed directory, and armed it deleted
+that row while the live fixture project remained. Re-check before admitting 0.12.
 
 The plugin opens a short-lived local connection per sweep or re-check, the same way the
 Paseo CLI does. The daemon address is resolved from `PASEO_HOST`, then

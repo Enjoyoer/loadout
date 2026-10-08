@@ -1,6 +1,6 @@
 # Pi Fast toggle
 
-A per-agent composer pill for **Paseo >=0.10.3 <0.11.0**. It requests Fast for one Pi agent, not every agent or every model. It never changes the model, thinking setting, picker labels, daemon defaults, or another agent's labels.
+A per-agent composer pill for **Paseo >=0.10.3 <0.12.0**. It requests Fast for one Pi agent, not every agent or every model. It never changes the model, thinking setting, picker labels, daemon defaults, or another agent's labels.
 
 ## Behavior
 
@@ -12,7 +12,7 @@ A per-agent composer pill for **Paseo >=0.10.3 <0.11.0**. It requests Fast for o
 - Capability lookup uses the same `/models?client_version=0.160.0` endpoint, exact `slug ?? id` match, and `priority` catalog ID as the extension. Display discovery caches catalogs for ten minutes, including concurrent lookups; a press fetches a fresh catalog. Catalog errors hide the pill and block writes.
 - The directory subscription handles existing agents, pagination, live label/model changes, reconnect snapshots, removals, and late async results after cleanup. The button uses Paseo's native icon, label, accessible title, pending state, and error toast on desktop and compact/mobile layouts.
 
-There is no Command Center item: 0.10.3's agent items have no per-model visibility predicate. An unconditional item would expose Fast for non-capable models, contrary to this plugin's scope.
+There is no Command Center item: agent items in 0.10.3 and 0.11.1 have no per-model visibility predicate. An unconditional item would expose Fast for non-capable models, contrary to this plugin's scope.
 
 ## Configure and install, only on an authorized host
 
@@ -20,7 +20,7 @@ Plugins are trusted, unsandboxed code. This plugin reads the existing Pi runtime
 
 The host setting `runtimeRoot` is the directory containing the existing Loadout Pi `runtime.json`, `credential.py`, and `agent/models.json`. Those files remain private. No real runtime path or credential belongs in this public package. With no setting, the plugin remains hidden and cannot change labels.
 
-1. Confirm the selected daemon and app are 0.10.3 and `pluginsEnabled` is already true. If not, obtain permission to enable trusted plugins first. Do not restart a daemon.
+1. Confirm the selected daemon and app are inside the pinned range and `pluginsEnabled` is already true. If not, obtain permission to enable trusted plugins first. Do not restart a daemon.
 2. Prepare a source directory on that host:
 
    ```bash
@@ -66,4 +66,4 @@ npm run check
 python3 -m unittest discover -s tests
 ```
 
-Unit tests cover label state, exact catalog capability, client action/cleanup/races/pagination, backend label-only writes/readback, and fail-closed gates. An isolated Paseo 0.10.3 daemon with the real Pi 1.0.0 CLI and a local fixture Responses router additionally verified the actual pill callback, preserved unrelated labels/session/model, and next-turn `priority` then `default` route evidence without a reload. Fixture responses are not evidence that a real upstream account will honor priority. No live installation, settings edit, reload, or restart was performed.
+Unit tests cover label state, exact catalog capability, client action/cleanup/races/pagination, backend label-only writes/readback, and fail-closed gates. An isolated Paseo 0.10.3 daemon with the real Pi 1.0.0 CLI and a local fixture Responses router additionally verified the actual pill callback, preserved unrelated labels/session/model, and next-turn `priority` then `default` route evidence without a reload. Fixture responses are not evidence that a real upstream account will honor priority. The 0.11.1 build was later rerun on disposable 0.10.3 and 0.11.1 daemons with a credential-free Pi fixture and a loopback catalog: unconfigured it reported not capable and wrote nothing; configured, the real client callbacks wrote `fast` then `standard` through `update_agent` and kept the other labels and model. No live installation, settings edit, reload, or restart was performed.
