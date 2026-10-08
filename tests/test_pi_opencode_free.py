@@ -2,6 +2,7 @@ import base64
 import gzip
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -28,7 +29,7 @@ class NativeZenFreeTest(unittest.TestCase):
                   'claude': {'models': [{'id': 'existing-opus', 'label': 'Opus'}]}}
         config = {'providers': source, 'hosts': {'approved': {
             'providers': overlay['providers'], 'pi': {'catalogOnly': True}}}}
-        scratch = ROOT / '.work/test-opencode-free'
+        scratch = Path(os.environ.get('FLEET_SCRATCH') or Path.home() / '.cache' / 'fleet-scratch') / 'loadout' / 'test-opencode-free'
         scratch.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=scratch) as tmp:
             path = Path(tmp) / 'config.json'

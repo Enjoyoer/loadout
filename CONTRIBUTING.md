@@ -26,6 +26,15 @@ python3 examples/fleet_demo.py                 # end-to-end fleet sync against s
 
 CI runs the same checks on every pull request.
 
+## Scratch work
+
+Throwaway work goes in one scratch root per machine, never inside a project folder: `~/.cache/fleet-scratch/<project>/<task>/` (Windows `%USERPROFILE%\.cache\fleet-scratch\<project>\<task>\`). Set `FLEET_SCRATCH` to use another root; the tests here write under `<root>/loadout/` and clean up after themselves.
+
+- An expiry job deletes any `<project>/<task>` whose newest file is older than 7 days and that nothing has open. A long task keeps itself alive by touching a file in it.
+- Only small evidence (logs, reports, screenshots, a few MB) stays in the checkout.
+- A scratch Paseo daemon gets its own `PASEO_HOME`, `HOME`, `TMPDIR`, and port, with `PASEO_HOST` pinned to that port and its plugins left unarmed. Set `features.dictation.enabled` and `features.voiceMode.enabled` to `false` in its `config.json` so it downloads no speech models.
+- Reuse an existing Paseo install instead of a fresh `npm install`. When `HOME` is overridden, keep `npm_config_cache` on the shared npm cache, and prefer `npm ci --prefer-offline`.
+
 ## Changing a skill or plugin
 
 `MANIFEST.json` records the size and SHA256 of every published file, and CI fails if it is stale:
