@@ -6,7 +6,7 @@ body:
     id: plugin
     attributes:
       label: Plugin
-      options: [cache-aware-autocompact, merged-worker-archiver, orphan-project-sweeper, usage-limit-auto-resume, New plugin]
+      options: [cache-aware-autocompact, merged-worker-archiver, orphan-project-sweeper, pm-native-worker-guard, usage-limit-auto-resume, New plugin]
     validations:
       required: true
   - type: input

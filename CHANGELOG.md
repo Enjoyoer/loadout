@@ -4,6 +4,9 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ## Unreleased
 
+### Added
+- `pm-native-worker-guard`, a dry-run-first Paseo plugin that stops and archives native Codex or Claude Code agents created by a PM and tells the PM to use the Pi provider, with an owner allowlist.
+
 ## 0.2.0 (2026-09-30)
 
 ### Fixed

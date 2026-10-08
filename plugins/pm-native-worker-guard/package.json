@@ -1,0 +1,24 @@
+{
+  "name": "pm-native-worker-guard",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Paseo server-only plugin that stops and archives native Codex or Claude Code agents created by a PM agent, so PM workers run on the Pi provider. Dry-run by default.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "build": "esbuild index.server.ts --bundle --platform=node --format=cjs --target=node20 --outfile=node_modules/.cache/pm-native-worker-guard/index.server.cjs --external:@getpaseo/plugin --external:@getpaseo/plugin/server --external:zod --log-level=warning && echo build ok",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@getpaseo/client": "0.10.3"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.10.3",
+    "@getpaseo/protocol": "0.10.3",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  }
+}

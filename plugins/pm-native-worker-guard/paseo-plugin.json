@@ -1,0 +1,7 @@
+{
+  "id": "pm-native-worker-guard",
+  "description": "Stops and archives native Codex or Claude Code agents created by a PM, so PM workers run on the Pi provider. Dry-run by default.",
+  "requirements": {
+    "paseo": ">=0.10.3 <0.11.0"
+  }
+}

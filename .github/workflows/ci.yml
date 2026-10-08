@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [cache-aware-autocompact, merged-worker-archiver, orphan-project-sweeper, pi-fast-toggle, usage-limit-auto-resume]
+        plugin: [cache-aware-autocompact, merged-worker-archiver, orphan-project-sweeper, pi-fast-toggle, pm-native-worker-guard, usage-limit-auto-resume]
     defaults:
       run:
         working-directory: plugins/${{ matrix.plugin }}
