@@ -42,12 +42,12 @@ export function validateInstructions(documents) {
   const normal = instructionPath(documents);
   assert.ok(normal.words <= 1500, `normal-path word budget: ${normal.words} (<=1500)`);
   const conditional = ['exploration-swarm', 'planner', 'web-reviewer', 'simplifier-review',
-    'web-lane', 'codex-sites', 'web-models-not-approved', 'recovery', 'maintenance', 'cloud-lane', 'pr-evidence'];
+    'web-lane', 'web-large-inputs', 'codex-sites', 'web-models-not-approved', 'recovery', 'maintenance', 'cloud-lane', 'pr-evidence'];
   for (const name of conditional) assert.ok(!normal.files.includes(`references/${name}.md`),
     `conditional reference leaked into normal path: ${name}`);
   const scouted = instructionPath(documents, ['scouting']);
   assert.ok(scouted.words <= 1500, `scouted normal-path word budget: ${scouted.words} (<=1500)`);
-  const all = instructionPath(documents, ['scouting', 'planning', 'review', 'sites', 'recovery', 'risk', 'maintenance', 'cloud', 'evidence']);
+  const all = instructionPath(documents, ['scouting', 'planning', 'review', 'sites', 'recovery', 'risk', 'maintenance', 'cloud', 'evidence', 'large-input']);
   assert.deepEqual(new Set(all.files), new Set(Object.keys(documents)), 'every instruction document needs a reachable branch');
   return { entryWords, normalWords: normal.words, scoutedNormalWords: scouted.words, normalFiles: normal.files };
 }
