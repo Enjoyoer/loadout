@@ -1,8 +1,8 @@
-"""Per-host Pi deployment with a stock 0.10.3 version gate and guarded rollback.
+"""Per-host Pi deployment with a stock Paseo >=0.10.3 <0.12.0 version gate and guarded rollback.
 
 Default action is plan. Apply/rollback are for an explicitly approved host only.
 """
-import argparse, base64, hashlib, json, os, shutil, subprocess, sys
+import argparse, base64, hashlib, json, os, re, shutil, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
 from configure import configure, safe_target
@@ -10,6 +10,14 @@ from credential import expand
 
 
 def sha(data): return hashlib.sha256(data).hexdigest()
+
+
+PASEO_RANGE = ((0, 10, 3), (0, 12, 0))  # >=0.10.3 <0.12.0, release versions only
+
+
+def supported_paseo(version):
+    match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', version) if isinstance(version, str) else None
+    return bool(match) and PASEO_RANGE[0] <= tuple(map(int, match.groups())) < PASEO_RANGE[1]
 
 
 def daemon_env(home):
@@ -27,8 +35,8 @@ def paseo_command():
 def version_gate(home):
     result = subprocess.run([paseo_command(),'daemon','status','--json'], env=daemon_env(home), capture_output=True, text=True, check=True)
     status = json.loads(result.stdout)
-    if status.get('daemonVersion') != '0.10.3' or status.get('connectedDaemon') != 'reachable':
-        raise ValueError('a reachable stock Paseo 0.10.3 daemon is required')
+    if not supported_paseo(status.get('daemonVersion')) or status.get('connectedDaemon') != 'reachable':
+        raise ValueError('a reachable stock Paseo >=0.10.3 <0.12.0 daemon is required')
     return status
 
 
