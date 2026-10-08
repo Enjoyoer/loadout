@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.19"
+  version: "7.20"
 ---
 
 # OPC
@@ -15,19 +15,19 @@ Follow this state machine, reading linked references only when their branch appl
 
 ## 1. Scope
 
-Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks. Consult root `STATUS.html` and `LESSONS.md` on resumption or when prior decisions matter. Escalate scope or authority changes to the owner.
+Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks: observable behaviors from the owner's intent, preferably end-to-end or live. Consult root `STATUS.html` and `LESSONS.md` on resumption or when prior decisions matter. Escalate scope or authority changes to the owner.
 
 Browser review defaults off. Enable it only when the initial request explicitly asks for review; preserve that immutable choice through repairs, resumes, and reinvocation. Initialize the [execution mechanics](references/imp-execution.md "runtime") before launching lanes.
 
 ## 2. Optional scouting
 
-Choose the smallest useful topology, splitting only independent questions or implementation ownership. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify the [planner](references/planner.md "branch:planning"); converged findings need none. Initially enabled review reserves the web lane and skips planning.
+Choose the smallest useful topology, splitting only independent questions or implementation ownership. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify the [planner](references/planner.md "branch:planning"). Initially enabled review reserves the web lane and skips planning.
 
 ## 3. Worker
 
 Workers run on Pi with Codemode; native Codex or Claude Code Workers need an explicit owner decision per task. An owner-named model, effort, and Fast wins; otherwise code changes default to Opus `xhigh` and browser or computer-use execution to Sol `medium`, Fast off; ask for other kinds. Record which source applied. Fast means Pi's Fast toggle on GPT routes, never native Codex `fast_mode`. If the cloud toggle is on, read the [cloud lane](references/cloud-lane.md "branch:cloud") first. Preserve the route through repairs and resumes. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Give each non-overlapping lane one durable Worker lineage, placed and briefed through the execution mechanics.
 
-All repository source and test edits, including small repairs, belong to Workers. The PM stays in its checkout and remains sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
+All repository source and test edits, including small repairs, belong to Workers. No test-driven development: Workers add only owner- or PM-specified tests and keep existing tests and CI green. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
 ## 4. Yield
 
@@ -35,7 +35,7 @@ For every OPC-created agent and background follow-up, launch through the agent-s
 
 ## 5. Integrate
 
-Verify the returned agent/workspace identity, path, branch, commits, selected-base ancestry, and exact diff. Integrate deliberately by repository merge or cherry-pick policy. Completion or idle status alone never authorizes integration. Send repairs to the same Worker agent, then return through notification yield and integration.
+Verify the returned agent/workspace identity, path, branch, commits, selected-base ancestry, and exact diff. Integrate deliberately by repository merge or cherry-pick policy. Completion or idle status alone never authorizes integration. Send repairs to the same Worker agent, then repeat yield and integration.
 
 ## 6. Verify
 

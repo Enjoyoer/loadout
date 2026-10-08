@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "746cb9b5bb1aeff867ee020cb94b1c990ee7e2fa",
+  "source_commit": "4576a3e319e68449e27e9e251cb5dfe6ad7f7b4e",
   "skill_count": 22,
   "file_count": 124,
   "files": [
@@ -191,8 +191,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5260,
-      "sha256": "4e3d6a028a0c44815e594edd6f7ce69975eddd355d5cd7b7dd4b8b396312e05d"
+      "bytes": 5389,
+      "sha256": "4c07e57d51e84f0cde476eccb38300fb5a383a99fe6e2fbceeac0f2f54ed499a"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -219,15 +219,15 @@
       "path": "skills/orchestration/opc/references/exploration-swarm.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 1059,
-      "sha256": "cdf41749524d4d7879951b20452c7a71f2e4a97e1bf2942b320794428ee162a8"
+      "bytes": 1039,
+      "sha256": "5623302a9d5a2c455d2a849d47331b7e98ae2ee088a5abbd9545f6295661861e"
     },
     {
       "path": "skills/orchestration/opc/references/imp-execution.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4480,
-      "sha256": "a72e8a106c378148321abff3e45c5d4e82c547928ba6bfa8cf2afc13fcf07b02"
+      "bytes": 4361,
+      "sha256": "39bb680667c02f0220b16c5c17fe28daa7650f5dbec664ef3129dab0e8f11b04"
     },
     {
       "path": "skills/orchestration/opc/references/maintenance.md",
@@ -261,8 +261,8 @@
       "path": "skills/orchestration/opc/references/simplifier-review.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 2011,
-      "sha256": "f1db95ee410c66ec9b6dfbbfd4924c5a7cd0bd9b576bb0f3c0bbdb1a6317bec8"
+      "bytes": 2086,
+      "sha256": "68fc8785caa57715de55ea080353ce6d9ed1bdaa71c1a64069bd32d9b5bdab13"
     },
     {
       "path": "skills/orchestration/opc/references/web-lane.md",
@@ -296,8 +296,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 11601,
-      "sha256": "b0a07caf39930d4ca26268cf802eabe3b6e0de12d8cfafbc351dea03e31f2a9a"
+      "bytes": 12080,
+      "sha256": "6cb1fb2156e3720a435d828941cba4d7047de056fae42a9da1d0be872191f7e6"
     },
     {
       "path": "skills/orchestration/opc/scripts/cloud-lane.mjs",

@@ -8,7 +8,7 @@ Audit targets, alongside that remit:
 - Reinvention: code that reimplements what an existing dependency or the standard library already provides, including duplicate dependencies that serve the same purpose.
 - Deprecated or known-buggy APIs: reliance on APIs or behavior the framework or dependency has deprecated or documents as defective.
 - Needless complexity: indirection, abstraction, configuration, or generality that no current requirement uses.
-- Low-value tests: tests whose maintenance cost exceeds their signal, such as tests that restate the implementation or break on behavior-preserving refactors.
+- Low-value tests: tests whose maintenance cost exceeds their signal, such as tests that restate the implementation or break on behavior-preserving refactors. OPC keeps existing tests otherwise, so this target is how they get pruned.
 
 Every finding cites repository evidence at the exact head. A simplification must preserve required behavior and pass the acceptance checks. A test is proposed for removal only with a stated reason that it adds no signal the remaining tests lack.
 
