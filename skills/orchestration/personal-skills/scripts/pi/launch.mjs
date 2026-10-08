@@ -37,10 +37,15 @@ if (caller) {
   env.LOADOUT_PI_MCP_URL = url.href;
   const args = process.argv.slice(2);
   const modelIndex = args.lastIndexOf('--model');
-  if (modelIndex < 0 || !args[modelIndex + 1]) throw Error('Paseo must resolve a concrete catalog model');
-  env.LOADOUT_PI_PARENT_MODEL = args[modelIndex + 1];
+  // Paseo 0.11 resumes with --session and applies the model over RPC; mcp_bridge reads the live model.
+  if (modelIndex >= 0 && args[modelIndex + 1]) env.LOADOUT_PI_PARENT_MODEL = args[modelIndex + 1];
+  else if (!args.includes('--session')) throw Error('Paseo must resolve a concrete catalog model');
   const thinkingIndex = args.lastIndexOf('--thinking');
   env.LOADOUT_PI_PARENT_THINKING = thinkingIndex < 0 ? spec.settings?.defaultThinkingLevel || '' : args[thinkingIndex + 1];
+  // Pi treats an empty ${VAR} as missing and drops the server, so omit empty parent values (resume has no --model).
+  const bridgeEnv = mcp.mcpServers?.paseo?.env;
+  if (bridgeEnv) for (const key of ['LOADOUT_PI_PARENT_MODEL', 'LOADOUT_PI_PARENT_THINKING'])
+    if (!env[key]) delete bridgeEnv[key];
   writeFileSync(join(home, 'mcp.json'), JSON.stringify(mcp, null, 2) + '\n', { mode: 0o600 });
   env.PI_CODING_AGENT_DIR = home;
 }
