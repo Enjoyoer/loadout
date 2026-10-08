@@ -32,7 +32,10 @@ try {
       const env={...process.env};for(const key of ['PASEO_HOME','PASEO_HOST','PASEO_AGENT_ID','PASEO_AGENT_CWD']) delete env[key];
       const status=spawnSync('paseo',['daemon','status','--json'],{env,encoding:'utf8'});
       const daemon=status.status===0 ? JSON.parse(status.stdout) : {};
-      if(daemon.daemonVersion!=='0.10.3'||daemon.connectedDaemon!=='reachable') throw Error('reachable stock Paseo 0.10.3 required for Pi sync');
+      // >=0.10.3 <0.12.0, release versions only.
+      const m=/^(\d+)\.(\d+)\.(\d+)$/.exec(typeof daemon.daemonVersion==='string'?daemon.daemonVersion:'');
+      const v=m?m.slice(1).map(Number):null, cmp=(a,b)=>a[0]-b[0]||a[1]-b[1]||a[2]-b[2];
+      if(!v||cmp(v,[0,10,3])<0||cmp(v,[0,12,0])>=0||daemon.connectedDaemon!=='reachable') throw Error('reachable stock Paseo >=0.10.3 <0.12.0 required for Pi sync');
     }
     const pkg = path.join(runtimeRoot, 'app/node_modules/@earendil-works/pi-coding-agent/package.json');
     if (!p.dry_run && (!fs.existsSync(pkg) || JSON.parse(fs.readFileSync(pkg)).version !== '1.0.0'))
