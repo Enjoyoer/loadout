@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "a1b322e5d86b70e23f52e20a500cb737e0f1f23f",
+  "source_commit": "949785128d4f54dbdf946f011ebe4f84613f231f",
   "skill_count": 22,
-  "file_count": 123,
+  "file_count": 124,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -191,8 +191,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4968,
-      "sha256": "8fc14fbf1269c800df5216e0dfd99d6155242caf9d97e709cfd4c7ca339793b7"
+      "bytes": 5260,
+      "sha256": "4e3d6a028a0c44815e594edd6f7ce69975eddd355d5cd7b7dd4b8b396312e05d"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -226,8 +226,8 @@
       "path": "skills/orchestration/opc/references/imp-execution.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4748,
-      "sha256": "9160f07ced49cb6fef8b118c19207edd25f5b4653aea5738540e0a1ca902792b"
+      "bytes": 4480,
+      "sha256": "a72e8a106c378148321abff3e45c5d4e82c547928ba6bfa8cf2afc13fcf07b02"
     },
     {
       "path": "skills/orchestration/opc/references/maintenance.md",
@@ -244,11 +244,18 @@
       "sha256": "58e7007fefbd57aeb8e67b13eaf61a092bcad305be61766be45a8d2698ea6350"
     },
     {
+      "path": "skills/orchestration/opc/references/pr-evidence.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 2417,
+      "sha256": "419651a6219f7b4293b2cc7ef480baca301d2ec8f0529054e4f312ecfefd4ca1"
+    },
+    {
       "path": "skills/orchestration/opc/references/recovery.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 1477,
-      "sha256": "3c89eb9f940c29b7e563cd0a3ce014ab6e75ac08c67d84e165d43661e73e5841"
+      "bytes": 1599,
+      "sha256": "19530e2203a3925d8de07935fd38865886a103e614a7217d07fe9a3af7d64ba9"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -289,8 +296,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 8248,
-      "sha256": "c371741f06c7370f5e2a8f6ac72dcdd71b27fac12be901ba1133d8448260ed87"
+      "bytes": 11601,
+      "sha256": "b0a07caf39930d4ca26268cf802eabe3b6e0de12d8cfafbc351dea03e31f2a9a"
     },
     {
       "path": "skills/orchestration/opc/scripts/cloud-lane.mjs",
@@ -310,8 +317,8 @@
       "path": "skills/orchestration/opc/scripts/paseo-worker.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 7960,
-      "sha256": "22e9154503e10f011b59256d960e236424e6c8b197f18ff00446a62c42ffae5a"
+      "bytes": 8332,
+      "sha256": "257226a95d0759d652d6f6621a3f229779806b1c50e930a519a8935e1a8ad0d9"
     },
     {
       "path": "skills/orchestration/opc/scripts/planner.mjs",
@@ -324,15 +331,15 @@
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 15895,
-      "sha256": "c30349565768a3dfebf9f9e8048c67feefc5b2d350750ce0aa603a6032d3558f"
+      "bytes": 16018,
+      "sha256": "029ba070f76cc8b387c0a97adc1fb2c5880941048aa763a8cc396bdcf5a52023"
     },
     {
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 6028,
-      "sha256": "edc15f9afe8e6f12624680745b7814212e7c6ecebf4deedfdd97e58a35e16cd1"
+      "bytes": 6076,
+      "sha256": "b7ee186d45dd4b170d43a5b50d30efbbc5e656e01a4e8289a658f01645598204"
     },
     {
       "path": "skills/orchestration/opc/scripts/web-reviewer.mjs",
@@ -345,8 +352,8 @@
       "path": "skills/orchestration/opc/scripts/worker.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 19022,
-      "sha256": "d2ed73d4e04098e12834f457eb5a56f2dcd42d6dcf8160827b0852dae5b23a5d"
+      "bytes": 19774,
+      "sha256": "167013761819c93a17d29756cdb6b20c93df35a35089f9189e030c316e448c4c"
     },
     {
       "path": "skills/orchestration/opn/SKILL.md",
@@ -415,8 +422,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 21697,
-      "sha256": "1b3a4fc111342ba0f2b202d7c3d0b7bf38baf2373d6e22791e1e1c59467fa941"
+      "bytes": 22123,
+      "sha256": "fa0264675d29e42a499471704fbdc78cc5e01b7d9fb41ab38cb4d0998f1f4678"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/client-config.json",

@@ -278,11 +278,15 @@ for(const model of ['gpt-6-astra','gpt-6.1-sol','gpt-6-luna','gpt-5.6-luna','cha
  for(const effort of ['low','medium','high','xhigh','max','ultra'])for(const fastMode of [true,false]){
   const route={role:'worker',source:'owner-explicit',model,effort,fastMode};
   const before=after.resolveAgentRoute('worker',{explicitRoute:route});
-  const mapped=after.resolveAgentSurface('worker',{explicitRoute:route},catalog);
-  assert.equal(mapped.model,before.model);assert.equal(mapped.effort,before.effort);assert.equal(mapped.fastMode,before.fastMode);
   const supports=catalog.find(row=>row.id==='route/'+model&&row.thinkingOptions.some(x=>x.id===effort));
+  const native={explicitRoute:route,nativeAuthorization:'owner-explicit'};
+  // Workers run on Pi only: an unserved route stops unless the owner authorized a native Worker.
+  if(!supports)assert.throws(()=>after.resolveAgentSurface('worker',{explicitRoute:route},catalog),/explicit owner authorization/);
+  const mapped=after.resolveAgentSurface('worker',supports?{explicitRoute:route}:native,catalog);
+  assert.equal(mapped.model,before.model);assert.equal(mapped.effort,before.effort);assert.equal(mapped.fastMode,before.fastMode);
   assert.equal(mapped.provider,supports?'pi/'+supports.id:'codex/'+model);
-  assert.equal(after.resolveAgentSurface('worker',{explicitRoute:route},catalog,'codex').provider,'codex/'+model);count++;
+  assert.throws(()=>after.resolveAgentSurface('worker',{explicitRoute:route},catalog,'codex'),/explicit owner authorization/);
+  assert.equal(after.resolveAgentSurface('worker',native,catalog,'codex').provider,'codex/'+model);count++;
  }
 assert.equal(count,88);
 assert.throws(()=>after.resolveCatalogLabel([{id:'a',label:'Luna'},{id:'b',label:'Luna'}],'Luna'),/exactly one/);
@@ -290,6 +294,108 @@ const next=catalog.map(row=>row.label==='Luna'?{...row,id:'route/new-catalog-id'
 assert.equal(after.resolveAgentSurface('scout',{},next).model,'route/new-catalog-id');
 """
         done=subprocess.run(['node','--input-type=module','-e',script,(ROOT/'skills/orchestration/opc/scripts/agent-routing.mjs').as_uri()],capture_output=True,text=True)
+        self.assertEqual(done.returncode,0,done.stderr)
+
+    def test_worker_task_defaults_owner_precedence_and_native_gate(self):
+        script=r"""
+import assert from 'node:assert/strict';
+const r=await import(process.argv[1]);const w=await import(process.argv[2]);
+const levels=ids=>ids.map(id=>({id}));
+const catalog=[['claude-opus-5-5','Opus'],['claude-fable-5-1','Fable'],['gpt-6.1-sol','Sol'],['gpt-6-luna','Luna'],['chatgpt-web/pro','Web Pro']]
+ .map(([id,label])=>({id:'fleet/'+id,label,thinkingOptions:levels(['low','medium','high','xhigh','max'])}));
+const piCaps={enabled:true,status:'available',modes:[],models:catalog};
+const nativeCaps={enabled:true,status:'available',modes:[{id:'full-access',isUnattended:true}],models:catalog};
+const workspace={workspaceId:'wks-example',cwd:'/tmp/example-worktree'};
+const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:'lane',title:'Worker',initialPrompt:'Do it',workspace,capabilities:piCaps,...extra});
+const plain=value=>JSON.parse(JSON.stringify(value));
+// Fixed role routes are unchanged; Worker defaults are frozen catalog labels.
+assert.deepEqual(plain(r.FIXED_ROLE_ROUTES),{scout:{label:'Luna',fallbackProvider:'codex',effort:'max',fastMode:true},planner:{label:'Web Pro',fallbackProvider:'codex',effort:null,fastMode:false},planner_fallback:{label:'Fable',fallbackProvider:'claude',effort:'high',fastMode:false},reviewer:{label:'Web Pro',fallbackProvider:'codex',effort:null,fastMode:false}});
+assert.deepEqual(plain(r.WORKER_DEFAULT_ROUTES),{code:{label:'Opus',effort:'xhigh',fastMode:false},browser:{label:'Sol',effort:'medium',fastMode:false}});
+assert(Object.isFrozen(r.WORKER_DEFAULT_ROUTES)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.code)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.browser));
+// Code default: Opus at xhigh, Fast off, on Pi, recorded as a task default.
+const code=r.selectWorkerRoute({taskKind:'code',catalog});
+assert.deepEqual(plain(code),{role:'worker',source:'task-default',kind:'code',model:'fleet/claude-opus-5-5',effort:'xhigh',fastMode:false});
+const codeReq=build({route:code});
+assert.equal(codeReq.request.provider,'pi/fleet/claude-opus-5-5');assert.deepEqual(codeReq.request.settings,{thinkingOptionId:'xhigh'});
+assert.equal(codeReq.request.labels['opc.route-source'],'task-default');
+for(const key of ['opc.service-tier','opc.fast-requested'])assert.equal(key in codeReq.request.labels,false);
+assert.equal(r.resolveAgentSurface('worker',{taskKind:'code'},catalog).provider,'pi/fleet/claude-opus-5-5');
+assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/claude-opus-5-5; effort=xhigh; Fast=off/);
+// Browser default: Sol at medium, Fast off.
+const browser=r.selectWorkerRoute({taskKind:'browser',catalog:{pi:catalog}});
+assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'fleet/gpt-6.1-sol',effort:'medium',fastMode:false});
+const browserReq=build({route:browser});
+assert.equal(browserReq.request.provider,'pi/fleet/gpt-6.1-sol');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'medium'});
+assert.equal(r.resolveAgentSurface('worker',{taskKind:'browser'},catalog).effort,'medium');
+// An owner-named route wins; its Fast is the Pi Fast toggle label, never native fast_mode.
+const owner={role:'worker',source:'owner-explicit',model:'gpt-6.1-sol',effort:'high',fastMode:true};
+assert.deepEqual(plain(r.selectWorkerRoute({ownerRoute:owner,taskKind:'code',catalog})),owner);
+const ownerSurface=r.resolveAgentSurface('worker',{explicitRoute:owner,taskKind:'code'},catalog);
+assert.equal(ownerSurface.provider,'pi/fleet/gpt-6.1-sol');assert.equal(ownerSurface.effort,'high');
+const ownerReq=build({route:owner});
+assert.equal(ownerReq.request.provider,'pi/fleet/gpt-6.1-sol');assert.deepEqual(ownerReq.request.settings,{thinkingOptionId:'high'});
+assert.equal(ownerReq.request.labels['opc.service-tier'],'fast');assert.equal(ownerReq.request.labels['opc.route-source'],'owner-explicit');
+// Other kinds ask the owner; a missing label or thinking level stops the lane.
+assert.throws(()=>r.selectWorkerRoute({catalog}),/ask the owner/);
+assert.throws(()=>r.selectWorkerRoute({taskKind:'docs',catalog}),/ask the owner/);
+assert.throws(()=>r.resolveAgentRoute('worker'),/ask the owner/);
+assert.throws(()=>r.selectWorkerRoute({taskKind:'code',catalog:catalog.filter(row=>row.label!=='Opus')}),/catalog label Opus/);
+assert.throws(()=>r.selectWorkerRoute({taskKind:'browser',catalog:catalog.map(row=>row.label==='Sol'?{...row,thinkingOptions:levels(['high'])}:row)}),/does not serve required thinking medium/);
+assert.throws(()=>r.selectWorkerRoute({ownerRoute:code,catalog}),/source owner-explicit/);
+// A recorded default cannot be edited or replayed against another catalog row.
+assert.throws(()=>build({route:{...code,effort:'high'}}),/task-default route/);
+assert.throws(()=>build({route:{...code,fastMode:true}}),/task-default route/);
+assert.throws(()=>build({route:{...code,kind:'docs'}}),/task-default route/);
+assert.throws(()=>build({route:{...code,model:'fleet/gpt-6.1-sol'}}),/match its Pi catalog label/);
+// Native Workers fail without the owner's authorization and are allowed with it.
+const unserved={role:'worker',source:'owner-explicit',model:'gpt-6.2-nova',effort:'high',fastMode:true};
+assert.throws(()=>build({route:unserved}),/Pi catalog does not serve gpt-6.2-nova at high thinking; Workers run on Pi only/);
+assert.throws(()=>build({route:owner,surface:'codex',capabilities:nativeCaps}),/explicit owner authorization/);
+for(const provider of ['codex/gpt-6.1-sol','claude/claude-opus-5-5[1m]']){
+ assert.throws(()=>build({provider,route:owner,capabilities:nativeCaps}),/explicit owner authorization/);
+ for(const value of [true,'yes',{answer:'yes'}])assert.throws(()=>r.resolveWorkerSurface({provider,nativeAuthorization:value}),/explicit owner authorization/);
+ const allowed=build({provider,route:owner,capabilities:nativeCaps,nativeAuthorization:'owner-explicit'});
+ assert.equal(allowed.request.provider,provider);assert.equal(allowed.modeId,'full-access');
+}
+const nativeReq=build({route:owner,surface:'codex',capabilities:nativeCaps,nativeAuthorization:'owner-explicit'});
+assert.equal(nativeReq.request.provider,'codex/gpt-6.1-sol');
+assert.deepEqual(nativeReq.request.settings,{thinkingOptionId:'high',features:{fast_mode:true},modeId:'full-access'});
+assert.equal(build({route:unserved,capabilities:nativeCaps,nativeAuthorization:'owner-explicit'}).request.provider,'codex/gpt-6.2-nova');
+// Explicit Pi providers and fixed roles are not gated.
+assert.equal(r.resolveWorkerSurface({provider:'pi/fleet/gpt-6.1-sol'}).provider,'pi/fleet/gpt-6.1-sol');
+assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).provider,'codex/gpt-6-luna');
+"""
+        opc=ROOT/'skills/orchestration/opc/scripts'
+        done=subprocess.run(['node','--input-type=module','-e',script,(opc/'agent-routing.mjs').as_uri(),(opc/'paseo-worker.mjs').as_uri()],capture_output=True,text=True)
+        self.assertEqual(done.returncode,0,done.stderr)
+
+    def test_native_cli_worker_requires_owner_authorization(self):
+        script=r"""
+import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {execFileSync} from 'node:child_process';
+const base=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'opc-native-')));const repo=path.join(base,'repo');const run=path.join(base,'run');fs.mkdirSync(repo);fs.mkdirSync(run);
+const git=(...args)=>execFileSync('git',['-C',repo,...args],{stdio:'pipe'});
+delete process.env.OPC_WORKER_CONTEXT;process.env.OPC_CODEX_BIN=path.join(base,'missing-codex');
+try{
+ git('init','-q','-b','main');git('config','user.name','Test');git('config','user.email','test@example.test');git('remote','add','origin','https://github.com/example/project.git');fs.writeFileSync(path.join(repo,'seed'),'seed');git('add','.');git('commit','-qm','seed');
+ const state=await import(process.argv[1]);const worker=await import(process.argv[2]);const {taskPath,task}=state.createTask({workingDirectory:repo,runDirectory:run,owner:'test'});
+ const route={role:'worker',source:'owner-explicit',model:'gpt-6.1-sol',effort:'high',fastMode:false};
+ await assert.rejects(worker.launchWorker(taskPath,{prompt:'do it',route}),/explicit owner authorization/);
+ await assert.rejects(worker.launchWorker(taskPath,{prompt:'do it',route,nativeAuthorization:'yes'}),/explicit owner authorization/);
+ await assert.rejects(worker.launchWorker(taskPath,{prompt:'do it',route:{...route,source:'task-default',kind:'browser',effort:'medium'},nativeAuthorization:'owner-explicit'}),/owner-named route/);
+ // Authorized launch passes the gate and stops only at the missing native executable.
+ await assert.rejects(worker.launchWorker(taskPath,{prompt:'do it',route,nativeAuthorization:'owner-explicit'}),/native Codex executable unavailable/);
+ assert.equal(state.readTask(taskPath).worker,null);
+ const record={run_id:task.id,owner:'test',status:'finished',thread_id:'00000000-0000-4000-8000-000000000000',model:'gpt-6.1-sol',effort:'high',fast_mode:false,route_source:'owner-explicit',turns:[],error:null,cancel_requested:false,process:null};
+ assert.throws(()=>state.updateTask(taskPath,current=>{current.worker={...record,native_authorization:'yes'};}),/invalid Worker record/);
+ state.updateTask(taskPath,current=>{current.worker={...record};});
+ await assert.rejects(worker.resumeWorker(taskPath,{prompt:'again'}),/explicit owner authorization/);
+ state.updateTask(taskPath,current=>{current.worker.native_authorization='owner-explicit';});
+ await assert.rejects(worker.resumeWorker(taskPath,{prompt:'again'}),/native Codex executable unavailable/);
+ assert.throws(()=>state.updateTask(taskPath,current=>{delete current.worker.native_authorization;}),/immutable Worker native_authorization/);
+}finally{fs.rmSync(base,{recursive:true,force:true});}
+"""
+        opc=ROOT/'skills/orchestration/opc/scripts'
+        done=subprocess.run(['node','--input-type=module','-e',script,(opc/'task-state.mjs').as_uri(),(opc/'worker.mjs').as_uri()],capture_output=True,text=True)
         self.assertEqual(done.returncode,0,done.stderr)
 
     def test_shared_catalog_generates_models_and_picker_in_one_sync(self):

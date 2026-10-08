@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.18"
+  version: "7.19"
 ---
 
 # OPC
@@ -25,7 +25,7 @@ Choose the smallest useful topology, splitting only independent questions or imp
 
 ## 3. Worker
 
-Record the owner's Worker model, effort, and Fast choice; ask if missing. The default surface is Pi with Codemode when its target catalog serves the chosen model and effort; otherwise retain the rule's route. Codex remains an explicit fallback. If the cloud toggle is on, read the [cloud lane](references/cloud-lane.md "branch:cloud") first. Preserve that route through repairs and resumes. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Give each non-overlapping lane one durable Worker lineage, placed and briefed through the execution mechanics.
+Workers run on Pi with Codemode; native Codex or Claude Code Workers need an explicit owner decision per task. An owner-named model, effort, and Fast wins; otherwise code changes default to Opus `xhigh` and browser or computer-use execution to Sol `medium`, Fast off; ask for other kinds. Record which source applied. Fast means Pi's Fast toggle on GPT routes, never native Codex `fast_mode`. If the cloud toggle is on, read the [cloud lane](references/cloud-lane.md "branch:cloud") first. Preserve the route through repairs and resumes. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Give each non-overlapping lane one durable Worker lineage, placed and briefed through the execution mechanics.
 
 All repository source and test edits, including small repairs, belong to Workers. The PM stays in its checkout and remains sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
@@ -43,6 +43,6 @@ Independently check required behavior and final committed deliverable bytes usin
 
 ## 7. Merge and cleanup
 
-Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. Report test and integration evidence, review verdict/head or unavailability, planner fallback and Worker usage, remaining issues, and cleanup gaps separately.
+PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. Report test, integration, and PR evidence, review verdict/head or unavailability, planner fallback and Worker usage, remaining issues, and cleanup gaps separately.
 
 For package maintenance only, use [maintenance](references/maintenance.md "branch:maintenance").

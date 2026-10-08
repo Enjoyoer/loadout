@@ -14,6 +14,21 @@ export const FIXED_ROLE_ROUTES = Object.freeze({
   reviewer: Object.freeze({ label: 'Web Pro', fallbackProvider: 'codex', effort: null, fastMode: false }),
 });
 
+// Worker defaults when the owner names no model. Labels resolve through the target Pi catalog.
+export const WORKER_DEFAULT_ROUTES = Object.freeze({
+  code: Object.freeze({ label: 'Opus', effort: 'xhigh', fastMode: false }),
+  browser: Object.freeze({ label: 'Sol', effort: 'medium', fastMode: false }),
+});
+
+// Workers run on Pi. A native Worker needs this recorded owner decision for the task.
+export const NATIVE_WORKER_AUTHORIZATION = 'owner-explicit';
+
+function requireNativeAuthorization(provider, nativeAuthorization, reason) {
+  if (nativeAuthorization !== NATIVE_WORKER_AUTHORIZATION) {
+    throw Error(`${reason}; Workers run on Pi only, and a native ${provider.split('/')[0]} Worker needs an explicit owner authorization for this task`);
+  }
+}
+
 export function resolveCatalogLabel(catalog, label) {
   const matches = catalog?.filter(row => row.label === label) || [];
   if (matches.length !== 1) throw Error(`catalog label ${label} must have exactly one row (found ${matches.length})`);
@@ -34,15 +49,39 @@ export function materializeFixedRoute(role, catalog, surface = 'pi') {
 
 const routeText = route => `model=${route.model ?? route.label}; effort=${route.effort ?? 'model-fixed'}; Fast=${route.fastMode ? 'on' : 'off'}`;
 
-function validateExplicitRoute(role, route) {
-  const keys = ['role', 'source', 'model', 'effort', 'fastMode'];
-  if (!route || typeof route !== 'object' || Array.isArray(route) || route.role !== role ||
+// A recorded Worker route comes from the owner or from a task-kind default.
+function validateWorkerRoute(route) {
+  const fallback = route?.source === 'task-default' && Object.hasOwn(WORKER_DEFAULT_ROUTES, route.kind)
+    ? WORKER_DEFAULT_ROUTES[route.kind] : null;
+  const keys = ['role', 'source', 'model', 'effort', 'fastMode', ...(fallback ? ['kind'] : [])];
+  if (!route || typeof route !== 'object' || Array.isArray(route) || route.role !== 'worker' ||
       Object.keys(route).length !== keys.length || keys.some(key => !Object.hasOwn(route, key)) ||
-      route.source !== 'owner-explicit' || !isValidModelId(route.model) ||
-      !efforts.has(route.effort) || typeof route.fastMode !== 'boolean') {
-    throw Error(`recorded explicit owner route required for ${role}`);
+      (route.source !== 'owner-explicit' && !fallback) || !isValidModelId(route.model) ||
+      !efforts.has(route.effort) || typeof route.fastMode !== 'boolean' ||
+      (fallback && (route.effort !== fallback.effort || route.fastMode !== fallback.fastMode))) {
+    throw Error('recorded owner or task-default route required for worker');
   }
-  return Object.freeze({ model: route.model, effort: route.effort, fastMode: route.fastMode, source: route.source });
+  return Object.freeze({ model: route.model, effort: route.effort, fastMode: route.fastMode, source: route.source,
+    ...(fallback ? { kind: route.kind } : {}) });
+}
+
+// An owner-named model and effort always win; otherwise the task kind selects a catalog label.
+export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog } = {}) {
+  if (ownerRoute) {
+    if (ownerRoute.source !== 'owner-explicit') throw Error('owner Worker route must have source owner-explicit');
+    validateWorkerRoute(ownerRoute);
+    return Object.freeze({ ...ownerRoute });
+  }
+  if (!Object.hasOwn(WORKER_DEFAULT_ROUTES, taskKind ?? '')) {
+    throw Error('Worker route unresolved; ask the owner for the exact model and effort (task defaults cover code and browser)');
+  }
+  const rule = WORKER_DEFAULT_ROUTES[taskKind];
+  const row = resolveCatalogLabel(Array.isArray(catalog) ? catalog : catalog?.pi, rule.label);
+  if (!row.thinkingOptions?.some(option => option.id === rule.effort)) {
+    throw Error(`${rule.label} does not serve required thinking ${rule.effort}; the Worker lane stops`);
+  }
+  return Object.freeze({ role: 'worker', source: 'task-default', kind: taskKind, model: row.id,
+    effort: rule.effort, fastMode: rule.fastMode });
 }
 
 function validateFixedRoute(role, route) {
@@ -56,17 +95,18 @@ function validateFixedRoute(role, route) {
 }
 
 export function validateRoleRoute(role, route) {
-  if (role === 'worker') return validateExplicitRoute(role, route);
+  if (role === 'worker') return validateWorkerRoute(route);
   if (!Object.hasOwn(FIXED_ROLE_ROUTES, role)) throw Error(`unknown OPC role: ${role}`);
   return validateFixedRoute(role, route);
 }
 
-export function resolveAgentRoute(role, { explicitRoute = null, plannerFailure = null, fallbackAuthorization = null } = {}) {
+export function resolveAgentRoute(role, { explicitRoute = null, taskKind = null, catalog = null,
+  plannerFailure = null, fallbackAuthorization = null } = {}) {
   if (explicitRoute) {
     if (role !== 'worker') throw Error(`${role} must use the exact fixed OPC role route`);
-    return validateExplicitRoute(role, explicitRoute);
+    return validateWorkerRoute(explicitRoute);
   }
-  if (role === 'worker') throw Error('Worker route unresolved; ask the owner for the exact model and effort');
+  if (role === 'worker') return validateWorkerRoute(selectWorkerRoute({ taskKind, catalog }));
   if (role === 'planner_fallback') {
     if (!plannerFailure?.id || plannerFailure.status !== 'failed' ||
         fallbackAuthorization?.answer !== 'yes' || fallbackAuthorization?.after_round !== plannerFailure.id) {
@@ -108,32 +148,54 @@ export function selectTopology({ scale, independentQuestions = 0, findingsConver
   });
 }
 
-// Model and thinking rules above remain authoritative. Only the execution surface changes.
-export function mapRouteToPi(route, catalog, { fallbackProvider = 'codex', surface = 'pi' } = {}) {
+// Model and thinking rules above remain authoritative. Workers run on Pi; a native route
+// (explicit codex surface or a model/effort Pi does not serve) needs the owner's authorization.
+export function mapRouteToPi(route, catalog, { fallbackProvider = 'codex', surface = 'pi', nativeAuthorization = null } = {}) {
   if (!route || !isValidModelId(route.model)) throw Error('selected OPC route required');
   if (!Array.isArray(catalog)) throw Error('target Pi catalog required');
   const originalProvider = route.provider?.split('/')[0] ?? fallbackProvider;
   const original = { ...route, provider: route.provider ?? `${originalProvider}/${route.model}` };
-  if (surface === 'codex') return original;
-  if (surface !== 'pi') throw Error('surface must be pi or codex');
+  if (surface !== 'pi' && surface !== 'codex') throw Error('surface must be pi or codex');
+  if (route.source === 'task-default' && (!Object.hasOwn(WORKER_DEFAULT_ROUTES, route.kind) ||
+      resolveCatalogLabel(catalog, WORKER_DEFAULT_ROUTES[route.kind].label).id !== route.model)) {
+    throw Error('task-default Worker route must match its Pi catalog label');
+  }
+  if (surface === 'codex') {
+    requireNativeAuthorization(original.provider, nativeAuthorization, 'native surface requested');
+    return original;
+  }
   const candidates = catalog.filter(row => row.id === route.model ||
     row.id?.slice(row.id.indexOf('/') + 1) === route.model);
   const supported = candidates.filter(row => route.effort == null ||
     row.thinkingOptions?.some(option => option.id === route.effort));
-  if (!supported.length) return original;
+  if (!supported.length) {
+    requireNativeAuthorization(original.provider, nativeAuthorization,
+      `Pi catalog does not serve ${route.model} at ${route.effort ?? 'model-fixed'} thinking`);
+    return original;
+  }
   if (supported.length !== 1) throw Error('ambiguous Pi catalog model mapping');
   return { ...route, provider: `pi/${supported[0].id}` };
 }
 
-export function resolveAgentSurface(role, options, catalog, surface = 'pi') {
-  const route = resolveAgentRoute(role, options);
-  return role === 'worker' ? mapRouteToPi(route, Array.isArray(catalog) ? catalog : catalog.pi, { surface }) : materializeFixedRoute(role, catalog, surface);
+export function resolveAgentSurface(role, options = {}, catalog, surface = 'pi') {
+  const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
+  const route = resolveAgentRoute(role, role === 'worker' ? { ...options, catalog: rows } : options);
+  return role === 'worker' ? mapRouteToPi(route, rows, { surface, nativeAuthorization: options.nativeAuthorization })
+    : materializeFixedRoute(role, catalog, surface);
 }
 
-export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'worker', route, catalog, surface = 'pi' } = {}) {
-  if (provider) return { provider, agentSettings };
+export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'worker', route, catalog, surface = 'pi',
+  nativeAuthorization = null } = {}) {
+  if (provider) {
+    if (role === 'worker' && !String(provider).startsWith('pi/')) {
+      requireNativeAuthorization(String(provider), nativeAuthorization, `explicit provider ${provider}`);
+    }
+    return { provider, agentSettings };
+  }
   const selected = validateRoleRoute(role, route);
-  const mapped = role === 'worker' ? mapRouteToPi(selected, Array.isArray(catalog) ? catalog : catalog.pi, { surface }) : materializeFixedRoute(role, catalog, surface);
+  const mapped = role === 'worker'
+    ? mapRouteToPi(selected, Array.isArray(catalog) ? catalog : catalog?.pi, { surface, nativeAuthorization })
+    : materializeFixedRoute(role, catalog, surface);
   if (Object.keys(agentSettings).length) throw Error('materialize settings from the selected rule or pass an explicit provider');
   return { provider: mapped.provider, agentSettings: {
     ...(mapped.effort ? { thinkingOptionId: mapped.effort } : {}),

@@ -39,7 +39,8 @@ function validateWorker(worker, task) {
       !['running', 'finished', 'blocked'].includes(worker.status) || !Array.isArray(worker.turns) ||
       worker.route_source !== 'owner-explicit' || typeof worker.model !== 'string' || !worker.model ||
       !['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(worker.effort) ||
-      typeof worker.fast_mode !== 'boolean') {
+      typeof worker.fast_mode !== 'boolean' ||
+      (worker.native_authorization != null && worker.native_authorization !== 'owner-explicit')) {
     throw Error('invalid Worker record');
   }
   if (worker.status === 'finished' && !worker.thread_id) throw Error('finished Worker lacks thread identity');
@@ -267,7 +268,7 @@ export function updateTask(taskPath, mutator) {
     if (result?.then) throw Error('task mutation must be synchronous');
     if (identity(old) !== identity(task)) throw Error('immutable task identity changed');
     if (old.worker) {
-      for (const key of ['run_id', 'owner', 'model', 'effort', 'fast_mode', 'route_source', 'thread_id']) {
+      for (const key of ['run_id', 'owner', 'model', 'effort', 'fast_mode', 'route_source', 'native_authorization', 'thread_id']) {
         if (old.worker[key] != null && JSON.stringify(old.worker[key]) !== JSON.stringify(task.worker?.[key])) {
           throw Error(`immutable Worker ${key} changed`);
         }
