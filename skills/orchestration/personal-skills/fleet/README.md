@@ -60,12 +60,12 @@ Put skills that must stay private (personal, account-bound, or holding credentia
     - `plugin_root`: directory where verified plugin sources are staged, one subdirectory per plugin ID. `null` means this host's plugins are managed outside the sync; the sync only reports whether they match the manifest. Changing it for a host with installed plugins needs `sync.py --migrate-path` once.
     - `stage`: plugin IDs whose verified source is copied to `plugin_root`, installed with `npm ci`, and checked.
     - `install`: plugin IDs, a subset of `stage`, authorized for `paseo plugin install` on this daemon. List a plugin here only after its host-local settings and arming have been decided.
-- `global`: optional. Maps each client to where `global/AGENTS.md` is installed.
+- `global`: optional. Maps each client to where `global/AGENTS.md` is installed. A target is a path starting with `~`, `/`, `$VAR` or `${VAR}`, `%VAR%`, or a drive such as `C:\`, and must be absolute once the host expands it. `fleet.py validate` rejects anything else, and a host refuses a target that is not absolute or names a variable it does not set, so text is never written as a file.
   - `codex`: normally `$CODEX_HOME/AGENTS.md`.
-  - `claude`: normally `~/.claude/CLAUDE.md`; a managed deployment may use the `claudeMd` field of Claude Code managed settings instead.
+  - `claude`: normally `~/.claude/CLAUDE.md`. For a managed deployment, `managed-settings:claudeMd` installs the instructions as the `claudeMd` string field of Claude Code's `managed-settings.json`: `/Library/Application Support/ClaudeCode/` on macOS, `/etc/claude-code/` on Linux, and `%ProgramFiles%\ClaudeCode\` on Windows (`C:\ProgramData\ClaudeCode\` only when that file exists and the Program Files one does not). Only `claudeMd` changes: the file is first backed up beside itself as `<file>.bak-<UTC stamp>`, then replaced atomically and checked. When the user cannot replace it, macOS and Linux use `sudo -n` and keep its owner and mode; if that needs a password, nothing is written. On Windows run the sync from an administrator shell. `--dry-run` reports whether elevation is needed. `LOADOUT_CLAUDE_MANAGED_SETTINGS` on the host overrides the file path, for tests.
   - `opencode`: normally `~/.config/opencode/AGENTS.md`.
 
-Omit `global` or `global/AGENTS.md` to skip global instructions. Global instructions follow the same preflight: never overwrite a changed target that matches no known prior version.
+Omit `global` or `global/AGENTS.md` to skip global instructions. Global instructions follow the same preflight: never overwrite a changed target that matches no known prior version. For `managed-settings:claudeMd` the preflight compares the field's value, a missing file or field is added, and unparseable JSON or a non-object is a conflict.
 
 Plugin settings, plugin state, and the daemon's `pluginsEnabled` switch are host-local. The sync never writes them. See the `Paseo plugins` section of `SKILL.md`.
 

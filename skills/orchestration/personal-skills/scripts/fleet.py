@@ -40,6 +40,10 @@ CLIENTS = {"codex", "claude", "opencode", "pi"}
 TOP_KEYS = {"schema_version", "source_host", "transport", "notes", "hosts", "global"}
 HOST_KEYS = {"name", "os", "checkout", "clients", "paseo", "transport", "sync", "paseo_offer", "exclude_skills"}
 PASEO_KEYS = {"plugin_root", "stage", "install"}
+# global.claude may name the claudeMd field of Claude Code's managed settings instead of a file.
+MANAGED_CLAUDE_MD = "managed-settings:claudeMd"
+# Every other global target is a path: ~, /, $VAR or ${VAR}, %VAR%, or a drive like C:\.
+GLOBAL_PATH = re.compile(r"(~([\\/]|$)|/|\$\{?[A-Za-z_]|%[A-Za-z_][A-Za-z0-9_]*%|[A-Za-z]:[\\/])")
 
 
 class FleetSource(NamedTuple):
@@ -184,6 +188,12 @@ def validate(data: Any) -> dict:
         for client, target in data["global"].items():
             if not isinstance(target, str):
                 raise FleetError(f"global.{client} must be a string path")
+            if client == "claude" and target == MANAGED_CLAUDE_MD:
+                continue
+            if not GLOBAL_PATH.match(target):
+                token = f"{MANAGED_CLAUDE_MD} or " if client == "claude" else ""
+                raise FleetError(f"global.{client} {target!r} must be {token}a path starting with ~, /, $VAR, "
+                                 "%VAR%, or a drive like C:\\")
     return {**data, "schema_version": version, "hosts": out}
 
 

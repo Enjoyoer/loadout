@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "910c67291b85256cde33be287aec47c8c36d34d8",
+  "source_commit": "287601053f035605cc4cb63e9922258aa5b8cfbe",
   "skill_count": 22,
   "file_count": 125,
   "files": [
@@ -429,8 +429,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 22156,
-      "sha256": "aa7dc1f6f9c785606958801e14b759f39885443e0f6b856c98cd5d5c486679ac"
+      "bytes": 23365,
+      "sha256": "c807a6efe8f2f10fcee88cb6a6e459696288bfd0c0bab5d7d9815e56b42d0357"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/client-config.json",
@@ -492,8 +492,8 @@
       "path": "skills/orchestration/personal-skills/scripts/fleet.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 15092,
-      "sha256": "6f670b75d78a488dad8638ac21df806b77928e165eb240467aeb382d5862ab8e"
+      "bytes": 15820,
+      "sha256": "467ceb886cf5b24aa0c07a4670588a04165d38689bffff9bc29e9abb83dfc48c"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/fleet_push_remote.js",
@@ -625,15 +625,15 @@
       "path": "skills/orchestration/personal-skills/scripts/skills_sync.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 8369,
-      "sha256": "8028ffd5efd05be1d2ccd763974cde4bb665ea65c53205891014a98f3f0a7ae8"
+      "bytes": 8478,
+      "sha256": "f467533d9754a62a40dc9e7b8045fa808d2e28e56ceba12c80dfaa945ca69065"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/skills_sync_remote.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 6844,
-      "sha256": "3fcc3c5fe1caf999a67c251c435cc1b7050e794eeefb52692398dc4476419816"
+      "bytes": 14783,
+      "sha256": "673c9cf92728cd94c938e398195925b43e2e6f8e5f9834596c62460c6627560b"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/sync.py",

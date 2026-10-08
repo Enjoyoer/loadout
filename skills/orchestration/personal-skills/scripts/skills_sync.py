@@ -120,7 +120,8 @@ def describe(result: dict) -> str:
     counts = [f"+{len(result['added'])}" if result["added"] else "", f"~{len(result['changed'])}" if result["changed"] else ""]
     counts = " ".join(c for c in counts if c)
     clients = ", ".join(f"{k} {v}" for k, v in result["clients"].items())
-    return f"{status}" + (f" ({counts})" if counts else "") + (f"; {clients}" if clients else "")
+    elevation = f"; elevation: {listed(result['elevation'])}" if result.get("elevation") else ""
+    return f"{status}" + (f" ({counts})" if counts else "") + (f"; {clients}" if clients else "") + elevation
 
 
 def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Callable[[str], None],
