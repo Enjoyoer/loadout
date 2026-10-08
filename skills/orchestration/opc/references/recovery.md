@@ -6,6 +6,6 @@ For managed Workers, call `cancel_agent({agentId})` on the recorded identity and
 
 ## Direct CLI helper
 
-`scripts/worker.mjs` is low-level direct plumbing, not an alternative OPC editing lane. `cancelWorker(taskPath)` addresses only its CLI worker slot, never managed agents. Preserve native history and avoid publishing credentials. Run native-launch tests on the PM host, not recursively inside the Worker under test.
+`scripts/worker.mjs` is low-level direct plumbing, not an alternative OPC editing lane. It launches native Codex only with `--native-authorization owner-explicit`, recording the owner's decision for that task. `cancelWorker(taskPath)` addresses only its CLI worker slot, never managed agents. Preserve native history and avoid publishing credentials. Run native-launch tests on the PM host, not recursively inside the Worker under test.
 
 CLI cancellation sends the normal native interrupt and reports handle exit. Codex owns descendants; OPC adds no keeper, process census, or forced-kill fallback and claims no independent descendant cleanup. The PM owns intentionally persistent services through host tools. Denied or unanswered interrupts remain incomplete. Mac normal exit/Ctrl-C were tested; Windows native interruption remains unverified because Node signals differ from console Ctrl-C and needs validation there.

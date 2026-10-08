@@ -92,10 +92,12 @@ export function buildManagedWorkspaceRequest({ taskId, lane, sourcePath, baseBra
 }
 
 export function buildManagedWorkerRequest({ taskId, lane, title, provider, initialPrompt,
-  agentSettings = {}, workerLabels = {}, workspace, capabilities, role = 'worker', route, surface = 'pi' }) {
+  agentSettings = {}, workerLabels = {}, workspace, capabilities, role = 'worker', route, surface = 'pi',
+  nativeAuthorization = null }) {
   const names = managedWorkerNames({ taskId, lane });
   const agentTitle = required(title, 'Worker title');
-  const mappedRoute = resolveWorkerSurface({ provider, agentSettings, role, route, surface, catalog: capabilities?.models });
+  const mappedRoute = resolveWorkerSurface({ provider, agentSettings, role, route, surface, nativeAuthorization,
+    catalog: capabilities?.models });
   const agentProvider = mappedRoute.provider;
   const requestedSettings = settings(mappedRoute.agentSettings);
   if (!workspace?.workspaceId || typeof workspace.workspaceId !== 'string' ||
@@ -104,8 +106,8 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
   }
   // Pi exposes no modes and executes its tools without a permission-mode selector.
   // This exception applies only to advertised, available Pi, never other providers.
-  const modeId = agentProvider.split('/')[0] === 'pi'
-    ? selectPiMode(capabilities) : selectUnattendedMode(capabilities);
+  const pi = agentProvider.split('/')[0] === 'pi';
+  const modeId = pi ? selectPiMode(capabilities) : selectUnattendedMode(capabilities);
   const prompt = managedPrompt(initialPrompt, {
     workspaceId: workspace.workspaceId, worktreePath: workspace.cwd, branchName: names.branchName,
   });
@@ -122,8 +124,11 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
       initialPrompt: prompt,
       notifyOnFinish: true,
       settings: { ...requestedSettings, ...(modeId ? { modeId } : {}) },
+      // Fast is the Pi Fast toggle label; Off leaves it absent, as the toggle shows Off.
+      // An explicit Standard label would refuse every turn on a route without service tiers.
       labels: { ...labels(workerLabels), 'opc.worker-task': taskId, 'opc.worker-lane': lane,
-        ...(route ? { 'opc.fast-requested': String(route.fastMode) } : {}) },
+        ...(pi && route?.fastMode === true ? { 'opc.service-tier': 'fast' } : {}),
+        ...(role === 'worker' && typeof route?.source === 'string' ? { 'opc.route-source': route.source } : {}) },
     }),
   });
 }

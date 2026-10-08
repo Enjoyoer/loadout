@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // One task, one native Codex thread. The host owns permissions and CODEX_HOME.
+// Workers run on Pi; this native launcher needs the owner's recorded authorization for the task.
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, realpathSync, statSync, writeSync } from 'node:fs';
 import { delimiter } from 'node:path';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { buildDelegatedBrief, isValidModelId, resolveAgentRoute } from './agent-routing.mjs';
+import { buildDelegatedBrief, isValidModelId, NATIVE_WORKER_AUTHORIZATION, resolveAgentRoute } from './agent-routing.mjs';
 import { assertRepository, canonicalPath, gitEnvironment, readTask, updateTask } from './task-state.mjs';
 
 const MAX_PROMPT = 64 * 1024;
@@ -36,6 +37,7 @@ function promptBytes(prompt) {
 function validateOptions(route) {
   const resolved = resolveAgentRoute('worker', { explicitRoute: route });
   if (!isValidModelId(resolved.model)) fail('invalid Worker model');
+  if (resolved.source !== 'owner-explicit') fail('native Worker requires an owner-named route; task defaults run on Pi');
   return { role: 'worker', ...resolved };
 }
 
@@ -203,11 +205,14 @@ function staleWorker(taskPath) {
 
 async function runWorker(taskPath, request, resume) {
   requireLauncherContext();
-  allowed(request, resume ? ['prompt'] : ['prompt', 'route']);
+  allowed(request, resume ? ['prompt'] : ['prompt', 'route', 'nativeAuthorization']);
   const requestedPrompt = promptBytes(request.prompt);
   const task = staleWorker(taskPath);
   assertRepository(task);
   assertTaskIdle(task);
+  if ((resume ? task.worker?.native_authorization : request.nativeAuthorization) !== NATIVE_WORKER_AUTHORIZATION) {
+    fail('Workers run on Pi only; a native Codex Worker needs an explicit owner authorization for this task');
+  }
   if (!resume && task.worker) fail('one Worker lineage per task; use resume for the existing thread');
   if (resume && (!task.worker?.thread_id || task.worker.status === 'running')) {
     fail('resume requires an existing harvested Worker thread');
@@ -261,6 +266,7 @@ async function runWorker(taskPath, request, resume) {
           effort: options.effort,
           fast_mode: options.fastMode,
           route_source: options.source,
+          native_authorization: NATIVE_WORKER_AUTHORIZATION,
           turns: [],
           error: null,
           cancel_requested: false,
@@ -431,7 +437,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const [mode, ...argv] = process.argv.slice(2);
     const flags = {};
     for (let index = 0; index < argv.length; index += 2) {
-      if (!['--task', '--prompt-file', '--model', '--effort', '--fast'].includes(argv[index]) ||
+      if (!['--task', '--prompt-file', '--model', '--effort', '--fast', '--native-authorization'].includes(argv[index]) ||
           !argv[index + 1] || argv[index] in flags) fail('invalid Worker CLI option');
       flags[argv[index]] = argv[index + 1];
     }
@@ -443,7 +449,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       result = await cancelWorker(taskPath);
     } else {
       if (!['launch', 'resume'].includes(mode) || !flags['--prompt-file']) {
-        fail('usage: worker.mjs launch --task PATH --prompt-file PATH --model MODEL --effort EFFORT --fast on|off; worker.mjs resume --task PATH --prompt-file PATH; or cancel --task PATH');
+        fail('usage: worker.mjs launch --task PATH --prompt-file PATH --model MODEL --effort EFFORT --fast on|off --native-authorization owner-explicit; worker.mjs resume --task PATH --prompt-file PATH; or cancel --task PATH');
       }
       const promptFile = canonicalPath(flags['--prompt-file']);
       const task = readTask(taskPath);
@@ -457,8 +463,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         if (!['on', 'off'].includes(flags['--fast'])) fail('--fast must be on or off');
         request.route = { role: 'worker', source: 'owner-explicit', model: flags['--model'],
           effort: flags['--effort'], fastMode: flags['--fast'] === 'on' };
-      } else if (flags['--model'] || flags['--effort'] || flags['--fast']) {
-        fail('resume uses the locked Worker route and accepts no route flags');
+        request.nativeAuthorization = flags['--native-authorization'];
+      } else if (flags['--model'] || flags['--effort'] || flags['--fast'] || flags['--native-authorization']) {
+        fail('resume uses the locked Worker route and authorization and accepts no route flags');
       }
       result = await (mode === 'launch' ? launchWorker : resumeWorker)(taskPath, request);
     }
