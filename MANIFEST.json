@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "ff0e028539a0dfca16f3cfcda2db4e9deffa4134",
+  "source_commit": "e37f50f8a2a2032a86a305e5c7908ff63ef0be2c",
   "skill_count": 22,
-  "file_count": 124,
+  "file_count": 125,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -192,7 +192,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5389,
-      "sha256": "4c07e57d51e84f0cde476eccb38300fb5a383a99fe6e2fbceeac0f2f54ed499a"
+      "sha256": "929818177a9f09bb703d75294fb271a09679c43f07210115e1714baf2d25300a"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -268,8 +268,15 @@
       "path": "skills/orchestration/opc/references/web-lane.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 1079,
-      "sha256": "6d442396f7488acc9ea9870717b666ccead73c223f3ba559dde68b7f6575f213"
+      "bytes": 1193,
+      "sha256": "97b91a66d9d4970df4b0a0d0cfa1a29a2c202986ec354482b0e78e7bcdfd8774"
+    },
+    {
+      "path": "skills/orchestration/opc/references/web-large-inputs.md",
+      "category": "orchestration",
+      "skill": "opc",
+      "bytes": 1799,
+      "sha256": "5ab1a080118d696bc891dfa7cefb1e5317b183e1d885daa111fcfe3a367a3805"
     },
     {
       "path": "skills/orchestration/opc/references/web-models-not-approved.md",
@@ -338,8 +345,8 @@
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 6076,
-      "sha256": "b7ee186d45dd4b170d43a5b50d30efbbc5e656e01a4e8289a658f01645598204"
+      "bytes": 6111,
+      "sha256": "e37bbac63354123f46cf7599a8e01f9a0fed478c29df74008f0171d0844db58b"
     },
     {
       "path": "skills/orchestration/opc/scripts/web-reviewer.mjs",
