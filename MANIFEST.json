@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "0ed0cfcbedb5a1667e8454f6bc918bc55a3063e6",
+  "source_commit": "c992f5370b3c6cd72a92d1d48f2567cc8c3e9e01",
   "skill_count": 22,
   "file_count": 125,
   "files": [
@@ -513,8 +513,8 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 5139,
-      "sha256": "90dd54f366579b865ee4bd72629b28791bef75437a4b94ef7f2134d274b1dfd9"
+      "bytes": 5406,
+      "sha256": "514c970070e98bcc45496594d39e7b61fa9f79462b1af76318f420397f3d2ab8"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/app-defaults.mjs",
