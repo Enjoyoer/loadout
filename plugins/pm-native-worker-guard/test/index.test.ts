@@ -36,7 +36,8 @@ async function until(check: () => boolean): Promise<void> {
 }
 
 it("subscribes to agent.created and agent.turn_ended only, with state under PASEO_HOME, and cleans up", async () => {
-  const home = path.dirname(path.dirname(await tempStatePath()));
+  // A fresh mkdtemp directory per run, so no state from an earlier run is reused.
+  const home = path.dirname(await tempStatePath());
   const previousHome = process.env.PASEO_HOME;
   process.env.PASEO_HOME = home;
   const originalLog = console.log;

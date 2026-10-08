@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { it } from "node:test";
 import { defaultStatePath, StateStore, type HandledRecord } from "../server/store.ts";
 import { tempStatePath } from "./fakes.ts";
@@ -15,7 +16,10 @@ const record = (childId: string, overrides: Partial<HandledRecord> = {}): Handle
 });
 
 it("lives under PASEO_HOME/plugin-state/pm-native-worker-guard", () => {
-  assert.equal(defaultStatePath({ PASEO_HOME: "/srv/paseo-home" }), "/srv/paseo-home/plugin-state/pm-native-worker-guard/state.json");
+  assert.equal(
+    defaultStatePath({ PASEO_HOME: "/srv/paseo-home" }),
+    path.join("/srv/paseo-home", "plugin-state", "pm-native-worker-guard", "state.json"),
+  );
 });
 
 it("starts empty, upserts by child id, bounds entries, and survives a reload", async () => {
