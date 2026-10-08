@@ -2,6 +2,6 @@
   "id": "usage-limit-auto-resume",
   "description": "Safely resumes same-agent work after a recognized usage-limit failure.",
   "requirements": {
-    "paseo": ">=0.10.3 <0.11.0"
+    "paseo": ">=0.10.3 <0.12.0"
   }
 }

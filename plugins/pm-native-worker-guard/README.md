@@ -1,6 +1,6 @@
 # pm-native-worker-guard
 
-Server-only Paseo plugin for Paseo >=0.10.3 <0.11.0, built against the exact 0.10.3
+Server-only Paseo plugin for Paseo >=0.10.3 <0.12.0, built against the exact 0.11.1
 `@getpaseo/*` packages. It enforces one owner rule: **agents created by a PM run on the
 Pi provider**. When a PM creates a native Codex or native Claude Code agent, the plugin
 stops and archives that agent and tells the PM why. It is **dry-run by default**: it only
@@ -8,14 +8,14 @@ logs what it would do until `armed` is set in its settings.
 
 ## Limitation: the agent exists before it is stopped
 
-Paseo 0.10.3 gives `before("agent.create")` hooks only `{ config, env }`, with no parent
+Paseo 0.10.3 and 0.11.1 give `before("agent.create")` hooks only `{ config, env }`, with no parent
 agent, so a before-create hook cannot tell a PM's worker from an agent the owner created.
 The plugin therefore acts on `agent.created`, after Paseo has created the agent. By then
 the agent exists and may have begun its first turn (the initial prompt), so it can run
 briefly, call tools, or change files before it is stopped. Check what it did if that
 matters. This is a guard rail for PMs that follow the rule, not a security boundary.
 
-Other gaps, all in Paseo 0.10.3:
+Other gaps, all in Paseo 0.10.3 and 0.11.1:
 
 - Only agents with a parent are covered. Paseo sets the parent (the
   `paseo.parent-agent-id` label) for MCP `create_agent` children and for `paseo run`
@@ -155,14 +155,17 @@ subprocess-wide plugin session. It opens no connection of its own. Timeline rows
 be appended from a plugin session. Hooks start the work and return; the API outlives the
 hook.
 
-`paseo-plugin.json` pins `"paseo": ">=0.10.3 <0.11.0"` and `package.json` pins
-`@getpaseo/client`, `@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.10.3`. The
+`paseo-plugin.json` pins `"paseo": ">=0.10.3 <0.12.0"` and `package.json` pins
+`@getpaseo/client`, `@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.11.1`. The
 behavior above was read from the installed 0.10.3 plugin and client type declarations and
 the 0.10.3 daemon source: the `agent.created` payload and where it is emitted, the parent
 label, archive cancelling the run, `send` interrupting a busy agent, and plugin-only
-timeline append. Re-check them before admitting 0.11, in particular whether
-`before("agent.create")` gains the parent agent, which would allow blocking before the
-agent exists.
+timeline append. The 0.11.1 declarations and daemon source were re-checked: the hook
+payload and parent label are unchanged, and `before("agent.create")` still receives no
+parent agent, so the check stays on `agent.created`. 0.11 adds an `agent.closed` event,
+which this plugin does not use. The same build was proven on disposable 0.10.3 and 0.11.1
+daemons: unarmed it logged `would-archive` for a fixture PM's child, and armed it archived
+the next child and sent the PM its notice.
 
 ## Develop and verify
 
