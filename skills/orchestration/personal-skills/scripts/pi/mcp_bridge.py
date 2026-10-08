@@ -2,6 +2,7 @@
 
 Stock 0.10.3 requires create_agent.provider. The exposed tool permits omission,
 then forwards the parent's exact catalog model and thinking. Explicit routes pass through.
+Calls with argument names a tool's tools/list schema lacks get a tool error, not silent stripping.
 """
 import copy, json, os, sys, urllib.request
 from pathlib import Path
@@ -38,6 +39,23 @@ def transform_list(response):
     return response
 
 
+def learn(response):
+    return {tool['name']: tool.get('inputSchema') or {} for tool in (response or {}).get('result', {}).get('tools', [])}
+
+
+def reject_unknown(request, schemas):
+    params = request.get('params', {})
+    name, args = params.get('name'), params.get('arguments') or {}
+    schema = schemas.get(name) or {}
+    allowed = schema.get('properties') or {}
+    # Skip unknown tools, schemaless tools and open schemas (true or {}, as zod passthrough emits).
+    if not allowed or schema.get('additionalProperties', False) is not False or not isinstance(args, dict): return None
+    extra = sorted(key for key in args if key not in allowed)
+    if not extra: return None
+    text = f"Unknown argument(s) for {name}: {', '.join(extra)}. Allowed: {', '.join(allowed)}."
+    return {'jsonrpc':'2.0', 'id':request.get('id'), 'result':{'content':[{'type':'text', 'text':text}], 'isError':True}}
+
+
 def inherit(request, model, thinking):
     result = copy.deepcopy(request)
     if result.get('method') == 'tools/call' and result.get('params', {}).get('name') == 'create_agent':
@@ -56,9 +74,17 @@ def main():
     model = os.environ.get('LOADOUT_PI_PARENT_MODEL')
     thinking = os.environ.get('LOADOUT_PI_PARENT_THINKING')
     verified = False
+    schemas = None
     for line in sys.stdin:
         request = json.loads(line)
         try:
+            if request.get('method') == 'tools/call':
+                if schemas is None:
+                    schemas = learn(forward(url, {'jsonrpc':'2.0', 'id':'loadout-tools', 'method':'tools/list'}, spec))
+                response = reject_unknown(request, schemas)
+                if response is not None:
+                    print(json.dumps(response), flush=True)
+                    continue
             if request.get('method') == 'tools/call' and request.get('params', {}).get('name') == 'create_agent' and 'provider' not in request['params'].get('arguments', {}) :
                 caller = parse_qs(urlparse(url).query).get('callerAgentId', [])
                 if len(caller) != 1: raise ValueError('caller identity unavailable')
@@ -77,7 +103,9 @@ def main():
                     raise ValueError('parent model not present in Pi catalog')
                 verified = True
             response = forward(url, inherit(request, model, thinking), spec)
-            if request.get('method') == 'tools/list': response = transform_list(response)
+            if request.get('method') == 'tools/list':
+                response = transform_list(response)
+                schemas = learn(response)
         except Exception:
             # Never echo credentials, connection URLs, or request arguments.
             response = {'jsonrpc':'2.0', 'id':request.get('id'),
