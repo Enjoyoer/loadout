@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "949785128d4f54dbdf946f011ebe4f84613f231f",
+  "source_commit": "b82097f6f1e2c11d3308eec2e103ad5a39196ad2",
   "skill_count": 22,
   "file_count": 124,
   "files": [
@@ -874,8 +874,8 @@
       "sha256": "aa3fdff5d0e4556177f4dfd5f04117e772aa54f94b6a2e34b6c0edf629c6b9b5"
     }
   ],
-  "plugin_count": 5,
-  "plugin_file_count": 85,
+  "plugin_count": 6,
+  "plugin_file_count": 101,
   "plugins": [
     {
       "id": "cache-aware-autocompact",
@@ -891,6 +891,10 @@
     },
     {
       "id": "pi-fast-toggle",
+      "paseo": ">=0.10.3 <0.11.0"
+    },
+    {
+      "id": "pm-native-worker-guard",
       "paseo": ">=0.10.3 <0.11.0"
     },
     {
@@ -1330,6 +1334,102 @@
       "plugin": "pi-fast-toggle",
       "bytes": 403,
       "sha256": "1ebd881bd817d11247010016d182294c858febe29459b219a7d085400fa65803"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/README.md",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 10837,
+      "sha256": "3312c0986e4ecb5563208d562c1192a049f8bd23cf041f4e4b20bc88a5f1105b"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/index.server.ts",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 2593,
+      "sha256": "97bf5e169c4efc65aff11adce3bf274209132a3b3a387c78d2128205125a87ac"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/package-lock.json",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 21226,
+      "sha256": "76fc87db3d455690c7576aa5d6fd9c31b7155c4b9fb2464744fae8a8915bbbcd"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/package.json",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 981,
+      "sha256": "c0cc53cd399b37f88c4d825a2c45ffd92e3d3e35324e3746c073fe123fc9fa6c"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/paseo-plugin.json",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 243,
+      "sha256": "25e20997c15db0ce446509a4d36eab69130e4f115a81e583efff6c1e709ae96a"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/server/config.ts",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 1959,
+      "sha256": "50aa5e3ead00a1448f330972bf93b56e76d6a2eec40ae4a51591c9e115288c7f"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/server/guard.ts",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 12055,
+      "sha256": "2d8a31fa911cf81e49d9e286fd7ec50547ef95cb32e96a7ea1a570a32d38f095"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/server/policy.ts",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 2017,
+      "sha256": "55d4e42d7678a71ad63a7daa9b4b2400a7f28785d277de78ba453574098545cf"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/server/store.ts",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 3281,
+      "sha256": "b59208d866fe2884c62c31a9e8df7ed8ce6c6e6362eaa0553cdacf8375308c22"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/test/config.test.ts",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 1494,
+      "sha256": "c285052ad9dd2c88de766312b5ecd70dbcd27400dd7570a4c6b71d9a1684478d"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/test/fakes.ts",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 4690,
+      "sha256": "1248c4be1758672813119db2df8e771bb7654a18b8485c56838e90fa25e700f8"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/test/guard.test.ts",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 13200,
+      "sha256": "0e4c72a27d390af4ad7127ea8226c273f369b9af6e79467d98d4c8d82b68f1f8"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/test/index.test.ts",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 3190,
+      "sha256": "967228f0167feefc6a524d651f62e6b55647a8e1929236179b8a3db1302682af"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/test/policy.test.ts",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 2028,
+      "sha256": "4bee36df19c8a254f2f0e19800a07067dc92b20c4cc1361fb3360e4fbec91d93"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/test/store.test.ts",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 1925,
+      "sha256": "2360403fbcb8b76a95ed0de319421ef7b44ed2ee3c209f182aaec66514532b53"
+    },
+    {
+      "path": "plugins/pm-native-worker-guard/tsconfig.json",
+      "plugin": "pm-native-worker-guard",
+      "bytes": 515,
+      "sha256": "49a2391265ffe24e7c4d0c201661fbb4093c3547e9ff7fbfa36fdad63f6e1d0c"
     },
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
