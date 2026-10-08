@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b82097f6f1e2c11d3308eec2e103ad5a39196ad2",
+  "source_commit": "746cb9b5bb1aeff867ee020cb94b1c990ee7e2fa",
   "skill_count": 22,
   "file_count": 124,
   "files": [
@@ -1410,8 +1410,8 @@
     {
       "path": "plugins/pm-native-worker-guard/test/index.test.ts",
       "plugin": "pm-native-worker-guard",
-      "bytes": 3190,
-      "sha256": "967228f0167feefc6a524d651f62e6b55647a8e1929236179b8a3db1302682af"
+      "bytes": 3259,
+      "sha256": "bdd1b07486009fb6d7f3a8f31962188a189ffafb63424e8cc0c8ae01219e0a6f"
     },
     {
       "path": "plugins/pm-native-worker-guard/test/policy.test.ts",
@@ -1422,8 +1422,8 @@
     {
       "path": "plugins/pm-native-worker-guard/test/store.test.ts",
       "plugin": "pm-native-worker-guard",
-      "bytes": 1925,
-      "sha256": "2360403fbcb8b76a95ed0de319421ef7b44ed2ee3c209f182aaec66514532b53"
+      "bytes": 1988,
+      "sha256": "56a980064826d54454cbc271ad5ef7cec65bf9a84518eb85ead6858144d7999d"
     },
     {
       "path": "plugins/pm-native-worker-guard/tsconfig.json",
