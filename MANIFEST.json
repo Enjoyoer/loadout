@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "c992f5370b3c6cd72a92d1d48f2567cc8c3e9e01",
+  "source_commit": "986bab39b052d5b4b4da4005e69cf158e1caa4b5",
   "skill_count": 22,
   "file_count": 125,
   "files": [
@@ -576,8 +576,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 3267,
-      "sha256": "c10b074a7c5ee02775216dc0e2be7e378572ecf27fc9448880be179880124617"
+      "bytes": 3710,
+      "sha256": "5dfd78c5aa086a661145b915616c523058ef2c1f262a18e5bb7bf4645480e5a9"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/mcp_bridge.py",
