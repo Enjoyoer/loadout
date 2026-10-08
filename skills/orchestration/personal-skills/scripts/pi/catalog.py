@@ -69,6 +69,18 @@ def derive(providers, pi):
             if row.get('description'):row['description']=row['description'].rstrip('.')+'. Billed to API credits.'
             # Sit directly after the base entry, so each pair stays together and direct providers stay last.
             models.insert(models.index(base)+1,model);rows.insert(rows.index(next(r for r in rows if r['label']==source['label']))+1,row)
+    # Optional Pi-only order: canonical labels listed first, each with its API entry; the rest keep their
+    # order, and direct providers stay last. Native provider pickers keep the catalog order.
+    order=pi.get('labelOrder')
+    if order is not None:
+        fleet={s['label'] for p in sources for s in providers.get(p,{}).get('models',[])}
+        if not isinstance(order,list) or len(set(order))!=len(order) or not set(order)<=fleet:
+            raise ValueError('labelOrder must list distinct canonical labels from the Pi catalog')
+        suffix=' '+route['labelSuffix'] if route else None
+        group=lambda label:label[:-len(suffix)] if suffix and label.endswith(suffix) and label[:-len(suffix)] in fleet else label
+        rank=lambda label,i:(order.index(group(label)),i) if group(label) in order else (len(order),i) if group(label) in fleet else (len(order)+1,i)
+        rows=[r for i,r in sorted(enumerate(rows),key=lambda x:rank(x[1]['label'],x[0]))]
+        models=[m for i,m in sorted(enumerate(models),key=lambda x:rank(x[1]['name'],x[0]))]
     if not default:
         source=providers.get(default_source,{}).get('models',[None])[0]
         if not source:raise ValueError('default provider catalog missing')
