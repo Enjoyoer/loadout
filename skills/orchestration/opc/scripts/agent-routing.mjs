@@ -118,12 +118,16 @@ export function resolveAgentRoute(role, { explicitRoute = null, taskKind = null,
   return route;
 }
 
+// Owner testing rule: tests a Worker writes for itself restate its own reading of intent.
+const WORKER_TESTING_RULE = 'Testing rule: do not write new unit, integration, or end-to-end tests, and do not use test-driven development, unless the PM specifies the test cases. ' +
+  'Verify against the acceptance checks, run the existing suites and keep them green, and keep existing tests unless the PM asks to remove them.';
+
 export function buildDelegatedBrief({ role, route, brief }) {
   if (typeof role !== 'string' || !role || typeof brief !== 'string' || !brief.trim()) {
     throw Error('delegated role and nonempty brief required');
   }
   const resolved = route == null ? resolveAgentRoute(role) : validateRoleRoute(role, route);
-  return `Fixed route for this ${role} lane: ${routeText(resolved)}. This route is not a suggestion. You cannot delegate, launch another agent, choose another route, or substitute a model or effort. If this route fails, stop this lane and report the failure to the PM.\n\n${brief}`;
+  return `Fixed route for this ${role} lane: ${routeText(resolved)}. This route is not a suggestion. You cannot delegate, launch another agent, choose another route, or substitute a model or effort. If this route fails, stop this lane and report the failure to the PM.\n\n${role === 'worker' ? `${WORKER_TESTING_RULE}\n\n` : ''}${brief}`;
 }
 
 export function selectTopology({ scale, independentQuestions = 0, findingsConverged = false,
