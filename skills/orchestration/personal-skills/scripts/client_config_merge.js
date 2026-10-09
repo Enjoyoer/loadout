@@ -3,6 +3,7 @@
 // {codex: {top, sections, reportOnly}, claude: {settings, env, token_env, minVersion},
 //  token, stamp, dry_run, update_claude}. The token arrives only on stdin and is
 // never printed. Only managed keys are written; everything else stays host-local.
+// replaceFile comes from remote_common.js, which fleet.run_node ships ahead of this file.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib");
 const { execSync } = require("child_process");
 const result = { codex: null, claude: null, claude_code: null, error: null };
@@ -78,9 +79,7 @@ function write(p, file, before, after) {
     backup = `${file}.bak-loadout-${p.stamp}`;
     fs.copyFileSync(file, backup);
   }
-  const tmp = file + ".loadout-tmp";
-  fs.writeFileSync(tmp, after, { mode: 0o600 });
-  fs.renameSync(tmp, file);
+  replaceFile(fs, file, after, 0o600);
   return backup && path.basename(backup);
 }
 
