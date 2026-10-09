@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,35 @@ class PiSurfaceTest(unittest.TestCase):
                     {'email': 'owner@example.test', 'home': '/h', 'port': 80}]:
             with self.assertRaisesRegex(ValueError, 'gmail'):
                 build({**spec, 'gmail': bad}, root)
+
+    def test_launch_drops_gmail_only_for_worker_labels(self):
+        import http.server, threading
+        labels = {}
+        class Daemon(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                body = json.dumps({'jsonrpc': '2.0', 'id': 'launch-labels', 'result': {'structuredContent': {'snapshot': {'labels': labels}}}}).encode()
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)
+            def log_message(self, *args): pass
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Daemon)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close); self.addCleanup(server.shutdown)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve(); app = root/'app/node_modules/@earendil-works/pi-coding-agent'
+            (app/'dist/bundle').mkdir(parents=True); (root/'agent').mkdir()
+            (app/'package.json').write_text('{"version": "1.0.0"}'); (app/'dist/bundle/cli.js').write_text('')
+            (root/'launch.mjs').write_bytes((PI/'launch.mjs').read_bytes())
+            (root/'runtime.json').write_text(json.dumps({'paseoMcp': {'url': f'http://127.0.0.1:{server.server_port}/mcp/agents'}}))
+            (root/'agent/settings.json').write_text(json.dumps({'codemode': {'mode': 'on'}, 'defaultTools': ['+codemode'], 'extensions': [str(root/'fleet-routing.mjs')]}))
+            (root/'agent/models.json').write_text('{}')
+            (root/'agent/mcp.json').write_text(json.dumps({'mcpServers': {'paseo': {'command': 'python3'}, 'gmail': {'command': 'stub'}}}))
+            for agent, role, has_gmail in (('agent-worker-1', 'worker', False), ('agent-pm-0001', 'pm', True)):
+                labels.clear(); labels['role'] = role
+                done = subprocess.run(['node', str(root/'launch.mjs'), '--model', 'fleet/fake'], capture_output=True, text=True,
+                                      env={**os.environ, 'PASEO_AGENT_ID': agent})
+                self.assertEqual(done.returncode, 0, done.stderr)
+                servers = json.loads((root/'agents'/agent/'mcp.json').read_text())['mcpServers']
+                self.assertIn('paseo', servers); self.assertEqual('gmail' in servers, has_gmail)
 
     def test_router_base_url_requires_https_unless_loopback(self):
         sys.path.insert(0, str(PI))
