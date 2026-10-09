@@ -1,10 +1,9 @@
 // Quota pace for Worker routing. Reads Paceline's `pq --json` (schemaVersion 1) and turns one provider
 // pool into a level step: weekly pace first, then the 5-hour window. Stale or missing data never adjusts.
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 
 export const PACE_LEVELS = Object.freeze(['medium', 'high', 'xhigh']);
 export const PQ_TIMEOUT_MS = 15000;
@@ -68,14 +67,39 @@ export async function readQuota({ settings = ROUTING_DEFAULTS, pqFile = null, ho
   }
   const [command, ...args] = settings.pq;
   const file = command === '~' || command.startsWith('~/') ? join(home, command.slice(1)) : command;
-  try {
-    const { stdout } = await promisify(execFile)(file, args, { timeout: PQ_TIMEOUT_MS, maxBuffer: 16 << 20, encoding: 'utf8' });
-    return parseQuota(stdout);
-  } catch (error) {
-    if (error.code === 'ENOENT') return { stale: `pq unavailable (${command} not found)` };
-    if (error.killed) return { stale: `pq unavailable (no answer in ${PQ_TIMEOUT_MS / 1000}s)` };
-    return { stale: `pq unavailable (${firstLine(error.stderr) || firstLine(error.message)})` };
-  }
+  const result = await runPq(file, args);
+  if (result.json) return parseQuota(result.json);
+  if (result.code === 'ENOENT') return { stale: `pq unavailable (${command} not found)` };
+  if (result.timedOut) return { stale: `pq unavailable (no answer in ${PQ_TIMEOUT_MS / 1000}s)` };
+  return { stale: `pq unavailable (${firstLine(result.stderr) || firstLine(result.error) || `exit ${result.exit}`})` };
+}
+
+// Settle on the first complete JSON document, not on process exit: on Windows, ssh.exe run without a
+// console can keep running after the remote pq has printed everything. stdin is closed so ssh never waits on it.
+function runPq(file, args) {
+  return new Promise(resolve => {
+    let stdout = '', stderr = '', done = false;
+    const finish = result => {
+      if (done) return;
+      done = true; clearTimeout(timer);
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      // A grandchild can still hold the pipes open; release them so the caller is not kept waiting.
+      child.stdout.destroy(); child.stderr.destroy(); child.unref();
+      resolve(result);
+    };
+    const child = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const timer = setTimeout(() => finish({ timedOut: true, stderr }), PQ_TIMEOUT_MS);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      stdout += chunk;
+      if (stdout.length > 16 << 20) return finish({ error: 'pq output too large', stderr });
+      try { JSON.parse(stdout); finish({ json: stdout }); } catch { /* not complete yet */ }
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('error', error => finish({ code: error.code, error: error.message, stderr }));
+    child.on('close', exit => finish(exit === 0 && stdout.trim() ? { json: stdout } : { exit, stderr }));
+  });
 }
 
 // Pool values for one provider. Weekly gap is pq's plan-weighted pool pace; 5-hour use and reset-soon

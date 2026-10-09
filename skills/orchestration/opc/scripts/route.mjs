@@ -87,8 +87,9 @@ const readJson = (path, what) => {
 
 async function readCatalog(path) {
   if (path) return catalogRows(readJson(path, 'catalog'));
+  // On Windows the paseo CLI is an npm .cmd shim, which only a shell can start; the arguments are fixed.
   const { stdout } = await promisify(execFile)('paseo', ['provider', 'models', 'pi', '--json'],
-    { timeout: 60000, maxBuffer: 16 << 20, encoding: 'utf8' });
+    { timeout: 60000, maxBuffer: 16 << 20, encoding: 'utf8', shell: process.platform === 'win32' });
   return catalogRows(JSON.parse(stdout));
 }
 

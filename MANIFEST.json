@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "543f88fb3e2a9a425c591224999d989377bb0973",
+  "source_commit": "19dafbcc78e65a8ead116b05123220d41e564677",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -345,15 +345,15 @@
       "path": "skills/orchestration/opc/scripts/quota-pace.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 8999,
-      "sha256": "c7d235631ed158f0aa1211deec4d724ffab9d9202ea60254a21fa894a2eb539a"
+      "bytes": 10362,
+      "sha256": "79c00f367812e9b6910eefe4d632fe54fe7130b63c01d8bcfe7121c7dde6e6ea"
     },
     {
       "path": "skills/orchestration/opc/scripts/route.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 8506,
-      "sha256": "7eaf3a7f3fa406dfd02ac44c1b92a7059e7c272e4969743e19e8cefdbfad2957"
+      "bytes": 8649,
+      "sha256": "a1ed67d72ba38dc5433bf1b8fb246a604b0f5c41ecaea77e4ea70da82e83abf5"
     },
     {
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
