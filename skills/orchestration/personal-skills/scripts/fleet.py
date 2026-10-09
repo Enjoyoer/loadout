@@ -25,6 +25,8 @@ from typing import Any, Mapping, NamedTuple, Optional
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 PUSH_JS = Path(__file__).resolve().parent / "fleet_push_remote.js"
+# Helpers the remote programs share; run_node ships it ahead of each program.
+COMMON_JS = Path(__file__).resolve().parent / "remote_common.js"
 SYNC_RECORD = ".loadout-sync.json"
 SKIP_NAMES = {SYNC_RECORD, ".DS_Store"}
 # Remote programs travel gzip+base64 so they survive cmd.exe and terminal quoting.
@@ -235,6 +237,11 @@ def pack(data: bytes) -> str:
     return base64.b64encode(gzip.compress(data)).decode()
 
 
+def bundle(program: Path) -> bytes:
+    """The program with remote_common.js ahead of it: one script, so a host needs no shared file."""
+    return COMMON_JS.read_bytes() + b"\n" + program.read_bytes()
+
+
 def parse_result(output: str) -> Optional[dict]:
     match = RESULT.search(output)
     if not match:
@@ -267,18 +274,19 @@ def push_targets(fleet: dict) -> tuple:
 
 
 def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Optional[float] = None) -> tuple:
-    """Run a Loadout node program on a host with a gzip+base64 JSON payload on stdin.
+    """Run a Loadout node program, bundled with remote_common.js, on a host with a gzip+base64 JSON payload on stdin.
 
     Returns (result dict or None, raw output). Secrets travel only on stdin.
     """
     body = pack(json.dumps(payload).encode())
+    script = pack(bundle(program))
     env = None
     if local:
-        command = ["node", "-e", BOOT, "--", pack(program.read_bytes())]
+        command = ["node", "-e", BOOT, "--", script]
         # Inside an agent session, keep daemon commands off the agent's own identity.
         env = {k: v for k, v in os.environ.items() if k not in ("PASEO_AGENT_ID", "PASEO_AGENT_CWD")}
     else:
-        command = ["ssh", *SSH_OPTIONS, "--", name, f'node -e "{BOOT}" -- {pack(program.read_bytes())}']
+        command = ["ssh", *SSH_OPTIONS, "--", name, f'node -e "{BOOT}" -- {script}']
     try:
         done = subprocess.run(command, input=body, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:

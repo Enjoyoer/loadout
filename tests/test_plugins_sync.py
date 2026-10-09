@@ -126,7 +126,7 @@ class RemotePluginTest(Fixture):
         payload = {"dry_run": dry_run, "migrate_path": migrate, "plugin_root": root, "stage": list(stage), "install": list(install),
                    "plugins": {"demo": {"pin": pin, "files": files}}}
         env = {**self.env, "HOME": str(self.home)}
-        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(plugins_sync.REMOTE_JS.read_bytes())],
+        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(fleet.bundle(plugins_sync.REMOTE_JS))],
                               input=fleet.pack(json.dumps(payload).encode()), capture_output=True, text=True, env=env)
         return fleet.parse_result(done.stdout)
 
