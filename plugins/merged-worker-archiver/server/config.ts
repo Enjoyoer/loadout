@@ -4,12 +4,15 @@ import { z } from "zod";
 // <PASEO_HOME>/plugin-settings/merged-worker-archiver/config.json as
 // {"version":1,"values":{...}}. Every field has a safe default, so a missing file means
 // "dry-run with defaults". `armed` is the only switch that allows real archiving.
-// Other unknown keys still make the settings invalid (fail closed).
-const RETIRED_KEYS = ["maxArchivesPerSweep"] as const;
-
-const ConfigObjectSchema = z
+// Unknown keys make the settings invalid (fail closed).
+export const ConfigSchema = z
   .object({
     armed: z.boolean().default(false),
+    /**
+     * Archive attempts per sweep; the rest are deferred to the next sweep. An armed archive call
+     * that fails still uses a slot, and dry-run previews the same number as would-archive.
+     */
+    maxArchivesPerSweep: z.number().int().min(1).default(5),
     /** Slow backstop for merges done outside Paseo (for example the GitHub web UI). */
     sweepIntervalMinutes: z.number().min(1).max(24 * 60).default(60),
     graceMinutes: z.number().min(0).max(7 * 24 * 60).default(0),
@@ -24,15 +27,7 @@ const ConfigObjectSchema = z
   })
   .strict();
 
-/** Retired keys (for example maxArchivesPerSweep, removed in 0.2.0) are accepted and ignored. */
-export const ConfigSchema = z.preprocess((values) => {
-  if (values === null || typeof values !== "object" || Array.isArray(values)) return values;
-  const copy: Record<string, unknown> = { ...(values as Record<string, unknown>) };
-  for (const key of RETIRED_KEYS) delete copy[key];
-  return copy;
-}, ConfigObjectSchema);
-
-export type ArchiverConfig = z.output<typeof ConfigObjectSchema>;
+export type ArchiverConfig = z.output<typeof ConfigSchema>;
 
 export const SETTINGS_ID = "config";
 export const SETTINGS_VERSION = 1;

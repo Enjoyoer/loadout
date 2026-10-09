@@ -7,11 +7,20 @@ it("defaults to dry-run", () => {
   assert.equal(defaultConfig().armed, false);
 });
 
-it("accepts and ignores the retired maxArchivesPerSweep key (live settings file)", () => {
+it("loads a live settings file that sets maxArchivesPerSweep and keeps its value", () => {
   const parsed = ConfigSchema.safeParse({ armed: true, maxArchivesPerSweep: 50 });
   assert.equal(parsed.success, true);
   assert.equal(parsed.data?.armed, true);
-  assert.equal(Object.hasOwn(parsed.data ?? {}, "maxArchivesPerSweep"), false);
+  assert.equal(parsed.data?.maxArchivesPerSweep, 50);
+});
+
+it("maxArchivesPerSweep: a settings file without it loads as 5; 0, -1, 0.5 and \"5\" are refused", () => {
+  const cases: Array<[unknown, number | "refused"]> = [[undefined, 5], [0, "refused"], [-1, "refused"], [0.5, "refused"], ["5", "refused"]];
+  for (const [value, expected] of cases) {
+    const parsed = ConfigSchema.safeParse(value === undefined ? { armed: true } : { armed: true, maxArchivesPerSweep: value });
+    if (expected === "refused") assert.equal(parsed.success, false, JSON.stringify(value));
+    else assert.equal(parsed.data?.maxArchivesPerSweep, expected);
+  }
 });
 
 it("bounds follow-ups", () => {

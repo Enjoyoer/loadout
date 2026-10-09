@@ -56,7 +56,7 @@ Every decision is `skip` unless all of these pass. Reasons appear verbatim in th
 | `no-base(...)` | No Paseo worktree metadata, or none of the base refs exist locally. |
 | `branch-is-base` | The worktree is on its base branch. |
 | `operation-in-progress(x)` | Merge, cherry-pick, revert, rebase, or bisect in progress. |
-| `dirty(changed, untracked)` | Any staged, unstaged, or untracked change (`--untracked-files=all`). |
+| `dirty(changed, untracked, ignored)` | Any staged, unstaged, or untracked change (`--untracked-files=all`), or any git-ignored file (`--ignored=matching`). A worktree whose only extra files are ignored reports `dirty(ignored=N)`, for example an ignored `.env` or local notes. `N` counts the paths git lists, and an ignored directory counts once. Ignored dependency or build output (`node_modules`, `dist`) also blocks archival. That is intended: the owner chose safety over automatic cleanup. Delete such output, or archive the workspace by hand. |
 | `no-branch-commits` | The branch reflog has no `commit`/`cherry-pick` entry. A branch with no own commits is trivially an ancestor of its base (also after a pure rebase onto a newer base); that is "no work yet", not "merged". |
 | `not-merged(...)` | Commits not contained in the base, no merged PR (`no PR`, `PR #n open`, `gh unavailable`, `no GitHub remote`, `gh disabled`). |
 | `unmerged-commits(...)` | Local commits after the merged PR head. |
@@ -77,8 +77,8 @@ request as `paseo workspace archive`). In Paseo 0.9.1 that (`archiveByScope`):
 - runs the project's worktree teardown commands, if any;
 - if the worktree is Paseo-owned and no other active workspace references it, removes
   the directory with `git worktree remove --force` (Paseo's force, not this plugin's).
-  Ignored files in the worktree (for example `node_modules`, `.env`) go with it; the
-  plugin already refused if anything tracked or untracked-but-not-ignored was present;
+  The plugin already refused if any changed, untracked, or ignored file was present, so
+  only clean, committed content is removed;
 - does **not** delete the branch. Verified in the isolated test: after archive the
   directory and its `git worktree` entry were gone and `worker-merged` still existed.
 
@@ -118,21 +118,34 @@ worker agent inside a Paseo turn, so the turn end is the trigger.
 Each finished turn logs one `event` line; each evaluation ends with `sweep-done`
 including `trigger`, `pendingMerge`, and `latencyMs` (first coalesced event to end of
 evaluation). Permission and attention state are read from agent snapshots at decision
-time. Sweeps are serialized; there is no per-sweep archive cap.
+time. Sweeps are serialized.
+
+## Per-sweep cap
+
+One sweep makes at most `maxArchivesPerSweep` archive attempts (default 5). The cap
+counts attempts, not successes: an armed archive call that fails still uses a slot, a
+workspace that fails the armed fresh-state re-check does not, and deferred workspaces
+are not re-checked. Dry-run applies the same cap to `would-archive`, so it previews the
+same 5 an armed sweep would attempt.
+
+Further eligible workspaces are not archived: each gets a `deferred` log line, and they
+wait for the next sweep (the next turn end in their project or repository, or the
+periodic sweep). In `sweep-done`, `counts.archive` covers only the candidates within the
+cap and `counts.deferred` the rest (also reported as `deferred`), so a sweep that finds 7
+eligible workspaces reports `"archive":5,"deferred":2`.
 
 ## Settings
 
 Host-scoped plugin settings (`server.registerSettings`), stored by Paseo at
 `<PASEO_HOME>/plugin-settings/merged-worker-archiver/config.json` as
 `{"version":1,"values":{...}}`. Missing file means all defaults. Unknown keys or wrong
-types make the settings invalid, which stops all evaluation. The retired key
-`maxArchivesPerSweep` (the cap was removed) is accepted and ignored so existing files
-keep loading. Settings are re-read before
+types make the settings invalid, which stops all evaluation. Settings are re-read before
 every sweep, so edits take effect on the next sweep without a reload.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `armed` | `false` | `true` allows real archiving. Anything else is dry-run. |
+| `maxArchivesPerSweep` | `5` | Archive attempts per sweep; the rest are deferred to the next sweep. An armed archive call that fails still uses a slot, and dry-run previews the same number as `would-archive`. A whole number of at least 1; anything else makes the settings invalid. |
 | `sweepIntervalMinutes` | `60` | Backstop full-sweep interval (1 to 1440). |
 | `graceMinutes` | `0` | Minimum idle time before archiving (0 to 10080). A merged branch means the PM already integrated the work; raise it to keep an inspection window. |
 | `eventDebounceSeconds` | `3` | Coalescing window after a turn ends (0 to 60). |
@@ -150,7 +163,8 @@ One stdout line per decision (`paseo plugin logs merged-worker-archiver`):
 [merged-worker-archiver] {"action":"would-archive","workspaceId":"wks_...","name":"...","agentIds":["..."],"branch":"opc/x","base":"main","reason":"merged-ancestry(refs/remotes/origin/main)"}
 ```
 
-`action` is `skip`, `would-archive` (dry-run), `archived`, or `archive-failed`. Each
+`action` is `skip`, `would-archive` (dry-run), `archived`, `archive-failed`, or
+`deferred` (over the per-sweep cap). Each
 evaluation ends with a `sweep-done` summary; failures log `sweep-aborted`. Non-worktree
 workspaces are counted in the summary only unless `logNonCandidates` is on.
 
@@ -194,12 +208,12 @@ install or reload. Loading takes about 10 s.
 
 ```bash
 npm install
-npm run check          # typecheck + unit tests (node:test, fake git/gh) + esbuild bundle (to node_modules/.cache)
+npm run check          # typecheck + unit tests (node:test, fake git/gh, one real-git ignored-file test) + esbuild bundle (to node_modules/.cache)
 npm run dry-run -- --host 127.0.0.1:6767          # read-only table against a live daemon
 npm run dry-run -- --grace 0 --config <settings.json>
 ```
 
-`scripts/dry-run.ts` sweeps with `armed: false` and `forceDryRun: true`, so every decision returns at the `would-archive` log line before the archive call is reached.
+`scripts/dry-run.ts` sweeps with `armed: false` and `forceDryRun: true`, so every decision returns at the `would-archive` (or, past the cap, `deferred`) log line before the archive call is reached.
 
 ## Install and arm (PM, after owner approval)
 
@@ -223,4 +237,7 @@ Disarm by setting `armed` to `false` (takes effect at the next evaluation) or
 
 Upgrading an installed copy (directory install): `npm install && npm run check`, then
 `paseo plugin reload merged-worker-archiver` and confirm `running` in `paseo plugin ls`.
-Existing settings files keep loading; `maxArchivesPerSweep` is ignored.
+Existing settings files keep loading. A `maxArchivesPerSweep` value left in one from an
+earlier version is honored again, and a value below 1 makes the settings invalid.
+Worktrees that hold ignored files (for example `node_modules` or `.env`) are now skipped
+as `dirty(...)`.

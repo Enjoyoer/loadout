@@ -6,6 +6,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ### Changed
 - `frontend-design` is now Anthropic's official frontend-design skill, copied unmodified from the official Claude Code plugin; the skill name is unchanged.
+- `merged-worker-archiver` caps archives per sweep again (`maxArchivesPerSweep`, default 5; the rest are deferred to the next sweep) and treats git-ignored files in a worktree as dirty, so an ignored `.env`, local notes, or `node_modules` now block archival.
 
 ### Fixed
 - Fleet push, skills sync, and plugins sync share one destination path check. Plugins sync now also refuses a file path that leaves the plugin root, and all three refuse a dangling symlink among a destination's parent directories.
