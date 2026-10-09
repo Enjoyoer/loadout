@@ -1,0 +1,10 @@
+frontend-design skill
+Copyright Anthropic, PBC. Licensed under the Apache License, Version 2.0 (see LICENSE.txt).
+
+SKILL.md and LICENSE.txt are copied unmodified from Anthropic's official frontend-design
+Claude Code plugin:
+https://github.com/anthropics/claude-plugins-public/tree/main/plugins/frontend-design/skills/frontend-design
+at commit 44490cccaf6d9f82fdeec9416fbf7c9bd72575dc.
+
+agents/openai.yaml is Loadout's own display metadata for Codex and is not part of the
+upstream skill.
