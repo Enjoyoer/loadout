@@ -15,6 +15,7 @@ export interface GitScenario {
   head: string;
   /** Reflog lines as `%H %gs`, newest first. */
   reflog: string[];
+  /** Upstream of the worktree branch itself; other branches track origin/<same name>. */
   upstream: string | null;
   refs: Record<string, boolean>;
   ancestors: Record<string, number>;
@@ -35,7 +36,7 @@ export function scenario(overrides: Partial<GitScenario> = {}): GitScenario {
     status: "",
     head: HEAD,
     reflog: [`${HEAD} commit: work`, `${CREATED} branch: Created from refs/remotes/origin/main`],
-    upstream: "refs/remotes/origin/main",
+    upstream: "refs/remotes/origin/opc/feature",
     refs: { "refs/heads/main": true, "refs/remotes/origin/main": true },
     ancestors: { "refs/heads/main": 1, "refs/remotes/origin/main": 1 },
     ahead: 2,
@@ -71,7 +72,11 @@ export function fakeRunner(s: GitScenario, calls: Recorded[] = []): CommandRunne
         if (rest[0] === "--show-toplevel") return ok(`${CWD}\n`);
         if (rest[0] === "--absolute-git-dir") return ok(`${GIT_DIR}\n`);
         if (rest[0] === "--verify" && rest[1] === "HEAD^{commit}") return ok(`${s.head}\n`);
-        if (rest[0] === "--symbolic-full-name") return s.upstream ? ok(`${s.upstream}\n`) : fail(128, "no upstream");
+        if (rest[0] === "--symbolic-full-name") {
+          const name = rest[1]!.replace(/@\{upstream\}$/, "");
+          if (name && name !== s.branch) return ok(`refs/remotes/origin/${name}\n`);
+          return s.upstream ? ok(`${s.upstream}\n`) : fail(128, "no upstream");
+        }
         if (rest[0] === "--verify" && rest[1] === "-q") {
           const ref = rest[2]!.replace("^{commit}", "");
           return s.refs[ref] ? ok(`${"d".repeat(40)}\n`) : fail(1);

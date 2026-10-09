@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createPaseoClient, type PaseoClient } from "@getpaseo/client";
-import type { ArchiverApi } from "./sweeper.ts";
 
 export interface DaemonTarget {
   url: string;
@@ -61,8 +60,4 @@ export async function openDaemonClient(env: NodeJS.ProcessEnv = process.env): Pr
     throw new Error(`cannot connect to Paseo daemon at ${target.url} (${target.source}): ${error instanceof Error ? error.message : String(error)}`);
   }
   return client;
-}
-
-export function asArchiverApi(client: PaseoClient): ArchiverApi {
-  return client as unknown as ArchiverApi;
 }

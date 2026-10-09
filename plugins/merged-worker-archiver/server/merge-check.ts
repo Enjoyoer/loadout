@@ -33,12 +33,6 @@ function text(result: CommandResult): string {
   return `${result.stdout}\n${result.stderr}`.trim();
 }
 
-function commandFailure(prefix: "git" | "gh", label: string, result: CommandResult): string {
-  if (result.timedOut) return `${prefix}-timeout(${label})`;
-  if (result.notFound) return `${prefix}-not-found`;
-  return `${prefix}-error(${label}:exit=${result.code ?? "null"}:${text(result)})`;
-}
-
 function gitFailure(label: string, result: CommandResult): string {
   if (result.timedOut) return `git-timeout(${label})`;
   if (result.notFound) return "git-not-found";
@@ -60,16 +54,22 @@ function baseName(ref: string): string {
   return ref.replace(/^refs\/heads\//, "");
 }
 
+// Branch name of a local or remote-tracking ref: refs/remotes/origin/x and refs/heads/x are both x.
+function shortBranchName(ref: string): string {
+  return ref.replace(/^refs\/remotes\/[^/]+\//, "").replace(/^refs\/heads\//, "");
+}
+
 async function existingRef(deps: MergeCheckDeps, directory: string, ref: string): Promise<boolean> {
   const { result } = await runGit(deps, directory, ["rev-parse", "--verify", "-q", `${ref}^{commit}`], `verify ${ref}`);
   return result.code === 0;
 }
 
-async function upstreamRef(deps: MergeCheckDeps, directory: string): Promise<string | null> {
-  const { result } = await runGit(deps, directory, ["rev-parse", "--symbolic-full-name", "@{upstream}"], "upstream");
-  if (result.code !== 0) return null;
-  const value = result.stdout.trim();
-  return value || null;
+// The upstream of the BASE branch, never of the worktree's own branch: after `git push -u`
+// the worker branch's upstream is refs/remotes/origin/<branch>, which always contains HEAD.
+async function baseUpstreamRef(deps: MergeCheckDeps, directory: string, baseRefName: string): Promise<string> {
+  const { result } = await runGit(deps, directory, ["rev-parse", "--symbolic-full-name", `${baseRefName}@{upstream}`], `upstream ${baseRefName}`);
+  const value = result.code === 0 ? result.stdout.trim() : "";
+  return value || `refs/remotes/origin/${baseRefName}`;
 }
 
 function parseMetadata(raw: string | null): { value: WorktreeMetadata | null; reason: string | null } {
@@ -150,12 +150,11 @@ export async function checkMerged(directory: string, deps: MergeCheckDeps): Prom
   const candidates: string[] = [];
   if (exactBase) candidates.push(exactBase);
   if (baseRefName) candidates.push(`refs/heads/${baseRefName}`);
-  const upstream = await upstreamRef(deps, directory);
-  if (upstream) candidates.push(upstream);
+  if (baseRefName) candidates.push(await baseUpstreamRef(deps, directory, baseRefName));
   let baseRef: string | null = null;
   let base: string | null = null;
-  let ancestorFailure: string | null = null;
   for (const candidate of [...new Set(candidates)]) {
+    if (shortBranchName(candidate) === branch) continue;
     if (!(await existingRef(deps, directory, candidate))) continue;
     const candidateBase = baseRefName ?? baseName(candidate);
     const ancestor = await runGit(deps, directory, ["merge-base", "--is-ancestor", "HEAD", candidate], `is-ancestor ${candidate}`);
@@ -170,13 +169,7 @@ export async function checkMerged(directory: string, deps: MergeCheckDeps): Prom
       base = candidateBase;
     }
   }
-  if (!baseRef) {
-    if (ancestorFailure) return { merged: false, branch, base: baseRefName ?? exactBase, reason: ancestorFailure };
-    return { merged: false, branch, base: baseRefName ?? exactBase, reason: "no-base(base ref not found locally)" };
-  }
-  if (ancestorFailure) return { merged: false, branch, base, reason: ancestorFailure };
-
-  const selectedBaseRef = baseRef;
+  if (!baseRef) return { merged: false, branch, base: baseRefName ?? exactBase, reason: "no-base(base ref not found locally)" };
 
   const aheadResult = await runGit(deps, directory, ["rev-list", "--count", `${baseRef}..HEAD`], `rev-list ${baseRef}..HEAD`);
   if (aheadResult.failure) return { merged: false, branch, base, reason: aheadResult.failure };
