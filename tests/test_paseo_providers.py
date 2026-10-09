@@ -281,6 +281,26 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertIn("refusing secret-looking host env EXAMPLE_API_KEY", out)
         self.assertEqual(self.config("laptop"), EXISTING)
 
+    def test_secret_name_part_is_refused_but_longer_word_passes(self):
+        catalog = json.loads((self.fleet / "paseo-providers.json").read_text())
+        env = catalog["hosts"]["laptop"]["env"]["claude"]
+        env["ANTHROPIC_BASE_URL"] = "%GITHUB_PAT%"
+        (self.fleet / "paseo-providers.json").write_text(json.dumps(catalog))
+        self.env["GITHUB_PAT"] = "not-a-real-token"
+        code, out = self.run_sync("--host", "laptop")
+        self.assertEqual(code, 1, out)
+        self.assertIn("refusing secret-looking host env GITHUB_PAT", out)
+        self.assertEqual(self.config("laptop"), EXISTING)
+
+        # PAT inside a longer word (LOCALAPPDATA) is not a secret name.
+        env["ANTHROPIC_BASE_URL"] = "%LOCALAPPDATA%"
+        (self.fleet / "paseo-providers.json").write_text(json.dumps(catalog))
+        self.env["LOCALAPPDATA"] = str(self.root / "appdata")
+        code, out = self.run_sync("--host", "laptop")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.config("laptop")["agents"]["providers"]["claude"]["env"]["ANTHROPIC_BASE_URL"],
+                         self.env["LOCALAPPDATA"])
+
     def test_relay_waits_for_the_prompt_before_one_send(self):
         (self.root / "quiet-captures").write_text("4")
         code, out = self.run_sync("--host", "tablet")
