@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -10,8 +11,11 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills/orchestration/opc/scripts"
 
 
-def run(*args, cwd=None):
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=60)
+def run(*args, cwd=None, env=None):
+    return subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, timeout=60)
+
+
+CATALOG = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptionIds": ["medium", "high", "xhigh"]}]
 
 
 class OpcDeliveryTest(unittest.TestCase):
@@ -64,6 +68,71 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertIn("task lock busy", done.stdout, done.stderr)
         self.assertEqual(lock.read_text(), str(os.getpid()))
         self.assertEqual(sorted(p.name for p in lock.parent.iterdir() if ".lock" in p.name), [lock.name])
+
+    def test_recorded_route_reads_and_updates_after_class_table_change(self):
+        root = Path(self.task).parent.parent
+        (root / "catalog.json").write_text(json.dumps(CATALOG))
+        recorded = run("node", str(SCRIPTS / "route.mjs"), "--class", "code", "--catalog", str(root / "catalog.json"),
+                       "--pq-file", str(root / "no-pq.json"), "--task", self.task, "--lane", "code-lane")
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        # An alternate table: the same scripts with the code class fixed at a level the record does not carry.
+        changed = root / "changed"
+        shutil.copytree(SCRIPTS, changed)
+        routing = changed / "agent-routing.mjs"
+        effort = json.loads(recorded.stdout)["route"]["effort"]
+        level = "medium" if effort != "medium" else "high"
+        text, count = re.subn(r"^  code: workerClass\(.*$", f"  code: workerClass('Opus', '{level}', null),", routing.read_text(), flags=re.M)
+        self.assertEqual(count, 1)
+        routing.write_text(text)
+        done = run("node", "--input-type=module", "-e", f"""
+            import {{ readTask, updateTask }} from {json.dumps((changed / 'task-state.mjs').as_uri())};
+            const path = {json.dumps(self.task)};
+            const read = readTask(path).routes['code-lane'].route.effort;
+            const updated = updateTask(path, task => {{ task.tests = null; }}).routes['code-lane'].route.effort;
+            console.log(JSON.stringify([read, updated]));
+        """)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), [effort, effort])
+
+    def test_cloud_fallback_on_cloud_lane_records_local_route_atomically(self):
+        root = Path(self.task).parent.parent
+        home = root / "home"
+        home.mkdir()
+        env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+        (root / "catalog.json").write_text(json.dumps(CATALOG))
+        (root / "facts.json").write_text(json.dumps({"githubRemote": True, "claudeAppInstalled": True, "selfContained": True,
+                                                     "authStatus": {"authMethod": "claude.ai"}}))
+        route = ("node", str(SCRIPTS / "route.mjs"), "--catalog", str(root / "catalog.json"), "--pq-file", str(root / "no-pq.json"),
+                 "--task", self.task)
+        cloud = run(*route, "--class", "code", "--cloud-facts", str(root / "facts.json"), "--lane", "fix-auth", env=env)
+        self.assertEqual(cloud.returncode, 0, cloud.stderr)
+        cloud_route = json.loads(cloud.stdout)["route"]
+        self.assertEqual(cloud_route["model"], "claude-opus-5-5[1m]")
+        # A taken fallback lane makes the route write fail, which must leave cloud.fallback unwritten too.
+        done = run("node", "--input-type=module", "-e", f"""
+            import {{ recordCloudLaunch }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
+            import {{ recordWorkerRoute }} from {json.dumps((SCRIPTS / 'route.mjs').as_uri())};
+            import {{ updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            const path = {json.dumps(self.task)};
+            recordWorkerRoute(path, {{ lane: 'taken-fallback', reason: 'owner-named, never adjusted',
+              route: {{ role: 'worker', source: 'owner-explicit', model: 'fleet/claude-opus-5-5', effort: 'high', fastMode: false }} }});
+            recordCloudLaunch(path, {{ sessionId: 'session_example', url: 'https://example.invalid/session', branch: 'opc/fix-auth',
+              repo: 'example/app', launchedAt: '2026-01-01T00:00:00.000Z' }});
+            updateTask(path, task => {{ task.cloud.status = 'dead'; task.cloud.reason = 'session page shows failure'; }});
+        """)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        clash = run(*route, "--cloud-fallback", "--lane", "taken", env=env)
+        self.assertIn("lane taken-fallback already has a recorded route", clash.stderr)
+        self.assertIsNone(json.loads(Path(self.task).read_text())["cloud"]["fallback"])
+        fallback = run(*route, "--cloud-fallback", "--lane", "fix-auth", env=env)
+        self.assertEqual(fallback.returncode, 0, fallback.stderr)
+        result = json.loads(fallback.stdout)
+        self.assertEqual((result["lane"], result["route"]["source"], result["route"]["model"]),
+                         ("fix-auth-fallback", "task-default", "fleet/claude-opus-5-5"))
+        task = json.loads(Path(self.task).read_text())
+        self.assertEqual(task["cloud"]["fallback"]["route"], result["route"])
+        self.assertEqual(task["routes"]["fix-auth-fallback"]["route"], result["route"])
+        self.assertEqual(task["routes"]["fix-auth"]["route"], cloud_route)
 
 
 if __name__ == "__main__":

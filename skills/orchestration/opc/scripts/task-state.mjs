@@ -2,11 +2,10 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, linkSync, lstatSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { FIXED_ROLE_ROUTES, validateRoleRoute } from './agent-routing.mjs';
+import { validateRecordedWorkerRoute } from './agent-routing.mjs';
 
-const plannerFallback = FIXED_ROLE_ROUTES.planner_fallback;
-// Fallback rounds recorded before Opus replaced Fable keep their recorded route.
-const fallbackEfforts = { [plannerFallback.label]: plannerFallback.effort, Fable: 'high' };
+// Recorded routes and planner rounds are checked for shape only; the routing tables apply once, when they are recorded.
+const efforts = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 const identity = task => JSON.stringify([
   task.schema, task.id, task.owner, task.repository, task.contract_version, task.delivery, task.browser_review, task.ui ?? false,
@@ -49,7 +48,7 @@ function validateWorker(worker, task) {
   if (typeof worker !== 'object' || worker.run_id !== task.id || worker.owner !== task.owner ||
       !['running', 'finished', 'blocked'].includes(worker.status) || !Array.isArray(worker.turns) ||
       worker.route_source !== 'owner-explicit' || typeof worker.model !== 'string' || !worker.model ||
-      !['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(worker.effort) ||
+      !efforts.includes(worker.effort) ||
       typeof worker.fast_mode !== 'boolean' ||
       (worker.native_authorization != null && worker.native_authorization !== 'owner-explicit')) {
     throw Error('invalid Worker record');
@@ -75,7 +74,7 @@ function validatePlanner(planner) {
   const ids = new Set(), agents = new Set();
   for (const [index, round] of planner.rounds.entries()) {
     if (!object(round) || !uuid(round.id) ||
-        !(catalogRound(round, 'Web Pro', 'planner') || Object.keys(fallbackEfforts).some(label => catalogRound(round, label, 'planner_fallback')) ||
+        !(catalogRound(round, 'Web Pro', 'planner') || (text(round.catalog_label) && catalogRound(round, round.catalog_label, 'planner_fallback')) ||
           (round.role === undefined && ['codex/chatgpt-web/pro', 'claude/claude-fable-5-1[1m]'].includes(round.provider))) ||
         !['launching', 'running', 'uncertain', 'failed', 'planned'].includes(round.status)) {
       throw Error('invalid planner round');
@@ -84,7 +83,7 @@ function validatePlanner(planner) {
     ids.add(round.id);
     if (round.role === 'planner' || round.provider === 'codex/chatgpt-web/pro') {
       if (index !== 0 || Object.hasOwn(round, 'effort')) throw Error('invalid Pro planner route');
-    } else if (index !== 1 || round.effort !== fallbackEfforts[round.catalog_label ?? 'Fable'] ||
+    } else if (index !== 1 || !efforts.includes(round.effort) ||
         planner.rounds[0]?.status !== 'failed' || authorization?.after_round !== planner.rounds[0].id) {
       throw Error('planner fallback requires recorded explicit owner yes after Pro failure');
     }
@@ -179,7 +178,8 @@ function validateCloud(cloud) {
   }
 }
 
-// Recorded Worker routes, one per lane: the resolved route and its one-line reason, kept through repairs and resumes.
+// Recorded Worker routes, one per lane: the resolved route and its one-line reason, kept through repairs and resumes
+// even after a routing class changes.
 function validateRoutes(routes) {
   if (routes == null) return;
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -191,7 +191,7 @@ function validateRoutes(routes) {
         typeof entry.recorded_at !== 'string' || Number.isNaN(Date.parse(entry.recorded_at))) {
       throw Error(`invalid Worker route record for lane ${lane}`);
     }
-    validateRoleRoute('worker', entry.route);
+    validateRecordedWorkerRoute(entry.route);
   }
 }
 

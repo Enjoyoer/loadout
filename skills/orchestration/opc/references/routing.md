@@ -6,7 +6,7 @@ An owner-named model, effort, or Fast wins and is never adjusted. Otherwise pick
 
 `node scripts/route.mjs --class <class> [--cloud-facts FILE] [--task TASK_JSON --lane SLUG]`
 
-It prints one JSON object, `{route, reason}`. Add `--owner-model ID --owner-effort LEVEL [--owner-fast on|off]` for an owner-named route, `--pq-file FILE` to read a saved `pq --json` output, and `--catalog FILE` for saved Pi catalog rows (default: `paseo provider models pi --json`). With `--task` and `--lane` it records `{route, reason}` in the task's `routes` and returns an already recorded lane unchanged, so repairs and resumes keep their route. Pass `route` unchanged to `buildManagedWorkerRequest` and `reason` to `buildDelegatedBrief`. Kinds outside the table go to the owner.
+It prints one JSON object, `{route, reason}`. Add `--owner-model ID --owner-effort LEVEL [--owner-fast on|off]` for an owner-named route, `--pq-file FILE` to read a saved `pq --json` output, and `--catalog FILE` for saved Pi catalog rows (default: `paseo provider models pi --json`). With `--task` and `--lane` it records `{route, reason}` in the task's `routes` and returns an already recorded lane unchanged, so repairs and resumes keep their route. A new route is checked against the class table once, when it is recorded; later reads check only its shape, so a later class change never strands a task. Pass `route` unchanged to `buildManagedWorkerRequest` and `reason` to `buildDelegatedBrief`. Kinds outside the table go to the owner.
 
 ## Classes
 
@@ -35,7 +35,7 @@ UI work runs only on Opus xhigh, Fast off. The `ui` class resolves to an owner-e
 
 ## Cloud lane
 
-For `code`, check the [cloud lane](cloud-lane.md "branch:cloud") first: pass `--cloud-facts` with the `checkCloudEligibility` facts, or `cloud: {toggle, eligibility}` to `resolveWorkerRoute`. An eligible lane gets the cloud route. Otherwise the local route applies, and the reason says why the cloud lane was not used. After a dead cloud lane, `resolveCloudFallback` (or `--cloud-fallback`) gives its one local fallback Worker that same local route.
+For `code`, check the [cloud lane](cloud-lane.md "branch:cloud") first: pass `--cloud-facts` with the `checkCloudEligibility` facts, or `cloud: {toggle, eligibility}` to `resolveWorkerRoute`. An eligible lane gets the cloud route. Otherwise the local route applies, and the reason says why the cloud lane was not used. After a dead cloud lane, `resolveCloudFallback` (or `--cloud-fallback`) gives its one local fallback Worker that same local route, recorded under the lane `<slug>-fallback`.
 
 ## Pace
 
@@ -63,7 +63,7 @@ Some stale accounts still adjust, and the reason shows "N of M stale".
 
 ## Settings
 
-The optional owner file `~/.config/opc/routing.json` tunes `behindPoints` (default 10), `aheadPoints` (10), `resetSoonHours` (24), `resetSoonLeftPct` (15), `fiveHourNoUpPct` (75), `fiveHourDownPct` (90), and `pq`. `pq` is an argv array, default `["~/.local/bin/pq", "--json"]`; a leading `~` in its first element is expanded. A host without pq can name another host, for example `["ssh", "<alias>", "~/.local/bin/pq", "--json"]`. pq runs without a shell and has 15 seconds to answer. Unknown keys and bad values stop routing with an error.
+The optional owner file `~/.config/opc/routing.json` tunes `behindPoints` (default 10), `aheadPoints` (10), `resetSoonHours` (24), `resetSoonLeftPct` (15), `fiveHourNoUpPct` (75), `fiveHourDownPct` (90), and `pq`. `pq` is an argv array, default `["~/.local/bin/pq", "--json"]`; a leading `~` in its first element is expanded. A host without pq can name another host, for example `["ssh", "<alias>", "~/.local/bin/pq", "--json"]`. pq runs without a shell and has 15 seconds to answer. A file with unknown keys or bad values is ignored: the defaults apply and the reason names the error, for example `routing.json invalid (unknown key x), defaults used`. Fixed classes, `ui`, and the planner never read this file or the quota.
 
 ## Errors
 
