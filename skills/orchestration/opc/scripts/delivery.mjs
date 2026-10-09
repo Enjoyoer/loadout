@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { assertRepository, git, gitEnvironment, readTask, updateTask } from './task-state.mjs';
+import { assertRepository, git, gitEnvironment, processAlive, readTask, updateTask } from './task-state.mjs';
 import { requireReviewDelivery } from './web-reviewer.mjs';
 
 // Receipts are convenient bookkeeping, not a security boundary against trusted Workers.
@@ -29,21 +29,31 @@ function idle(task) {
   if(task.status === 'cancelled' || task.worker?.status === 'running' || task.tests?.status === 'running') throw Error('task is cancelled or busy');
   if(task.merge?.status === 'pending') throw Error('merge uncertain; reconcile live GitHub state before further work');
 }
+// Only the recorded process clears 'running'; once it is gone the run was interrupted.
+export function recoverTests(taskPath) {
+  const stale=t=>t.tests?.status==='running'&&!processAlive(t.tests.pid);
+  if(!stale(readTask(taskPath)))return null;
+  return updateTask(taskPath,t=>{if(stale(t))t.tests={...t.tests,status:'failed',reason:'interrupted'};}).tests;
+}
 export async function runTests(taskPath, {argv}) {
   if(!Array.isArray(argv) || !argv.length || argv.some(a=>typeof a !== 'string') || !argv[0]) throw Error('test argv required');
+  recoverTests(taskPath);
   const task=readTask(taskPath); idle(task);
   const source=sourceIdentity(task);
-  updateTask(taskPath,t=>{idle(t);t.tests={...source,argv,status:'running'};});
-  let code;
+  updateTask(taskPath,t=>{idle(t);t.tests={...source,argv,status:'running',pid:process.pid,started_at:new Date().toISOString()};});
+  let code,child,signal=null;
+  const stop=name=>{signal??=name;child?.kill(name);};
+  for(const name of ['SIGINT','SIGTERM'])process.on(name,stop);
   try {
     code=await new Promise((resolve,reject)=>{
-      const child=spawn(argv[0],argv.slice(1),{cwd:task.repository.working_directory,env:gitEnvironment(),stdio:'inherit'});
+      child=spawn(argv[0],argv.slice(1),{cwd:task.repository.working_directory,env:gitEnvironment(),stdio:'inherit'});
       child.once('error',reject); child.once('close',code=>resolve(code));
     });
   } catch(error) {
     updateTask(taskPath,t=>{t.tests.status='failed';});
     throw error;
-  }
+  } finally { for(const name of ['SIGINT','SIGTERM'])process.off(name,stop); }
+  if(signal)return updateTask(taskPath,t=>{t.tests={...source,argv,status:'blocked',reason:'interrupted',signal,exit_code:code};}).tests;
   const unchanged=same(source,sourceIdentity(readTask(taskPath)));
   return updateTask(taskPath,t=>{t.tests={...source,argv,status:code===0&&unchanged?'passed':'failed',exit_code:code};}).tests;
 }
@@ -53,7 +63,7 @@ function repositoryName(remote) {
   return name;
 }
 function github(args) {
-  const output=execFileSync('gh',args,{encoding:'utf8',env:gitEnvironment(),maxBuffer:8*1024*1024});
+  const output=execFileSync('gh',args,{encoding:'utf8',env:gitEnvironment(),maxBuffer:8*1024*1024,timeout:120000});
   return args[0]==='api'?JSON.parse(output):output;
 }
 function pull(task,number,query) {
@@ -138,8 +148,8 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).hr
     if(command==='test')result=await runTests(path,{argv:args});
     else if(command==='verify')result=verifyDelivery(path,{pr:Number(args[0])});
     else if(command==='merge')result=mergeDelivery(path,{pr:Number(args[0])});
-    else if(command==='reconcile')result=reconcileMerge(path);
-    else throw Error('usage: delivery.mjs test <task.json> <executable> [args...] | verify <task.json> <PR> | merge <task.json> <PR> | reconcile <task.json>');
+    else if(command==='reconcile')result=recoverTests(path)??reconcileMerge(path);
+    else throw Error('usage: delivery.mjs test <task.json> <executable> [args...] | verify <task.json> <PR> | merge <task.json> <PR> | reconcile <task.json> (interrupted tests, then merge)');
     console.log(JSON.stringify(result));
     if(['failed','blocked','pending'].includes(result.status))process.exitCode=1;
   } catch(error){console.error(error.message);process.exitCode=1;}

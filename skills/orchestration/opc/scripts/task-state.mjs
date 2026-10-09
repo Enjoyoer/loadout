@@ -28,6 +28,12 @@ export function canonicalPath(value) {
   return value;
 }
 
+// Signal 0 only probes existence; EPERM means the process exists under another user.
+export function processAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid < 1) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
+}
+
 export function within(child, parent) {
   const path = relative(parent, child);
   return !path || (path !== '..' && !path.startsWith('../') && !path.startsWith('..\\') && !isAbsolute(path));
@@ -257,6 +263,13 @@ export function updateTask(taskPath, mutator) {
       break;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
+      // A lock whose owner died is stale. An empty lock is still being written, so it is never stale.
+      let owner = '';
+      try { owner = readFileSync(lock, 'utf8').trim(); } catch (readError) { if (readError.code !== 'ENOENT') throw readError; }
+      if (/^\d+$/.test(owner) && !processAlive(Number(owner))) {
+        try { unlinkSync(lock); } catch (unlinkError) { if (unlinkError.code !== 'ENOENT') throw unlinkError; }
+        continue;
+      }
       if (Date.now() >= deadline) throw Error('task lock busy; do not remove ownership-uncertain lock');
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
     }
