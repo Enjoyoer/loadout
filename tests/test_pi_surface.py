@@ -269,8 +269,8 @@ server.close();
 import assert from 'node:assert/strict';
 const after=await import(process.argv[1]);
 // Historical rule choices before the surface change; scout now follows catalog churn.
-const baseline={scout:{model:'gpt-5.6-luna',effort:'max',fastMode:true,label:'Luna'},planner:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'},reviewer:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'},planner_fallback:{model:'claude-fable-5-1[1m]',effort:'high',fastMode:false,label:'Fable'}};
-const source=[['gpt-6-astra','Astra'],['gpt-6.1-sol','Sol'],['gpt-6-luna','Luna'],['chatgpt-web/extra-high','Web Extra'],['chatgpt-web/pro','Web Pro'],['claude-fable-5-1[1m]','Fable']].map(([id,label])=>({id,label,thinkingOptions:['low','medium','high','xhigh','max'].map(id=>({id}))}));
+const baseline={scout:{model:'gpt-5.6-luna',effort:'max',fastMode:true,label:'Luna'},planner:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'},reviewer:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'},planner_fallback:{model:'claude-opus-5-5[1m]',effort:'xhigh',fastMode:false,label:'Opus'}};
+const source=[['gpt-6-astra','Astra'],['gpt-6.1-sol','Sol'],['gpt-6-luna','Luna'],['chatgpt-web/extra-high','Web Extra'],['chatgpt-web/pro','Web Pro'],['claude-fable-5-1[1m]','Fable'],['claude-opus-5-5[1m]','Opus']].map(([id,label])=>({id,label,thinkingOptions:['low','medium','high','xhigh','max'].map(id=>({id}))}));
 const catalog=source.map(row=>({...row,id:'route/'+row.id}));
 let count=0;
 for(const [role,before] of Object.entries(baseline)){
@@ -319,21 +319,23 @@ const workspace={workspaceId:'wks-example',cwd:'/tmp/example-worktree'};
 const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:'lane',title:'Worker',initialPrompt:'Do it',workspace,capabilities:piCaps,...extra});
 const plain=value=>JSON.parse(JSON.stringify(value));
 // Fixed role routes are unchanged; Worker defaults are frozen catalog labels.
-assert.deepEqual(plain(r.FIXED_ROLE_ROUTES),{scout:{label:'Luna',fallbackProvider:'codex',effort:'max',fastMode:true},planner:{label:'Web Pro',fallbackProvider:'codex',effort:null,fastMode:false},planner_fallback:{label:'Fable',fallbackProvider:'claude',effort:'high',fastMode:false},reviewer:{label:'Web Pro',fallbackProvider:'codex',effort:null,fastMode:false}});
-assert.deepEqual(plain(r.WORKER_DEFAULT_ROUTES),{code:{label:'Opus',effort:'xhigh',fastMode:false},browser:{label:'Sol',effort:'medium',fastMode:false}});
+assert.deepEqual(plain(r.FIXED_ROLE_ROUTES),{scout:{label:'Luna',fallbackProvider:'codex',effort:'max',fastMode:true},planner:{label:'Web Pro',fallbackProvider:'codex',effort:null,fastMode:false},planner_fallback:{label:'Opus',fallbackProvider:'claude',effort:'xhigh',fastMode:false},reviewer:{label:'Web Pro',fallbackProvider:'codex',effort:null,fastMode:false}});
+const cls=(label,effort,range,fastMode=false)=>({label,effort,range,fastMode});
+assert.deepEqual(plain(r.WORKER_DEFAULT_ROUTES),{code:cls('Opus','xhigh',['high','xhigh']),'code-bounded':cls('Opus','high',['medium','xhigh']),'test-fix':cls('Opus','high',['medium','xhigh']),'review-critical':cls('Opus','xhigh',['high','xhigh']),'review-general':cls('Opus','high',['medium','xhigh']),automation:cls('Opus','xhigh',['high','xhigh']),browser:cls('Sol','medium',['medium','high'],true),research:cls('Luna','xhigh',['medium','xhigh'],true),mechanical:cls('Opus','medium',null),smoke:cls('Sonnet','low',null),watcher:cls('Luna','xhigh',null,true)});
+const unread=pool=>({pool,step:0,weekly:null,stale:'no quota reading supplied',gapPct:null,fiveHourUsedPct:null,resetSoon:null,accounts:null,staleAccounts:null,ageSeconds:null});
 assert(Object.isFrozen(r.WORKER_DEFAULT_ROUTES)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.code)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.browser));
 // Code default: Opus at xhigh, Fast off, on Pi, recorded as a task default.
 const code=r.selectWorkerRoute({taskKind:'code',catalog});
-assert.deepEqual(plain(code),{role:'worker',source:'task-default',kind:'code',model:'fleet/claude-opus-5-5',effort:'xhigh',fastMode:false});
+assert.deepEqual(plain(code),{role:'worker',source:'task-default',kind:'code',model:'fleet/claude-opus-5-5',effort:'xhigh',fastMode:false,pace:unread('claude'),reason:'code default xhigh, no adjustment, no quota reading supplied'});
 const codeReq=build({route:code});
 assert.equal(codeReq.request.provider,'pi/fleet/claude-opus-5-5');assert.deepEqual(codeReq.request.settings,{thinkingOptionId:'xhigh'});
 assert.equal(codeReq.request.labels['opc.route-source'],'task-default');
 for(const key of ['opc.service-tier','opc.fast-requested'])assert.equal(key in codeReq.request.labels,false);
 assert.equal(r.resolveAgentSurface('worker',{taskKind:'code'},catalog).provider,'pi/fleet/claude-opus-5-5');
 assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/claude-opus-5-5; effort=xhigh; Fast=off/);
-// Browser default: Sol at medium, Fast off.
+// Browser default: Sol at medium, Fast on.
 const browser=r.selectWorkerRoute({taskKind:'browser',catalog:{pi:catalog}});
-assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'fleet/gpt-6.1-sol',effort:'medium',fastMode:false});
+assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'fleet/gpt-6.1-sol',effort:'medium',fastMode:true,pace:unread('codex'),reason:'browser default medium, no adjustment, no quota reading supplied'});
 const browserReq=build({route:browser});
 assert.equal(browserReq.request.provider,'pi/fleet/gpt-6.1-sol');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'medium'});
 assert.equal(r.resolveAgentSurface('worker',{taskKind:'browser'},catalog).effort,'medium');
@@ -444,13 +446,13 @@ try{
  git('init','-q','-b','main');git('config','user.name','Test');git('config','user.email','test@example.test');git('remote','add','origin','https://github.com/example/project.git');fs.writeFileSync(path.join(repo,'seed'),'seed');git('add','.');git('commit','-qm','seed');
  const state=await import(process.argv[1]);const planner=await import(process.argv[2]);const {taskPath}=state.createTask({workingDirectory:repo,runDirectory:run,owner:'test'});
  const contextPack=Object.fromEntries(['outcome','scope','constraints','exploration','ambiguities','checks'].map(k=>[k,'test '+k]));
- const capabilities={enabled:true,status:'available',modes:[],models:[{id:'fleet/web-current',label:'Web Pro'},{id:'fleet/fable-current',label:'Fable',thinkingOptions:[{id:'high'}]}]};
+ const capabilities={enabled:true,status:'available',modes:[],models:[{id:'fleet/web-current',label:'Web Pro'},{id:'fleet/opus-current',label:'Opus',thinkingOptions:[{id:'xhigh'}]}]};
  const prepared=planner.preparePlannerLaunch(taskPath,{contextPack,capabilities});assert.equal(prepared.request.provider,'pi/fleet/web-current');assert.equal(prepared.request.settings.modeId,undefined);
  assert.equal(state.readTask(taskPath).planner.rounds[0].catalog_label,'Web Pro');
  planner.recordPlannerLaunchFailure(taskPath,{roundId:prepared.round.id,error:'controlled failure',terminal:true});
  assert.throws(()=>planner.preparePlannerLaunch(taskPath,{contextPack,capabilities}),/explicit owner yes/);
  planner.authorizePlannerFallback(taskPath,{answer:'yes'});
- const fallback=planner.preparePlannerLaunch(taskPath,{contextPack,capabilities});assert.equal(fallback.request.provider,'pi/fleet/fable-current');assert.equal(fallback.request.settings.thinkingOptionId,'high');
+ const fallback=planner.preparePlannerLaunch(taskPath,{contextPack,capabilities});assert.equal(fallback.request.provider,'pi/fleet/opus-current');assert.equal(fallback.request.settings.thinkingOptionId,'xhigh');
  assert.equal(state.readTask(taskPath).planner.rounds[1].role,'planner_fallback');
 }finally{fs.rmSync(base,{recursive:true,force:true});}
 """

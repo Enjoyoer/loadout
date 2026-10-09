@@ -1,6 +1,6 @@
 # Recovery and cancellation
 
-Inspect the failed component: Worker execution separately from controller/messaging health, page loading separately from authentication. Preserve existing state. A lost message or unknown/still-running launch never authorizes replacement; slow loading alone does not justify restart or another login. Never bypass a human challenge.
+Inspect the failed component: Worker execution separately from controller/messaging health, page loading separately from authentication. A network or proxy error (`Connection error`, 502 `backend unavailable`) is retried on the same route with a continue follow-up to the same Worker; it never changes model or effort. Rate limits and real launch failures still stop the lane. Preserve existing state. A lost message or unknown/still-running launch never authorizes replacement; slow loading alone does not justify restart or another login. Never bypass a human challenge.
 
 For managed Workers, call `cancel_agent({agentId})` on the recorded identity and confirm the owned run stopped through Paseo. Retain workspace and commits for integration or explicit abandonment under [cleanup](worktree-lifecycle.md "runtime"). Cancellation alone does not authorize archival.
 

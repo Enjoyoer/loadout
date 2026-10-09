@@ -25,8 +25,9 @@ const repoPattern = new RegExp(`^${repoPart}/${repoPart}$`);
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const minutes = (from, to) => (Date.parse(to) - Date.parse(from)) / 60000;
 
+// Missing means default: on for eligible code-class Workers only. on covers any eligible editing class; off disables.
 export function readCloudToggle({ path = defaultTogglePath() } = {}) {
-  if (!existsSync(path)) return 'off';
+  if (!existsSync(path)) return 'default';
   const value = readFileSync(path, 'utf8').trim();
   if (value !== 'on' && value !== 'off') throw Error(`cloud toggle must contain on or off: ${path}`);
   return value;
@@ -83,9 +84,13 @@ export function checkCloudEligibility({ githubRemote, claudeAppInstalled, selfCo
   return Object.freeze({ eligible: reasons.length === 0, reasons });
 }
 
-// The toggle is the owner's standing explicit Worker route choice; off or ineligible means ask as usual.
-export function resolveCloudWorkerRoute({ toggle, eligibility }) {
-  if (toggle !== 'on' || eligibility?.eligible !== true) return null;
+// The toggle is the owner's standing explicit Worker route choice; off, ineligible, or another class returns null
+// and the task takes its local route. A class-less call with the toggle on is the PM's own editing-lane judgment.
+export const CLOUD_EDITING_CLASSES = Object.freeze(['code', 'code-bounded', 'test-fix', 'mechanical', 'automation']);
+export function resolveCloudWorkerRoute({ toggle, eligibility, taskClass = null }) {
+  if (!['on', 'off', 'default'].includes(toggle)) throw Error('cloud toggle must be on, off, or default');
+  if (toggle === 'off' || eligibility?.eligible !== true) return null;
+  if (toggle === 'default' ? taskClass !== 'code' : taskClass != null && !CLOUD_EDITING_CLASSES.includes(taskClass)) return null;
   return Object.freeze({ role: 'worker', source: 'owner-explicit', ...CLOUD_ROUTE });
 }
 
@@ -263,7 +268,7 @@ function pushToFleet(fleet, args) {
 function main(argv) {
   const [state, ...rest] = argv;
   const flag = name => { const i = rest.indexOf(name); return i === -1 ? null : rest[i + 1]; };
-  if (state === 'status') { console.log(`${readCloudToggle()}; repos: ${[...readCloudRepos()].join(', ') || 'none'}`); return; }
+  if (state === 'status') { console.log(`${readCloudToggle().replace(/^default$/, 'default (code class only)')}; repos: ${[...readCloudRepos()].join(', ') || 'none'}`); return; }
   if (state === 'allow' || state === 'disallow') {
     console.log(`local repos: ${[...setCloudRepo(rest[0], state === 'allow')].join(', ') || 'none'}`);
     pushToFleet(flag('--fleet'), [state, rest[0]]);
