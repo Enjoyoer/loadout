@@ -4,6 +4,9 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ## Unreleased
 
+### Changed
+- `frontend-design` is now Anthropic's official frontend-design skill, copied unmodified from the official Claude Code plugin; the skill name is unchanged.
+
 ### Added
 - `pm-native-worker-guard`, a dry-run-first Paseo plugin that stops and archives native Codex or Claude Code agents created by a PM and tells the PM to use the Pi provider, with an owner allowlist.
 
