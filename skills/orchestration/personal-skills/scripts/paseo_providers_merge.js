@@ -30,7 +30,11 @@ try {
     const runtimeRoot = expand(p.pi.root);
     if (!p.dry_run) {
       const env={...process.env};for(const key of ['PASEO_HOME','PASEO_HOST','PASEO_AGENT_ID','PASEO_AGENT_CWD']) delete env[key];
-      const status=spawnSync('paseo',['daemon','status','--json'],{env,encoding:'utf8'});
+      // Windows ships the CLI as an npm .cmd shim, which only runs through a shell. The command is a
+      // constant; one string avoids Node's DEP0190 warning for args with shell:true.
+      const status=process.platform==='win32'
+        ? spawnSync('paseo daemon status --json',{env,encoding:'utf8',shell:true})
+        : spawnSync('paseo',['daemon','status','--json'],{env,encoding:'utf8'});
       const daemon=status.status===0 ? JSON.parse(status.stdout) : {};
       // >=0.10.3 <0.12.0, release versions only.
       const m=/^(\d+)\.(\d+)\.(\d+)$/.exec(typeof daemon.daemonVersion==='string'?daemon.daemonVersion:'');
