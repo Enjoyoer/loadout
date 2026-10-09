@@ -71,6 +71,8 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     terminal = true,
     attemptedAt?: string,
   ) => {
+    // After a reload the old instance must not race the new instance's writes to the same state file.
+    if (stopped) return;
     await store.append({
       key: stateKey(checkpoint, terminal),
       agentId: checkpoint.agentId,
@@ -201,7 +203,10 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         const windowMs = config.compactionWindowMinutes * 60_000;
         const sentAt = Date.now();
         await handle.send(COMMAND);
-        await handle.waitForFinish(windowMs);
+        const finished = await handle.waitForFinish(windowMs);
+        if (finished.status !== "idle") {
+          log("wait-for-finish", { agentId: checkpoint.agentId, status: finished.status, error: finished.error, strictnessTier: tier });
+        }
         const observed = await compactionResult(handle.timeline, afterSeq, lifetime.signal, Math.max(0, windowMs - (Date.now() - sentAt)));
         if (observed === "unconfirmed") {
           // No completed row and no error by the end of the window. Backed off like a failure, but not reported as one.
@@ -214,6 +219,10 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         void metrics.append({ event: "compacted", agentId: checkpoint.agentId, provider: agent.provider, model: agent.model ?? null, usage: agent.lastUsage ?? null });
         log("compacted", { agentId: checkpoint.agentId, reason: decision.reason, command: COMMAND, strictnessTier: tier });
       } catch (error) {
+        if (stopped) {
+          log("compaction-abandoned", { agentId: checkpoint.agentId, reason: `plugin stopped: ${safeError(error)}`, strictnessTier: tier });
+          return;
+        }
         await record(checkpoint, "compaction-failed", safeError(error), config, true, attemptedAt);
         log("compaction-failed", { agentId: checkpoint.agentId, reason: safeError(error), strictnessTier: tier });
       }

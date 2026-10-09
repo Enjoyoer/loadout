@@ -7,8 +7,10 @@ A project is orphaned only when both hold at evaluation time:
 
 1. it has zero active (non-archived) workspaces, joined on `projectId`, and
 2. its `projectRootPath` no longer exists on disk (`lstat` fails with `ENOENT`/`ENOTDIR`),
-   while its parent directory (and, on Windows, its drive root) still exists. A root on an
-   unmounted or late-mounting volume is skipped as `parent-missing`, never deleted.
+   while its parent directory (and, on Windows, its drive root) still exists and is not empty.
+   A root on an unmounted or late-mounting volume is skipped as `parent-missing`, never deleted.
+   An unmounted volume usually leaves its mount point as an empty directory, so an empty parent
+   counts as absent.
 
 It defaults to dry-run until `armed` is exactly `true`. It removes Paseo bookkeeping,
 never git branches or repository/worktree directories. The daemon also removes the

@@ -74,3 +74,44 @@ it("opens a fresh daemon client on the sweep after the cached client's transport
     await rm(home, { recursive: true, force: true });
   }
 });
+
+it("leaves the record parked when the send fails because the transport is not connected", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-send-"));
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  const originalLog = console.log;
+  const logs: string[] = [];
+  console.log = (line: string) => { logs.push(line); };
+  try {
+    const config = ConfigSchema.parse({ armed: true });
+    // Detected six hours ago, so the five-hour usage record is due on the first sweep.
+    const record = buildRecord(agent, "out of credits", undefined, config, Date.now() - 6 * 3600_000, "turn-1")!;
+    await new ResumeStore().upsert(record);
+    let sends = 0;
+    const open = async () => ({
+      getConnectionState: () => ({ status: "connected" }),
+      close: async () => undefined,
+      agents: { ref: () => ({
+        refresh: async () => ({ agent }),
+        send: async () => { sends += 1; throw new Error("Transport not connected (status: disconnected)"); },
+      }) },
+    } as unknown as PaseoClient);
+    const server = {
+      registerSettings: () => ({ read: async () => ({ status: "ready", revision: "r1", values: config }) }),
+      on: () => () => undefined,
+    } as unknown as PluginServerContext;
+    const cleanup = contribute(server, open);
+    await until(() => logs.some((line) => line.includes("send-deferred")));
+    (cleanup as () => void)();
+    assert.equal(sends, 1);
+    const [stored] = await new ResumeStore().read();
+    assert.equal(stored?.state, "parked");
+    assert.equal(stored?.terminalReason, null);
+    assert.deepEqual(stored?.attempts, []);
+  } finally {
+    console.log = originalLog;
+    if (previousHome === undefined) delete process.env.PASEO_HOME;
+    else process.env.PASEO_HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  }
+});

@@ -1,4 +1,4 @@
-import { lstat, stat } from "node:fs/promises";
+import { lstat, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { withDaemon, type DaemonClient } from "./daemon.ts";
 import { readConfig, type SweeperConfig } from "./config.ts";
@@ -47,17 +47,26 @@ async function inspectPath(target: string): Promise<PathState> {
 
 /**
  * A missing root only counts as orphaned when its parent directory (and, on Windows,
- * its drive root) is present, so an unmounted or late-mounting volume deletes nothing.
+ * its drive root) is present and not empty, so an unmounted or late-mounting volume deletes nothing.
+ * An unmounted volume leaves its mount point behind as an empty directory (Linux, and custom mount
+ * points on macOS). Comparing st_dev cannot catch that: an unmounted mount point is an ordinary
+ * directory on its parent's device, and st_dev only differs while the volume is mounted.
  */
 async function findMissingContainer(target: string): Promise<{ dir: string; error: string } | null> {
-  const dirs = [path.dirname(target)];
+  const parent = path.dirname(target);
+  const dirs = [parent];
   if (process.platform === "win32") dirs.unshift(path.parse(target).root);
   for (const dir of dirs) {
     try {
-      if (!(await stat(dir)).isDirectory()) return { dir, error: "not-a-directory" };
+      if (!(await stat(dir)).isDirectory()) return { dir, error: "stat=not-a-directory" };
     } catch (error) {
-      return { dir, error: (error as NodeJS.ErrnoException).code ?? String(error) };
+      return { dir, error: `stat=${(error as NodeJS.ErrnoException).code ?? String(error)}` };
     }
+  }
+  try {
+    if ((await readdir(parent)).length === 0) return { dir: parent, error: "empty-directory" };
+  } catch (error) {
+    return { dir: parent, error: `readdir=${(error as NodeJS.ErrnoException).code ?? String(error)}` };
   }
   return null;
 }
@@ -96,7 +105,7 @@ async function judge(project: ProjectRow, activeCount: number): Promise<Verdict>
   }
   const missing = await findMissingContainer(project.projectRootPath);
   if (missing) {
-    return { kind: "skip", ...base, reason: "parent-missing", detail: `dir=${quote(missing.dir)} stat=${missing.error} (volume or parent absent)` };
+    return { kind: "skip", ...base, reason: "parent-missing", detail: `dir=${quote(missing.dir)} ${missing.error} (volume or parent absent)` };
   }
   return { kind: "delete", ...base };
 }

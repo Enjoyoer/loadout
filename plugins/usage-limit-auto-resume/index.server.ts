@@ -4,10 +4,12 @@ import type { PaseoApi } from "@getpaseo/client";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
 import { openDaemonClient } from "./server/daemon.ts";
 import { afterTransientFailure, buildFailedTransientRecord, buildRecord, buildTransientRecord, failureSignature, lastUserMessage, continuationPrompt, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, shouldResume, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeRecord, type ResumeState } from "./server/model.ts";
-import { ResumeStore } from "./server/store.ts";
+import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+// Thrown before anything reaches the socket, so the message was never delivered.
+const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/.test(errorMessage(error));
 
 export default function contribute(server: PluginServerContext, openClient = openDaemonClient) {
   const settings = server.registerSettings(defineSettings({ id: SETTINGS_ID, scope: "host", version: SETTINGS_VERSION, schema: ConfigSchema }));
@@ -15,6 +17,18 @@ export default function contribute(server: PluginServerContext, openClient = ope
   let timer: NodeJS.Timeout | null = null;
   let running = false;
   let client: Awaited<ReturnType<typeof openDaemonClient>> | null = null;
+  let stateErrorLogged = false;
+
+  // An unreadable state file fails closed until the owner fixes or moves it; say so once, not on every poll or event.
+  function failed(action: string, error: unknown) {
+    if (!(error instanceof StateUnreadableError)) {
+      log(`${action} reason=${JSON.stringify(errorMessage(error))}`);
+      return;
+    }
+    if (stateErrorLogged) return;
+    stateErrorLogged = true;
+    console.error(`[usage-limit-auto-resume] state-unreadable reason=${JSON.stringify(errorMessage(error))} effect="no record is detected, resumed, or retried until the state file is fixed or moved aside"`);
+  }
 
   async function config(): Promise<Config | null> {
     const state = await settings.read();
@@ -109,6 +123,12 @@ export default function contribute(server: PluginServerContext, openClient = ope
       }));
       log(`${record.kind === "transient" ? "retry" : "resume"}-sent agentId=${record.agentId} messageId=${stableMessageId}`);
     } catch (error) {
+      if (isTransportNotConnected(error)) {
+        // Undo the claim and stay parked; the next sweep opens a fresh client.
+        await store.update(record.recordId, (value) => value.state === "resuming" ? { ...record, updatedAt: new Date().toISOString() } : value);
+        log(`send-deferred agentId=${record.agentId} recordId=${record.recordId} reason=${JSON.stringify(errorMessage(error))}`);
+        return;
+      }
       await store.update(record.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: `send:${errorMessage(error)}`, updatedAt: new Date().toISOString() }));
       log(`resume-uncertain agentId=${record.agentId} reason=${JSON.stringify(errorMessage(error))}`);
     }
@@ -165,7 +185,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
         if (latest.state === "parked") await processRecord(latest, currentConfig);
       }
     } catch (error) {
-      log(`sweep-failed reason=${JSON.stringify(errorMessage(error))}`);
+      failed("sweep-failed", error);
     } finally {
       running = false;
     }
@@ -178,7 +198,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
       if (!active || !["resuming", "verifying"].includes(active.state) || active.resumeTurnId) return;
       await store.update(active.recordId, (value) => ({ ...value, resumeTurnId: event.turnId, resumeStartedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
       log(`resume-turn-started agentId=${event.agent.id} turnId=${event.turnId}`);
-    })().catch((error) => log(`turn-started-handler-failed reason=${JSON.stringify(errorMessage(error))}`));
+    })().catch((error) => failed("turn-started-handler-failed", error));
   });
 
   const removeTurnEnded = server.on("agent.turn_ended", (event, context) => {
@@ -276,7 +296,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
       await store.upsert(record);
       log(`detected kind=${record.kind ?? "usage"} agentId=${record.agentId} recordId=${record.recordId} sourceTurnId=${record.sourceTurnId} notBefore=${record.notBefore}`);
       await sweep();
-    })().catch((error) => log(`turn-handler-failed reason=${JSON.stringify(errorMessage(error))}`));
+    })().catch((error) => failed("turn-handler-failed", error));
   });
 
   const removeArchived = server.on("agent.archived", (event) => {
@@ -286,7 +306,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
         await store.update(record.recordId, (value) => ({ ...value, state: "superseded", terminalReason: "agent-archived", updatedAt: new Date().toISOString() }));
         log(`record-superseded agentId=${event.agent.id} recordId=${record.recordId} reason=agent-archived`);
       }
-    })().catch((error) => log(`archive-handler-failed reason=${JSON.stringify(errorMessage(error))}`));
+    })().catch((error) => failed("archive-handler-failed", error));
   });
 
   const removePermission = server.on("agent.permission_requested", (event) => {
@@ -296,7 +316,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
         await store.update(active.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: "permission-requested", updatedAt: new Date().toISOString() }));
         log(`record-uncertain agentId=${event.agent.id} recordId=${active.recordId} reason=permission-requested`);
       }
-    })().catch((error) => log(`permission-handler-failed reason=${JSON.stringify(errorMessage(error))}`));
+    })().catch((error) => failed("permission-handler-failed", error));
   });
 
   // Poll even when settings are invalid or unreadable at startup; every sweep reads them again.

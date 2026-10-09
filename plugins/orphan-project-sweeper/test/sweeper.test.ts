@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { it, type TestContext } from "node:test";
@@ -12,6 +12,8 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1) {
   // All filesystem fixtures stay in this worktree's ignored dependency directory.
   const root = await mkdtemp(path.join(process.cwd(), "node_modules/sweeper-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
+  // An empty parent reads as an unmounted volume, so the parent keeps one unrelated file.
+  await writeFile(path.join(root, "keep"), "");
   let projects = Array.from({ length: count }, (_, index) => ({
     projectId: `project-${index}`, projectRootPath: path.join(root, `missing-${index}`),
     projectDisplayName: `Project ${index}`, projectKind: "directory",
@@ -160,6 +162,14 @@ it("a missing root whose parent is also missing is not orphaned", async (t) => {
   await f.sweeper.sweep();
   assert.deepEqual(f.removed, []);
   assert.ok(f.logs.some((line) => line.includes("decision=skip") && line.includes("projectId=project-0") && line.includes("reason=parent-missing")));
+});
+
+it("a missing root whose parent is an existing empty directory is not deleted", async (t) => {
+  const f = await fixture(t, { armed: true });
+  await rm(path.join(f.root, "keep"));
+  await f.sweeper.sweep();
+  assert.deepEqual(f.removed, []);
+  assert.ok(f.logs.some((line) => line.includes("decision=skip") && line.includes("projectId=project-0") && line.includes("reason=parent-missing") && line.includes("empty-directory")));
 });
 
 it("delete errors are logged without reporting successful deletion", async (t) => {
