@@ -6,7 +6,9 @@ Server-only Paseo plugin (Paseo >=0.10.3 <0.12.0) that deletes an orphaned Paseo
 A project is orphaned only when both hold at evaluation time:
 
 1. it has zero active (non-archived) workspaces, joined on `projectId`, and
-2. its `projectRootPath` no longer exists on disk (`lstat` fails with `ENOENT`/`ENOTDIR`).
+2. its `projectRootPath` no longer exists on disk (`lstat` fails with `ENOENT`/`ENOTDIR`),
+   while its parent directory (and, on Windows, its drive root) still exists. A root on an
+   unmounted or late-mounting volume is skipped as `parent-missing`, never deleted.
 
 It defaults to dry-run until `armed` is exactly `true`. It removes Paseo bookkeeping,
 never git branches or repository/worktree directories. The daemon also removes the
@@ -24,7 +26,7 @@ project's custom icon when deleting its row (see Recovery).
 Every decision logs one stdout line (`paseo plugin logs orphan-project-sweeper`) with
 `projectId`, `path`, and a reason (including `would-delete` when unarmed and
 `cap-reached` for candidates beyond the sweep limit): `orphaned(...)`, `path-still-exists`,
-`active-workspaces`, `path-unverifiable`, or `project-missing`. The project is
+`active-workspaces`, `path-unverifiable`, `parent-missing`, or `project-missing`. The project is
 re-evaluated immediately before each delete.
 
 ## Internal client dependency and the version bound
