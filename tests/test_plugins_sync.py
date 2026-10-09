@@ -126,7 +126,7 @@ class RemotePluginTest(Fixture):
         payload = {"dry_run": dry_run, "migrate_path": migrate, "plugin_root": root, "stage": list(stage), "install": list(install),
                    "plugins": {"demo": {"pin": pin, "files": files}}}
         env = {**self.env, "HOME": str(self.home)}
-        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(plugins_sync.REMOTE_JS.read_bytes())],
+        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(fleet.bundle(plugins_sync.REMOTE_JS))],
                               input=fleet.pack(json.dumps(payload).encode()), capture_output=True, text=True, env=env)
         return fleet.parse_result(done.stdout)
 
@@ -158,6 +158,35 @@ class RemotePluginTest(Fixture):
         self.assertEqual((got["status"], got["conflicts"]), ("conflict", ["demo/server/index.ts"]))
         self.assertFalse(self.staged("server/new.ts").exists())
         self.assertEqual(self.calls(), "")
+
+    def test_symlinked_ancestor_is_refused(self):
+        elsewhere = self.home / "elsewhere"
+        elsewhere.mkdir()
+        self.staged().parent.mkdir()
+        self.staged().symlink_to(elsewhere)
+        got = self.run_remote()
+        self.assertEqual(got["status"], "failed")
+        self.assertIn("not a real directory", got["error"])
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertEqual(self.calls(), "")
+
+    def test_path_leaving_plugin_root_is_refused(self):
+        for rel in ("../escape", "a/../../escape"):
+            with self.subTest(rel=rel):
+                before = sorted(self.root.rglob("*"))
+                got = self.run_remote({**{r: blob(d) for r, d in PLUGIN_FILES.items()}, rel: blob(b"escaped")})
+                self.assertEqual(got["status"], "failed", got)
+                self.assertIn("invalid path from source: " + rel, got["error"])
+                self.assertEqual(sorted(self.root.rglob("*")), before, "a file was written")
+                self.assertFalse((self.home / "plugins").exists())
+                self.assertEqual(self.calls(), "")
+        # A Windows host also splits on backslashes, so this name leaves its root there.
+        probe = ('const p = require("path").win32, [common, root, rel] = process.argv.slice(1);'
+                 'try { require(common).checkAncestors(require("fs"), p, root, p.join(root, rel)); console.log("allowed"); }'
+                 'catch (e) { console.log(e.message); }')
+        done = subprocess.run(["node", "-e", probe, "--", str(SCRIPTS / "remote_common.js"), r"C:\loadout\plugins", r"a\..\..\x"],
+                              capture_output=True, text=True)
+        self.assertEqual(done.stdout.strip(), r"path escapes its root: C:\loadout\x", done.stderr)
 
     def test_plugins_enabled_false_blocks_install_and_is_not_changed(self):
         self.set_enabled(False)

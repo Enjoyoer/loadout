@@ -191,7 +191,7 @@ class FleetPushTest(unittest.TestCase):
         files = fleet.fleet_files(self.source)
         files["hosts.json"]["sha256"] = "0" * 64
         body = fleet.pack(json.dumps({"dry_run": False, "target": str(self.target("desktop")), "files": files}).encode())
-        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(fleet.PUSH_JS.read_bytes())],
+        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(fleet.bundle(fleet.PUSH_JS))],
                               input=body, capture_output=True, text=True)
         result = fleet.parse_result(done.stdout)
         self.assertEqual(result["status"], "failed")
@@ -202,7 +202,7 @@ class FleetPushTest(unittest.TestCase):
         files = fleet.fleet_files(self.source)
         files["..\\escape.json"] = files["hosts.json"]
         body = fleet.pack(json.dumps({"dry_run": False, "target": str(self.target("desktop")), "files": files}).encode())
-        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(fleet.PUSH_JS.read_bytes())],
+        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(fleet.bundle(fleet.PUSH_JS))],
                               input=body, capture_output=True, text=True)
         result = fleet.parse_result(done.stdout)
         self.assertEqual(result["status"], "failed")

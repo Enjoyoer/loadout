@@ -7,6 +7,9 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 ### Changed
 - `frontend-design` is now Anthropic's official frontend-design skill, copied unmodified from the official Claude Code plugin; the skill name is unchanged.
 
+### Fixed
+- Fleet push, skills sync, and plugins sync share one destination path check. Plugins sync now also refuses a file path that leaves the plugin root, and all three refuse a dangling symlink among a destination's parent directories.
+
 ### Added
 - `pi-fast-toggle`, a Paseo plugin with a per-agent composer pill that requests Fast on Pi agents whose model supports service tiers.
 - OPC routes Pi Workers by task class, with quota-paced effort for adjustable classes and a fixed Opus route for UI work.

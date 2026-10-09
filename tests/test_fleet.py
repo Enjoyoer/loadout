@@ -1,7 +1,9 @@
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills/orchestration/personal-skills/scripts"))
 import fleet  # noqa: E402
@@ -158,6 +160,32 @@ class ValidateTest(unittest.TestCase):
 
     def test_global_clients(self):
         self.check_error(fleet_doc(**{"global": {"cursor": "~/x"}}), "unknown keys ['cursor']")
+
+
+class WindowsCommandLengthTest(unittest.TestCase):
+    """run_node puts the packed program on the ssh command line, which a Windows host runs through cmd.exe."""
+
+    CMD_LIMIT = 8191
+    # OpenSSH on Windows runs a remote command as "<cmd.exe>" /c "<command>". The count adds that wrapper to the
+    # whole ssh line, options and host name included: a worst case, since only the command reaches cmd.exe.
+    CMD_WRAPPER = '"C:\\Windows\\System32\\cmd.exe" /c ""'
+    PROGRAMS = ("fleet_push_remote.js", "skills_sync_remote.js", "plugins_sync_remote.js", "client_config_merge.js")
+
+    def test_bundled_programs_fit_cmd_exe(self):
+        crlf = lambda data: data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")  # the longer checkout
+        with tempfile.TemporaryDirectory() as tmp:
+            common = Path(tmp) / fleet.COMMON_JS.name
+            common.write_bytes(crlf(fleet.COMMON_JS.read_bytes()))
+            for name in self.PROGRAMS:
+                program = Path(tmp) / name
+                program.write_bytes(crlf((fleet.COMMON_JS.parent / name).read_bytes()))
+                with mock.patch.object(fleet, "COMMON_JS", common), mock.patch.object(fleet.subprocess, "run") as run:
+                    run.return_value = subprocess.CompletedProcess([], 0, "", "")
+                    fleet.run_node("windows-host", False, program, {})
+                length = len(self.CMD_WRAPPER) + len(subprocess.list2cmdline(run.call_args.args[0]))
+                margin = self.CMD_LIMIT - length
+                with self.subTest(program=name):
+                    self.assertGreater(margin, 0, f"{name}: {length} characters, margin {margin} to the {self.CMD_LIMIT} limit")
 
 
 if __name__ == "__main__":

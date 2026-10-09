@@ -4,6 +4,7 @@
 // Never writes plugin settings, plugin state, or pluginsEnabled, and never arms a plugin. The one
 // exception is migrate_path: `paseo plugin remove` deletes <PASEO_HOME>/plugin-settings/<id>, so a
 // migration backs that directory up first and restores the host's own bytes, hash-verified.
+// checkAncestors comes from remote_common.js, which fleet.run_node ships ahead of this file.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execSync, execFileSync } = require("child_process");
 const result = { status: null, plugins: {}, conflicts: [], daemon: null, error: null };
@@ -20,17 +21,6 @@ function expand(template) {
     .replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (m, v) => process.env[v] || m);
   if (p === "~" || p.startsWith("~/") || p.startsWith("~\\")) p = path.join(home, p.slice(1));
   return path.resolve(p);
-}
-
-function checkAncestors(root, file) {
-  let cur = path.dirname(root);
-  const parts = path.relative(cur, path.dirname(file)).split(path.sep);
-  for (const part of parts) {
-    cur = path.join(cur, part);
-    if (!fs.existsSync(cur)) return;
-    const st = fs.lstatSync(cur);
-    if (st.isSymbolicLink() || !st.isDirectory()) throw new Error("not a real directory: " + cur);
-  }
 }
 
 function hashTree(dir, skip = SKIP, rel = "", out = {}) {
@@ -157,7 +147,7 @@ try {
     const info = result.plugins[id] = { staged: "same", checked: false, installed: null, running: null };
     for (const [rel, f] of Object.entries(plugin.files)) {
       const file = path.join(dir, ...rel.split("/"));
-      checkAncestors(root, file);
+      checkAncestors(fs, path, root, file);
       if (!fs.existsSync(file)) { writes.push({ id, file, buf: data[id + "/" + rel] }); info.staged = "changed"; continue; }
       const st = fs.lstatSync(file);
       const have = st.isFile() && !st.isSymbolicLink() ? sha(fs.readFileSync(file)) : null;
