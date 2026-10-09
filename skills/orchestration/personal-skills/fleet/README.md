@@ -74,7 +74,7 @@ Plugin settings, plugin state, and the daemon's `pluginsEnabled` switch are host
 Optional. The Paseo provider-picker sync (`python3 scripts/paseo_providers.py`) reads it and updates hosts whose `sync` includes `providers`. It holds router URLs and host settings, so it stays in the private fleet directory.
 
 - `providers`: pinned blocks keyed by Paseo provider, such as `claude` or `codex`. Each block's fields replace the same fields in the host's `agents.providers.<provider>`; other fields there are kept. `models[]` rows need a unique `id` and a `label` that is a name only: no digits and not the model ID.
-- `env`: optional default environment per provider, merged into `agents.providers.<provider>.env` on every host.
+- `env`: optional default environment per provider, merged into `agents.providers.<provider>.env` on every host. A value's `%VAR%` is expanded from the host environment and written in plain text to `config.json` and its backups, so `%VAR%` must never name a secret; names containing KEY, TOKEN, SECRET, PASSWORD, CREDENTIAL or AUTH are refused with nothing written.
 - `hosts`: optional settings by host name, each for a host with the `providers` scope.
   - `env`: per-provider values layered over the default.
   - `inherit_env`: `false` skips the default `env`, so the host keeps its own values.

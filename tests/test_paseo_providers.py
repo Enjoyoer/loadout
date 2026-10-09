@@ -271,6 +271,16 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertIn("workspace archive ws-1", self.calls())
         self.assertEqual(self.config("tablet"), {"agents": {"providers": {}}})
 
+    def test_secret_looking_host_env_is_refused(self):
+        catalog = json.loads((self.fleet / "paseo-providers.json").read_text())
+        catalog["hosts"]["laptop"]["env"]["claude"]["ANTHROPIC_BASE_URL"] = "%EXAMPLE_API_KEY%"
+        (self.fleet / "paseo-providers.json").write_text(json.dumps(catalog))
+        self.env["EXAMPLE_API_KEY"] = "not-a-real-key"
+        code, out = self.run_sync("--host", "laptop")
+        self.assertEqual(code, 1, out)
+        self.assertIn("refusing secret-looking host env EXAMPLE_API_KEY", out)
+        self.assertEqual(self.config("laptop"), EXISTING)
+
     def test_relay_waits_for_the_prompt_before_one_send(self):
         (self.root / "quiet-captures").write_text("4")
         code, out = self.run_sync("--host", "tablet")

@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Every pushed branch gets the secret scan; the other jobs run only for main and pull requests.
+    branches: ['**']
   pull_request:
 
 permissions:
@@ -11,6 +12,7 @@ permissions:
 jobs:
   repo:
     name: Repo tests (${{ matrix.os }})
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -59,10 +61,22 @@ jobs:
         env:
           # A pull request scans its own commits; a push to main scans all of main.
           LOG_OPTS: ${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || 'HEAD' }}
-        run: '"$RUNNER_TEMP/gitleaks" git --redact --verbose --no-banner --log-opts="$LOG_OPTS" .'
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # A push to any other branch scans that push's own commits. A new branch (all-zero
+          # before), or a force push whose old tip was not fetched, scans the commits not on main.
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            if [ "$BEFORE" != 0000000000000000000000000000000000000000 ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              LOG_OPTS="$BEFORE..$GITHUB_SHA"
+            else
+              LOG_OPTS="origin/main..$GITHUB_SHA"
+            fi
+          fi
+          "$RUNNER_TEMP/gitleaks" git --redact --verbose --no-banner --log-opts="$LOG_OPTS" .
 
   plugins:
     name: Plugin ${{ matrix.plugin }}
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
