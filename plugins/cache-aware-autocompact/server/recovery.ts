@@ -20,8 +20,11 @@ export function recoveryDelay(provider: string, endedAt: string, config: AutoCom
   return { delayMs, remainingMs, jitterApplied };
 }
 
-export function rearmSkipReason(agent: PaseoAgent): string | null {
+export function rearmSkipReason(agent: PaseoAgent, extended = false): string | null {
   if (!cacheFamily(agent.provider, agent.model)) return agent.provider === "pi" ? "unsupported-pi-model" : "unsupported-provider";
+  // Finished agents. A closed agent's session is unloaded (closed, or not reloaded since a daemon restart).
+  if (extended && agent.archivedAt) return "archived";
+  if (extended && agent.status === "closed") return "closed";
   if (agent.status !== "idle" || agent.activeTurn) return "not-idle";
   if (agent.archivedAt) return "archived";
   if (agent.labels?.autocompact === "off") return "opted-out-label";

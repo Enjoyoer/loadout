@@ -8,6 +8,12 @@ export const ConfigSchema = z.object({
   codexDelayMinutes: z.number().min(1).max(120).default(22),
   /** Pi GPT idle compaction is opt-in pending cache-cost measurements. Native Codex is unchanged. */
   piGptEnabled: z.boolean().default(false),
+  /**
+   * End every Claude-family idle gap of at least claudeDelayMinutes in one compaction: recovery compacts
+   * agents whose cache already expired, failed turns arm a timer, and recovery counts closed agents as finished.
+   * false restores the previous cache-expired skip exactly. Codex and Pi GPT behavior is unchanged.
+   */
+  extendIdleCompaction: z.boolean().default(true),
   /** Latest reported context usage required before a timer is eligible. */
   thresholdTokens: z.number().int().min(1).max(10_000_000).default(100_000),
   /** Context size at which boundary checks favor recall over precision. */

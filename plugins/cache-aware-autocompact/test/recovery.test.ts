@@ -48,7 +48,8 @@ async function fixture(run: (f: ReturnType<typeof harness> & { store: StateStore
   const dir = await mkdtemp(path.join(root, "rearm-test-"));
   const file = path.join(dir, "state.json");
   const f = { ...harness(), file, store: new StateStore(file) };
-  try { await run(f); } finally { f.cleanup(); await rm(dir, { recursive: true, force: true }); }
+  // A state write can still be landing when a test ends; rm retries ENOTEMPTY.
+  try { await run(f); } finally { f.cleanup(); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
 }
 function harness() {
   let snapshots = [agent()];
@@ -120,9 +121,9 @@ function harness() {
     event<Name extends keyof PluginLifecycleEvents>(name: Name, event: PluginLifecycleEvents[Name], contextApi = api) {
       hooks.get(name)?.(event as never, { paseo: contextApi, signal: new AbortController().signal });
     },
-    start(store: StateStore, armed = true, piGptEnabled = false) {
+    start(store: StateStore, armed = true, piGptEnabled = false, extendIdleCompaction = true) {
       cleanup = startScheduler(server, { store, timerApi: timers, metrics: { append: async (record) => { metrics.push(record); } },
-        now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed, piGptEnabled }),
+        now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed, piGptEnabled, extendIdleCompaction }),
         openApi: async () => { if (bootstrapFails) throw new Error("Unavailable"); return api; },
         log: (action, data) => { logs.push({ action, data }); } });
     },
@@ -218,10 +219,12 @@ describe("cache TTL guards", () => {
     { provider: "pi", model: "fleet/gpt-6.1-sol", ttl: 30 },
   ];
   for (const route of routes) {
+    // Claude-family cold skips are the extendIdleCompaction=false behavior; Codex-family skips hold by default.
+    const extend = route.ttl !== 60;
     it(`skips cold ${route.provider}/${route.model} recovery at and beyond TTL`, async () => {
       await fixture(async f => {
         f.setAgents([agent(route)]); f.setNow(endedMs + route.ttl * 60_000);
-        f.start(f.store, true, true); await f.recovered();
+        f.start(f.store, true, true, extend); await f.recovered();
         assert.equal(f.timers.pending.size, 0);
         assert.equal((f.logs.find(l => l.action === "rearm-summary")!.data.skipped as Record<string, number>)["cache-expired"], 1);
         f.timers.fire(); assert.deepEqual(f.sends, []);
@@ -230,7 +233,7 @@ describe("cache TTL guards", () => {
     });
     it(`refuses a late ${route.provider}/${route.model} timer at TTL`, async () => fixture(async f => {
       f.setAgents([agent(route)]); f.setNow(endedMs + (route.ttl - 1) * 60_000);
-      f.start(f.store, true, true); await f.recovered();
+      f.start(f.store, true, true, extend); await f.recovered();
       assert.equal(f.timers.pending.size, 1);
       f.setNow(endedMs + route.ttl * 60_000); f.timers.fire();
       await until(() => f.logs.some(l => l.data.reason === "cache-expired"));
@@ -243,7 +246,7 @@ describe("cache TTL guards", () => {
       page.entries[0]!.item = { type: "tool_call", callId: "tool1", name: "tool", detail: { type: "plain_text", text: "work" }, status: "running", error: null };
       f.setAgents([a]); f.histories.set(a.id, page);
       f.setNow(endedMs + (route.ttl - 1) * 60_000);
-      f.start(f.store, true, true); await f.recovered(); f.timers.fire();
+      f.start(f.store, true, true, extend); await f.recovered(); f.timers.fire();
       await until(() => f.logs.some(l => l.action === "retry-scheduled"));
       f.setNow(endedMs + (route.ttl + 1) * 60_000); f.timers.fire();
       await until(() => f.logs.some(l => l.data.reason === "cache-expired"));
@@ -252,6 +255,36 @@ describe("cache TTL guards", () => {
       assert.equal((await f.store.read()).at(-1)?.reason, "cache-expired");
     }));
   }
+});
+
+describe("extended idle compaction", () => {
+  const cold = endedMs + 3 * 60 * 60_000;
+  it("recovers a cold idle Claude agent at 150k and leaves one at 60k", async () => fixture(async f => {
+    f.setAgents([agent({ lastUsage: { contextWindowUsedTokens: 150_000 } }),
+      agent({ id: "a2", lastUsage: { contextWindowUsedTokens: 60_000 } })]);
+    f.setNow(cold); f.start(f.store); await f.recovered();
+    assert.equal(f.timers.pending.size, 1);
+    assert.deepEqual(f.logs.filter(l => l.action === "re-armed").map(l => [l.data.agentId, l.data.cacheExpired]), [["a1", true]]);
+    assert.equal((f.logs.find(l => l.action === "rearm-summary")!.data.skipped as Record<string, number>)["cache-expired"], 1);
+    f.timers.fire(); await until(() => f.logs.some(l => l.action === "compacted"));
+    assert.deepEqual(f.sends, ["/compact"]);
+  }));
+  it("arms a timer after a failed turn", async () => fixture(async f => {
+    f.setAgents([]); f.setNow(endedMs); f.start(f.store); await f.recovered();
+    const a = agent();
+    f.setAgents([a]);
+    f.event("agent.turn_ended", { agent: { ...a, parentAgentId: null }, turnId: "t2", timeline: [],
+      outcome: { kind: "failed", error: { message: "provider error" } } } as PluginLifecycleEvents["agent.turn_ended"]);
+    f.update(agent({ status: "error", attentionReason: "error" }));
+    await until(() => f.logs.some(l => l.action === "timer-started"));
+    assert.equal(f.timers.pending.size, 1);
+  }));
+  it("skips the cold 150k Claude agent as cache-expired with the flag off", async () => fixture(async f => {
+    f.setAgents([agent({ lastUsage: { contextWindowUsedTokens: 150_000 } })]);
+    f.setNow(cold); f.start(f.store, true, false, false); await f.recovered();
+    assert.equal(f.timers.pending.size, 0);
+    assert.equal((f.logs.find(l => l.action === "rearm-summary")!.data.skipped as Record<string, number>)["cache-expired"], 1);
+  }));
 });
 
 describe("restart recovery", () => {

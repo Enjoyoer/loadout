@@ -2,7 +2,7 @@ import type { PaseoApi, PaseoClient } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { AutoCompactConfig } from "./config.ts";
-import { cacheExpired, checkpointKey, guardDecision, providerDelayMinutes, strictnessTier } from "./model.ts";
+import { cacheExpired, cacheExpiredSkip, checkpointKey, guardDecision, providerDelayMinutes, strictnessTier } from "./model.ts";
 import { StateStore, type StateEntry } from "./store.ts";
 import { AgentTimers, realTimers, type TimerApi } from "./timer.ts";
 import { MetricsLog } from "./metrics.ts";
@@ -46,7 +46,15 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   const random = dependencies.random ?? Math.random;
   const lifetime = new AbortController();
   let startupClient: PaseoClient | null = null;
-  const readConfig = dependencies.readConfig;
+  // The synchronous agent-update listener uses the last loaded flag; null keeps the previous behavior.
+  let extended: boolean | null = null;
+  const readConfig = async () => {
+    const config = await dependencies.readConfig();
+    if (config) extended = config.extendIdleCompaction;
+    return config;
+  };
+  // A failed turn leaves the agent in `error`, which is settled, not busy, when the extension is on.
+  const busyStatus = (status: string) => status !== "idle" && !(extended === true && status === "error");
   const inFlight = new Set<string>();
   const expectedUserMessage = new Map<string, string | null>();
   const recoveryFailures = new Map<string, Set<string>>();
@@ -133,7 +141,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         log("skip", { agentId: checkpoint.agentId, reason: "agent-unavailable", strictnessTier: "safe" });
         return;
       }
-      if (cacheExpired(agent.provider, agent.model, checkpoint.endedAt, now())) {
+      if (cacheExpiredSkip(agent.provider, agent.model, checkpoint.endedAt, now(), config)) {
         await record(checkpoint, "skip", "cache-expired", config);
         log("skip", { agentId: checkpoint.agentId, reason: "cache-expired", retryCount: checkpoint.retryCount });
         return;
@@ -188,7 +196,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         if (stopped || generation !== (generations.get(checkpoint.agentId) ?? 0)) return;
         const beforeSend = (await handle.refresh())?.agent;
         if (stopped || generation !== (generations.get(checkpoint.agentId) ?? 0)) return;
-        const sendDecision = beforeSend && (cacheExpired(beforeSend.provider, beforeSend.model, checkpoint.endedAt, now())
+        const sendDecision = beforeSend && (cacheExpiredSkip(beforeSend.provider, beforeSend.model, checkpoint.endedAt, now(), config)
           ? { ok: false, reason: "cache-expired" }
           : guardDecision(beforeSend, checkpoint.timeline, config, checkpoint.lastUserMessageAt));
         if (!sendDecision || !sendDecision.ok) {
@@ -316,7 +324,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         const page = await api.agents.list({ page: { limit: 200, cursor }, signal: lifetime.signal });
         for (const { agent } of page.entries) {
           if (stopped) return;
-          const reason = rearmSkipReason(agent) ?? (providerDelayMinutes(agent.provider, config, agent.model) === null ? "pi-gpt-disabled" : null);
+          const reason = rearmSkipReason(agent, config.extendIdleCompaction) ?? (providerDelayMinutes(agent.provider, config, agent.model) === null ? "pi-gpt-disabled" : null);
           if (reason) { skip(reason); continue; }
           if (timers.has(agent.id) || inFlightHasAgent(agent.id)) { skip("already-pending"); continue; }
           expectedUserMessage.set(agent.id, agent.lastUserMessageAt ?? null);
@@ -331,7 +339,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
             const fresh = (await handle.refresh())?.agent;
             if (stopped) return;
             if (!fresh) { skip("agent-unavailable"); continue; }
-            const freshReason = rearmSkipReason(fresh);
+            const freshReason = rearmSkipReason(fresh, config.extendIdleCompaction);
             if (freshReason) { skip(freshReason); continue; }
             const remembered = await store.latestTurn(agent.id);
             const recovered = recoverTurn(fresh, history, remembered);
@@ -351,7 +359,10 @@ export function startScheduler(server: PluginServerContext, dependencies: {
             await store.rememberTurn(checkpoint, config.maxStateEntries);
             if (stopped) return;
             if (generation !== (generations.get(agent.id) ?? 0) || timers.has(agent.id)) { skip("changed-during-recovery"); continue; }
-            if (cacheExpired(fresh.provider, fresh.model, checkpoint.endedAt, now())) { skip("cache-expired"); continue; }
+            const cold = cacheExpired(fresh.provider, fresh.model, checkpoint.endedAt, now());
+            // A cold agent is compacted only when its context reaches the threshold; otherwise it stays a cache-expired skip.
+            if (cold && (cacheExpiredSkip(fresh.provider, fresh.model, checkpoint.endedAt, now(), config) ||
+              (fresh.lastUsage?.contextWindowUsedTokens ?? 0) < config.thresholdTokens)) { skip("cache-expired"); continue; }
             const delay = recoveryDelay(fresh.provider, checkpoint.endedAt, config, now(), random, fresh.model);
             expectedUserMessage.set(agent.id, checkpoint.lastUserMessageAt);
             timers.schedule(checkpoint.key, agent.id, delay.delayMs, () => {
@@ -359,7 +370,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
             });
             recoveryFailures.delete(agent.id);
             rearmed++;
-            log("re-armed", { agentId: agent.id, provider: fresh.provider, idleSince: checkpoint.endedAt, ...delay });
+            log("re-armed", { agentId: agent.id, provider: fresh.provider, idleSince: checkpoint.endedAt, ...delay, ...(cold ? { cacheExpired: true } : {}) });
           } catch (error) {
             skip("recovery-failed");
             const message = safeError(error);
@@ -391,7 +402,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       if (update.agent.status === "running" || update.agent.activeTurn ||
         (expectedUserMessage.has(update.agent.id) &&
           (update.agent.lastUserMessageAt ?? null) !== expectedUserMessage.get(update.agent.id))) recoveryFailures.delete(update.agent.id);
-      if (update.agent.status !== "idle" || update.agent.activeTurn || update.agent.archivedAt ||
+      if (busyStatus(update.agent.status) || update.agent.activeTurn || update.agent.archivedAt ||
         (expectedUserMessage.has(update.agent.id) &&
           (update.agent.lastUserMessageAt ?? null) !== expectedUserMessage.get(update.agent.id))) invalidate(update.agent.id);
       const pendingKey = timers.key(update.agent.id);
@@ -401,7 +412,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         log("timer-canceled", { agentId: update.agent.id, reason: "new-user-message" });
         return;
       }
-      if (update.agent.status !== "idle" || update.agent.activeTurn || update.agent.archivedAt) {
+      if (busyStatus(update.agent.status) || update.agent.activeTurn || update.agent.archivedAt) {
         timers.cancel(update.agent.id);
         log("timer-canceled", { agentId: update.agent.id, reason: "new-turn-or-busy" });
       }

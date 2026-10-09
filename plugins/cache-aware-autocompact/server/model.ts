@@ -26,6 +26,12 @@ export function cacheExpired(provider: string, model: string | null | undefined,
   return ttlMs !== null && now - Date.parse(endedAt) >= ttlMs;
 }
 
+/** Cache expiry as a terminal skip. With extendIdleCompaction, a cold Claude-family agent still compacts once. */
+export function cacheExpiredSkip(provider: string, model: string | null | undefined, endedAt: string, now: number, config: AutoCompactConfig): boolean {
+  if (config.extendIdleCompaction && cacheFamily(provider, model) === "claude") return false;
+  return cacheExpired(provider, model, endedAt, now);
+}
+
 export function providerDelayMinutes(provider: string, config: AutoCompactConfig, model?: string | null): number | null {
   if (provider === "pi" && cacheFamily(provider, model) === "codex" && !config.piGptEnabled) return null;
   const family = cacheFamily(provider, model);
