@@ -35,9 +35,33 @@ export type Verdict =
 
 type PathState = { exists: true; how: string } | { exists: false } | { exists: "unknown"; error: string };
 
-async function inspectPath(target: string): Promise<PathState> {
+type EntryStats = { isDirectory(): boolean; isSymbolicLink(): boolean; dev: number };
+
+/** The platform and filesystem calls a root is judged with. Tests inject a fake one. */
+export interface SweeperHost {
+  platform: NodeJS.Platform;
+  lstat(target: string): Promise<EntryStats>;
+  stat(target: string): Promise<EntryStats>;
+  readdir(target: string): Promise<string[]>;
+  readFile(target: string): Promise<string>;
+  realpath(target: string): Promise<string>;
+}
+
+const nodeHost: SweeperHost = {
+  platform: process.platform,
+  lstat: (target) => lstat(target),
+  stat: (target) => stat(target),
+  readdir: (target) => readdir(target),
+  readFile: (target) => readFile(target, "utf8"),
+  realpath: (target) => realpath(target),
+};
+
+// Paths follow the host's platform, so a Windows host can be judged from any machine.
+const pathsOf = (host: SweeperHost) => host.platform === "win32" ? path.win32 : path.posix;
+
+async function inspectPath(target: string, host: SweeperHost): Promise<PathState> {
   try {
-    const stats = await lstat(target);
+    const stats = await host.lstat(target);
     const how = stats.isSymbolicLink() ? "symlink" : stats.isDirectory() ? "directory" : "file";
     return { exists: true, how };
   } catch (error) {
@@ -53,21 +77,22 @@ async function inspectPath(target: string): Promise<PathState> {
  * An unmounted volume usually leaves its mount point behind as an empty directory (Linux, and custom
  * mount points on macOS). Comparing st_dev alone cannot catch that: an unmounted mount point is an
  * ordinary directory on its parent's device, and st_dev only differs while the volume is mounted.
- * A non-empty parent is necessary, not sufficient: findAbsentMount checks the declared mounts next.
+ * A non-empty parent is necessary, not sufficient: findAbsentMount checks the mounts next.
  */
-async function findMissingContainer(target: string): Promise<{ dir: string; error: string } | null> {
-  const parent = path.dirname(target);
+async function findMissingContainer(target: string, host: SweeperHost): Promise<{ dir: string; error: string } | null> {
+  const paths = pathsOf(host);
+  const parent = paths.dirname(target);
   const dirs = [parent];
-  if (process.platform === "win32") dirs.unshift(path.parse(target).root);
+  if (host.platform === "win32") dirs.unshift(paths.parse(target).root);
   for (const dir of dirs) {
     try {
-      if (!(await stat(dir)).isDirectory()) return { dir, error: "stat=not-a-directory" };
+      if (!(await host.stat(dir)).isDirectory()) return { dir, error: "stat=not-a-directory" };
     } catch (error) {
       return { dir, error: `stat=${(error as NodeJS.ErrnoException).code ?? String(error)}` };
     }
   }
   try {
-    if ((await readdir(parent)).length === 0) return { dir: parent, error: "empty-directory" };
+    if ((await host.readdir(parent)).length === 0) return { dir: parent, error: "empty-directory" };
   } catch (error) {
     return { dir: parent, error: `readdir=${(error as NodeJS.ErrnoException).code ?? String(error)}` };
   }
@@ -77,6 +102,8 @@ async function findMissingContainer(target: string): Promise<{ dir: string; erro
 const FSTAB = "/etc/fstab";
 const MOUNTINFO = "/proc/self/mountinfo";
 
+type MountProblem = { reason: "mount-absent" | "mount-unverifiable"; detail: string };
+
 class MountStateError extends Error {}
 
 const errorCode = (error: unknown) => (error as NodeJS.ErrnoException).code ?? message(error);
@@ -85,15 +112,15 @@ const errorCode = (error: unknown) => (error as NodeJS.ErrnoException).code ?? m
 const unescapeMountPath = (value: string) => value.replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)));
 
 function isWithin(dir: string, target: string): boolean {
-  const relative = path.relative(dir, target);
-  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  const relative = path.posix.relative(dir, target);
+  return relative === "" || (relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative));
 }
 
 /** Mount points the host declares in /etc/fstab. A missing fstab declares none; an unreadable one is an error. */
-async function declaredMountPoints(): Promise<string[]> {
+async function declaredMountPoints(host: SweeperHost): Promise<string[]> {
   let text: string;
   try {
-    text = await readFile(FSTAB, "utf8");
+    text = await host.readFile(FSTAB);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw new MountStateError(`${FSTAB} read=${errorCode(error)}`);
@@ -103,17 +130,17 @@ async function declaredMountPoints(): Promise<string[]> {
     const fields = line.trim().split(/\s+/);
     if (!fields[0] || fields[0].startsWith("#") || fields.length < 3) continue;
     const point = unescapeMountPath(fields[1]!);
-    if (fields[2] === "swap" || !path.isAbsolute(point)) continue;
-    points.push(path.resolve(point));
+    if (fields[2] === "swap" || !path.posix.isAbsolute(point)) continue;
+    points.push(path.posix.resolve(point));
   }
   return points;
 }
 
 /** Linux: every mount point in this mount namespace. An automount trigger alone does not count as mounted. */
-async function mountedPoints(): Promise<Set<string>> {
+async function mountedPoints(host: SweeperHost): Promise<Set<string>> {
   let text: string;
   try {
-    text = await readFile(MOUNTINFO, "utf8");
+    text = await host.readFile(MOUNTINFO);
   } catch (error) {
     throw new MountStateError(`${MOUNTINFO} read=${errorCode(error)}`);
   }
@@ -127,19 +154,19 @@ async function mountedPoints(): Promise<Set<string>> {
   return points;
 }
 
-async function isMounted(point: string, mounted: Set<string> | null): Promise<boolean> {
+async function isMounted(point: string, mounted: Set<string> | null, host: SweeperHost): Promise<boolean> {
   let real: string;
   try {
-    real = await realpath(point);
+    real = await host.realpath(point);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return false;
     throw new MountStateError(`mount=${quote(point)} realpath=${errorCode(error)}`);
   }
   if (mounted) return mounted.has(point) || mounted.has(real);
   // Elsewhere a mounted volume's root sits on another device than the directory that holds it; an unmounted mount point does not.
-  if (real === path.parse(real).root) return true;
+  if (real === path.posix.parse(real).root) return true;
   try {
-    const [own, holder] = await Promise.all([stat(real), stat(path.dirname(real))]);
+    const [own, holder] = await Promise.all([host.stat(real), host.stat(path.posix.dirname(real))]);
     return own.dev !== holder.dev;
   } catch (error) {
     throw new MountStateError(`mount=${quote(point)} stat=${errorCode(error)}`);
@@ -147,21 +174,44 @@ async function isMounted(point: string, mounted: Set<string> | null): Promise<bo
 }
 
 /**
- * POSIX only; Windows keeps the drive-root check above. A non-empty parent is weak proof of a mount, because the
- * directory under a mount point can hold unrelated files. Every mount point /etc/fstab declares over the root path
- * must be mounted now: by /proc/self/mountinfo on Linux, by device id elsewhere. A mount table that cannot be read
- * fails closed. A mount the host does not declare (mounted by hand or by a desktop session) cannot be told apart
- * from a plain directory, so only the empty-parent check above covers it.
+ * Windows: a junction, a volume mount point or a directory symlink among the existing ancestors can put the root on a
+ * volume or target that is absent, so such a root is kept. lstat reports a junction or a symlink as a symbolic link.
+ * Node reports a volume mount point as a plain directory, but a mounted volume has another device id than the folder
+ * that holds it. An lstat error other than ENOENT also keeps the root. A missing folder under plain folders on a
+ * present drive stays a candidate.
  */
-async function findAbsentMount(target: string): Promise<{ reason: "mount-absent" | "mount-unverifiable"; detail: string } | null> {
-  if (process.platform === "win32") return null;
+async function findReparseAncestor(target: string, host: SweeperHost): Promise<MountProblem | null> {
+  let below: { dir: string; dev: number } | null = null;
+  for (let dir = path.win32.dirname(target); ; dir = path.win32.dirname(dir)) {
+    let stats: EntryStats | null = null;
+    try {
+      stats = await host.lstat(dir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { reason: "mount-unverifiable", detail: `dir=${quote(dir)} lstat=${errorCode(error)}` };
+    }
+    if (stats?.isSymbolicLink()) return { reason: "mount-unverifiable", detail: `dir=${quote(dir)} reparse-point` };
+    if (stats && below && stats.dev !== below.dev) return { reason: "mount-unverifiable", detail: `dir=${quote(below.dir)} volume-mount-point` };
+    below = stats ? { dir, dev: stats.dev } : null;
+    if (path.win32.dirname(dir) === dir) return null;
+  }
+}
+
+/**
+ * A non-empty parent is weak proof of a mount, because the directory under a mount point can hold unrelated files.
+ * Windows walks the root's ancestors for reparse points (findReparseAncestor). Elsewhere every mount point /etc/fstab
+ * declares over the root path must be mounted now: by /proc/self/mountinfo on Linux, by device id elsewhere. A mount
+ * table that cannot be read fails closed. A POSIX mount the host does not declare (mounted by hand or by a desktop
+ * session) cannot be told apart from a plain directory, so only the empty-parent check above covers it.
+ */
+async function findAbsentMount(target: string, host: SweeperHost): Promise<MountProblem | null> {
+  if (host.platform === "win32") return findReparseAncestor(target, host);
   try {
-    const paths = [path.resolve(target), path.join(await realpath(path.dirname(target)), path.basename(target))];
-    const expected = (await declaredMountPoints()).filter((point) => paths.some((candidate) => isWithin(point, candidate)));
+    const paths = [path.posix.resolve(target), path.posix.join(await host.realpath(path.posix.dirname(target)), path.posix.basename(target))];
+    const expected = (await declaredMountPoints(host)).filter((point) => paths.some((candidate) => isWithin(point, candidate)));
     if (expected.length === 0) return null;
-    const mounted = process.platform === "linux" ? await mountedPoints() : null;
+    const mounted = host.platform === "linux" ? await mountedPoints(host) : null;
     for (const point of expected) {
-      if (!(await isMounted(point, mounted))) return { reason: "mount-absent", detail: `mount=${quote(point)} declared-in=${FSTAB} not-mounted` };
+      if (!(await isMounted(point, mounted, host))) return { reason: "mount-absent", detail: `mount=${quote(point)} declared-in=${FSTAB} not-mounted` };
     }
     return null;
   } catch (error) {
@@ -195,22 +245,17 @@ function verdictBase(project: ProjectRow): VerdictBase {
   return { projectId: project.projectId, path: project.projectRootPath, name: project.projectDisplayName };
 }
 
-function pathSkip(base: VerdictBase, state: PathState & { exists: true | "unknown" }): Verdict {
-  return state.exists === "unknown"
-    ? { kind: "skip", ...base, reason: "path-unverifiable", detail: `lstat=${state.error}` }
-    : { kind: "skip", ...base, reason: "path-still-exists", detail: `on-disk=${state.how}` };
-}
-
-/** The filesystem half of the verdict: a skip, or null when the root is gone and its volume is provably present. */
-async function judgeDisk(project: ProjectRow): Promise<Verdict | null> {
-  const state = await inspectPath(project.projectRootPath);
-  if (state.exists !== false) return pathSkip(verdictBase(project), state);
-  const missing = await findMissingContainer(project.projectRootPath);
+/** The filesystem half of the verdict: a skip, or null when the root is gone, its parent is present and its mounts are too. */
+async function judgeDisk(base: VerdictBase, host: SweeperHost): Promise<Verdict | null> {
+  const state = await inspectPath(base.path, host);
+  if (state.exists === "unknown") return { kind: "skip", ...base, reason: "path-unverifiable", detail: `lstat=${state.error}` };
+  if (state.exists) return { kind: "skip", ...base, reason: "path-still-exists", detail: `on-disk=${state.how}` };
+  const missing = await findMissingContainer(base.path, host);
   if (missing) {
-    return { kind: "skip", ...verdictBase(project), reason: "parent-missing", detail: `dir=${quote(missing.dir)} ${missing.error} (volume or parent absent)` };
+    return { kind: "skip", ...base, reason: "parent-missing", detail: `dir=${quote(missing.dir)} ${missing.error} (volume or parent absent)` };
   }
-  const mount = await findAbsentMount(project.projectRootPath);
-  if (mount) return { kind: "skip", ...verdictBase(project), ...mount };
+  const mount = await findAbsentMount(base.path, host);
+  if (mount) return { kind: "skip", ...base, ...mount };
   return null;
 }
 
@@ -218,21 +263,21 @@ function workspaceSkip(project: ProjectRow, activeCount: number): Verdict | null
   return activeCount > 0 ? { kind: "skip", ...verdictBase(project), reason: "active-workspaces", detail: `activeWorkspaces=${activeCount}` } : null;
 }
 
-async function judge(project: ProjectRow, activeCount: number): Promise<Verdict> {
-  return workspaceSkip(project, activeCount) ?? (await judgeDisk(project)) ?? { kind: "delete", ...verdictBase(project) };
+async function judge(project: ProjectRow, activeCount: number, host: SweeperHost): Promise<Verdict> {
+  return workspaceSkip(project, activeCount) ?? (await judgeDisk(verdictBase(project), host)) ?? { kind: "delete", ...verdictBase(project) };
 }
 
 /**
  * Fresh, live evaluation of one project against the daemon and the filesystem. The filesystem goes first and the
- * daemon's workspace count last, so a delete that follows starts right after its last daemon check.
+ * daemon's workspace count last; deleteVerified repeats the filesystem half right before removeProject.
  */
-export async function evaluateProject(client: SweeperApi, projectId: string): Promise<Verdict> {
+export async function evaluateProject(client: SweeperApi, projectId: string, host: SweeperHost = nodeHost): Promise<Verdict> {
   const { projects } = await client.listProjects();
   const project = projects.find((row) => row.projectId === projectId);
   if (!project) {
     return { kind: "skip", projectId, path: null, name: null, reason: "project-missing", detail: "not in project list" };
   }
-  const disk = await judgeDisk(project);
+  const disk = await judgeDisk(verdictBase(project), host);
   if (disk) return disk;
   const counts = await countActiveWorkspaces(client);
   return workspaceSkip(project, counts.get(projectId) ?? 0) ?? { kind: "delete", ...verdictBase(project) };
@@ -263,14 +308,17 @@ export class OrphanProjectSweeper {
   private readonly connect: <T>(fn: (client: SweeperApi) => Promise<T>) => Promise<T>;
   private readonly loadConfig: () => Promise<SweeperConfig>;
   private readonly logger: SweeperLogger;
+  private readonly host: SweeperHost;
 
   constructor(logger: SweeperLogger, options: {
     withDaemon?: <T>(fn: (client: SweeperApi) => Promise<T>) => Promise<T>;
     config?: () => Promise<SweeperConfig>;
+    host?: SweeperHost;
   } = {}) {
     this.logger = logger;
     this.connect = options.withDaemon ?? withDaemon;
     this.loadConfig = options.config ?? (async () => readConfig());
+    this.host = options.host ?? nodeHost;
   }
 
   /** One serialized full sweep, also used by the forced dry-run CLI. */
@@ -335,7 +383,7 @@ export class OrphanProjectSweeper {
     try {
       const config = await this.loadConfig();
       outcome = await this.connect(async (client) => {
-        const verdict = await evaluateProject(client, projectId);
+        const verdict = await evaluateProject(client, projectId, this.host);
         if (verdict.kind === "delete") {
           await this.deleteVerified(client, verdict, `re-check ${attempt}`, config);
           return "done";
@@ -374,7 +422,7 @@ export class OrphanProjectSweeper {
       let wouldDelete = 0;
       for (const project of projects) {
         if (this.stopped) return;
-        const verdict = await judge(project, counts.get(project.projectId) ?? 0);
+        const verdict = await judge(project, counts.get(project.projectId) ?? 0, this.host);
         if (verdict.kind === "skip") {
           this.logger.log(`${TAG} decision=skip source=${source} ${describe(verdict)}`);
           continue;
@@ -395,19 +443,19 @@ export class OrphanProjectSweeper {
   /**
    * Re-verify against live state immediately before deleting, then delete. project.remove.request carries only the
    * project id, so the daemon cannot refuse a row whose workspaces or path changed after this check; a true
-   * compare-and-swap needs a daemon-side precondition. The re-verify ends with the daemon's workspace count, and one
-   * lstat of the root path is the last step before removeProject.
+   * compare-and-swap needs a daemon-side precondition. The re-verify ends with the daemon's workspace count, then the
+   * root, parent and mount checks run once more as the last step before removeProject.
    */
   private async deleteVerified(client: SweeperApi, verdict: Verdict & { kind: "delete" }, source: string, config: SweeperConfig, forceDryRun = false): Promise<boolean> {
-    const fresh = await evaluateProject(client, verdict.projectId);
+    const fresh = await evaluateProject(client, verdict.projectId, this.host);
     if (fresh.kind !== "delete") {
       this.logger.log(`${TAG} decision=skip source=${source} (changed on re-verify) ${describe(fresh)}`);
       return false;
     }
     if (this.stopped) return false;
-    const last = await inspectPath(fresh.path);
-    if (last.exists !== false) {
-      this.logger.log(`${TAG} decision=skip source=${source} (changed on final check) ${describe(pathSkip({ projectId: fresh.projectId, path: fresh.path, name: fresh.name }, last))}`);
+    const last = await judgeDisk({ projectId: fresh.projectId, path: fresh.path, name: fresh.name }, this.host);
+    if (last) {
+      this.logger.log(`${TAG} decision=skip source=${source} (changed on final check) ${describe(last)}`);
       return false;
     }
     if (forceDryRun || config.armed !== true) {

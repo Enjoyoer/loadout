@@ -4,11 +4,11 @@ import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { it, type TestContext } from "node:test";
 import { readConfig } from "../server/config.ts";
-import { OrphanProjectSweeper, type SweeperApi } from "../server/sweeper.ts";
+import { OrphanProjectSweeper, type SweeperApi, type SweeperHost } from "../server/sweeper.ts";
 
 type Project = Awaited<ReturnType<SweeperApi["listProjects"]>>["projects"][number];
 
-async function fixture(t: TestContext, values: unknown = {}, count = 1) {
+async function fixture(t: TestContext, values: unknown = {}, count = 1, options: { host?: SweeperHost; paths?: string[] } = {}) {
   // All filesystem fixtures stay in this worktree's ignored dependency directory.
   const root = await mkdtemp(path.join(process.cwd(), "node_modules/sweeper-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -16,8 +16,9 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1) {
   // empty-parent check; it is no proof of a mount. Deletes here proceed because no mount the host declares over this
   // checkout is absent.
   await writeFile(path.join(root, "keep"), "");
-  let projects = Array.from({ length: count }, (_, index) => ({
-    projectId: `project-${index}`, projectRootPath: path.join(root, `missing-${index}`),
+  const paths = options.paths ?? Array.from({ length: count }, (_, index) => path.join(root, `missing-${index}`));
+  let projects = paths.map((projectRootPath, index) => ({
+    projectId: `project-${index}`, projectRootPath,
     projectDisplayName: `Project ${index}`, projectKind: "directory",
   } satisfies Project));
   const removed: string[] = [];
@@ -55,9 +56,46 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1) {
   const sweeper = new OrphanProjectSweeper({ log: (line) => logs.push(line), error: (line) => logs.push(line) }, {
     withDaemon: async (fn) => fn(api),
     config: async () => readConfig(state.values, (line) => logs.push(line)),
+    ...(options.host ? { host: options.host } : {}),
   });
   t.after(() => sweeper.stop());
   return { sweeper, state, removed, logs, calls, root };
+}
+
+type FakeEntry = { kind: "dir" | "file" | "junction"; dev?: number };
+
+/** A host whose filesystem is the given entries and files; a junction reads as a directory once followed. */
+function fakeHost(platform: NodeJS.Platform, entries: Record<string, FakeEntry>, files: Record<string, string> = {}): SweeperHost {
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const missing = (target: string) => Object.assign(new Error(`ENOENT: ${target}`), { code: "ENOENT" });
+  const entry = (target: string) => {
+    const found = entries[target];
+    if (!found) throw missing(target);
+    return found;
+  };
+  const stats = (found: FakeEntry, follow: boolean) => ({
+    isDirectory: () => found.kind === "dir" || (follow && found.kind === "junction"),
+    isSymbolicLink: () => !follow && found.kind === "junction",
+    dev: found.dev ?? 1,
+  });
+  return {
+    platform,
+    lstat: async (target) => stats(entry(target), false),
+    stat: async (target) => stats(entry(target), true),
+    readdir: async (target) => {
+      entry(target);
+      return Object.keys(entries).filter((name) => name !== target && paths.dirname(name) === target).map((name) => paths.basename(name));
+    },
+    readFile: async (target) => {
+      const text = files[target];
+      if (text === undefined) throw missing(target);
+      return text;
+    },
+    realpath: async (target) => {
+      entry(target);
+      return target;
+    },
+  };
 }
 
 it("unarmed evaluates and logs projectId, path and reason without deleting", async (t) => {
@@ -197,3 +235,38 @@ for (const armed of [false, true]) {
     assert.deepEqual(f.calls, ["list", "fetch", "list", "fetch", ...(armed ? ["remove:project-0"] : [])]);
   });
 }
+
+it("on Windows a missing root under a junction is kept as mount-unverifiable, and one under plain folders stays a candidate", async (t) => {
+  const host = fakeHost("win32", {
+    "C:\\": { kind: "dir" },
+    "C:\\work": { kind: "dir" },
+    "C:\\work\\linked": { kind: "junction" },
+    "C:\\work\\linked\\keep": { kind: "file" },
+    "C:\\work\\plain": { kind: "dir" },
+    "C:\\work\\plain\\keep": { kind: "file" },
+  });
+  const f = await fixture(t, {}, 0, { host, paths: ["C:\\work\\linked\\gone", "C:\\work\\plain\\gone"] });
+  await f.sweeper.sweep();
+  assert.ok(f.logs.some((line) => line.includes("decision=skip") && line.includes("projectId=project-0") && line.includes("reason=mount-unverifiable") && line.includes("reparse-point")));
+  assert.ok(f.logs.some((line) => line.includes("decision=would-delete") && line.includes("projectId=project-1")));
+  assert.deepEqual(f.removed, []);
+});
+
+it("a mount that disappears between evaluation and delete makes the delete skip", async (t) => {
+  const mountinfo = "1 0 0:1 / / rw - ext4 root rw\n";
+  const files: Record<string, string> = {
+    "/etc/fstab": "vol /mnt/vol ext4 defaults 0 2\n",
+    "/proc/self/mountinfo": `${mountinfo}2 1 0:2 / /mnt/vol rw - ext4 vol rw\n`,
+  };
+  const host = fakeHost("linux", {
+    "/": { kind: "dir" }, "/mnt": { kind: "dir" }, "/mnt/vol": { kind: "dir" }, "/mnt/vol/keep": { kind: "file" },
+  }, files);
+  const f = await fixture(t, { armed: true }, 0, { host, paths: ["/mnt/vol/gone"] });
+  // The re-verify's workspace count runs after its mount check; the volume goes away there.
+  f.state.beforeFetch = async (call) => {
+    if (call === 2) files["/proc/self/mountinfo"] = mountinfo;
+  };
+  await f.sweeper.sweep();
+  assert.deepEqual(f.removed, []);
+  assert.ok(f.logs.some((line) => line.includes("changed on final check") && line.includes("reason=mount-absent")), f.logs.join("\n"));
+});

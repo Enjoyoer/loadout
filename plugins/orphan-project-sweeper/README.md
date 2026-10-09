@@ -18,7 +18,12 @@ A project is orphaned only when all of these hold at evaluation time:
    A declared mount that is absent skips the project as `mount-absent`. If `/etc/fstab` exists but
    cannot be read, or the mount table cannot be read, the project is kept as `mount-unverifiable`.
    A mount the host does not declare (mounted by hand or by a desktop session) looks like a plain
-   directory, so only the empty-parent rule covers it. Windows keeps the drive-root rule above.
+   directory, so only the empty-parent rule covers it.
+4. On Windows, no existing ancestor of the root is a reparse point. A junction or directory symlink
+   (`lstat` reports a symbolic link), a volume mount point (a folder whose device id differs from
+   its parent's), or an ancestor `lstat` cannot read for a reason other than `ENOENT` keeps the
+   project as `mount-unverifiable`. A missing folder under plain folders on a present drive is
+   still a candidate. The drive-root rule above is unchanged.
 
 It defaults to dry-run until `armed` is exactly `true`. It removes Paseo bookkeeping,
 never git branches or repository/worktree directories. The daemon also removes the
@@ -38,10 +43,11 @@ Every decision logs one stdout line (`paseo plugin logs orphan-project-sweeper`)
 `cap-reached` for candidates beyond the sweep limit): `orphaned(...)`, `path-still-exists`,
 `active-workspaces`, `path-unverifiable`, `parent-missing`, `mount-absent`, `mount-unverifiable`,
 or `project-missing`. The project is re-evaluated immediately before each delete: filesystem and
-mount checks first, then the daemon's workspace count, then one last `lstat` of the root path
-right before `removeProject`. The daemon's `project.remove.request` carries only the project ID,
-so it cannot refuse a row that changed after that last check; closing the remaining gap needs a
-daemon-side precondition on the request.
+mount checks first, then the daemon's workspace count, then the root, parent and mount checks
+once more right before `removeProject`; any absent or unverifiable state skips the delete. The
+daemon's `project.remove.request` carries only the project ID, so it cannot refuse a row that
+changed after that last check; closing the remaining gap needs a daemon-side precondition on the
+request.
 
 ## Internal client dependency and the version bound
 
