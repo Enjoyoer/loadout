@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { buildDelegatedBrief, FIXED_ROLE_ROUTES, MAX_CHATGPT_BROWSER_TABS, resolveAgentSurface } from './agent-routing.mjs';
 import { selectUnattendedMode, selectPiMode } from './paseo-worker.mjs';
+import { recoverTests } from './delivery.mjs';
 import { assertRepository, readTask, updateTask } from './task-state.mjs';
 
 export { MAX_CHATGPT_BROWSER_TABS };
@@ -50,6 +51,7 @@ export function authorizePlannerFallback(taskPath, { answer }) {
 // Prepare the exact MCP create_agent request. The PM calls that tool directly,
 // then binds its response below. Planner rounds are never steered.
 export function preparePlannerLaunch(taskPath, { contextPack, capabilities, surface = 'pi' }) {
+  recoverTests(taskPath); // a dead 'running' test is interrupted, not busy
   const task = readTask(taskPath);
   available(task);
   const previous = latest(task);

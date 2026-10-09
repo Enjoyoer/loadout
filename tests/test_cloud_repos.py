@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -64,6 +65,23 @@ class CloudReposTest(unittest.TestCase):
         self.assertIn("invalid fleet host name", done.stderr)
         self.assertFalse(calls.exists())
         self.assertFalse((home / ".config/opc/cloud-repos").exists())
+
+    def test_fleet_command_survives_cmd_exe_parsing(self):
+        built = node(f"""
+            import {{ buildFleetCommand }} from {json.dumps(SCRIPT.as_uri())};
+            console.log(JSON.stringify(buildFleetCommand(['allow', 'Acme/*'])));
+        """)
+        command = built["command"]
+        # cmd.exe passes the line through, acting only on quotes and its metacharacters; sh has its own set.
+        self.assertFalse(set(command) & set("\"'^%&|<>()!*?$`\\;~"), command)
+        self.assertEqual(command.split(), shlex.split(command))
+        home = Path(self.tmp.name) / "home"
+        scripts = home / ".claude/skills/opc/scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "cloud-lane.mjs").write_text("console.log(JSON.stringify(process.argv.slice(2)))\n")
+        done = subprocess.run(command.split(), input=built["input"], capture_output=True, text=True, timeout=60,
+                              env={**os.environ, "HOME": str(home), "USERPROFILE": str(home)})
+        self.assertEqual(json.loads(done.stdout), ["allow", "Acme/*"], done.stderr)
 
 
 if __name__ == "__main__":

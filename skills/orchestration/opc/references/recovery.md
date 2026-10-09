@@ -4,7 +4,7 @@ Inspect the failed component: Worker execution separately from controller/messag
 
 For managed Workers, call `cancel_agent({agentId})` on the recorded identity and confirm the owned run stopped through Paseo. Retain workspace and commits for integration or explicit abandonment under [cleanup](worktree-lifecycle.md "runtime"). Cancellation alone does not authorize archival.
 
-An interrupted `delivery.mjs test` leaves `tests.status: 'running'` with its pid. SIGINT or SIGTERM stops the test command and records `blocked`; if the process was killed outright, `delivery.mjs reconcile <task.json>` or the next `delivery.mjs test` marks the record `failed` with reason `interrupted` once that pid is gone. A `task.json.lock` whose pid is gone is stale and is replaced; a live pid's lock is never removed.
+An interrupted `delivery.mjs test` leaves `tests.status: 'running'` with its pid. SIGINT or SIGTERM stops the test command and records `blocked`; if the process was killed outright, `delivery.mjs reconcile <task.json>` (which then also reconciles a pending merge) or the next `test`, `verify`, `merge` or planner launch marks the record `failed` with reason `interrupted` once that pid is gone. A `task.json.lock` whose pid is gone, or that is empty and over 10 s old, is stale and is replaced; a live pid's lock is never removed. If the lock changes hands during a reclaim, the call fails with `task lock contention`; retry it.
 
 ## Direct CLI helper
 
