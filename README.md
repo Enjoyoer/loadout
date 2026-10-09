@@ -49,7 +49,7 @@ cp -R skills/planning-writing/grilling "${CODEX_HOME:-$HOME/.codex}/skills/"
 | Claude Code | Current release with plugin marketplaces |
 | Codex | Current release with a `skills` folder |
 | Paseo plugins | Paseo `>=0.10.3 <0.12.0` (pinned in each `paseo-plugin.json`) |
-| Fleet sync and tests | Python 3 and Node on each host; CI runs Python 3.12 and Node 24 on Ubuntu and macOS |
+| Fleet sync and tests | Python 3 and Node on each host; CI runs Python 3.12 and Node 24 on Ubuntu, macOS and Windows |
 
 ## Verified install
 
