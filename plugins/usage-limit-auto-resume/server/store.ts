@@ -1,6 +1,7 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { ResumeRecord } from "./model.ts";
+import { writeJsonAtomically } from "./vendor/atomic-json.ts";
 
 type State = { version: 2; records: ResumeRecord[] };
 
@@ -46,9 +47,8 @@ export class ResumeStore {
 
   private async persist(records: ResumeRecord[]): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    const temp = `${this.filePath}.${process.pid}.tmp`;
-    await writeFile(temp, `${JSON.stringify({ version: 2, records }, null, 2)}\n`, { mode: 0o600 });
-    await rename(temp, this.filePath);
+    const state: State = { version: 2, records };
+    await writeJsonAtomically(this.filePath, state, { mode: 0o600 });
   }
 
   async activeForAgent(agentId: string): Promise<ResumeRecord | null> {
