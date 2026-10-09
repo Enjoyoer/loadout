@@ -46,22 +46,6 @@ if (caller) {
   const bridgeEnv = mcp.mcpServers?.paseo?.env;
   if (bridgeEnv) for (const key of ['LOADOUT_PI_PARENT_MODEL', 'LOADOUT_PI_PARENT_THINKING'])
     if (!env[key]) delete bridgeEnv[key];
-  // Workers read untrusted text, so role=worker agents get no Gmail. An unknown role keeps today's Gmail.
-  if (mcp.mcpServers?.gmail) {
-    try {
-      const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 'launch-labels', method: 'tools/call', params: { name: 'get_agent_status', arguments: { agentId: caller } } }),
-        signal: AbortSignal.timeout(3000) });
-      const text = await response.text();
-      const value = response.headers.get('content-type')?.includes('text/event-stream')
-        ? JSON.parse(text.split('\n').find(line => line.startsWith('data:')).slice(5)) : JSON.parse(text);
-      const labels = value.result?.structuredContent?.snapshot?.labels;
-      if (!response.ok || value.error || value.result?.isError || !labels) throw Error('agent snapshot unavailable');
-      if (labels.role === 'worker') delete mcp.mcpServers.gmail;
-    } catch (error) {
-      process.stderr.write(`Pi Gmail kept: agent label lookup failed (${String(error?.message ?? error).slice(0, 80)})\n`);
-    }
-  }
   writeFileSync(join(home, 'mcp.json'), JSON.stringify(mcp, null, 2) + '\n', { mode: 0o600 });
   env.PI_CODING_AGENT_DIR = home;
 }

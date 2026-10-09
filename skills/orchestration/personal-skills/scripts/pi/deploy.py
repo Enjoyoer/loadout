@@ -93,7 +93,7 @@ def main():
     backup = config.with_name(config.name + '.before-pi-' + stamp)
     shutil.copy2(config, backup)
     if backup.read_bytes() != before: raise ValueError('backup readback failed')
-    names = ['runtime.json','credential.py','launch.mjs','mcp_bridge.py','fleet-routing.mjs','gmail_guard.py','agent/models.json','agent/settings.json','agent/mcp.json']
+    names = ['runtime.json','credential.py','launch.mjs','mcp_bridge.py','fleet-routing.mjs','agent/models.json','agent/settings.json','agent/mcp.json']
     runtime_before = {}
     for name in names:
         target = root / name
