@@ -170,6 +170,24 @@ class RemotePluginTest(Fixture):
         self.assertEqual(list(elsewhere.iterdir()), [])
         self.assertEqual(self.calls(), "")
 
+    def test_path_leaving_plugin_root_is_refused(self):
+        for rel in ("../escape", "a/../../escape"):
+            with self.subTest(rel=rel):
+                before = sorted(self.root.rglob("*"))
+                got = self.run_remote({**{r: blob(d) for r, d in PLUGIN_FILES.items()}, rel: blob(b"escaped")})
+                self.assertEqual(got["status"], "failed", got)
+                self.assertIn("invalid path from source: " + rel, got["error"])
+                self.assertEqual(sorted(self.root.rglob("*")), before, "a file was written")
+                self.assertFalse((self.home / "plugins").exists())
+                self.assertEqual(self.calls(), "")
+        # A Windows host also splits on backslashes, so this name leaves its root there.
+        probe = ('const p = require("path").win32, [common, root, rel] = process.argv.slice(1);'
+                 'try { require(common).checkAncestors(require("fs"), p, root, p.join(root, rel)); console.log("allowed"); }'
+                 'catch (e) { console.log(e.message); }')
+        done = subprocess.run(["node", "-e", probe, "--", str(SCRIPTS / "remote_common.js"), r"C:\loadout\plugins", r"a\..\..\x"],
+                              capture_output=True, text=True)
+        self.assertEqual(done.stdout.strip(), r"path escapes its root: C:\loadout\x", done.stderr)
+
     def test_plugins_enabled_false_blocks_install_and_is_not_changed(self):
         self.set_enabled(False)
         got = self.run_remote()
