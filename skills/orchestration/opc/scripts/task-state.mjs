@@ -161,7 +161,8 @@ function validateCloud(cloud) {
   const text = value => typeof value === 'string' && value.trim().length > 0;
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   if (!object(cloud) || !['running', 'ready', 'dead'].includes(cloud.status) ||
-      !['session_id', 'url', 'branch', 'repo', 'launched_at', 'heartbeat_id'].every(key => text(cloud[key])) ||
+      !['session_id', 'url', 'branch', 'repo', 'launched_at'].every(key => text(cloud[key])) ||
+      (cloud.heartbeat_id !== null && !text(cloud.heartbeat_id)) ||
       !/^opc\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(cloud.branch) ||
       !object(cloud.route) || cloud.route.model !== 'claude-opus-5-5[1m]' || cloud.route.effort !== 'xhigh') {
     throw Error('invalid cloud lane record');
@@ -289,6 +290,7 @@ export function updateTask(taskPath, mutator) {
     }
     if (old.cloud) {
       for (const key of ['session_id', 'url', 'branch', 'repo', 'launched_at', 'heartbeat_id', 'route']) {
+        if (key === 'heartbeat_id' && old.cloud.heartbeat_id === null) continue; // bound once, after the launch record
         if (JSON.stringify(old.cloud[key]) !== JSON.stringify(task.cloud?.[key])) throw Error(`immutable cloud ${key} changed`);
       }
       if (old.cloud.status !== 'running' && task.cloud.status !== old.cloud.status) throw Error('terminal cloud lane cannot change state');
