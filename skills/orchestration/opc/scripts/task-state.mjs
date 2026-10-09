@@ -222,7 +222,9 @@ export function assertRepository(task) {
   const repository = task.repository;
   const cwd = repository.working_directory;
   canonicalPath(cwd);
-  if (resolve(git(cwd, 'rev-parse', '--show-toplevel')) !== cwd ||
+  // Compared as the file system resolves them: on Windows git can spell the same top level differently (an 8.3 short
+  // name expanded, a different case).
+  if (realpathSync.native(resolve(git(cwd, 'rev-parse', '--show-toplevel'))) !== realpathSync.native(cwd) ||
       git(cwd, 'remote', 'get-url', 'origin') !== repository.remote ||
       git(cwd, 'remote', 'get-url', '--push', 'origin') !== repository.remote ||
       git(cwd, 'branch', '--show-current') !== repository.branch) {

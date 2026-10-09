@@ -8,7 +8,7 @@ import { delimiter } from 'node:path';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildDelegatedBrief, isValidModelId, NATIVE_WORKER_AUTHORIZATION, resolveAgentRoute } from './agent-routing.mjs';
-import { assertRepository, canonicalPath, gitEnvironment, readTask, updateTask } from './task-state.mjs';
+import { assertRepository, canonicalPath, gitEnvironment, readTask, updateTask, within } from './task-state.mjs';
 
 const MAX_PROMPT = 64 * 1024;
 const MAX_OUTPUT = 16 * 1024 * 1024;
@@ -453,7 +453,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       }
       const promptFile = canonicalPath(flags['--prompt-file']);
       const task = readTask(taskPath);
-      if (promptFile.startsWith(task.repository.working_directory + '/') ||
+      if (within(promptFile, task.repository.working_directory) ||
           statSync(promptFile).size > MAX_PROMPT) fail('prompt must be a bounded file outside the worktree');
       const request = { prompt: readFileSync(promptFile, 'utf8') };
       if (mode === 'launch') {
