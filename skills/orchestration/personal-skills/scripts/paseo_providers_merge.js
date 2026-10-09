@@ -18,7 +18,11 @@ try {
   const cfgPath = p.config_path || path.join(process.env.PASEO_HOME || path.join(os.homedir(), ".paseo"), "config.json");
   const raw = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, "utf8") : "{}";
   const expand = value => value.replace(/^~(?=[/\\]|$)/, os.homedir())
-    .replace(/%([^%]+)%/g, (_, key) => process.env[key] || (() => { throw Error('missing host env ' + key); })());
+    .replace(/%([^%]+)%/g, (_, key) => {
+      // A host value lands in config.json and its backups in plain text, so never copy a secret.
+      if (/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH/i.test(key)) throw Error('refusing secret-looking host env ' + key);
+      return process.env[key] || (() => { throw Error('missing host env ' + key); })();
+    });
   for (const env of Object.values(p.env)) for (const key of Object.keys(env)) env[key] = expand(env[key]);
   const visit = value => typeof value === 'string' ? value.replace(/\$\{([A-Z_]+)\}/g,
     (_, key) => p.env.pi?.[key] || (() => { throw Error('missing provider env ' + key); })())

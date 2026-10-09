@@ -5,9 +5,12 @@
 // .loadout-sync.json; anything else is a hand edit and stops the host.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const RECORD = ".loadout-sync.json";
-// Skipped like fleet.py skips them on the source: a leftover temp file or Finder's
-// .DS_Store is not a hand edit.
-const skipped = name => name === ".DS_Store" || name.endsWith(".loadout-tmp");
+const TMP = ".loadout-tmp";
+// Finder's .DS_Store and a temp file this sync itself writes (<managed file>.loadout-tmp or the
+// record's) are not hand edits. Any other *.loadout-tmp is still reported.
+let managed = new Set();
+const skipped = (name, r) => name === ".DS_Store" ||
+  r.endsWith(TMP) && !managed.has(r) && (managed.has(r.slice(0, -TMP.length)) || r === RECORD + TMP);
 const result = { status: null, target: null, added: [], changed: [], removed: [], conflicts: [], error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
@@ -32,8 +35,9 @@ function defaultTarget() {
 }
 function walk(dir, rel, out) {
   for (const name of fs.readdirSync(dir)) {
-    if (skipped(name)) continue;
-    const full = path.join(dir, name), r = rel ? rel + "/" + name : name, st = fs.lstatSync(full);
+    const full = path.join(dir, name), r = rel ? rel + "/" + name : name;
+    if (skipped(name, r)) continue;
+    const st = fs.lstatSync(full);
     if (st.isSymbolicLink()) throw new Error("symlink in fleet directory: " + r);
     if (st.isDirectory()) walk(full, r, out);
     else if (st.isFile()) { if (r !== RECORD) out[r] = sha(fs.readFileSync(full)); }
@@ -59,9 +63,10 @@ try {
   // The fleet directory and its loadout parent must be real directories.
   for (const dir of [path.dirname(target), target])
     if (fs.existsSync(dir) && !fs.lstatSync(dir).isDirectory()) throw new Error("not a real directory: " + dir);
-  const existing = fs.existsSync(target) ? walk(target, "", {}) : {};
   const recordPath = path.join(target, RECORD);
   const record = fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, "utf8")).files || {} : {};
+  managed = new Set([...Object.keys(desired), ...Object.keys(record)]);
+  const existing = fs.existsSync(target) ? walk(target, "", {}) : {};
   for (const rel of new Set([...Object.keys(desired), ...Object.keys(existing)])) {
     const want = desired[rel] && desired[rel].sha256, have = existing[rel];
     if (have === want) continue;
@@ -73,7 +78,7 @@ try {
   result.status = edits ? (p.dry_run ? "would update" : "updated") : "same";
   if (p.dry_run) done(0);
   for (const rel of [...result.added, ...result.changed]) {
-    const dest = path.join(target, ...rel.split("/")), tmp = dest + ".loadout-tmp";
+    const dest = path.join(target, ...rel.split("/")), tmp = dest + TMP;
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(tmp, desired[rel].data, { mode: 0o600 });
     fs.renameSync(tmp, dest);
@@ -85,8 +90,8 @@ try {
     throw new Error("fleet directory does not match the source after writing");
   const newRecord = JSON.stringify({ version: 1, files: expect }, null, 2);
   if (!fs.existsSync(recordPath) || fs.readFileSync(recordPath, "utf8") !== newRecord) {
-    fs.writeFileSync(recordPath + ".loadout-tmp", newRecord, { mode: 0o600 });
-    fs.renameSync(recordPath + ".loadout-tmp", recordPath);
+    fs.writeFileSync(recordPath + TMP, newRecord, { mode: 0o600 });
+    fs.renameSync(recordPath + TMP, recordPath);
   }
   done(0);
 } catch (e) {
