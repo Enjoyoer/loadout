@@ -8,7 +8,10 @@ import { z } from "zod";
 export const ConfigSchema = z
   .object({
     armed: z.boolean().default(false),
-    /** Most workspaces one sweep archives (or would archive in dry-run); the rest wait for the next sweep. */
+    /**
+     * Archive attempts per sweep; the rest are deferred to the next sweep. An armed archive call
+     * that fails still uses a slot, and dry-run previews the same number as would-archive.
+     */
     maxArchivesPerSweep: z.number().int().min(1).default(5),
     /** Slow backstop for merges done outside Paseo (for example the GitHub web UI). */
     sweepIntervalMinutes: z.number().min(1).max(24 * 60).default(60),

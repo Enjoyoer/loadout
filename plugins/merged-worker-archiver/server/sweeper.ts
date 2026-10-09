@@ -159,7 +159,7 @@ export class Sweeper {
       let nonCandidates = 0;
       // Archive attempts (would-archive in dry-run) left this sweep; the rest wait for the next sweep.
       let remaining = config.maxArchivesPerSweep;
-      let deferred = 0;
+      const deferred = new Set<string>();
       for (const workspace of inScope) {
         const agents = state.agentsByWorkspace.get(workspace.id) ?? [];
         const decision = await evaluateWorkspace(workspace, agents, config, this.deps);
@@ -174,7 +174,7 @@ export class Sweeper {
           continue;
         }
         if (remaining <= 0) {
-          deferred += 1;
+          deferred.add(workspace.id);
           log(formatDecision({ ...decision, reason: `${decision.reason}; maxArchivesPerSweep=${config.maxArchivesPerSweep} reached` }, "deferred"));
           continue;
         }
@@ -210,14 +210,14 @@ export class Sweeper {
         }
       }
       const counts = decisions.reduce<Record<string, number>>((acc, decision) => {
-        const key = !decision.candidate ? "nonCandidate" : decision.action;
+        const key = !decision.candidate ? "nonCandidate" : deferred.has(decision.workspaceId) ? "deferred" : decision.action;
         acc[key] = (acc[key] ?? 0) + 1;
         return acc;
       }, {});
       const pendingMerge = decisions.filter(isPendingMerge).map((decision) => decision.workspaceId);
       const latencyMs = options.eventAt === undefined ? undefined : this.deps.now() - options.eventAt;
       log(
-        `[merged-worker-archiver] sweep-done ${JSON.stringify({ trigger: options.trigger, mode: dryRun ? "dry-run" : "armed", evaluated: decisions.length, nonCandidates, counts, archived, deferred, pendingMerge, latencyMs })}`,
+        `[merged-worker-archiver] sweep-done ${JSON.stringify({ trigger: options.trigger, mode: dryRun ? "dry-run" : "armed", evaluated: decisions.length, nonCandidates, counts, archived, deferred: deferred.size, pendingMerge, latencyMs })}`,
       );
       return { decisions, archived, pendingMerge, error: null };
     } catch (error) {

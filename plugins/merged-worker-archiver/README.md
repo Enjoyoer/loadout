@@ -122,13 +122,17 @@ time. Sweeps are serialized.
 
 ## Per-sweep cap
 
-One sweep archives at most `maxArchivesPerSweep` workspaces (default 5). Further
-eligible workspaces are not archived: each gets a `deferred` log line, and they wait for
-the next sweep (the next turn end in their project or repository, or the periodic
-sweep). `sweep-done` reports how many were deferred as `deferred`. The cap counts
-archive attempts: a failed archive call uses a slot, a workspace that fails the armed
-fresh-state re-check does not, and deferred workspaces are not re-checked. Dry-run
-applies the same cap to `would-archive`, so its output previews an armed sweep.
+One sweep makes at most `maxArchivesPerSweep` archive attempts (default 5). The cap
+counts attempts, not successes: an armed archive call that fails still uses a slot, a
+workspace that fails the armed fresh-state re-check does not, and deferred workspaces
+are not re-checked. Dry-run applies the same cap to `would-archive`, so it previews the
+same 5 an armed sweep would attempt.
+
+Further eligible workspaces are not archived: each gets a `deferred` log line, and they
+wait for the next sweep (the next turn end in their project or repository, or the
+periodic sweep). In `sweep-done`, `counts.archive` covers only the candidates within the
+cap and `counts.deferred` the rest (also reported as `deferred`), so a sweep that finds 7
+eligible workspaces reports `"archive":5,"deferred":2`.
 
 ## Settings
 
@@ -141,7 +145,7 @@ every sweep, so edits take effect on the next sweep without a reload.
 | Key | Default | Meaning |
 |---|---|---|
 | `armed` | `false` | `true` allows real archiving. Anything else is dry-run. |
-| `maxArchivesPerSweep` | `5` | Most workspaces one sweep archives; the rest are deferred to the next sweep. A whole number of at least 1; anything else makes the settings invalid. |
+| `maxArchivesPerSweep` | `5` | Archive attempts per sweep; the rest are deferred to the next sweep. An armed archive call that fails still uses a slot, and dry-run previews the same number as `would-archive`. A whole number of at least 1; anything else makes the settings invalid. |
 | `sweepIntervalMinutes` | `60` | Backstop full-sweep interval (1 to 1440). |
 | `graceMinutes` | `0` | Minimum idle time before archiving (0 to 10080). A merged branch means the PM already integrated the work; raise it to keep an inspection window. |
 | `eventDebounceSeconds` | `3` | Coalescing window after a turn ends (0 to 60). |
