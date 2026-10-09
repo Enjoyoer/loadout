@@ -12,7 +12,9 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1) {
   // All filesystem fixtures stay in this worktree's ignored dependency directory.
   const root = await mkdtemp(path.join(process.cwd(), "node_modules/sweeper-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  // An empty parent reads as an unmounted volume, so the parent keeps one unrelated file.
+  // An empty parent reads as an unmounted volume, so the parent keeps one unrelated file. That file only clears the
+  // empty-parent check; it is no proof of a mount. Deletes here proceed because no mount the host declares over this
+  // checkout is absent.
   await writeFile(path.join(root, "keep"), "");
   let projects = Array.from({ length: count }, (_, index) => ({
     projectId: `project-${index}`, projectRootPath: path.join(root, `missing-${index}`),

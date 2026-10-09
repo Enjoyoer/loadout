@@ -3,7 +3,7 @@
 Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.pid` runtime listen metadata. An explicit non-default `PASEO_HOME` without valid endpoint metadata refuses to connect instead of falling back to another daemon. Invalid explicit hosts also fail closed. The standard local endpoint is a fallback only for an unset home or `~/.paseo`.
 
 Server-only Paseo plugin (Paseo >=0.10.3 <0.12.0) that deletes an orphaned Paseo project row.
-A project is orphaned only when both hold at evaluation time:
+A project is orphaned only when all of these hold at evaluation time:
 
 1. it has zero active (non-archived) workspaces, joined on `projectId`, and
 2. its `projectRootPath` no longer exists on disk (`lstat` fails with `ENOENT`/`ENOTDIR`),
@@ -11,6 +11,14 @@ A project is orphaned only when both hold at evaluation time:
    A root on an unmounted or late-mounting volume is skipped as `parent-missing`, never deleted.
    An unmounted volume usually leaves its mount point as an empty directory, so an empty parent
    counts as absent.
+3. On Linux and macOS, every mount point `/etc/fstab` declares over the root path is mounted now.
+   A non-empty parent alone proves nothing, because the directory under a mount point can hold
+   unrelated files. Linux reads `/proc/self/mountinfo` (an automount trigger alone does not count);
+   macOS and other POSIX systems compare the mount point's device id with its parent directory's.
+   A declared mount that is absent skips the project as `mount-absent`. If `/etc/fstab` exists but
+   cannot be read, or the mount table cannot be read, the project is kept as `mount-unverifiable`.
+   A mount the host does not declare (mounted by hand or by a desktop session) looks like a plain
+   directory, so only the empty-parent rule covers it. Windows keeps the drive-root rule above.
 
 It defaults to dry-run until `armed` is exactly `true`. It removes Paseo bookkeeping,
 never git branches or repository/worktree directories. The daemon also removes the
@@ -28,8 +36,12 @@ project's custom icon when deleting its row (see Recovery).
 Every decision logs one stdout line (`paseo plugin logs orphan-project-sweeper`) with
 `projectId`, `path`, and a reason (including `would-delete` when unarmed and
 `cap-reached` for candidates beyond the sweep limit): `orphaned(...)`, `path-still-exists`,
-`active-workspaces`, `path-unverifiable`, `parent-missing`, or `project-missing`. The project is
-re-evaluated immediately before each delete.
+`active-workspaces`, `path-unverifiable`, `parent-missing`, `mount-absent`, `mount-unverifiable`,
+or `project-missing`. The project is re-evaluated immediately before each delete: filesystem and
+mount checks first, then the daemon's workspace count, then one last `lstat` of the root path
+right before `removeProject`. The daemon's `project.remove.request` carries only the project ID,
+so it cannot refuse a row that changed after that last check; closing the remaining gap needs a
+daemon-side precondition on the request.
 
 ## Internal client dependency and the version bound
 
