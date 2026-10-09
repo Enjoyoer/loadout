@@ -5,7 +5,8 @@ param(
 # Desktop launch guard: reapply the picker patch, then always launch Paseo.
 # A normal user cannot write the per-machine install under Program Files, so a
 # reapply failure after an app update warns and launches the unpatched client.
-# Reapply it later from an elevated shell (see the logged command).
+# Reapply it later from an elevated shell (see the logged command). That command
+# names the python resolved here, unelevated, so the elevated run skips PATH.
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $log=Join-Path $env:LOCALAPPDATA 'loadout\picker-launch.log'
@@ -25,12 +26,14 @@ if(-not (Test-Path -LiteralPath $exe)){throw "Paseo.exe not found under $AppRoot
 $bundle=Join-Path $AppRoot 'resources\app-dist'
 $patch=Join-Path $PSScriptRoot 'picker-patch.py'
 $reapplied=$false
+$python=Get-Command python -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
 try {
- & python $patch $bundle reapply --preferences-script $PreferencesScript
+ if(-not $python){throw 'python not found on PATH'}
+ & $python $patch $bundle reapply --preferences-script $PreferencesScript
  $reapplied=($LASTEXITCODE -eq 0)
  if(-not $reapplied){ $reason="exit $LASTEXITCODE" }
 } catch { $reason=$_.Exception.Message }
 if(-not $reapplied){
- Write-GuardLog "Picker reapply failed ($reason); launching the unpatched client. Reapply from an elevated shell: python `"$patch`" `"$bundle`" reapply --preferences-script `"$PreferencesScript`""
+ Write-GuardLog "Picker reapply failed ($reason); launching the unpatched client. Reapply from an elevated PowerShell: & `"$python`" `"$patch`" `"$bundle`" reapply --preferences-script `"$PreferencesScript`""
 }
 Start-Process -FilePath $exe

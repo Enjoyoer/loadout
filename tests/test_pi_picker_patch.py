@@ -98,6 +98,15 @@ if(JSON.stringify([definitions,snapshots])!==before)throw Error('provider input 
             picker.run(root,'rollback')
             self.assertEqual(p.read_text(),BUNDLE)
 
+    def test_changed_preference_script_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);p=root/'index-original.js';p.write_text(BUNDLE)
+            picker.run(root,'apply',"localStorage.setItem('example', 'pi')")
+            patched=p.read_bytes()
+            with self.assertRaisesRegex(ValueError,'differs from the pinned'):
+                picker.run(root,'apply',"localStorage.setItem('example', 'swapped')")
+            self.assertEqual(p.read_bytes(),patched)
+
     def test_unsupported_client_is_rejected_without_mutation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);p=root/'index-unsupported.js';p.write_text('buildSelectableProviderSelectorProviders=function unsupported')
