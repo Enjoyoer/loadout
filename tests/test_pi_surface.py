@@ -38,6 +38,16 @@ class PiSurfaceTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'gmail'):
                 build({**spec, 'gmail': bad}, root)
 
+    def test_router_base_url_requires_https_unless_loopback(self):
+        sys.path.insert(0, str(PI))
+        from configure import build
+        spec = {'credential': {'kind': 'env', 'name': 'EXISTING_KEY'}, 'models': [{'id': 'current', 'name': 'Sol'}],
+                'settings': {'defaultProvider': 'fleet', 'defaultModel': 'current', 'defaultThinkingLevel': 'high'}}
+        root = Path('/tmp/example-pi')
+        with self.assertRaisesRegex(ValueError, 'https unless the host is loopback'):
+            build({**spec, 'baseUrl': 'http://router.example.test/v1'}, root)
+        self.assertEqual(build({**spec, 'baseUrl': 'http://127.0.0.1:4000/v1'}, root)['agent/models.json']['providers']['fleet']['baseUrl'], 'http://127.0.0.1:4000/v1')
+
     def test_direct_provider_adds_unauthenticated_models_and_picker_rows(self):
         sys.path.insert(0, str(PI))
         from configure import build
