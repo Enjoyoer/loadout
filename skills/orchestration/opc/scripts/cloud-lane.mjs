@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { updateTask } from './task-state.mjs';
+import { readTask, updateTask } from './task-state.mjs';
 
 export const CLOUD_ROUTE = Object.freeze({ model: 'claude-opus-5-5[1m]', effort: 'xhigh', fastMode: false });
 export const CLOUD_LIMITS = Object.freeze({ draftPrMinutes: 20, idleMinutes: 90, hardCapMinutes: 360, followUps: 1 });
@@ -19,6 +19,9 @@ export const defaultReposPath = () => join(homedir(), '.config', 'opc', 'cloud-r
 // The lane marker reuses the managed opc/<slug> name. Cloud sessions push only to their own claude/... branch,
 // so the marker goes in the PR title, never in a branch name.
 const branchPattern = /^opc\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// GitHub owner and repository names only; the value reaches ssh, which runs it through the remote shell.
+const repoPart = '[A-Za-z0-9._-]+';
+const repoPattern = new RegExp(`^${repoPart}/${repoPart}$`);
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const minutes = (from, to) => (Date.parse(to) - Date.parse(from)) / 60000;
 
@@ -37,14 +40,14 @@ export function readCloudRepos({ path = defaultReposPath() } = {}) {
 }
 
 export function isCloudRepo(repo, { path = defaultReposPath() } = {}) {
-  if (!/^[^/\s*]+\/[^/\s*]+$/.test(repo ?? '')) return false;
+  if (!repoPattern.test(repo ?? '')) return false;
   const repos = new Set([...readCloudRepos({ path })].map(item => item.toLowerCase()));
   const name = repo.toLowerCase();
   return repos.has(name) || repos.has(`${name.split('/')[0]}/*`);
 }
 
 export function setCloudRepo(repo, allowed, { path = defaultReposPath() } = {}) {
-  if (!/^[^/\s*]+\/(?:\*|[^/\s*]+)$/.test(repo ?? '')) throw Error('owner/repo or owner/* required');
+  if (!new RegExp(`^${repoPart}/(?:\\*|${repoPart})$`).test(repo ?? '')) throw Error('owner/repo or owner/* required');
   const repos = readCloudRepos({ path });
   if (allowed) repos.add(repo); else repos.delete(repo);
   mkdirSync(dirname(path), { recursive: true });
@@ -104,7 +107,7 @@ export function buildCloudLaunchCommand({ briefPath }) {
 }
 
 export function buildCloudHeartbeatRequest({ taskPath, repo, branch }) {
-  if (!text(taskPath) || !/^[^/\s]+\/[^/\s]+$/.test(repo ?? '') || !branchPattern.test(branch ?? '')) {
+  if (!text(taskPath) || !repoPattern.test(repo ?? '') || !branchPattern.test(branch ?? '')) {
     throw Error('task path, owner/repo, and cloud lane marker required');
   }
   return Object.freeze({
@@ -143,19 +146,34 @@ export function assessCloudProgress({ launchedAt, now, pr = null, lastPushAt = n
   return { state: 'running', reason: null };
 }
 
-export function recordCloudLaunch(taskPath, { sessionId, url, branch, repo, launchedAt, heartbeatId }) {
-  if (![sessionId, url, repo, launchedAt, heartbeatId].every(text) || !branchPattern.test(branch ?? '')) {
-    throw Error('cloud session id, URL, branch, repo, launch time, and heartbeat id required');
+// Record the launch before creating its heartbeat, so a PM that stops in between leaves a lane to reconcile.
+export function recordCloudLaunch(taskPath, { sessionId, url, branch, repo, launchedAt }) {
+  if (![sessionId, url, repo, launchedAt].every(text) || !branchPattern.test(branch ?? '')) {
+    throw Error('cloud session id, URL, branch, repo, and launch time required');
   }
   return updateTask(taskPath, task => {
     if (task.cloud) throw Error('cloud lane already recorded; reconcile it, never launch a second session');
     task.cloud = { status: 'running', session_id: sessionId, url, branch, repo, launched_at: launchedAt,
-      heartbeat_id: heartbeatId, route: { ...CLOUD_ROUTE }, progress: null, reason: null, fallback: null,
+      heartbeat_id: null, route: { ...CLOUD_ROUTE }, progress: null, reason: null, fallback: null,
       suspect: null, active_at: null, follow_ups: 0 };
   }).cloud;
 }
 
+// A recorded lane without a heartbeat id needs a heartbeat, never a second session.
+export function recordCloudHeartbeat(taskPath, { heartbeatId }) {
+  if (!text(heartbeatId)) throw Error('heartbeat id required');
+  return updateTask(taskPath, task => {
+    if (task.cloud?.status !== 'running' || task.cloud.heartbeat_id) throw Error('no running cloud lane awaiting a heartbeat');
+    task.cloud.heartbeat_id = heartbeatId;
+  }).cloud;
+}
+
 export function recordCloudProgress(taskPath, { now, pr = null, commits = 0, lastPushAt = null, unavailable = false, noCredits = false }) {
+  // With no running lane the heartbeat has nothing to observe: report terminal so it deletes itself.
+  const current = readTask(taskPath);
+  if (current.cloud?.status !== 'running') {
+    return cloudResult({ state: current.cloud?.status ?? 'dead', reason: current.cloud?.reason ?? 'no cloud lane recorded' }, current);
+  }
   let decision;
   const task = updateTask(taskPath, task => {
     if (task.cloud?.status !== 'running') throw Error('no running cloud lane to observe');
@@ -170,7 +188,7 @@ export function recordCloudProgress(taskPath, { now, pr = null, commits = 0, las
 }
 
 const cloudResult = (decision, task, extra = {}) => Object.freeze({ ...decision, ...extra,
-  terminal: decision.state === 'ready' || decision.state === 'dead', heartbeatId: task.cloud.heartbeat_id,
+  terminal: decision.state === 'ready' || decision.state === 'dead', heartbeatId: task.cloud?.heartbeat_id ?? null,
   tellOwner: decision.reason === NO_CREDITS });
 
 // A quiet remote is only suspect. The session page decides: working keeps waiting, waiting or unreadable gets one
@@ -225,16 +243,20 @@ export function authorizeCloudFallback(taskPath) {
 }
 
 function readAuthStatus() {
-  return JSON.parse(execFileSync('claude', ['auth', 'status', '--json'], { encoding: 'utf8' }));
+  return JSON.parse(execFileSync('claude', ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 30000 }));
 }
 
 function pushToFleet(fleet, args) {
   if (!fleet) return;
   const script = '.codex/skills/opc/scripts/cloud-lane.mjs';
   for (const host of fleet.split(',').filter(Boolean)) {
-    const ssh = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, 'node', script, ...args];
-    try { console.log(`${host}: ${execFileSync('ssh', ssh, { encoding: 'utf8' }).trim()}`); }
-    catch (error) { console.log(`${host}: FAILED ${(error.stderr || error.message).toString().trim().split('\n').at(-1)}`); }
+    // ssh hands the words to the remote shell; quote them so owner/* is not globbed there.
+    const ssh = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, 'node', script, ...args.map(arg => `'${arg}'`)];
+    try { console.log(`${host}: ${execFileSync('ssh', ssh, { encoding: 'utf8', timeout: 60000 }).trim()}`); }
+    catch (error) {
+      console.log(`${host}: FAILED ${(error.stderr || error.message).toString().trim().split('\n').at(-1)}`);
+      process.exitCode = 1;
+    }
   }
 }
 

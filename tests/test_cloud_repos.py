@@ -45,7 +45,7 @@ class CloudReposTest(unittest.TestCase):
                          [True, True, False, False, False])
 
     def test_invalid_entries_are_rejected(self):
-        for bad in ("*/*", "Acme", "Acme/a*", "a/b/c"):
+        for bad in ("*/*", "Acme", "Acme/a*", "a/b/c", "Acme/app;id"):
             with self.subTest(bad=bad), self.assertRaises(AssertionError):
                 self.check([bad], [])
 
