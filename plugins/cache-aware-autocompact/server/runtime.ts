@@ -470,7 +470,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       note: "Set config.armed=true explicitly to permit sends",
     });
   });
-  return () => {
+  return async () => {
     stopped = true;
     lifetime.abort();
     void startupClient?.close().catch(() => undefined);
@@ -485,5 +485,8 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     deferredTurns.clear();
     expectedUserMessage.clear();
     recoveryFailures.clear();
+    // A store passed in belongs to the caller. Ours drops every later write, and teardown
+    // waits for the one in flight, so a reloaded instance never races this one's writes.
+    if (!dependencies.store) await store.close();
   };
 }
