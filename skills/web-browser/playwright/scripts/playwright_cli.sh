@@ -16,7 +16,7 @@ for arg in "$@"; do
   esac
 done
 
-cmd=(npx --yes --package @playwright/cli playwright-cli)
+cmd=(npx --yes --package @playwright/cli@0.1.22 playwright-cli)
 if [[ "${has_session_flag}" != "true" && -n "${PLAYWRIGHT_CLI_SESSION:-}" ]]; then
   cmd+=(--session "${PLAYWRIGHT_CLI_SESSION}")
 fi

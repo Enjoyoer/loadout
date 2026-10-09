@@ -1,0 +1,2 @@
+# False positive: the client config tests define a made-up token fixture and assert it never leaks.
+5e08a3742df905370493c1bb1f36fff2fff13003:tests/test_client_config.py:generic-api-key:64
