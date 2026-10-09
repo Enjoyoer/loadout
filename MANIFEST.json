@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "a262f31cf9b883d15e21078ceeed6b95a8c92d36",
+  "source_commit": "b65fd773e1060558ac5d63cb7849833eb906d07c",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -156,8 +156,8 @@
       "path": "skills/orchestration/claude-cloud/SKILL.md",
       "category": "orchestration",
       "skill": "claude-cloud",
-      "bytes": 5582,
-      "sha256": "9ba9300d6e362fa88d3f2ae8708e2310d6f959caa086681eea69cb3ec0c0e774"
+      "bytes": 5698,
+      "sha256": "95b29f2760f7c9e3d341aab32e2cd6154073721a92afcd3260b91d9adf90e7da"
     },
     {
       "path": "skills/orchestration/dispatching-parallel-agents/SKILL.md",
@@ -192,7 +192,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5408,
-      "sha256": "5807ae0744d58e3c5ed6727cd74628fc874407f014bb42bb4a2f04d5da482504"
+      "sha256": "e1eae15947623d8132f4537e545e835658ba1827aba26a38adb08a792a2e07eb"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -205,8 +205,8 @@
       "path": "skills/orchestration/opc/references/cloud-lane.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 6206,
-      "sha256": "2d82b1711cf23364476ed24723b73ea7711aa1619b11001438e6cd97c94ab74a"
+      "bytes": 6380,
+      "sha256": "2cfaa52566ea6454b02515819a8f31960113310db8e2cf1045e5672765694abf"
     },
     {
       "path": "skills/orchestration/opc/references/codex-sites.md",
@@ -317,8 +317,8 @@
       "path": "skills/orchestration/opc/scripts/cloud-lane.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 23223,
-      "sha256": "458e709b9e847d98118ad1c1b8d6731674c7018e007ad6506dd5417eb4d5a91b"
+      "bytes": 23480,
+      "sha256": "3fc28dc51cc8c07df40d5639de93271af4a73de328a23850f6d840d633e035d2"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",

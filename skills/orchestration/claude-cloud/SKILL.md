@@ -29,11 +29,11 @@ Run from inside the repository:
 
 ```bash
 claude --cloud "<brief>" --model 'claude-opus-5-5[1m]' --effort xhigh  # create one new cloud session
-claude -p "<message>" --cloud <session_id | claude.ai/code URL>     # queue a follow-up into an existing session
-claude --teleport [session_id]                                      # pull a finished session into this terminal
+claude -p "<message>" --cloud <session_id | claude.ai/code URL> --model 'claude-opus-5-5[1m]' --effort xhigh  # queue a follow-up
+claude --teleport [session_id] --model 'claude-opus-5-5[1m]' --effort xhigh  # pull a finished session into this terminal
 ```
 
-- `--model <id>` and `--effort <level>` apply to the new session. The owner's default for cloud lanes is Opus 5.5 at xhigh, as shown.
+- Owner rule: every cloud session runs `claude-opus-5-5[1m]` at `--effort xhigh`, never another model or effort, whatever the task's class or route. Pass both flags on every launch, follow-up and teleport, exactly as shown.
 - `--cloud` requires an interactive terminal. Non-interactive invocations, including an agent's Bash tool call, run locally and silently ignore `--cloud`.
 
 - Write the description as a complete, self-contained brief: outcome, scope, constraints, and checks. The session cannot ask the local agent follow-up questions, so the brief must also:
