@@ -85,15 +85,24 @@ function parseMetadata(raw: string | null): { value: WorktreeMetadata | null; re
   }
 }
 
-function statusCounts(status: string): { changed: number; untracked: number } {
+function statusCounts(status: string): { changed: number; untracked: number; ignored: number } {
   let changed = 0;
   let untracked = 0;
+  let ignored = 0;
   for (const line of status.split("\n")) {
     if (!line.trim()) continue;
     if (line.startsWith("??")) untracked += 1;
+    else if (line.startsWith("!!")) ignored += 1;
     else changed += 1;
   }
-  return { changed, untracked };
+  return { changed, untracked, ignored };
+}
+
+function dirtyReason(status: { changed: number; untracked: number; ignored: number }): string | null {
+  const parts: string[] = [];
+  if (status.changed > 0 || status.untracked > 0) parts.push(`changed=${status.changed}`, `untracked=${status.untracked}`);
+  if (status.ignored > 0) parts.push(`ignored=${status.ignored}`);
+  return parts.length > 0 ? `dirty(${parts.join(",")})` : null;
 }
 
 function hasBranchCommit(reflog: string): boolean {
@@ -126,12 +135,12 @@ export async function checkMerged(directory: string, deps: MergeCheckDeps): Prom
     }
   }
 
-  const statusResult = await runGit(deps, directory, ["status", "--porcelain=v1", "--untracked-files=all"], "status");
+  // Ignored files (.env, notes, node_modules) count as dirty too: archiving removes the
+  // worktree with --force. "matching" lists an ignored directory once instead of every file in it.
+  const statusResult = await runGit(deps, directory, ["status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"], "status");
   if (statusResult.failure) return { merged: false, branch, base: null, reason: statusResult.failure };
-  const status = statusCounts(statusResult.result.stdout);
-  if (status.changed > 0 || status.untracked > 0) {
-    return { merged: false, branch, base: null, reason: `dirty(changed=${status.changed},untracked=${status.untracked})` };
-  }
+  const dirty = dirtyReason(statusCounts(statusResult.result.stdout));
+  if (dirty) return { merged: false, branch, base: null, reason: dirty };
 
   const reflogResult = await runGit(deps, directory, ["reflog", "show", "--format=%H %gs"], "reflog");
   if (reflogResult.failure) return { merged: false, branch, base: null, reason: reflogResult.failure };
