@@ -3,7 +3,7 @@ import copy
 import re
 from configure import LEVELS, direct_providers
 
-CANONICAL = {'Opus','Sonnet','Fable','Astra','Sol','Luna','Web Extra','Web Pro'}
+CANONICAL = {'Opus','Sonnet','Fable','Haiku','Astra','Sol','Luna','Web Extra','Web Pro'}
 LEVEL_LABELS = {'off':'Off','minimal':'Minimal','low':'Low','medium':'Medium','high':'High','xhigh':'Extra High','max':'Max'}
 
 
