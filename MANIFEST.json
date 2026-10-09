@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "bd4ebfd2128a98fd9c35cb752bf2883b8a6b4d39",
+  "source_commit": "4e005f53e947bb49ca2540439f64c9828509a851",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -192,7 +192,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5408,
-      "sha256": "fcdf337c76c0757d3b2523bdce94dfd2e214f799159237490af262504e8a7b6c"
+      "sha256": "131564422bb79c2a1b6b2db5fb31cd423a9118c002878a2a689bd21db500cdbe"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -205,8 +205,8 @@
       "path": "skills/orchestration/opc/references/cloud-lane.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 6470,
-      "sha256": "8c64c3f2505c544dbc9ebe51756ce40bb5c5832575ab3a8848f38e615014f1d4"
+      "bytes": 6580,
+      "sha256": "25583e1e5a4d776e81a084de7d4aee2600217820d67b45deeeb61cbdb4dcca0c"
     },
     {
       "path": "skills/orchestration/opc/references/codex-sites.md",
@@ -352,8 +352,8 @@
       "path": "skills/orchestration/opc/scripts/route.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 10537,
-      "sha256": "43d4007f3c667a83cf9412ce278a2d9fa34a36a6cfc9eb5f8f930e7928307bd8"
+      "bytes": 10797,
+      "sha256": "b6a788fab330ce7f47b6b54d41ebff57451b46d0795656980b16e75b5607ce4b"
     },
     {
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
