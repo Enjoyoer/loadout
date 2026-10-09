@@ -14,6 +14,18 @@ function done(code) {
   process.exit(code);
 }
 const sha = buf => crypto.createHash("sha256").update(buf).digest("hex");
+// Every existing component from root down to the file must be a real directory.
+function checkAncestors(root, file) {
+  const rel = path.relative(root, file);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) throw new Error("path escapes its root: " + file);
+  let cur = root;
+  for (const part of [""].concat(path.dirname(rel) === "." ? [] : path.dirname(rel).split(path.sep))) {
+    cur = part ? path.join(cur, part) : cur;
+    if (!fs.existsSync(cur)) return;
+    const st = fs.lstatSync(cur);
+    if (st.isSymbolicLink() || !st.isDirectory()) throw new Error("not a real directory: " + cur);
+  }
+}
 function defaultTarget() {
   if (process.platform === "win32") return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "loadout", "fleet");
   return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "loadout", "fleet");
@@ -36,8 +48,10 @@ try {
   const desired = {};
   for (const [rel, f] of Object.entries(p.files)) {
     const parts = rel.split("/");
-    if (path.isAbsolute(rel) || parts.some(x => x === "" || x === "." || x === "..") || rel === RECORD)
+    // A backslash or drive prefix is a separator or root on a Windows target.
+    if (path.isAbsolute(rel) || /\\|^[A-Za-z]:/.test(rel) || parts.some(x => x === "" || x === "." || x === "..") || rel === RECORD)
       throw new Error("invalid path from source: " + rel);
+    checkAncestors(target, path.join(target, ...parts));
     const data = Buffer.from(f.data, "base64");
     if (sha(data) !== f.sha256) throw new Error("hash mismatch in transfer: " + rel);
     desired[rel] = { data, sha256: f.sha256 };

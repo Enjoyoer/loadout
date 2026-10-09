@@ -40,6 +40,8 @@ SCOPES = ("skills", "plugins", "providers", "client-config")
 # Scopes that move files or secrets, so they need an ssh transport.
 SSH_SCOPES = {"skills", "plugins", "client-config"}
 OSES = {"macos", "windows", "linux"}
+# Host names are ssh aliases and reach ssh's argv, so a leading '-' would read as an option.
+HOST_NAME = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 CLIENTS = {"codex", "claude", "opencode", "pi"}
 TOP_KEYS = {"schema_version", "source_host", "transport", "notes", "hosts", "global"}
 HOST_KEYS = {"name", "os", "checkout", "clients", "paseo", "transport", "sync", "paseo_offer", "exclude_skills"}
@@ -139,6 +141,8 @@ def validate(data: Any) -> dict:
         name = host.get("name")
         if not isinstance(name, str) or not name:
             raise FleetError(f"{where}.name must be a non-empty string")
+        if not HOST_NAME.fullmatch(name):
+            raise FleetError(f"{where}.name {name!r} must use only A-Z, a-z, 0-9, '.', '_' or '-' and not start with '-'")
         where = f"host {name}"
         if name in names:
             raise FleetError(f"{where} is listed twice")
@@ -274,7 +278,7 @@ def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Opti
         # Inside an agent session, keep daemon commands off the agent's own identity.
         env = {k: v for k, v in os.environ.items() if k not in ("PASEO_AGENT_ID", "PASEO_AGENT_CWD")}
     else:
-        command = ["ssh", *SSH_OPTIONS, name, f'node -e "{BOOT}" -- {pack(program.read_bytes())}']
+        command = ["ssh", *SSH_OPTIONS, "--", name, f'node -e "{BOOT}" -- {pack(program.read_bytes())}']
     try:
         done = subprocess.run(command, input=body, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:

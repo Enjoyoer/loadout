@@ -5,7 +5,7 @@
 // exception is migrate_path: `paseo plugin remove` deletes <PASEO_HOME>/plugin-settings/<id>, so a
 // migration backs that directory up first and restores the host's own bytes, hash-verified.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
-const { execSync } = require("child_process");
+const { execSync, execFileSync } = require("child_process");
 const result = { status: null, plugins: {}, conflicts: [], daemon: null, error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
@@ -44,24 +44,33 @@ function hashTree(dir, skip = SKIP, rel = "", out = {}) {
   return out;
 }
 
-function sh(command, cwd, timeout = 900000) {
-  return execSync(command, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout, env: process.env });
+// Arguments are fixed words, checked plugin IDs, or paths. The npm and paseo shims on Windows
+// are .cmd files that run only through cmd.exe, so there a path is quoted instead.
+function winArg(arg) {
+  if (/^[A-Za-z0-9._-]+$/.test(arg)) return arg;
+  if (/["%\r\n]/.test(arg)) throw new Error("cannot pass to cmd.exe: " + arg);
+  return `"${arg}"`;
+}
+function sh(file, args, cwd, timeout = 900000) {
+  const options = { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout, env: process.env };
+  if (process.platform === "win32") return execSync([file, ...args].map(winArg).join(" "), options);
+  return execFileSync(file, args, options);
 }
 
 const WINDOWS_PASEO = "C:\\Program Files\\Paseo\\resources\\bin\\paseo.cmd";
 function paseo(args) {
   const bins = ["paseo"];
-  if (process.platform === "win32" && fs.existsSync(WINDOWS_PASEO)) bins.push(`"${WINDOWS_PASEO}"`);
+  if (process.platform === "win32" && fs.existsSync(WINDOWS_PASEO)) bins.push(WINDOWS_PASEO);
   let last;
   for (const bin of bins) {
-    try { return sh(bin + " " + args, undefined, 120000); } catch (e) {
+    try { return sh(bin, args, undefined, 120000); } catch (e) {
       last = e;
       // Fall back only when the shell found no such command (cmd.exe 9009, sh 127): a real failure
       // of a non-idempotent command such as `plugin remove` must not run twice.
       if (e.status !== 9009 && e.status !== 127) break;
     }
   }
-  throw new Error(("paseo " + args + ": " + String(last.stderr || last.message)).trim().slice(0, 300));
+  throw new Error(("paseo " + args.join(" ") + ": " + String(last.stderr || last.message)).trim().slice(0, 300));
 }
 
 // Semver range of space-separated comparators; a prerelease never satisfies.
@@ -98,8 +107,8 @@ function migrate(id, dir, from) {
   }
   const keep = had ? "; settings backup kept at " + backup : "";
   try {
-    paseo("plugin remove " + id);
-    paseo(`plugin install "${dir}"`);
+    paseo(["plugin", "remove", id]);
+    paseo(["plugin", "install", dir]);
   } catch (e) {
     throw new Error(e.message + keep + "; the plugin may be removed, reinstall it from " + dir);
   } finally {
@@ -110,13 +119,14 @@ function migrate(id, dir, from) {
     }
   }
   if (!had) return `migrated from ${from}; no settings to carry`;
-  paseo("plugin reload " + id);
+  paseo(["plugin", "reload", id]);
   return `migrated from ${from}; settings restored (${Object.keys(want).length} files, hashes verified)${keep}`;
 }
 
 try {
   const p = JSON.parse(zlib.gunzipSync(Buffer.from(fs.readFileSync(0, "utf8").trim(), "base64")).toString());
   const data = {};
+  for (const id of Object.keys(p.plugins)) if (!/^[a-z0-9-]+$/.test(id)) throw new Error("invalid plugin id from source: " + id);
   for (const [id, plugin] of Object.entries(p.plugins))
     for (const [rel, f] of Object.entries(plugin.files)) {
       if (rel.split("/").some(x => !x || x === "." || x === "..")) throw new Error("invalid path from source: " + rel);
@@ -163,9 +173,9 @@ try {
   if (p.install.length) {
     // Pin-check the running daemon, not the CLI on PATH: they can differ after a staged upgrade.
     let version = null, cli = null;
-    try { cli = paseo("--version").trim().split(/\s+/).pop(); } catch (e) { gate = "paseo CLI not found"; }
+    try { cli = paseo(["--version"]).trim().split(/\s+/).pop(); } catch (e) { gate = "paseo CLI not found"; }
     if (!gate) {
-      try { version = JSON.parse(paseo("daemon status --json")).daemonVersion || null; } catch (e) { /* below */ }
+      try { version = JSON.parse(paseo(["daemon", "status", "--json"])).daemonVersion || null; } catch (e) { /* below */ }
       if (!version) gate = "the running daemon did not report its version (paseo daemon status --json)";
     }
     const enabled = daemonConfig().pluginsEnabled === true;
@@ -206,15 +216,16 @@ try {
   }
 
   let failed = false;
-  // 2. Check: npm ci and the package's check (or typecheck) script, when staged source changed or deps are missing.
+  // 2. Check: npm ci (no dependency install scripts) and the package's check (or typecheck) script,
+  // when staged source changed or deps are missing.
   for (const id of p.stage) {
     const dir = path.join(root, id), info = result.plugins[id];
     if (info.staged === "same" && fs.existsSync(path.join(dir, "node_modules"))) { info.checked = "skipped (unchanged)"; continue; }
     const scripts = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).scripts || {};
     const script = scripts.check ? "check" : scripts.typecheck ? "typecheck" : null;
     try {
-      sh("npm ci", dir);
-      if (script) sh("npm run " + script, dir);
+      sh("npm", ["ci", "--ignore-scripts"], dir);
+      if (script) sh("npm", ["run", script], dir);
       info.checked = script || "no check script";
     } catch (e) {
       info.checked = "FAILED: " + String(e.stderr || e.message).trim().split("\n").slice(-3).join(" ").slice(0, 300);
@@ -237,10 +248,10 @@ try {
         info.installed = "blocked: disabled plugin installed from " + from.path; blocked = true; continue;
       }
       if (from) info.installed = migrate(id, dir, from.path);
-      else if (!current) { paseo(`plugin install "${dir}"`); info.installed = "installed"; }
-      else if (info.staged === "changed") { paseo("plugin reload " + id); info.installed = "reloaded"; }
+      else if (!current) { paseo(["plugin", "install", dir]); info.installed = "installed"; }
+      else if (info.staged === "changed") { paseo(["plugin", "reload", id]); info.installed = "reloaded"; }
       else info.installed = "already installed";
-      const listed = JSON.parse(paseo("plugin ls --json")).find(x => x.id === id);
+      const listed = JSON.parse(paseo(["plugin", "ls", "--json"])).find(x => x.id === id);
       info.running = !!listed && listed.status === "running" && listed.enabled === true;
       if (!info.running) { info.installed += "; not running: " + (listed ? (listed.error || listed.status) : "missing"); failed = true; }
     } catch (e) {

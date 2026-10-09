@@ -20,6 +20,7 @@ FAKE_SSH = textwrap.dedent(r"""
     #!/bin/sh
     [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
     while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
+    [ "$1" = "--" ] && shift
     host="$1"; shift
     unset PASEO_HOME
     HOME="$FAKE_ROOT/hosts/$host" exec sh -c "$*"
@@ -133,7 +134,7 @@ class RemotePluginTest(Fixture):
         self.assertEqual(got["status"], "updated", got)
         self.assertEqual(got["plugins"]["demo"], {"staged": "changed", "checked": "check", "installed": "installed", "running": True})
         self.assertEqual(self.staged("server/index.ts").read_bytes(), b"export {}\n")
-        self.assertIn(f"npm ci in {self.staged().resolve()}", self.calls())
+        self.assertIn(f"npm ci --ignore-scripts in {self.staged().resolve()}", self.calls())
         self.assertIn(f'paseo plugin install {self.staged()}', self.calls().replace('"', ""))
         got = self.run_remote()
         self.assertEqual(got["status"], "same", got)

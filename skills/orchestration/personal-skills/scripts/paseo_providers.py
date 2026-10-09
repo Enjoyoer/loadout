@@ -201,7 +201,7 @@ class Runner:
         if self.mode in {"local", "ssh"}:
             raw, boot = staged_payload(program, data)
             command = (["node", "-e", boot] if self.mode == "local" else
-                       ["ssh", *fleet.SSH_OPTIONS, self.name, f'node -e "{boot}"'])
+                       ["ssh", *fleet.SSH_OPTIONS, "--", self.name, f'node -e "{boot}"'])
             # Without the agent session's PASEO_HOME, the merge finds the host's own Paseo home.
             try:
                 done = subprocess.run(command, input=raw, capture_output=True, text=True, env=self.base_env(),
@@ -238,6 +238,9 @@ class Runner:
 
     def run_in_terminal(self, terminal: str, program: str, data: str) -> str:
         self.wait_for_prompt(terminal)
+        # Keep the payload out of shell history. This is its own command because zsh with
+        # SHARE_HISTORY saves a line as it is read, before a same-line unset runs.
+        self.terminal_command(terminal, "unset HISTFILE", require_success=True)
         inline = f"node -e \"{BOOT}\" -- '{program}' '{data}'"
         if len(inline) <= RELAY_INLINE_LIMIT:
             return self.terminal_command(terminal, inline)
@@ -324,7 +327,7 @@ class Runner:
             command = ["paseo", "reload"]
             env = self.relay_env()
         else:
-            command = ["ssh", "-n", *fleet.SSH_OPTIONS, self.name, "paseo reload"]
+            command = ["ssh", "-n", *fleet.SSH_OPTIONS, "--", self.name, "paseo reload"]
             env = self.base_env()
         try:
             done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=RELOAD_TIMEOUT_SECONDS)

@@ -11,6 +11,16 @@ function done(code) {
   process.exit(code);
 }
 
+// Managed keys, section names and reportOnly entries become TOML lines and a regex: bare
+// keys, optionally dotted, only.
+const TOML_NAME = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/;
+function checkNames(codex) {
+  const names = [...Object.keys(codex.top), ...codex.reportOnly];
+  for (const [name, keys] of Object.entries(codex.sections)) names.push(name, ...Object.keys(keys));
+  const bad = names.filter(n => typeof n !== "string" || !TOML_NAME.test(n));
+  if (bad.length) throw new Error("refused, nothing written: managed Codex names must be bare TOML keys: " + JSON.stringify(bad));
+}
+
 function tomlValue(v) {
   if (typeof v === "string") return JSON.stringify(v);
   if (typeof v === "boolean" || typeof v === "number") return String(v);
@@ -93,6 +103,7 @@ function claudeVersion() {
 
 try {
   const p = JSON.parse(zlib.gunzipSync(Buffer.from(fs.readFileSync(0, "utf8").trim(), "base64")).toString());
+  checkNames(p.codex);
 
   const codexFile = path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "config.toml");
   if (!fs.existsSync(codexFile)) result.codex = { status: "absent" };
