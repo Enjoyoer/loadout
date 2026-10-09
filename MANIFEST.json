@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "10327643c912977f320ad0e7fc5d8889139a6137",
+  "source_commit": "032fec62942f61720547e80cc396c20bd71780b4",
   "skill_count": 22,
-  "file_count": 129,
+  "file_count": 128,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -226,8 +226,8 @@
       "path": "skills/orchestration/opc/references/imp-execution.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4335,
-      "sha256": "cea99485ba30d87e0abce357227781d87179b26b02750d50cb677e33704ee8e8"
+      "bytes": 4279,
+      "sha256": "3baadb828f81e3bc639932cb88960745fb9b0b13c2054a7ea4710c13fe2fec21"
     },
     {
       "path": "skills/orchestration/opc/references/maintenance.md",
@@ -254,8 +254,8 @@
       "path": "skills/orchestration/opc/references/recovery.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 2469,
-      "sha256": "116fd06fd1efba9c81d17a5737ca6407841fbee578b7adb8296093270469bb33"
+      "bytes": 1526,
+      "sha256": "c2a55041bde2edbb93056f4e2e6acf0408455955911e8caefbc2670a05cb8375"
     },
     {
       "path": "skills/orchestration/opc/references/routing.md",
@@ -366,8 +366,8 @@
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 6389,
-      "sha256": "bd9e610df66b286c2e76243e3c112cd8d4e3c2457459b1f455bcff498e124acf"
+      "bytes": 6321,
+      "sha256": "64170aa4d3c19077ee468365806954d896fa9cfe451ad33f2577212d5a32bc2b"
     },
     {
       "path": "skills/orchestration/opc/scripts/web-reviewer.mjs",
@@ -375,13 +375,6 @@
       "skill": "opc",
       "bytes": 14183,
       "sha256": "9992b01769a7bce4b568ff2933846e5df115eb81b36bc50cf0c2983e8b6ed3b8"
-    },
-    {
-      "path": "skills/orchestration/opc/scripts/worker.mjs",
-      "category": "orchestration",
-      "skill": "opc",
-      "bytes": 19771,
-      "sha256": "079c01aed22fd742903e9d3ff2e6bbe4988827689c9d055dcaa03464e629e4ec"
     },
     {
       "path": "skills/orchestration/opn/SKILL.md",
