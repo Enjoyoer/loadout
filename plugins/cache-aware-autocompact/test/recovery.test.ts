@@ -86,7 +86,7 @@ function harness() {
             if (historyErrors.has(id)) throw historyErrors.get(id);
             return histories.get(id) ?? history(snapshots.find((a) => a.id === id)!);
           } },
-          waitForFinish: async () => {},
+          waitForFinish: async () => ({ status: "idle", final: null, error: null, lastMessage: null }),
           send: async (text: string) => {
             sends.push(text);
             await sendGate;

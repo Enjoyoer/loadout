@@ -4,6 +4,9 @@ import type { ResumeRecord } from "./model.ts";
 
 type State = { version: 2; records: ResumeRecord[] };
 
+/** The state file exists but cannot be read or parsed. Callers fail closed and leave the file alone. */
+export class StateUnreadableError extends Error {}
+
 function defaultState(): State {
   return { version: 2, records: [] };
 }
@@ -29,7 +32,7 @@ export class ResumeStore {
       return state.records;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaultState().records;
-      throw new Error(`cannot read ${this.filePath}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new StateUnreadableError(`cannot read ${this.filePath}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
