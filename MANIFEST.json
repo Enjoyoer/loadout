@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "1d952fb062c9bbb46de15c9b8d1ca543f1950369",
+  "source_commit": "a78dd583e001ae6bf0220489787f37b0d092967c",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -352,8 +352,8 @@
       "path": "skills/orchestration/opc/scripts/route.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 9899,
-      "sha256": "58e4a201640be3bb25dadc3668f40b765263b200a7ee3a961b9e47b74d298d04"
+      "bytes": 10224,
+      "sha256": "ffb96e5bd87e46b720be7bd2b544a01124e1e930898d4de2d0eee785e7f52b9e"
     },
     {
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
