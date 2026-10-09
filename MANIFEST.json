@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b65fd773e1060558ac5d63cb7849833eb906d07c",
+  "source_commit": "4443160903b1f02b375a01e155a2ade924460ad7",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -527,8 +527,8 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 5993,
-      "sha256": "435544515e0d7db0d7a4ad29ce85271c9a81e364e2b96349213cbd0f07afd23f"
+      "bytes": 6104,
+      "sha256": "686e67fd83bcc9c48704f715367cea4883acee2f5e95c254ac5ccc70038c38c1"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/app-defaults.mjs",
@@ -1126,8 +1126,8 @@
     {
       "path": "plugins/merged-worker-archiver/server/io.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 2991,
-      "sha256": "0e551dab2a7d19eaf0313f969dd0ebaf0691c1d65573015aa7b097f5513669c6"
+      "bytes": 3587,
+      "sha256": "b4c5ddf9c334987555ed9365c2150361691e8b7e066c6e4bc57220a8a8fc85e3"
     },
     {
       "path": "plugins/merged-worker-archiver/server/merge-check.ts",
