@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { rm, writeFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 import { ResumeStore } from "../server/store.ts";
 import { buildRecord, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
@@ -59,5 +60,15 @@ describe("ResumeStore", () => {
     await Promise.all(records.map((record) => store.upsert(record)));
     assert.deepEqual((await store.read()).map((record) => record.agentId).sort(), ["agent-a", "agent-b", "agent-c"]);
     for (const record of records) await store.remove(record.recordId);
+  });
+
+  it("throws on a corrupt state file instead of reading it as empty", async () => {
+    const filePath = `/tmp/usage-limit-auto-resume-corrupt-${process.pid}.json`;
+    await writeFile(filePath, "{\"version\":2,\"records\":[");
+    try {
+      await assert.rejects(new ResumeStore(filePath).read(), /cannot read/);
+    } finally {
+      await rm(filePath, { force: true });
+    }
   });
 });
