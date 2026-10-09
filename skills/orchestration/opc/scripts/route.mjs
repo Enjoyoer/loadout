@@ -54,16 +54,19 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
 }
 
 // After a dead cloud lane, its one local fallback Worker resolves like any local route for the lane's class
-// (default code): Pi catalog label, quota pace, and reason, or an owner-named route. It is recorded under the lane
+// (default ui for a UI task, else code; a UI task refuses any other class, so the ui owner rule holds): Pi catalog label, quota pace, and reason, or an owner-named route. It is recorded under the lane
 // <lane>-fallback, never over the lane's cloud route, and cloud.fallback and that route are written in one task update.
-export async function resolveCloudFallback(taskPath, { lane, taskClass = 'code', ownerRoute = null, catalog, pqFile = null,
+export async function resolveCloudFallback(taskPath, { lane, taskClass = null, ownerRoute = null, catalog, pqFile = null,
   settings = null, home } = {}) {
+  const task = readTask(taskPath);
+  taskClass ??= task.ui ? 'ui' : 'code';
+  if (task.ui && taskClass !== 'ui') throw Error('UI task: the cloud fallback must use the ui class (owner rule)');
   if (!CLOUD_ALL_CLASSES.includes(taskClass)) throw Error(`cloud fallback class must be one of ${CLOUD_ALL_CLASSES.join(', ')}`);
   // A Worker lane slug is at most 40 characters, so <lane>-fallback must fit.
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(lane ?? '') || lane.length > 31) {
     throw Error('cloud fallback needs the cloud Worker lane slug (at most 31 characters)');
   }
-  const cloud = readTask(taskPath).cloud;
+  const cloud = task.cloud;
   if (cloud?.status !== 'dead') throw Error('cloud fallback requires a heartbeat-recorded dead cloud lane');
   const local = await resolveWorkerRoute({ taskClass, ownerRoute, catalog, pqFile, settings, home });
   const fallback = { lane: `${lane}-fallback`, route: local.route, reason: `cloud lane dead (${cloud.reason}), local fallback: ${local.reason}` };
@@ -134,7 +137,7 @@ async function main(argv) {
   // Before the recorded-lane shortcut: the cloud lane's own record is the dead cloud route.
   if (flags['cloud-fallback']) {
     if (!flags.task) throw Error('--cloud-fallback needs --task and --lane');
-    return resolveCloudFallback(resolve(flags.task), { lane: flags.lane, taskClass: flags.class ?? 'code', ownerRoute,
+    return resolveCloudFallback(resolve(flags.task), { lane: flags.lane, taskClass: flags.class ?? null, ownerRoute,
       catalog: await readCatalog(flags.catalog), pqFile: flags['pq-file'] ?? null });
   }
   if (flags.task && flags.lane && readTask(resolve(flags.task)).routes?.[flags.lane]) {
