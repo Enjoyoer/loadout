@@ -33,7 +33,8 @@ With none of these, the fleet is the current host only. To move an existing `fle
 Put skills that must stay private (personal, account-bound, or holding credentials) in `skills/<name>/` inside the fleet directory on the source host, laid out like any installed package with a `SKILL.md`. The skills step installs them with the published ones, with the same `--skills` and `exclude_skills` selection and the same local-edit protection:
 
 - A name that is also a published skill stops the run; rename one of them.
-- Every overlay file hash the sync has sent is recorded in `skills/.loadout-overlay.json`, so a newer version replaces an older installed one while a hand edit on a host stays a conflict. A skill that moved here from the public repository also replaces its last published copy.
+- Every overlay file hash a host has accepted is recorded in `skills/.loadout-overlay.json`, so a newer version replaces an older installed one while a hand edit on a host stays a conflict. A skill that moved here from the public repository also replaces its last published copy.
+- A skill removed from the overlay is retired from hosts like an unpublished package (see `Local-edit protection` in `SKILL.md`), so keep the overlay complete on the source host and check `--dry-run` first.
 - `__pycache__`, `.pyc`, and `.DS_Store` are skipped; symlinks are errors.
 - The fleet push does not copy `skills/` to other hosts; skill bytes travel only through the skills step.
 
