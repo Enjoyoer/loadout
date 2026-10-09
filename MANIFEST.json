@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "f6c245e318bdd0e07a5f16cbc2d86106c3317346",
+  "source_commit": "299824e11fa47781f8b716de060cb3791153ef20",
   "skill_count": 22,
   "file_count": 124,
   "files": [
@@ -254,8 +254,8 @@
       "path": "skills/orchestration/opc/references/recovery.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 1599,
-      "sha256": "19530e2203a3925d8de07935fd38865886a103e614a7217d07fe9a3af7d64ba9"
+      "bytes": 2025,
+      "sha256": "728085af64c6dc9f6851eee3154f6a1d9c00c84f6841dc7f07dd4c15fa9c4da4"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -317,8 +317,8 @@
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 9260,
-      "sha256": "a32a113fed5b89e1b9150c9b787eaf1eadecc4970529ff8a2c878749e99e2dda"
+      "bytes": 10126,
+      "sha256": "cd93b52ba1ce151e10dd832b73d17e84db4c6b383c12d7be61c6f05cfa1c5a27"
     },
     {
       "path": "skills/orchestration/opc/scripts/paseo-worker.mjs",
@@ -338,8 +338,8 @@
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 16018,
-      "sha256": "029ba070f76cc8b387c0a97adc1fb2c5880941048aa763a8cc396bdcf5a52023"
+      "bytes": 16753,
+      "sha256": "29cbe305bd056d9a80984103279520be33a119b850f300cbfe94ccb92985f695"
     },
     {
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
