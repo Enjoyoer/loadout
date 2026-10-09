@@ -159,6 +159,17 @@ class RemotePluginTest(Fixture):
         self.assertFalse(self.staged("server/new.ts").exists())
         self.assertEqual(self.calls(), "")
 
+    def test_symlinked_ancestor_is_refused(self):
+        elsewhere = self.home / "elsewhere"
+        elsewhere.mkdir()
+        self.staged().parent.mkdir()
+        self.staged().symlink_to(elsewhere)
+        got = self.run_remote()
+        self.assertEqual(got["status"], "failed")
+        self.assertIn("not a real directory", got["error"])
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertEqual(self.calls(), "")
+
     def test_plugins_enabled_false_blocks_install_and_is_not_changed(self):
         self.set_enabled(False)
         got = self.run_remote()
