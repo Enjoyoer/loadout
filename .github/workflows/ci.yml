@@ -37,22 +37,6 @@ jobs:
         run: python3 skills/orchestration/opn/scripts/validate-opn.py
       - name: Repo tests
         run: python3 -m unittest discover -s tests
-      - name: Probe the paseo catalog spawn (temporary)
-        if: always() && runner.os == 'Windows'
-        run: |
-          $fake = Join-Path $env:RUNNER_TEMP 'fake-paseo'
-          New-Item -ItemType Directory -Force $fake | Out-Null
-          Set-Content -Path (Join-Path $fake 'paseo.cmd') -Value '@echo [{"id":"x","label":"X","thinkingOptions":[]}]'
-          $env:PATH = "$fake;$env:PATH"
-          $scripts = 'skills/orchestration/opc/scripts'
-          git show "origin/main:$scripts/route.mjs" | Set-Content "$scripts/route-main.mjs"
-          $main = node "$scripts/route-main.mjs" --class planner 2>&1 | Out-String
-          $branch = node --throw-deprecation "$scripts/route.mjs" --class planner 2>&1 | Out-String
-          Remove-Item "$scripts/route-main.mjs"
-          Write-Output "--- main:" $main "--- branch:" $branch
-          if ($main -notmatch 'DEP0190') { throw 'main did not reproduce DEP0190' }
-          if ($branch -match 'DEP0190' -or $branch -notmatch 'catalog label Web Pro') { throw 'branch probe failed' }
-          $global:LASTEXITCODE = 0
 
   secrets:
     name: Secret scan
