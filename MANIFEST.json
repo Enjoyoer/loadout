@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "a78dd583e001ae6bf0220489787f37b0d092967c",
+  "source_commit": "43c5249c243616e747421fdb105baeadbe1a2b29",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -359,8 +359,8 @@
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 20636,
-      "sha256": "ee7e5fd2754e31c3f89110dbf7b2ab2a678af03b3fb683d7b6df23e631aba941"
+      "bytes": 20835,
+      "sha256": "e04811745856286a00db3859b2870168abdc262ef73b093541cd35b21d0abcd6"
     },
     {
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
@@ -380,8 +380,8 @@
       "path": "skills/orchestration/opc/scripts/worker.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 19772,
-      "sha256": "c72ac4b243281de3ea717c63b9024307565549bf12800bdd38ca41038fbd159a"
+      "bytes": 19771,
+      "sha256": "079c01aed22fd742903e9d3ff2e6bbe4988827689c9d055dcaa03464e629e4ec"
     },
     {
       "path": "skills/orchestration/opn/SKILL.md",
