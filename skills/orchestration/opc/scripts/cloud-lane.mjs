@@ -255,12 +255,20 @@ function readAuthStatus() {
   return JSON.parse(execFileSync('claude', ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 30000 }));
 }
 
-function pushToFleet(fleet, args) {
-  if (!fleet) return;
+// Same pattern as HOST_NAME in personal-skills fleet.py: a host can never start with '-' and become an ssh option.
+const HOST_NAME = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
+
+function fleetHosts(fleet) {
+  const hosts = (fleet ?? '').split(',').filter(Boolean);
+  for (const host of hosts) if (!HOST_NAME.test(host)) throw Error(`invalid fleet host name: ${JSON.stringify(host)}`);
+  return hosts;
+}
+
+function pushToFleet(hosts, args) {
   const script = '.codex/skills/opc/scripts/cloud-lane.mjs';
-  for (const host of fleet.split(',').filter(Boolean)) {
+  for (const host of hosts) {
     // ssh hands the words to the remote shell; quote them so owner/* is not globbed there.
-    const ssh = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, 'node', script, ...args.map(arg => `'${arg}'`)];
+    const ssh = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '--', host, 'node', script, ...args.map(arg => `'${arg}'`)];
     try { console.log(`${host}: ${execFileSync('ssh', ssh, { encoding: 'utf8', timeout: 60000 }).trim()}`); }
     catch (error) {
       console.log(`${host}: FAILED ${(error.stderr || error.message).toString().trim().split('\n').at(-1)}`);
@@ -272,10 +280,12 @@ function pushToFleet(fleet, args) {
 function main(argv) {
   const [state, ...rest] = argv;
   const flag = name => { const i = rest.indexOf(name); return i === -1 ? null : rest[i + 1]; };
+  // Refuse a bad host before any local change or ssh call.
+  const hosts = fleetHosts(flag('--fleet'));
   if (state === 'status') { console.log(`${readCloudToggle().replace(/^default$/, 'default (code class only)')}; repos: ${[...readCloudRepos()].join(', ') || 'none'}`); return; }
   if (state === 'allow' || state === 'disallow') {
     console.log(`local repos: ${[...setCloudRepo(rest[0], state === 'allow')].join(', ') || 'none'}`);
-    pushToFleet(flag('--fleet'), [state, rest[0]]);
+    pushToFleet(hosts, [state, rest[0]]);
     return;
   }
   if (state !== 'on' && state !== 'off') {
@@ -283,7 +293,7 @@ function main(argv) {
   }
   setCloudToggle(state, { authStatus: state === 'on' ? readAuthStatus() : null });
   console.log(`local: ${state}`);
-  pushToFleet(flag('--fleet'), [state]);
+  pushToFleet(hosts, [state]);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

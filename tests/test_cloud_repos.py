@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -48,6 +49,21 @@ class CloudReposTest(unittest.TestCase):
         for bad in ("*/*", "Acme", "Acme/a*", "a/b/c", "Acme/app;id"):
             with self.subTest(bad=bad), self.assertRaises(AssertionError):
                 self.check([bad], [])
+
+    def test_fleet_host_starting_with_dash_is_refused_before_ssh(self):
+        home, bin_dir = Path(self.tmp.name) / "home", Path(self.tmp.name) / "bin"
+        bin_dir.mkdir()
+        calls = Path(self.tmp.name) / "ssh-calls"
+        ssh = bin_dir / "ssh"
+        ssh.write_text(f"#!/bin/sh\necho \"$@\" >> {calls}\n")
+        ssh.chmod(0o755)
+        env = {**os.environ, "HOME": str(home), "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+        done = subprocess.run(["node", str(SCRIPT), "allow", "Acme/app", "--fleet", "-oProxyCommand=x"],
+                              capture_output=True, text=True, timeout=60, env=env)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("invalid fleet host name", done.stderr)
+        self.assertFalse(calls.exists())
+        self.assertFalse((home / ".config/opc/cloud-repos").exists())
 
 
 if __name__ == "__main__":

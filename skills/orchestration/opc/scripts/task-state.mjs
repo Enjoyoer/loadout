@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, lstatSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { FIXED_ROLE_ROUTES, validateRoleRoute } from './agent-routing.mjs';
 
@@ -279,7 +279,8 @@ export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'H
   return { taskPath, task };
 }
 
-export function updateTask(taskPath, mutator) {
+// beforeReclaim is a test seam that runs after a dead-pid lock is read and before it is reclaimed.
+export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
   canonicalPath(taskPath);
   const lock = `${taskPath}.lock`;
   const deadline = Date.now() + 2000;
@@ -293,8 +294,15 @@ export function updateTask(taskPath, mutator) {
       let owner = '';
       try { owner = readFileSync(lock, 'utf8').trim(); } catch (readError) { if (readError.code !== 'ENOENT') throw readError; }
       if (/^\d+$/.test(owner) && !processAlive(Number(owner))) {
-        try { unlinkSync(lock); } catch (unlinkError) { if (unlinkError.code !== 'ENOENT') throw unlinkError; }
-        continue;
+        beforeReclaim?.(lock);
+        // Reclaim atomically: move the lock aside, then delete it only if it still holds the dead pid we read.
+        // A different pid means another waiter already reclaimed it and its live lock was caught, so put it back
+        // without overwriting; if a newer lock appeared meanwhile, that holder keeps it.
+        const claimed = `${lock}.${randomUUID()}.stale`;
+        try { renameSync(lock, claimed); } catch (renameError) { if (renameError.code !== 'ENOENT') throw renameError; continue; }
+        if (readFileSync(claimed, 'utf8').trim() === owner) { unlinkSync(claimed); continue; }
+        try { linkSync(claimed, lock); } catch (linkError) { if (linkError.code !== 'EEXIST') throw linkError; }
+        unlinkSync(claimed);
       }
       if (Date.now() >= deadline) throw Error('task lock busy; do not remove ownership-uncertain lock');
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
@@ -337,6 +345,9 @@ export function updateTask(taskPath, mutator) {
     return task;
   } finally {
     if (temporary && existsSync(temporary)) unlinkSync(temporary);
-    if (existsSync(lock)) unlinkSync(lock);
+    // Release only our own lock; a lock holding another pid belongs to someone else.
+    let held = '';
+    try { held = readFileSync(lock, 'utf8').trim(); } catch (readError) { if (readError.code !== 'ENOENT') throw readError; }
+    if (held === String(process.pid)) unlinkSync(lock);
   }
 }

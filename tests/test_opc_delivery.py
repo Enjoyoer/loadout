@@ -49,6 +49,22 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(rerun.returncode, 0, rerun.stderr)
         self.assertEqual(json.loads(rerun.stdout.strip().splitlines()[-1])["status"], "passed")
 
+    def test_live_lock_replacing_stale_lock_before_reclaim_survives(self):
+        dead = subprocess.Popen([sys.executable, "-c", ""])
+        dead.wait()
+        lock = Path(self.task + ".lock")
+        lock.write_text(str(dead.pid))
+        done = run("node", "--input-type=module", "-e", f"""
+            import {{ unlinkSync, writeFileSync }} from 'node:fs';
+            import {{ updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            const beforeReclaim = lock => {{ unlinkSync(lock); writeFileSync(lock, String({os.getpid()}), {{ flag: 'wx' }}); }};
+            try {{ updateTask({json.dumps(self.task)}, () => {{}}, {{ beforeReclaim }}); }}
+            catch (error) {{ console.log(error.message); }}
+        """)
+        self.assertIn("task lock busy", done.stdout, done.stderr)
+        self.assertEqual(lock.read_text(), str(os.getpid()))
+        self.assertEqual(sorted(p.name for p in lock.parent.iterdir() if ".lock" in p.name), [lock.name])
+
 
 if __name__ == "__main__":
     unittest.main()
