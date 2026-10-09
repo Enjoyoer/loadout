@@ -312,7 +312,7 @@ assert.equal(after.resolveAgentSurface('scout',{},next).model,'route/new-catalog
 import assert from 'node:assert/strict';
 const r=await import(process.argv[1]);const w=await import(process.argv[2]);
 const levels=ids=>ids.map(id=>({id}));
-const catalog=[['claude-opus-5-5','Opus'],['claude-fable-5-1','Fable'],['gpt-6.1-sol','Sol'],['gpt-6-luna','Luna'],['chatgpt-web/pro','Web Pro']]
+const catalog=[['claude-opus-5-5','Opus'],['claude-fable-5-1','Fable'],['gpt-6.1-sol','Sol'],['gpt-6-luna','Luna'],['gpt-6-astra','Astra'],['chatgpt-web/pro','Web Pro']]
  .map(([id,label])=>({id:'fleet/'+id,label,thinkingOptions:levels(['low','medium','high','xhigh','max'])}));
 const piCaps={enabled:true,status:'available',modes:[],models:catalog};
 const nativeCaps={enabled:true,status:'available',modes:[{id:'full-access',isUnattended:true}],models:catalog};
@@ -322,20 +322,20 @@ const plain=value=>JSON.parse(JSON.stringify(value));
 const unread=pool=>({pool,step:0,weekly:null,stale:'no quota reading supplied',gapPct:null,fiveHourUsedPct:null,resetSoon:null,accounts:null,staleAccounts:null,ageSeconds:null});
 // Worker defaults are frozen.
 assert(Object.isFrozen(r.WORKER_DEFAULT_ROUTES)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.code)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.browser));
-// Code default: Opus at xhigh, Fast off, on Pi, recorded as a task default.
+// Code default: Opus at medium (owner rule for local lanes), Fast off, on Pi, recorded as a task default.
 const code=r.selectWorkerRoute({taskKind:'code',catalog});
-assert.deepEqual(plain(code),{role:'worker',source:'task-default',kind:'code',model:'fleet/claude-opus-5-5',effort:'xhigh',fastMode:false,pace:unread('claude'),reason:'code default xhigh, no adjustment, no quota reading supplied'});
+assert.deepEqual(plain(code),{role:'worker',source:'task-default',kind:'code',model:'fleet/claude-opus-5-5',effort:'medium',fastMode:false,pace:unread('claude'),reason:'code default medium, no adjustment, no quota reading supplied'});
 const codeReq=build({route:code});
-assert.equal(codeReq.request.provider,'pi/fleet/claude-opus-5-5');assert.deepEqual(codeReq.request.settings,{thinkingOptionId:'xhigh'});
+assert.equal(codeReq.request.provider,'pi/fleet/claude-opus-5-5');assert.deepEqual(codeReq.request.settings,{thinkingOptionId:'medium'});
 assert.equal(codeReq.request.labels['opc.route-source'],'task-default');
 for(const key of ['opc.service-tier','opc.fast-requested'])assert.equal(key in codeReq.request.labels,false);
 assert.equal(r.resolveAgentSurface('worker',{taskKind:'code'},catalog).provider,'pi/fleet/claude-opus-5-5');
-assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/claude-opus-5-5; effort=xhigh; Fast=off/);
-// Browser default: Sol at medium, Fast on.
+assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/claude-opus-5-5; effort=medium; Fast=off/);
+// Browser default: Astra at medium, Fast on.
 const browser=r.selectWorkerRoute({taskKind:'browser',catalog:{pi:catalog}});
-assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'fleet/gpt-6.1-sol',effort:'medium',fastMode:true,pace:unread('codex'),reason:'browser default medium, no adjustment, no quota reading supplied'});
+assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'fleet/gpt-6-astra',effort:'medium',fastMode:true,pace:unread('codex'),reason:'browser default medium, no adjustment, no quota reading supplied'});
 const browserReq=build({route:browser});
-assert.equal(browserReq.request.provider,'pi/fleet/gpt-6.1-sol');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'medium'});
+assert.equal(browserReq.request.provider,'pi/fleet/gpt-6-astra');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'medium'});
 assert.equal(r.resolveAgentSurface('worker',{taskKind:'browser'},catalog).effort,'medium');
 // An owner-named route wins; its Fast is the Pi Fast toggle label, never native fast_mode.
 const owner={role:'worker',source:'owner-explicit',model:'gpt-6.1-sol',effort:'high',fastMode:true};
@@ -350,10 +350,10 @@ assert.throws(()=>r.selectWorkerRoute({catalog}),/ask the owner/);
 assert.throws(()=>r.selectWorkerRoute({taskKind:'docs',catalog}),/ask the owner/);
 assert.throws(()=>r.resolveAgentRoute('worker'),/ask the owner/);
 assert.throws(()=>r.selectWorkerRoute({taskKind:'code',catalog:catalog.filter(row=>row.label!=='Opus')}),/catalog label Opus/);
-assert.throws(()=>r.selectWorkerRoute({taskKind:'browser',catalog:catalog.map(row=>row.label==='Sol'?{...row,thinkingOptions:levels(['high'])}:row)}),/does not serve required thinking medium/);
+assert.throws(()=>r.selectWorkerRoute({taskKind:'browser',catalog:catalog.map(row=>row.label==='Astra'?{...row,thinkingOptions:levels(['high'])}:row)}),/does not serve required thinking medium/);
 assert.throws(()=>r.selectWorkerRoute({ownerRoute:code,catalog}),/source owner-explicit/);
 // A recorded default cannot be edited or replayed against another catalog row.
-assert.throws(()=>build({route:{...code,effort:'high'}}),/task-default route/);
+assert.throws(()=>build({route:{...code,effort:'xhigh'}}),/task-default route/);
 assert.throws(()=>build({route:{...code,fastMode:true}}),/task-default route/);
 assert.throws(()=>build({route:{...code,kind:'docs'}}),/task-default route/);
 assert.throws(()=>build({route:{...code,model:'fleet/gpt-6.1-sol'}}),/match its Pi catalog label/);
