@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 export function validateCodemode(pi) {
   const tools = pi.getActiveTools();
   if (pi.getSettings().codemode?.mode !== 'on' || !tools.includes('codemode'))
@@ -28,11 +28,14 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
     return result;
   }
   if (model?.api === 'openai-responses') {
-    const metadata = { thread_id: sessionId, turn_id: turnId, sandbox: 'none', workspaces: { [cwd]: {} } };
+    const web = model.id.startsWith('chatgpt-web/');
+    // The Web backend gets only the folder name: the full path carries the local user name.
+    const where = web ? basename(cwd) || cwd : cwd;
+    const metadata = { thread_id: sessionId, turn_id: turnId, sandbox: 'none', workspaces: { [where]: {} } };
     result.client_metadata = { ...result.client_metadata, 'x-codex-turn-metadata': JSON.stringify(metadata),
       ...(requestId ? { 'x-fleet-request-id': requestId } : {}) };
-    if (model.id.startsWith('chatgpt-web/')) {
-      const xml = cwd.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+    if (web) {
+      const xml = where.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
       const environment = { type:'message', role:'developer', content:[{type:'input_text',text:
         `<environment_context>\n<cwd>${xml}</cwd>\n<filesystem><workspace_roots><root>${xml}</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>\n</environment_context>`}] };
       result.input = [environment, ...(Array.isArray(result.input) ? result.input : [])];
