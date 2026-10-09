@@ -45,8 +45,15 @@ export class StateStore {
     await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
     await rename(temp, this.filePath);
   }
+  // Every read-modify-write runs inside one queue. A failed write still rejects
+  // to its caller, but the queue recovers so later writes are not poisoned.
+  private exclusive(task: () => Promise<void>): Promise<void> {
+    const run = this.writes.then(task, task);
+    this.writes = run.catch(() => undefined);
+    return run;
+  }
   async rememberTurn(turn: Checkpoint, maxEntries: number): Promise<void> {
-    this.writes = this.writes.then(async () => {
+    await this.exclusive(async () => {
       const state = await this.readState();
       // The evaluator only inspects running tools. Keep their guard state, not
       // whole transcripts, alongside the already-derived checkpoint identity.
@@ -54,17 +61,15 @@ export class StateStore {
       const turns = [...(state.turns ?? []).filter((candidate) => candidate.agentId !== turn.agentId), durableTurn].slice(-maxEntries);
       await this.write({ ...state, turns });
     });
-    await this.writes;
   }
   async has(key: string): Promise<boolean> {
     return (await this.read()).some((entry) => entry.key === key);
   }
   async append(entry: StateEntry, maxEntries: number): Promise<void> {
-    this.writes = this.writes.then(async () => {
+    await this.exclusive(async () => {
       const state = await this.readState();
       const next = [...state.entries.filter((candidate) => candidate.key !== entry.key), entry].slice(-maxEntries);
       await this.write({ ...state, entries: next });
     });
-    await this.writes;
   }
 }
