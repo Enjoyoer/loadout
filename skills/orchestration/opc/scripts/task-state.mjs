@@ -2,9 +2,14 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { FIXED_ROLE_ROUTES, validateRoleRoute } from './agent-routing.mjs';
+
+const plannerFallback = FIXED_ROLE_ROUTES.planner_fallback;
+// Fallback rounds recorded before Opus replaced Fable keep their recorded route.
+const fallbackEfforts = { [plannerFallback.label]: plannerFallback.effort, Fable: 'high' };
 
 const identity = task => JSON.stringify([
-  task.schema, task.id, task.owner, task.repository, task.contract_version, task.delivery, task.browser_review,
+  task.schema, task.id, task.owner, task.repository, task.contract_version, task.delivery, task.browser_review, task.ui ?? false,
 ]);
 
 export function gitEnvironment() {
@@ -70,7 +75,7 @@ function validatePlanner(planner) {
   const ids = new Set(), agents = new Set();
   for (const [index, round] of planner.rounds.entries()) {
     if (!object(round) || !uuid(round.id) ||
-        !(catalogRound(round, index === 0 ? 'Web Pro' : 'Fable', index === 0 ? 'planner' : 'planner_fallback') ||
+        !(catalogRound(round, 'Web Pro', 'planner') || Object.keys(fallbackEfforts).some(label => catalogRound(round, label, 'planner_fallback')) ||
           (round.role === undefined && ['codex/chatgpt-web/pro', 'claude/claude-fable-5-1[1m]'].includes(round.provider))) ||
         !['launching', 'running', 'uncertain', 'failed', 'planned'].includes(round.status)) {
       throw Error('invalid planner round');
@@ -79,7 +84,7 @@ function validatePlanner(planner) {
     ids.add(round.id);
     if (round.role === 'planner' || round.provider === 'codex/chatgpt-web/pro') {
       if (index !== 0 || Object.hasOwn(round, 'effort')) throw Error('invalid Pro planner route');
-    } else if (index !== 1 || round.effort !== 'high' ||
+    } else if (index !== 1 || round.effort !== fallbackEfforts[round.catalog_label ?? 'Fable'] ||
         planner.rounds[0]?.status !== 'failed' || authorization?.after_round !== planner.rounds[0].id) {
       throw Error('planner fallback requires recorded explicit owner yes after Pro failure');
     }
@@ -174,6 +179,22 @@ function validateCloud(cloud) {
   }
 }
 
+// Recorded Worker routes, one per lane: the resolved route and its one-line reason, kept through repairs and resumes.
+function validateRoutes(routes) {
+  if (routes == null) return;
+  const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!object(routes)) throw Error('invalid Worker route records');
+  for (const [lane, entry] of Object.entries(routes)) {
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(lane) || !object(entry) || Object.keys(entry).length !== 3 ||
+        !['route', 'reason', 'recorded_at'].every(key => Object.hasOwn(entry, key)) ||
+        typeof entry.reason !== 'string' || !entry.reason.trim() || /[\r\n]/.test(entry.reason) ||
+        typeof entry.recorded_at !== 'string' || Number.isNaN(Date.parse(entry.recorded_at))) {
+      throw Error(`invalid Worker route record for lane ${lane}`);
+    }
+    validateRoleRoute('worker', entry.route);
+  }
+}
+
 function validate(task, path) {
   if (task.schema !== 'opc_task_v2' || task.contract_version !== 2) {
     throw Error('incompatible task contract; create a fresh task');
@@ -186,11 +207,14 @@ function validate(task, path) {
   if (within(path, task.repository.working_directory)) throw Error('task evidence must be outside worktree');
   if (!['local', 'pr', 'merge'].includes(task.delivery)) throw Error('invalid task delivery target');
   if (typeof task.browser_review !== 'boolean') throw Error('browser review choice required');
+  if (typeof (task.ui ?? false) !== 'boolean') throw Error('UI choice must be boolean');
+  if (task.ui && task.browser_review) throw Error('UI work never uses the web reviewer (owner rule)');
   if (!['ready', 'cancelled'].includes(task.status)) throw Error('invalid task status');
   validateWorker(task.worker, task);
   validatePlanner(task.planner);
   validateReviewer(task.reviewer, task);
   validateCloud(task.cloud);
+  validateRoutes(task.routes);
   return task;
 }
 
@@ -212,7 +236,8 @@ export function readTask(taskPath) {
   return task;
 }
 
-export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'HEAD', delivery = 'local', browserReview = false }) {
+// ui marks UI work: Opus xhigh only, never a GPT or web lane (owner rule). It is immutable like browserReview.
+export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'HEAD', delivery = 'local', browserReview = false, ui = false }) {
   canonicalPath(workingDirectory);
   canonicalPath(runDirectory);
   if (within(runDirectory, workingDirectory) || within(workingDirectory, runDirectory)) {
@@ -228,7 +253,7 @@ export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'H
     baseBranch = symbolic.replace(/^refs\/(?:heads\/|remotes\/origin\/)/, '');
   }
   const task = {
-    schema: 'opc_task_v2', id: randomUUID(), owner, delivery, browser_review: browserReview,
+    schema: 'opc_task_v2', id: randomUUID(), owner, delivery, browser_review: browserReview, ui,
     repository: {
       working_directory: workingDirectory,
       remote: git(workingDirectory, 'remote', 'get-url', 'origin'),
@@ -297,6 +322,9 @@ export function updateTask(taskPath, mutator) {
       if (old.cloud.fallback && JSON.stringify(old.cloud.fallback) !== JSON.stringify(task.cloud.fallback)) {
         throw Error('immutable cloud fallback changed');
       }
+    }
+    for (const [lane, entry] of Object.entries(old.routes ?? {})) {
+      if (JSON.stringify(entry) !== JSON.stringify(task.routes?.[lane])) throw Error(`immutable Worker route for lane ${lane} changed`);
     }
     if (old.planner?.fallback_authorization &&
         JSON.stringify(old.planner.fallback_authorization) !== JSON.stringify(task.planner?.fallback_authorization)) {

@@ -35,9 +35,9 @@ function promptBytes(prompt) {
 }
 
 function validateOptions(route) {
+  if (route?.source !== 'owner-explicit') fail('native Worker requires an owner-named route; task defaults run on Pi');
   const resolved = resolveAgentRoute('worker', { explicitRoute: route });
   if (!isValidModelId(resolved.model)) fail('invalid Worker model');
-  if (resolved.source !== 'owner-explicit') fail('native Worker requires an owner-named route; task defaults run on Pi');
   return { role: 'worker', ...resolved };
 }
 

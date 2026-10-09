@@ -26,6 +26,7 @@ export function buildPlannerPrompt({ contextPack, route }) {
 function available(task) {
   assertRepository(task);
   if (task.browser_review) throw Error('reviewer reserves the one OPC web lane; skip the planner');
+  if (task.ui) throw Error('UI work never uses the web planner or its fallback (owner rule); the PM plans');
   if (task.status !== 'ready' || task.worker?.status === 'running' || task.tests?.status === 'running' || task.merge) {
     throw Error('task is busy, cancelled, or already delivering');
   }

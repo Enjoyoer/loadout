@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isGptOrWebRoute, validateRoleRoute } from './agent-routing.mjs';
 import { readTask, updateTask } from './task-state.mjs';
 
 export const CLOUD_ROUTE = Object.freeze({ model: 'claude-opus-5-5[1m]', effort: 'xhigh', fastMode: false });
@@ -25,8 +26,9 @@ const repoPattern = new RegExp(`^${repoPart}/${repoPart}$`);
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const minutes = (from, to) => (Date.parse(to) - Date.parse(from)) / 60000;
 
+// Missing means default: on for eligible code-class Workers only. on covers any eligible editing class; off disables.
 export function readCloudToggle({ path = defaultTogglePath() } = {}) {
-  if (!existsSync(path)) return 'off';
+  if (!existsSync(path)) return 'default';
   const value = readFileSync(path, 'utf8').trim();
   if (value !== 'on' && value !== 'off') throw Error(`cloud toggle must contain on or off: ${path}`);
   return value;
@@ -83,9 +85,13 @@ export function checkCloudEligibility({ githubRemote, claudeAppInstalled, selfCo
   return Object.freeze({ eligible: reasons.length === 0, reasons });
 }
 
-// The toggle is the owner's standing explicit Worker route choice; off or ineligible means ask as usual.
-export function resolveCloudWorkerRoute({ toggle, eligibility }) {
-  if (toggle !== 'on' || eligibility?.eligible !== true) return null;
+// The toggle is the owner's standing explicit Worker route choice; off, ineligible, or another class returns null
+// and the task takes its local route. A class-less call with the toggle on is the PM's own editing-lane judgment.
+export const CLOUD_EDITING_CLASSES = Object.freeze(['code', 'code-bounded', 'test-fix', 'mechanical', 'automation']);
+export function resolveCloudWorkerRoute({ toggle, eligibility, taskClass = null }) {
+  if (!['on', 'off', 'default'].includes(toggle)) throw Error('cloud toggle must be on, off, or default');
+  if (toggle === 'off' || eligibility?.eligible !== true) return null;
+  if (toggle === 'default' ? taskClass !== 'code' : taskClass != null && !CLOUD_EDITING_CLASSES.includes(taskClass)) return null;
   return Object.freeze({ role: 'worker', source: 'owner-explicit', ...CLOUD_ROUTE });
 }
 
@@ -229,17 +235,20 @@ export function buildCloudFollowUpCommand({ sessionId, messagePath }) {
   return `claude -p "$(cat "${messagePath}")" --cloud ${sessionId}`;
 }
 
-// Pre-authorized by the toggle: one local managed Worker on the same model and effort, then stop.
-export function authorizeCloudFallback(taskPath) {
-  let route;
+// Pre-authorized by the toggle: one local managed Worker, then stop.
+// The local route comes from route.mjs resolveCloudFallback: the lane's class through the Pi catalog with its quota
+// pace, or an owner-named route, so the fallback runs on Pi without native authorization.
+export function authorizeCloudFallback(taskPath, { route, reason } = {}) {
+  validateRoleRoute('worker', route);
+  if (isGptOrWebRoute(route)) throw Error('cloud fallback stays on a Claude route');
+  if (typeof reason !== 'string' || !reason.trim() || /[\r\n]/.test(reason)) throw Error('cloud fallback reason must be one line');
   updateTask(taskPath, task => {
     if (task.cloud?.status !== 'dead') throw Error('cloud fallback requires a heartbeat-recorded dead cloud lane');
     if (task.cloud.fallback) throw Error('cloud fallback already used; stop and report to the owner');
     if (task.cloud.reason === NO_CREDITS) throw Error('no cloud credits: tell the owner; a local fallback needs their decision');
-    task.cloud.fallback = { authorized_by: 'cloud-toggle', route: { ...CLOUD_ROUTE } };
-    route = Object.freeze({ role: 'worker', source: 'owner-explicit', ...CLOUD_ROUTE });
+    task.cloud.fallback = { authorized_by: 'cloud-toggle', route: structuredClone(route), reason };
   });
-  return route;
+  return Object.freeze({ route, reason });
 }
 
 function readAuthStatus() {
@@ -263,7 +272,7 @@ function pushToFleet(fleet, args) {
 function main(argv) {
   const [state, ...rest] = argv;
   const flag = name => { const i = rest.indexOf(name); return i === -1 ? null : rest[i + 1]; };
-  if (state === 'status') { console.log(`${readCloudToggle()}; repos: ${[...readCloudRepos()].join(', ') || 'none'}`); return; }
+  if (state === 'status') { console.log(`${readCloudToggle().replace(/^default$/, 'default (code class only)')}; repos: ${[...readCloudRepos()].join(', ') || 'none'}`); return; }
   if (state === 'allow' || state === 'disallow') {
     console.log(`local repos: ${[...setCloudRepo(rest[0], state === 'allow')].join(', ') || 'none'}`);
     pushToFleet(flag('--fleet'), [state, rest[0]]);

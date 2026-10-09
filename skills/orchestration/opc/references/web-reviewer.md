@@ -1,6 +1,6 @@
 # Reviewer operation
 
-For the entrypoint's review branch, read [web lane](web-lane.md "runtime") and [Simplifier remit](simplifier-review.md "runtime"). The reviewer helper also works directly for initially authorized review without a Worker.
+For the entrypoint's review branch, read [web lane](web-lane.md "runtime") and [Simplifier remit](simplifier-review.md "runtime"). The reviewer helper also works directly for initially authorized review without a Worker. UI work never uses the web reviewer: a `ui` task refuses browser review.
 
 ## Prepare and launch
 

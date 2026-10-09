@@ -42,12 +42,12 @@ export function validateInstructions(documents) {
   const normal = instructionPath(documents);
   assert.ok(normal.words <= 1500, `normal-path word budget: ${normal.words} (<=1500)`);
   const conditional = ['exploration-swarm', 'planner', 'web-reviewer', 'simplifier-review',
-    'web-lane', 'web-large-inputs', 'codex-sites', 'web-models-not-approved', 'recovery', 'maintenance', 'cloud-lane', 'pr-evidence'];
+    'web-lane', 'web-large-inputs', 'codex-sites', 'web-models-not-approved', 'recovery', 'maintenance', 'cloud-lane', 'pr-evidence', 'routing'];
   for (const name of conditional) assert.ok(!normal.files.includes(`references/${name}.md`),
     `conditional reference leaked into normal path: ${name}`);
   const scouted = instructionPath(documents, ['scouting']);
   assert.ok(scouted.words <= 1500, `scouted normal-path word budget: ${scouted.words} (<=1500)`);
-  const all = instructionPath(documents, ['scouting', 'planning', 'review', 'sites', 'recovery', 'risk', 'maintenance', 'cloud', 'evidence', 'large-input']);
+  const all = instructionPath(documents, ['scouting', 'planning', 'review', 'sites', 'recovery', 'risk', 'maintenance', 'cloud', 'evidence', 'large-input', 'routing']);
   assert.deepEqual(new Set(all.files), new Set(Object.keys(documents)), 'every instruction document needs a reachable branch');
   return { entryWords, normalWords: normal.words, scoutedNormalWords: scouted.words, normalFiles: normal.files };
 }
@@ -78,7 +78,9 @@ export async function validatePackage(root = defaultRoot) {
     'delivery.mjs': ['runTests', 'verifyDelivery', 'mergeDelivery', 'reconcileMerge'],
     'worker.mjs': ['launchWorker', 'resumeWorker', 'cancelWorker'],
     'task-state.mjs': ['createTask', 'readTask', 'updateTask'],
-    'agent-routing.mjs': ['resolveAgentRoute', 'selectWorkerRoute', 'buildDelegatedBrief', 'selectTopology'],
+    'agent-routing.mjs': ['resolveAgentRoute', 'selectWorkerRoute', 'buildDelegatedBrief', 'selectTopology', 'isGptOrWebRoute'],
+    'quota-pace.mjs': ['readRoutingSettings', 'validateRoutingSettings', 'readQuota', 'poolPace', 'paceLevel'],
+    'route.mjs': ['resolveWorkerRoute', 'recordWorkerRoute', 'resolveCloudFallback'],
     'planner.mjs': ['buildPlannerPrompt', 'preparePlannerLaunch', 'bindPlannerAgent',
       'recordPlannerLaunchFailure', 'collectPlanner', 'authorizePlannerFallback'],
     'web-reviewer.mjs': ['buildReviewPrompt', 'prepareReviewLaunch', 'bindReviewAgent',
