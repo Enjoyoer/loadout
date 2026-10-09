@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "032fec62942f61720547e80cc396c20bd71780b4",
+  "source_commit": "1129c866e7cc6cda06a54fe0f6acaffaa14eaa12",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -226,8 +226,8 @@
       "path": "skills/orchestration/opc/references/imp-execution.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4279,
-      "sha256": "3baadb828f81e3bc639932cb88960745fb9b0b13c2054a7ea4710c13fe2fec21"
+      "bytes": 4211,
+      "sha256": "88a5d49af1bd7d8ab63a10d981db96856df3728c2c3f89a362b7ce39d40648ee"
     },
     {
       "path": "skills/orchestration/opc/references/maintenance.md",
@@ -324,8 +324,8 @@
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 10350,
-      "sha256": "3d6eb0c06f589d11336a48d677c929b037c1b497048f144e6f264d62a1cfd3da"
+      "bytes": 10281,
+      "sha256": "9c6f612b0e3eb49c9b5063cb8ab20fb9a544f203cab2ad988eaf3cad3b360800"
     },
     {
       "path": "skills/orchestration/opc/scripts/paseo-worker.mjs",
@@ -338,8 +338,8 @@
       "path": "skills/orchestration/opc/scripts/planner.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 7689,
-      "sha256": "04b4ab37aaa9bd2e5cfbb985cbd05ee50dad8d983ac3c8960b63cced11fbc1af"
+      "bytes": 7652,
+      "sha256": "ab619f106284f96bb3879e36ca290a7999f8472cbc57d74f5c77a0b5494c224c"
     },
     {
       "path": "skills/orchestration/opc/scripts/quota-pace.mjs",
@@ -359,8 +359,8 @@
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 20835,
-      "sha256": "e04811745856286a00db3859b2870168abdc262ef73b093541cd35b21d0abcd6"
+      "bytes": 19994,
+      "sha256": "da2ab62425f08d2bb7b06d61c3920cc1ad5948f24c31d9d31aff9cf93e286848"
     },
     {
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
@@ -373,8 +373,8 @@
       "path": "skills/orchestration/opc/scripts/web-reviewer.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 14183,
-      "sha256": "9992b01769a7bce4b568ff2933846e5df115eb81b36bc50cf0c2983e8b6ed3b8"
+      "bytes": 14146,
+      "sha256": "41109a59dacf2f36760e966adf4721708e93173fc3c4c561fc4d8c59b2b3e74e"
     },
     {
       "path": "skills/orchestration/opn/SKILL.md",
