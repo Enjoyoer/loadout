@@ -48,7 +48,8 @@ async function fixture(run: (f: ReturnType<typeof harness> & { store: StateStore
   const dir = await mkdtemp(path.join(root, "rearm-test-"));
   const file = path.join(dir, "state.json");
   const f = { ...harness(), file, store: new StateStore(file) };
-  try { await run(f); } finally { f.cleanup(); await rm(dir, { recursive: true, force: true }); }
+  // A state write can still be landing when a test ends; rm retries ENOTEMPTY.
+  try { await run(f); } finally { f.cleanup(); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
 }
 function harness() {
   let snapshots = [agent()];
