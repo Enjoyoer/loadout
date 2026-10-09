@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Owner cloud toggle: route eligible editing Workers to one Claude Code cloud session.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isGptOrWebRoute, validateRoleRoute } from './agent-routing.mjs';
 import { readTask, updateTask } from './task-state.mjs';
@@ -16,6 +16,7 @@ export const NO_CREDITS = 'no cloud credits on this account';
 export const CLOUD_HEARTBEAT_CRON = '*/20 * * * *';
 export const defaultTogglePath = () => join(homedir(), '.config', 'opc', 'cloud');
 export const defaultReposPath = () => join(homedir(), '.config', 'opc', 'cloud-repos');
+export const defaultProfilePath = () => join(homedir(), '.config', 'opc', 'cloud-profile');
 
 // The lane marker reuses the managed opc/<slug> name. Cloud sessions push only to their own claude/... branch,
 // so the marker goes in the PR title, never in a branch name.
@@ -56,6 +57,36 @@ export function setCloudRepo(repo, allowed, { path = defaultReposPath() } = {}) 
   writeFileSync(path, [...repos].sort().map(item => `${item}\n`).join(''));
   return repos;
 }
+
+// Optional cloud profile: a second Claude Code config directory (CLAUDE_CONFIG_DIR) whose claude.ai login holds the
+// cloud credits, while the host's default login stays as it is. Missing means the default login. POSIX hosts only,
+// because the launch and follow-up commands set it as an sh prefix.
+function profileDir(value) {
+  const dir = (value ?? '').trim().replace(/^~(?=$|\/)/, homedir());
+  if (!isAbsolute(dir) || /['"$`\\\r\n]/.test(dir)) throw Error('cloud profile must be one absolute directory path without quotes');
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) throw Error(`cloud profile directory missing: ${dir}`);
+  return dir;
+}
+
+export function readCloudProfile({ path = defaultProfilePath() } = {}) {
+  if (!existsSync(path)) return null;
+  if (process.platform === 'win32') throw Error(`cloud profile is supported on POSIX hosts only: ${path}`);
+  return profileDir(readFileSync(path, 'utf8'));
+}
+
+// Setting a profile requires that directory's claude.ai login (readAuthStatus with the new profile); none clears it.
+export function setCloudProfile(value, { path = defaultProfilePath(), authStatus = readAuthStatus } = {}) {
+  if (value === 'none') { rmSync(path, { force: true }); return null; }
+  if (process.platform === 'win32') throw Error('cloud profile is supported on POSIX hosts only');
+  const dir = profileDir(value);
+  const status = typeof authStatus === 'function' ? authStatus(dir) : authStatus;
+  if (status?.authMethod !== 'claude.ai') throw Error(`cloud profile ${dir} is not logged in to claude.ai`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${dir}\n`);
+  return dir;
+}
+
+const profilePrefix = profile => profile ? `CLAUDE_CONFIG_DIR='${profileDir(profile)}' ` : '';
 
 export function setCloudToggle(state, { path = defaultTogglePath(), authStatus = null } = {}) {
   if (state !== 'on' && state !== 'off') throw Error('cloud toggle state must be on or off');
@@ -107,9 +138,9 @@ export function buildCloudBrief({ brief, branch, baseRef }) {
     '- Do not edit project memory files (STATUS.html, LESSONS.md).\n';
 }
 
-export function buildCloudLaunchCommand({ briefPath }) {
+export function buildCloudLaunchCommand({ briefPath, profile = readCloudProfile() }) {
   if (!text(briefPath) || /["$`\\]/.test(briefPath)) throw Error('plain brief file path required');
-  return `claude --cloud "$(cat "${briefPath}")" --model '${CLOUD_ROUTE.model}' --effort ${CLOUD_ROUTE.effort}`;
+  return `${profilePrefix(profile)}claude --cloud "$(cat "${briefPath}")" --model '${CLOUD_ROUTE.model}' --effort ${CLOUD_ROUTE.effort}`;
 }
 
 export function buildCloudHeartbeatRequest({ taskPath, repo, branch }) {
@@ -228,11 +259,11 @@ export function buildCloudFollowUp({ branch }) {
 }
 
 // Print mode queues a follow-up into the existing session; without -p the CLI reports attaching as not enabled.
-export function buildCloudFollowUpCommand({ sessionId, messagePath }) {
+export function buildCloudFollowUpCommand({ sessionId, messagePath, profile = readCloudProfile() }) {
   if (!/^session_[A-Za-z0-9_-]+$/.test(sessionId ?? '') || !text(messagePath) || /["$`\\]/.test(messagePath)) {
     throw Error('cloud session id and plain message file path required');
   }
-  return `claude -p "$(cat "${messagePath}")" --cloud ${sessionId}`;
+  return `${profilePrefix(profile)}claude -p "$(cat "${messagePath}")" --cloud ${sessionId}`;
 }
 
 // Pre-authorized by the toggle: one local managed Worker, then stop.
@@ -253,8 +284,10 @@ export function authorizeCloudFallback(taskPath, { route, reason, record = null 
   return Object.freeze({ route, reason });
 }
 
-function readAuthStatus() {
-  return JSON.parse(execFileSync('claude', ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 30000 }));
+// The login cloud sessions use: the cloud profile's when one is set, else the host's default login.
+export function readAuthStatus(profile = readCloudProfile()) {
+  const env = profile ? { ...process.env, CLAUDE_CONFIG_DIR: profileDir(profile) } : process.env;
+  return JSON.parse(execFileSync('claude', ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 30000, env }));
 }
 
 // Same pattern as HOST_NAME in personal-skills fleet.py: a host can never start with '-' and become an ssh option.
@@ -306,8 +339,19 @@ function main(argv) {
   const hosts = fleetHosts(flag('--fleet'));
   if (state === 'status') {
     // Each host prints its own effective toggle: on, off, or default (code class only).
-    console.log(`${hosts.length ? 'local: ' : ''}${readCloudToggle().replace(/^default$/, 'default (code class only)')}; repos: ${[...readCloudRepos()].join(', ') || 'none'}`);
+    const profile = readCloudProfile();
+    let login = 'unknown';
+    try { const auth = readAuthStatus(profile); login = `${auth.authMethod ?? 'none'} ${auth.email ?? ''}`.trim(); } catch {}
+    console.log(`${hosts.length ? 'local: ' : ''}${readCloudToggle().replace(/^default$/, 'default (code class only)')}; repos: ${[...readCloudRepos()].join(', ') || 'none'}; ` +
+      `login: ${profile ? `profile ${profile}` : 'default'} (${login})`);
     pushToFleet(hosts, ['status']);
+    return;
+  }
+  // Host-local only: a profile names a directory on this host, so it never travels with --fleet.
+  if (state === 'profile') {
+    if (hosts.length) throw Error('cloud profile is host-local; run it on each host without --fleet');
+    const dir = setCloudProfile(rest[0]);
+    console.log(`local profile: ${dir ?? 'none (default login)'}`);
     return;
   }
   if (state === 'allow' || state === 'disallow') {
@@ -316,7 +360,7 @@ function main(argv) {
     return;
   }
   if (state !== 'on' && state !== 'off') {
-    throw Error('usage: cloud-lane.mjs on|off|status | allow|disallow <owner/repo|owner/*> [--fleet host,...]');
+    throw Error('usage: cloud-lane.mjs on|off|status | allow|disallow <owner/repo|owner/*> [--fleet host,...] | profile <dir>|none');
   }
   setCloudToggle(state, { authStatus: state === 'on' ? readAuthStatus() : null });
   console.log(`local: ${state}`);
