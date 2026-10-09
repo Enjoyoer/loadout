@@ -5,20 +5,21 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from credential import expand
 
-FILES = ("credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs")
+FILES = ("credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs", "gmail_guard.py")
 
 # Optional read-only Gmail (workspace-mcp). Read-only is enforced three times: the
 # server's --read-only mode (gmail.readonly scope, write tools removed), an explicit
 # --disabled-tools list, and a Pi allowlist on a hidden server. Only `email`, `home`
 # and `port` are configurable; the token and client JSON stay in `home`, owner-only:
 # POSIX refuses a group- or other-accessible `home`, Windows relies on the runtime ACL step.
+# gmail_guard.py fronts the server and refuses tool calls from role=worker agents.
 GMAIL_READ_TOOLS = ("search_gmail_messages", "get_gmail_message_content", "get_gmail_messages_content_batch",
                     "get_gmail_thread_content", "get_gmail_threads_content_batch", "get_gmail_attachment_content",
                     "list_gmail_labels")
 GMAIL_BLOCKED_TOOLS = ("start_google_auth", "send_gmail_message", "draft_gmail_message", "modify_gmail_message_labels",
                        "batch_modify_gmail_message_labels", "manage_gmail_label", "manage_gmail_filter")
 
-def gmail_server(cfg):
+def gmail_server(cfg, root, python):
     if not isinstance(cfg, dict) or not {"email", "home"} <= cfg.keys() or cfg.keys() - {"email", "home", "port"}:
         raise ValueError("gmail needs exactly email, home and optional port")
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", cfg["email"]): raise ValueError("gmail email invalid")
@@ -28,12 +29,13 @@ def gmail_server(cfg):
     if os.name != "nt" and home.exists() and home.stat().st_mode & 0o077:
         raise ValueError("gmail home " + str(home) + " is group- or other-accessible; run chmod 700 on it")
     exe = home / "venv" / ("Scripts/workspace-mcp.exe" if os.name == "nt" else "bin/workspace-mcp")
-    return {"command": str(exe),
-            "args": ["--single-user", "--tools", "gmail", "--read-only", "--disabled-tools", *GMAIL_BLOCKED_TOOLS],
+    return {"command": python,
+            "args": [str(root / "gmail_guard.py"), str(exe), "--single-user", "--tools", "gmail", "--read-only", "--disabled-tools", *GMAIL_BLOCKED_TOOLS],
             "exposure": "hidden", "toolExposure": {name: "codemode" for name in GMAIL_READ_TOOLS},
             "description": "Read-only Gmail for " + cfg["email"] + ": search and read messages, threads, attachments and labels. Cannot send, draft, label or delete.",
             "env": {"GOOGLE_CLIENT_SECRET_PATH": str(home / "client_secret.json"), "WORKSPACE_MCP_CREDENTIALS_DIR": str(home / "credentials"),
-                    "USER_GOOGLE_EMAIL": cfg["email"], "WORKSPACE_MCP_HOST": "127.0.0.1", "WORKSPACE_MCP_PORT": str(port)}}
+                    "USER_GOOGLE_EMAIL": cfg["email"], "WORKSPACE_MCP_HOST": "127.0.0.1", "WORKSPACE_MCP_PORT": str(port),
+                    "LOADOUT_PI_MCP_URL": "${LOADOUT_PI_MCP_URL}"}}
 
 # Optional direct providers: unauthenticated OpenAI-compatible endpoints (for example a
 # local model gate) that bypass the router. Each model is listed once here; the Paseo
@@ -125,7 +127,7 @@ def build(spec, root):
     mcp = {"autoEnableCodemode": True, "mcpServers": {"paseo": {
            "command": spec.get("python", sys.executable), "args": [str(root / "mcp_bridge.py")], "exposure": "codemode",
            "env": {"LOADOUT_PI_MCP_URL": "${LOADOUT_PI_MCP_URL}", "LOADOUT_PI_PARENT_MODEL": "${LOADOUT_PI_PARENT_MODEL}", "LOADOUT_PI_PARENT_THINKING": "${LOADOUT_PI_PARENT_THINKING}"}}}}
-    if "gmail" in spec: mcp["mcpServers"]["gmail"] = gmail_server(spec["gmail"])
+    if "gmail" in spec: mcp["mcpServers"]["gmail"] = gmail_server(spec["gmail"], root, spec.get("python", sys.executable))
     return {"runtime.json": spec, "agent/models.json": model, "agent/settings.json": settings, "agent/mcp.json": mcp}
 
 def safe_target(root, target):
