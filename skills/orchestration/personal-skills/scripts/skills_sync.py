@@ -6,7 +6,8 @@ install flat as <client skills directory>/<skill>/<file> for Codex and Claude
 Code. Private skills come from the fleet directory's skills/<skill>/ overlay,
 which is never published. Each host is preflighted before any write; a changed
 file that matches no published or recorded overlay version is a conflict and
-stops that host.
+stops that host. A skill the host's sync record shows the sync installed, and
+that is no longer published, is removed unless it was edited there.
 """
 
 from __future__ import annotations
@@ -53,20 +54,24 @@ def published_prior_by_dest(pub: publication.Publication) -> dict:
     return by_dest
 
 
-def overlay_files(fleet_dir: Path, published: set, prior_by_dest: dict, record: bool) -> dict:
+def overlay_history(fleet_dir: Path) -> dict:
+    path = fleet_dir / OVERLAY / OVERLAY_HISTORY
+    try:
+        return json.loads(path.read_text()) if path.is_file() else {}
+    except ValueError as error:
+        raise fleet.FleetError(f"unreadable overlay history {path}: {error}") from error
+
+
+def overlay_files(fleet_dir: Path, published: set, prior_by_dest: dict) -> dict:
     """Private skills from <fleet>/skills/<skill>/, keyed like payload_files.
 
-    Every hash sync has sent is kept in skills/.loadout-overlay.json, so a later
-    version replaces an installed earlier one while hand edits stay conflicts.
+    Every hash a host has accepted is kept in skills/.loadout-overlay.json, so a
+    later version replaces an installed earlier one while hand edits stay conflicts.
     """
     root = fleet_dir / OVERLAY
     if not root.is_dir():
         return {}
-    history_path = root / OVERLAY_HISTORY
-    try:
-        history = json.loads(history_path.read_text()) if history_path.is_file() else {}
-    except ValueError as error:
-        raise fleet.FleetError(f"unreadable overlay history {history_path}: {error}") from error
+    history = overlay_history(fleet_dir)
     files = {}
     for skill in sorted(root.iterdir()):
         if skill.name.startswith(".") or skill.name in OVERLAY_SKIP:
@@ -90,12 +95,15 @@ def overlay_files(fleet_dir: Path, published: set, prior_by_dest: dict, record: 
             dest = rel.as_posix()
             prior = set(history.get(dest, [])) | prior_by_dest.get(dest, set())
             files[dest] = {"sha256": digest, "data": base64.b64encode(data).decode(), "prior": sorted(prior)}
-    if record:
-        updated = {dest: sorted(set(history.get(dest, [])) | {f["sha256"]}) for dest, f in files.items()}
-        merged = {**history, **updated}
-        if merged != history:
-            history_path.write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n")
     return files
+
+
+def record_overlay(fleet_dir: Path, files: dict) -> None:
+    """Add the overlay hashes a host has accepted to the overlay history."""
+    history = overlay_history(fleet_dir)
+    merged = {**history, **{dest: sorted(set(history.get(dest, [])) | {f["sha256"]}) for dest, f in files.items()}}
+    if merged != history:
+        (fleet_dir / OVERLAY / OVERLAY_HISTORY).write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n")
 
 
 def global_payload(fleet_doc: dict, fleet_dir: Path) -> Optional[dict]:
@@ -118,11 +126,16 @@ def describe(result: dict) -> str:
         return f"FAILED: {result['error']}"
     if status == "conflict":
         return f"conflict: local edits, nothing written: {listed(result['conflicts'])}"
-    counts = [f"+{len(result['added'])}" if result["added"] else "", f"~{len(result['changed'])}" if result["changed"] else ""]
+    retired, kept = result.get("retired", []), result.get("kept", [])
+    counts = [f"+{len(result['added'])}" if result["added"] else "", f"~{len(result['changed'])}" if result["changed"] else "",
+              f"-{len(retired)}" if retired else ""]
     counts = " ".join(c for c in counts if c)
     clients = ", ".join(f"{k} {v}" for k, v in result["clients"].items())
     elevation = f"; elevation: {listed(result['elevation'])}" if result.get("elevation") else ""
-    return f"{status}" + (f" ({counts})" if counts else "") + (f"; {clients}" if clients else "") + elevation
+    dry = status == "would update"
+    unpublished = (f"; {'would retire' if dry else 'retired'} unpublished: {listed(retired)}" if retired else "") + (
+        f"; unpublished with local edits, {'would keep' if dry else 'kept'} and stop managing: {listed(kept)}" if kept else "")
+    return f"{status}" + (f" ({counts})" if counts else "") + (f"; {clients}" if clients else "") + elevation + unpublished
 
 
 def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[str], None],
@@ -130,7 +143,7 @@ def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[s
     """Build what every host shares once per sync: the publication, the overlay, and the global instructions."""
     pub = publication.Publication(publication.find_checkout(fleet_doc))
     published = {entry["skill"] for entry in pub.manifest["files"]}
-    overlay = overlay_files(fleet_dir, published, published_prior_by_dest(pub), record=not dry_run)
+    overlay = overlay_files(fleet_dir, published, published_prior_by_dest(pub))
     overlay_names = {dest.split("/")[0] for dest in overlay}
     names = published | overlay_names
     if only is not None:
@@ -142,7 +155,8 @@ def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[s
     emit(f"source_commit {pub.source[:12]}: {len(selected)} skills selected"
          + (f" ({len(selected & overlay_names)} from the private overlay)" if selected & overlay_names else "")
          + ("; global instructions" if glob else ""))
-    return {"fleet_doc": fleet_doc, "dry_run": dry_run, "only": only, "pub": pub, "overlay": overlay, "global": glob}
+    return {"fleet_doc": fleet_doc, "fleet_dir": fleet_dir, "dry_run": dry_run, "only": only, "pub": pub,
+            "overlay": overlay, "names": names, "global": glob}
 
 
 def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
@@ -150,14 +164,21 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
     only = state["only"]
     exclude = set(host.get("exclude_skills", []))
     files = payload_files(state["pub"], only, exclude)
-    files.update({dest: f for dest, f in state["overlay"].items()
-                  if dest.split("/")[0] not in exclude and (only is None or dest.split("/")[0] in only)})
+    overlay = {dest: f for dest, f in state["overlay"].items()
+               if dest.split("/")[0] not in exclude and (only is None or dest.split("/")[0] in only)}
+    files.update(overlay)
+    # A host retires a skill it recorded only when the skill is in neither the publication nor the
+    # overlay, nor excluded on this host; a run narrowed to some skills retires nothing.
+    keep = sorted(state["names"] | exclude) if only is None else None
     payload = {"dry_run": state["dry_run"], "clients": host.get("clients", []), "files": files,
-               "global": state["global"]}
+               "global": state["global"], "keep": keep}
     result, output = fleet.run_node(name, name == state["fleet_doc"]["source_host"], REMOTE_JS, payload,
                                     TIMEOUT_SECONDS)
     if result is None:
         result = {"status": "failed", "error": output}
+    if (not state["dry_run"] and overlay and result["status"] in ("updated", "same")
+            and "present" in result["clients"].values()):
+        record_overlay(state["fleet_dir"], overlay)
     note = f"; excluded {', '.join(sorted(exclude))}" if exclude else ""
     emit(f"{name}: skills {describe(result)}{note}")
     return "FAILED" if result["status"] == "failed" else result["status"]
