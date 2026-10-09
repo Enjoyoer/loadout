@@ -18,7 +18,7 @@ Use the pure request builders in `scripts/paseo-worker.mjs`, then make each MCP 
 2. Use `buildManagedWorkspaceRequest` for the unique branch and `worktreeSlug`; call direct `create_workspace({isolation:'worktree', ...})` with that request.
 3. Inspect Pi at the returned path; supply its verbatim model catalog rows as `capabilities.models`. Pass the recorded `route` from `resolveWorkerRoute`; omit `provider` and `agentSettings` to map its surface. Native or Pi-unserved routes need `nativeAuthorization: 'owner-explicit'`. Pass the returned `workspaceId` to `buildManagedWorkerRequest`, call direct `create_agent` with the unchanged request, then call `validateManagedWorkerLaunch`.
 
-Record agent/workspace IDs, path, branch, base, and parentage. Managed agents do not populate the task record's CLI `worker` slot. A failed placement stops the lane; preserve any created workspace for reconciliation. Permission requests require checking placement/settings, not accepting weaker permissions.
+Record agent/workspace IDs, path, branch, base, and parentage. A failed placement stops the lane; preserve any created workspace for reconciliation. Permission requests require checking placement/settings, not accepting weaker permissions.
 
 Repairs use `buildManagedWorkerFollowupRequest` with direct `send_agent_prompt`. Only an explicit owner fire-and-forget request may disable notification.
 
