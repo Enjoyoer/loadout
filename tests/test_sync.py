@@ -123,7 +123,7 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(self.row(out, "devbox"), {"fleet": "conflict", "skills": "stopped", "plugins": "skipped",
                                                    "providers": "skipped", "client-config": "stopped"})
         self.assertEqual(self.row(out, "desktop")["client-config"], "updated")
-        self.assertIn("stopped after a conflict or fleet failure: devbox", out)
+        self.assertIn("stopped after a conflict, a fleet failure, or a failed shared preflight: devbox", out)
         self.assertFalse((self.root / "hosts/devbox/.codex/skills").exists())
 
     def test_only_and_host(self):
