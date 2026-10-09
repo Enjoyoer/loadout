@@ -16,6 +16,8 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - Skills sync retires a skill it installed (per the host's sync record) once it is no longer published, keeping and reporting a locally edited one, and records an overlay hash only after a host accepts it.
 - A failed shared preflight in `sync.py` stops the later scopes for that step's hosts.
 - The skills, plugins, and client-config programs write through uniquely named temp files and rename one only while it is still the file they wrote.
+- `cache-aware-autocompact` no longer lets two state stores in one process clobber one temp file or an old store write after a reload. Every store for a file shares one write queue; a newer store fences off older ones, and teardown waits for the write in flight.
+- `cache-aware-autocompact`, `pm-native-worker-guard`, and `usage-limit-auto-resume` write their JSON state through one shared atomic writer, `plugins/_shared/atomic-json.ts`: a uniquely named, exclusively created temp file, flushed and renamed over the state file, with a brief retry when Windows reports the target busy. The on-disk format is unchanged.
 - Fleet sync's remote programs travel on stdin with their payload in one SHA256-checked envelope, so the ssh command line is a short fixed boot and Windows hosts stay far below the `cmd.exe` length limit; a corrupted envelope runs nothing.
 
 ### Added

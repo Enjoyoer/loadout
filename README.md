@@ -97,7 +97,7 @@ After changing a host's `plugin_root`, plugins installed from the old directory 
 | `pm-native-worker-guard` | Stops and archives native Codex or Claude Code agents created by a PM, so PM workers run on Pi | Dry-run until `armed` |
 | `pi-fast-toggle` | Adds a per-agent Fast pill to Pi agents on tier-capable models; pressing it sets the agent's service-tier label for the next turn | Inactive until its `routing.json` setting exists |
 
-`plugins/_shared` is not a plugin. It holds the canonical source of code that several plugins vendor into their own folders, such as the fail-closed daemon endpoint resolver; see [CONTRIBUTING.md](CONTRIBUTING.md).
+`plugins/_shared` is not a plugin. It holds the canonical source of code that several plugins vendor into their own folders, such as the fail-closed daemon endpoint resolver and the atomic JSON state writer; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Every plugin pins a Paseo version range in `paseo-plugin.json`. To install one manually, run `npm ci` and `npm run check` (or `npm run typecheck`) in its folder, confirm the daemon's `pluginsEnabled` is `true`, then run `paseo plugin install "$PWD"`. `personal-skills` stages and installs plugins across a fleet; see its `Paseo plugins` section. Plugin settings stay host-local and are never part of this repository.
 
