@@ -1,4 +1,5 @@
-import { lstat } from "node:fs/promises";
+import { lstat, stat } from "node:fs/promises";
+import path from "node:path";
 import { withDaemon, type DaemonClient } from "./daemon.ts";
 import { readConfig, type SweeperConfig } from "./config.ts";
 
@@ -23,6 +24,7 @@ export type SkipReason =
   | "project-missing"
   | "path-still-exists"
   | "path-unverifiable"
+  | "parent-missing"
   | "active-workspaces";
 
 export type Verdict =
@@ -41,6 +43,23 @@ async function inspectPath(target: string): Promise<PathState> {
     if (code === "ENOENT" || code === "ENOTDIR") return { exists: false };
     return { exists: "unknown", error: code ?? String(error) };
   }
+}
+
+/**
+ * A missing root only counts as orphaned when its parent directory (and, on Windows,
+ * its drive root) is present, so an unmounted or late-mounting volume deletes nothing.
+ */
+async function findMissingContainer(target: string): Promise<{ dir: string; error: string } | null> {
+  const dirs = [path.dirname(target)];
+  if (process.platform === "win32") dirs.unshift(path.parse(target).root);
+  for (const dir of dirs) {
+    try {
+      if (!(await stat(dir)).isDirectory()) return { dir, error: "not-a-directory" };
+    } catch (error) {
+      return { dir, error: (error as NodeJS.ErrnoException).code ?? String(error) };
+    }
+  }
+  return null;
 }
 
 /**
@@ -74,6 +93,10 @@ async function judge(project: ProjectRow, activeCount: number): Promise<Verdict>
   }
   if (state.exists) {
     return { kind: "skip", ...base, reason: "path-still-exists", detail: `on-disk=${state.how}` };
+  }
+  const missing = await findMissingContainer(project.projectRootPath);
+  if (missing) {
+    return { kind: "skip", ...base, reason: "parent-missing", detail: `dir=${quote(missing.dir)} stat=${missing.error} (volume or parent absent)` };
   }
   return { kind: "delete", ...base };
 }

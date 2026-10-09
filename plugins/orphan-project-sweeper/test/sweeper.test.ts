@@ -154,6 +154,14 @@ it("existing paths and active workspaces remain skipped in armed mode", async (t
   assert.ok(f.logs.some((line) => line.includes("reason=active-workspaces")));
 });
 
+it("a missing root whose parent is also missing is not orphaned", async (t) => {
+  const f = await fixture(t, { armed: true });
+  await rm(f.root, { recursive: true, force: true });
+  await f.sweeper.sweep();
+  assert.deepEqual(f.removed, []);
+  assert.ok(f.logs.some((line) => line.includes("decision=skip") && line.includes("projectId=project-0") && line.includes("reason=parent-missing")));
+});
+
 it("delete errors are logged without reporting successful deletion", async (t) => {
   const f = await fixture(t, { armed: true });
   f.state.failDelete = true;
