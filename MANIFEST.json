@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "9233883fcd0f72ec124e85e97f8bca812a3e2bce",
+  "source_commit": "a92a0ef99479bffa63bc3d16c92026b53fa10ba4",
   "skill_count": 22,
   "file_count": 129,
   "files": [
@@ -1049,8 +1049,8 @@
     {
       "path": "plugins/cache-aware-autocompact/test/recovery.test.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 40880,
-      "sha256": "cdd0ee5da79acd1f93a63988428508e1cf452f449fa6bf206b59fe707f4297de"
+      "bytes": 40992,
+      "sha256": "ff81c74523902e221a5faf6d7bb8f060b75d2d6a3e2dc5c5438f18a87cf05a83"
     },
     {
       "path": "plugins/cache-aware-autocompact/test/retry.test.ts",
