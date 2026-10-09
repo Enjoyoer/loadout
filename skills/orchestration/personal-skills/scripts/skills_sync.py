@@ -125,8 +125,9 @@ def describe(result: dict) -> str:
     return f"{status}" + (f" ({counts})" if counts else "") + (f"; {clients}" if clients else "") + elevation
 
 
-def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Callable[[str], None],
-        only: Optional[set] = None) -> dict:
+def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[str], None],
+              only: Optional[set] = None) -> dict:
+    """Build what every host shares once per sync: the publication, the overlay, and the global instructions."""
     pub = publication.Publication(publication.find_checkout(fleet_doc))
     published = {entry["skill"] for entry in pub.manifest["files"]}
     overlay = overlay_files(fleet_dir, published, published_prior_by_dest(pub), record=not dry_run)
@@ -141,22 +142,31 @@ def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Ca
     emit(f"source_commit {pub.source[:12]}: {len(selected)} skills selected"
          + (f" ({len(selected & overlay_names)} from the private overlay)" if selected & overlay_names else "")
          + ("; global instructions" if glob else ""))
-    statuses = {}
-    for host in targets:
-        name = host["name"]
-        exclude = set(host.get("exclude_skills", []))
-        files = payload_files(pub, only, exclude)
-        files.update({dest: f for dest, f in overlay.items()
-                      if dest.split("/")[0] not in exclude and (only is None or dest.split("/")[0] in only)})
-        payload = {"dry_run": dry_run, "clients": host.get("clients", []), "files": files, "global": glob}
-        result, output = fleet.run_node(name, name == fleet_doc["source_host"], REMOTE_JS, payload,
-                                        TIMEOUT_SECONDS)
-        if result is None:
-            result = {"status": "failed", "error": output}
-        note = f"; excluded {', '.join(sorted(exclude))}" if exclude else ""
-        emit(f"{name}: skills {describe(result)}{note}")
-        statuses[name] = "FAILED" if result["status"] == "failed" else result["status"]
-    return statuses
+    return {"fleet_doc": fleet_doc, "dry_run": dry_run, "only": only, "pub": pub, "overlay": overlay, "global": glob}
+
+
+def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
+    name = host["name"]
+    only = state["only"]
+    exclude = set(host.get("exclude_skills", []))
+    files = payload_files(state["pub"], only, exclude)
+    files.update({dest: f for dest, f in state["overlay"].items()
+                  if dest.split("/")[0] not in exclude and (only is None or dest.split("/")[0] in only)})
+    payload = {"dry_run": state["dry_run"], "clients": host.get("clients", []), "files": files,
+               "global": state["global"]}
+    result, output = fleet.run_node(name, name == state["fleet_doc"]["source_host"], REMOTE_JS, payload,
+                                    TIMEOUT_SECONDS)
+    if result is None:
+        result = {"status": "failed", "error": output}
+    note = f"; excluded {', '.join(sorted(exclude))}" if exclude else ""
+    emit(f"{name}: skills {describe(result)}{note}")
+    return "FAILED" if result["status"] == "failed" else result["status"]
+
+
+def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Callable[[str], None],
+        only: Optional[set] = None) -> dict:
+    state = preflight(fleet_doc, fleet_dir, dry_run, emit, only)
+    return {host["name"]: run_host(state, host, emit) for host in targets}
 
 
 def main(argv: Optional[list] = None) -> int:

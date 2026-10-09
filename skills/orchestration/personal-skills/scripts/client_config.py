@@ -149,39 +149,47 @@ def status_of(result: dict, dry_run: bool) -> str:
     return "would update" if dry_run else "updated"
 
 
+def preflight(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, update_claude: bool) -> dict:
+    """Load the catalog once per sync, and the token when any of these hosts needs it."""
+    catalog = load_catalog(fleet_dir / "client-config.json", fleet_doc)
+    token = None
+    if any(settings_for(catalog, fleet_doc, host["name"])["claude"]["token_env"] for host in targets):
+        token_file = catalog.get("token_file")
+        if not token_file:
+            raise fleet.FleetError("claude.token_env is set but token_file is missing")
+        try:
+            token = Path(token_file).expanduser().read_text(encoding="utf-8").strip()
+        except OSError as error:
+            raise fleet.FleetError(f"cannot read token_file: {error.strerror}") from error
+    return {"fleet_doc": fleet_doc, "catalog": catalog, "token": token, "dry_run": dry_run,
+            "update_claude": update_claude, "stamp": datetime.now().strftime("%Y%m%d-%H%M%S")}
+
+
+def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
+    name = host["name"]
+    fleet_doc, token, dry_run, update_claude = (state["fleet_doc"], state["token"], state["dry_run"],
+                                                state["update_claude"])
+    wanted = settings_for(state["catalog"], fleet_doc, name)
+    payload = {"codex": wanted["codex"], "claude": wanted["claude"],
+               "token": token if wanted["claude"]["token_env"] else None,
+               "stamp": state["stamp"], "dry_run": dry_run, "update_claude": update_claude}
+    result, output = fleet.run_node(name, name == fleet_doc["source_host"], MERGE_JS, payload,
+                                    UPDATE_TIMEOUT_SECONDS if update_claude else TIMEOUT_SECONDS)
+    if result is None or result.get("error"):
+        error = output if result is None else result["error"]
+        if token:
+            error = error.replace(token, "<token>")
+        emit(f"{name} ({wanted['role']}): FAILED: {error}")
+        return "FAILED"
+    for line in describe(f"{name} ({wanted['role']})", result):
+        emit(line)
+    return status_of(result, dry_run)
+
+
 def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, update_claude: bool,
         emit: Callable[[str], None]) -> dict:
-    catalog = load_catalog(fleet_dir / "client-config.json", fleet_doc)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    token = None
-    statuses = {}
-    for host in targets:
-        name = host["name"]
-        wanted = settings_for(catalog, fleet_doc, name)
-        if wanted["claude"]["token_env"] and token is None:
-            token_file = catalog.get("token_file")
-            if not token_file:
-                raise fleet.FleetError("claude.token_env is set but token_file is missing")
-            try:
-                token = Path(token_file).expanduser().read_text(encoding="utf-8").strip()
-            except OSError as error:
-                raise fleet.FleetError(f"cannot read token_file: {error.strerror}") from error
-        payload = {"codex": wanted["codex"], "claude": wanted["claude"],
-                   "token": token if wanted["claude"]["token_env"] else None,
-                   "stamp": stamp, "dry_run": dry_run, "update_claude": update_claude}
-        result, output = fleet.run_node(name, name == fleet_doc["source_host"], MERGE_JS, payload,
-                                        UPDATE_TIMEOUT_SECONDS if update_claude else TIMEOUT_SECONDS)
-        if result is None or result.get("error"):
-            error = output if result is None else result["error"]
-            if token:
-                error = error.replace(token, "<token>")
-            emit(f"{name} ({wanted['role']}): FAILED: {error}")
-            statuses[name] = "FAILED"
-            continue
-        for line in describe(f"{name} ({wanted['role']})", result):
-            emit(line)
-        statuses[name] = status_of(result, dry_run)
-    return statuses
+    state = preflight(fleet_doc, fleet_dir, targets, dry_run, update_claude)
+    return {host["name"]: run_host(state, host, emit) for host in targets}
 
 
 def main(argv: Optional[list] = None) -> int:

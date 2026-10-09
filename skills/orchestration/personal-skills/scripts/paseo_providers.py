@@ -379,13 +379,21 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
     return "updated" if result["changed"] else "same"
 
 
+def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool) -> dict:
+    """Load the provider config and the merge program once per sync."""
+    return {"fleet_doc": fleet_doc, "fleet_dir": fleet_dir, "dry_run": dry_run,
+            "config": load_config(fleet_dir / "paseo-providers.json", fleet_doc),
+            "program": pack(MERGE_JS.read_bytes()), "stamp": datetime.now().strftime("%Y%m%d-%H%M%S")}
+
+
+def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
+    return sync_host(Runner(host, state["fleet_doc"]["source_host"], state["fleet_dir"]), state["config"],
+                     state["program"], state["stamp"], state["dry_run"], emit)
+
+
 def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Callable[[str], None]) -> dict:
-    config = load_config(fleet_dir / "paseo-providers.json", fleet_doc)
-    program = pack(MERGE_JS.read_bytes())
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return {host["name"]: sync_host(Runner(host, fleet_doc["source_host"], fleet_dir), config, program, stamp,
-                                    dry_run, emit)
-            for host in targets}
+    state = preflight(fleet_doc, fleet_dir, dry_run)
+    return {host["name"]: run_host(state, host, emit) for host in targets}
 
 
 def main(argv: Optional[list] = None) -> int:
