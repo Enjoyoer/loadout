@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b7f147e38d150ddc61c002f7bf737407643e3e6b",
+  "source_commit": "94587b55ab49a54f0c23ee92fed2d665a59da8b2",
   "skill_count": 22,
-  "file_count": 125,
+  "file_count": 124,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -366,8 +366,8 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 8453,
-      "sha256": "5079e1276886970e91643879a65d428b6109c9c1115f46ba6ee1f0687083fb72"
+      "bytes": 8459,
+      "sha256": "82a43efb2a4321078326dff8da72625ae2d7fe1385bf037bd1e31ea53d816797"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
@@ -387,29 +387,22 @@
       "path": "skills/orchestration/opn/references/host-adapters.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 3507,
-      "sha256": "f5081803ba792db4bf9584da2cf64d055657c176553c69f51421e52172d6b8a2"
-    },
-    {
-      "path": "skills/orchestration/opn/scripts/host_adapters.py",
-      "category": "orchestration",
-      "skill": "opn",
-      "bytes": 4915,
-      "sha256": "cf4441a035cb55f59ad1649aadf32e26939da8f323704cb8dc3ad17e8ce8e017"
+      "bytes": 3931,
+      "sha256": "b21665ce440bea5cb69e99e8710b6dbd9feaa380dbb59f04c23be9121649d6ba"
     },
     {
       "path": "skills/orchestration/opn/scripts/test_validate_opn.py",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 5054,
-      "sha256": "bf9b93f2b23ae1bfb6af6be6de07493a16bab7cfe696eea59d5aeaaf7d636455"
+      "bytes": 1596,
+      "sha256": "5e19f30568f4f6923950677f31e09f57d30869540318fd42fb65a624f428be35"
     },
     {
       "path": "skills/orchestration/opn/scripts/validate-opn.py",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 4269,
-      "sha256": "30ec8e66deb33d4e03acdfee4de6d5e6a32205e5c6781772dcf98152143ecacd"
+      "bytes": 4158,
+      "sha256": "4229dcda734d00620fe16303eff3e5f73c5a52356a49a523e9bb00ab12f431ec"
     },
     {
       "path": "skills/orchestration/personal-skills/SKILL.md",
