@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { isGptOrWebRoute, materializeFixedRoute, OWNER_RULE_ROUTES, routeReason, selectWorkerRoute, validateRoleRoute,
   WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
-import { authorizeCloudFallback, checkCloudEligibility, CLOUD_EDITING_CLASSES, readCloudToggle,
+import { authorizeCloudFallback, checkCloudEligibility, CLOUD_ALL_CLASSES, cloudClasses, readCloudToggle,
   resolveCloudWorkerRoute } from './cloud-lane.mjs';
 import { defaultRoutingPath, readQuota, readRoutingSettings, ROUTING_DEFAULTS } from './quota-pace.mjs';
 import { readTask, updateTask } from './task-state.mjs';
@@ -17,7 +17,7 @@ const usage = 'usage: route.mjs --class <class> [--pq-file FILE] [--catalog FILE
   '[--owner-model ID --owner-effort LEVEL [--owner-fast on|off]] [--task TASK_JSON --lane SLUG [--cloud-fallback]]';
 
 // cloud is { toggle, eligibility } from readCloudToggle and checkCloudEligibility, or null when not checked.
-// An owner route is returned unchanged; owner-rule classes (ui) skip the cloud lane and the pace; routing.json and
+// An owner route is returned unchanged; owner-rule classes (ui) skip the pace, and the cloud lane unless its toggle is all; routing.json and
 // quota are read only for classes the pace may adjust, and a bad routing.json falls back to the defaults.
 export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, catalog, cloud = null, pqFile = null,
   settings = null, home } = {}) {
@@ -26,6 +26,8 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
     return Object.freeze({ route, reason: routeReason(route) });
   }
   if (Object.hasOwn(OWNER_RULE_ROUTES, taskClass ?? '')) {
+    const cloudRoute = cloud?.toggle === 'all' ? resolveCloudWorkerRoute({ ...cloud, taskClass }) : null;
+    if (cloudRoute) return Object.freeze({ route: cloudRoute, reason: `${taskClass} on the cloud lane (toggle all, eligible), Opus xhigh on cloud credits` });
     return Object.freeze({ route: selectWorkerRoute({ taskKind: taskClass, catalog }), reason: OWNER_RULE_ROUTES[taskClass].reason });
   }
   const rule = Object.hasOwn(WORKER_DEFAULT_ROUTES, taskClass ?? '') ? WORKER_DEFAULT_ROUTES[taskClass] : null;
@@ -35,7 +37,7 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
     return Object.freeze({ route: cloudRoute,
       reason: `${taskClass} on the cloud lane (toggle ${cloud.toggle}, eligible), ${cloudRoute.effort} on cloud credits` });
   }
-  const relevant = cloud && (cloud.toggle === 'on' ? CLOUD_EDITING_CLASSES.includes(taskClass) : taskClass === 'code');
+  const relevant = cloud && (['on', 'all'].includes(cloud.toggle) ? cloudClasses(cloud.toggle).includes(taskClass) : taskClass === 'code');
   const note = !relevant ? '' : cloud.toggle === 'off' ? 'cloud lane off, '
     : `cloud lane ineligible (${cloud.eligibility?.reasons?.join('; ') || 'no eligibility facts'}), `;
   let routing = settings ?? ROUTING_DEFAULTS, invalid = '';
@@ -56,7 +58,7 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
 // <lane>-fallback, never over the lane's cloud route, and cloud.fallback and that route are written in one task update.
 export async function resolveCloudFallback(taskPath, { lane, taskClass = 'code', ownerRoute = null, catalog, pqFile = null,
   settings = null, home } = {}) {
-  if (!CLOUD_EDITING_CLASSES.includes(taskClass)) throw Error(`cloud fallback class must be one of ${CLOUD_EDITING_CLASSES.join(', ')}`);
+  if (!CLOUD_ALL_CLASSES.includes(taskClass)) throw Error(`cloud fallback class must be one of ${CLOUD_ALL_CLASSES.join(', ')}`);
   // A Worker lane slug is at most 40 characters, so <lane>-fallback must fit.
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(lane ?? '') || lane.length > 31) {
     throw Error('cloud fallback needs the cloud Worker lane slug (at most 31 characters)');
