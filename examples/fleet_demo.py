@@ -14,21 +14,13 @@ import os
 import subprocess
 import sys
 import tempfile
-import textwrap
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SYNC = REPO / "skills/orchestration/personal-skills/scripts/sync.py"
 
-FAKE_SSH = textwrap.dedent(r"""
-    #!/bin/sh
-    # Stand-in for ssh: run the command with HOME set to the simulated host's folder.
-    while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
-    [ "$1" = "--" ] && shift
-    host="$1"; shift
-    unset CODEX_HOME XDG_CONFIG_HOME
-    HOME="$DEMO_ROOT/hosts/$host" exec sh -c "$*"
-    """).lstrip()
+sys.path.insert(0, str(REPO / "tests"))
+from fake_commands import assert_fake, install_fake_ssh
 
 HOSTS = {
     "schema_version": 2,
@@ -59,13 +51,15 @@ def main() -> int:
             for client in clients:
                 (root / "hosts" / host / client).mkdir(parents=True, exist_ok=True)
         bin_dir = root / "bin"
-        bin_dir.mkdir()
-        (bin_dir / "ssh").write_text(FAKE_SSH)
-        (bin_dir / "ssh").chmod(0o755)
+        install_fake_ssh(bin_dir)
         env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                "HOME": str(root / "hosts/laptop"), "DEMO_ROOT": str(root)}
         env.pop("LOADOUT_FLEET", None)
         env.pop("XDG_CONFIG_HOME", None)
+        env.pop("CODEX_HOME", None)
+        env["USERPROFILE"] = env["HOME"]
+        env["APPDATA"] = str(root / "hosts/laptop/.config")
+        assert_fake("ssh", bin_dir, env)
 
         step("1. Preview: nothing is written", env, "--dry-run")
         step("2. Sync: copy the fleet to desktop, install verified skills on both hosts", env)

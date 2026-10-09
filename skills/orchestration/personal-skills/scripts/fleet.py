@@ -19,6 +19,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -292,6 +293,18 @@ def push_targets(fleet: dict) -> tuple:
             [host for host in others if host["transport"] != "ssh"])
 
 
+def command_argv(name: str, *args: str):
+    """Resolve the exact PATH hit; only Windows .cmd launchers need cmd.exe."""
+    executable = shutil.which(name)
+    if executable is None:
+        raise FileNotFoundError(f"command not found on PATH: {name}")
+    command = [os.path.abspath(executable), *args]
+    if os.name == "nt" and executable.lower().endswith(".cmd"):
+        interpreter = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
+        return f'{subprocess.list2cmdline([interpreter])} /d /s /c "{subprocess.list2cmdline(command)}"'
+    return command
+
+
 def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Optional[float] = None) -> tuple:
     """Run a Loadout node program, bundled with remote_common.js, on a host with a JSON payload.
 
@@ -305,7 +318,7 @@ def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Opti
         # Inside an agent session, keep daemon commands off the agent's own identity.
         env = {k: v for k, v in os.environ.items() if k not in ("PASEO_AGENT_ID", "PASEO_AGENT_CWD")}
     else:
-        command = ["ssh", *SSH_OPTIONS, "--", name, f'node -e "{BOOT}" -- {digest}']
+        command = command_argv("ssh", *SSH_OPTIONS, "--", name, f'node -e "{BOOT}" -- {digest}')
     try:
         done = subprocess.run(command, input=raw, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
