@@ -20,10 +20,12 @@ A project is orphaned only when all of these hold at evaluation time:
    A mount the host does not declare (mounted by hand or by a desktop session) looks like a plain
    directory, so only the empty-parent rule covers it.
 4. On Windows, no existing ancestor of the root is a reparse point. A junction or directory symlink
-   (`lstat` reports a symbolic link), a volume mount point (a folder whose device id differs from
-   its parent's), or an ancestor `lstat` cannot read for a reason other than `ENOENT` keeps the
-   project as `mount-unverifiable`. A missing folder under plain folders on a present drive is
-   still a candidate. The drive-root rule above is unchanged.
+   (`lstat` reports a symbolic link), an ancestor `lstat` reports as anything but a directory, a
+   volume mount point (a folder whose device id differs from its parent's), or an ancestor `lstat`
+   cannot read for a reason other than `ENOENT` keeps the project as `mount-unverifiable`. So does
+   a `stat` of the parent or drive root that fails with `EPERM`, `EACCES` or any error other than
+   `ENOENT`; a missing or empty parent stays `parent-missing`. A missing folder under plain folders
+   on a present drive is still a candidate.
 
 It defaults to dry-run until `armed` is exactly `true`. It removes Paseo bookkeeping,
 never git branches or repository/worktree directories. The daemon also removes the

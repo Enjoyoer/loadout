@@ -79,22 +79,26 @@ async function inspectPath(target: string, host: SweeperHost): Promise<PathState
  * ordinary directory on its parent's device, and st_dev only differs while the volume is mounted.
  * A non-empty parent is necessary, not sufficient: findAbsentMount checks the mounts next.
  */
-async function findMissingContainer(target: string, host: SweeperHost): Promise<{ dir: string; error: string } | null> {
+async function findMissingContainer(target: string, host: SweeperHost): Promise<ContainerProblem | null> {
   const paths = pathsOf(host);
   const parent = paths.dirname(target);
   const dirs = [parent];
   if (host.platform === "win32") dirs.unshift(paths.parse(target).root);
+  const absent = (dir: string, error: string): ContainerProblem => ({ reason: "parent-missing", detail: `dir=${quote(dir)} ${error} (volume or parent absent)` });
   for (const dir of dirs) {
     try {
-      if (!(await host.stat(dir)).isDirectory()) return { dir, error: "stat=not-a-directory" };
+      if (!(await host.stat(dir)).isDirectory()) return absent(dir, "stat=not-a-directory");
     } catch (error) {
-      return { dir, error: `stat=${(error as NodeJS.ErrnoException).code ?? String(error)}` };
+      const code = errorCode(error);
+      // On Windows only ENOENT shows the folder is gone; a denied or failed stat says nothing about the volume.
+      if (host.platform === "win32" && code !== "ENOENT") return { reason: "mount-unverifiable", detail: `dir=${quote(dir)} stat=${code}` };
+      return absent(dir, `stat=${code}`);
     }
   }
   try {
-    if ((await host.readdir(parent)).length === 0) return { dir: parent, error: "empty-directory" };
+    if ((await host.readdir(parent)).length === 0) return absent(parent, "empty-directory");
   } catch (error) {
-    return { dir: parent, error: `readdir=${(error as NodeJS.ErrnoException).code ?? String(error)}` };
+    return absent(parent, `readdir=${errorCode(error)}`);
   }
   return null;
 }
@@ -103,6 +107,7 @@ const FSTAB = "/etc/fstab";
 const MOUNTINFO = "/proc/self/mountinfo";
 
 type MountProblem = { reason: "mount-absent" | "mount-unverifiable"; detail: string };
+type ContainerProblem = { reason: "parent-missing" | "mount-unverifiable"; detail: string };
 
 class MountStateError extends Error {}
 
@@ -190,6 +195,7 @@ async function findReparseAncestor(target: string, host: SweeperHost): Promise<M
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { reason: "mount-unverifiable", detail: `dir=${quote(dir)} lstat=${errorCode(error)}` };
     }
     if (stats?.isSymbolicLink()) return { reason: "mount-unverifiable", detail: `dir=${quote(dir)} reparse-point` };
+    if (stats && !stats.isDirectory()) return { reason: "mount-unverifiable", detail: `dir=${quote(dir)} not-a-directory` };
     if (stats && below && stats.dev !== below.dev) return { reason: "mount-unverifiable", detail: `dir=${quote(below.dir)} volume-mount-point` };
     below = stats ? { dir, dev: stats.dev } : null;
     if (path.win32.dirname(dir) === dir) return null;
@@ -250,10 +256,8 @@ async function judgeDisk(base: VerdictBase, host: SweeperHost): Promise<Verdict 
   const state = await inspectPath(base.path, host);
   if (state.exists === "unknown") return { kind: "skip", ...base, reason: "path-unverifiable", detail: `lstat=${state.error}` };
   if (state.exists) return { kind: "skip", ...base, reason: "path-still-exists", detail: `on-disk=${state.how}` };
-  const missing = await findMissingContainer(base.path, host);
-  if (missing) {
-    return { kind: "skip", ...base, reason: "parent-missing", detail: `dir=${quote(missing.dir)} ${missing.error} (volume or parent absent)` };
-  }
+  const container = await findMissingContainer(base.path, host);
+  if (container) return { kind: "skip", ...base, ...container };
   const mount = await findAbsentMount(base.path, host);
   if (mount) return { kind: "skip", ...base, ...mount };
   return null;

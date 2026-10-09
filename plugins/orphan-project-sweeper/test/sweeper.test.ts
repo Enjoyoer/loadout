@@ -62,9 +62,12 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1, options:
   return { sweeper, state, removed, logs, calls, root };
 }
 
-type FakeEntry = { kind: "dir" | "file" | "junction"; dev?: number };
+type FakeEntry = { kind: "dir" | "file" | "junction"; dev?: number; lstatAsFile?: boolean };
 
-/** A host whose filesystem is the given entries and files; a junction reads as a directory once followed. */
+/**
+ * A host whose filesystem is the given entries and files; a junction reads as a directory once followed. An entry
+ * with lstatAsFile is a directory to stat but a regular file to lstat.
+ */
 function fakeHost(platform: NodeJS.Platform, entries: Record<string, FakeEntry>, files: Record<string, string> = {}): SweeperHost {
   const paths = platform === "win32" ? path.win32 : path.posix;
   const missing = (target: string) => Object.assign(new Error(`ENOENT: ${target}`), { code: "ENOENT" });
@@ -74,7 +77,7 @@ function fakeHost(platform: NodeJS.Platform, entries: Record<string, FakeEntry>,
     return found;
   };
   const stats = (found: FakeEntry, follow: boolean) => ({
-    isDirectory: () => found.kind === "dir" || (follow && found.kind === "junction"),
+    isDirectory: () => (found.kind === "dir" && (follow || !found.lstatAsFile)) || (follow && found.kind === "junction"),
     isSymbolicLink: () => !follow && found.kind === "junction",
     dev: found.dev ?? 1,
   });
@@ -269,4 +272,16 @@ it("a mount that disappears between evaluation and delete makes the delete skip"
   await f.sweeper.sweep();
   assert.deepEqual(f.removed, []);
   assert.ok(f.logs.some((line) => line.includes("changed on final check") && line.includes("reason=mount-absent")), f.logs.join("\n"));
+});
+
+it("on Windows a missing root is kept as mount-unverifiable when an ancestor's lstat is a regular file", async (t) => {
+  const host = fakeHost("win32", {
+    "C:\\": { kind: "dir" },
+    "C:\\work": { kind: "dir", lstatAsFile: true },
+    "C:\\work\\keep": { kind: "file" },
+  });
+  const f = await fixture(t, {}, 0, { host, paths: ["C:\\work\\gone"] });
+  await f.sweeper.sweep();
+  assert.ok(f.logs.some((line) => line.includes("decision=skip") && line.includes("projectId=project-0") && line.includes("reason=mount-unverifiable") && line.includes("not-a-directory")), f.logs.join("\n"));
+  assert.deepEqual(f.removed, []);
 });
