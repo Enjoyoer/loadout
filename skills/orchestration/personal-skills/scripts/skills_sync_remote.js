@@ -7,6 +7,7 @@
 // (global instructions). Anything else is a conflict and nothing is written.
 // global.claude may be "managed-settings:claudeMd": the claudeMd string field of
 // Claude Code's managed-settings.json, preflighted by value; only that field changes.
+// checkAncestors comes from remote_common.js, which fleet.run_node ships ahead of this file.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execFileSync } = require("child_process");
 const result = { status: null, clients: {}, added: [], changed: [], same: 0, conflicts: [], elevation: [], error: null };
@@ -64,7 +65,7 @@ function managedSettingsPath() {
 
 // Preflight the claudeMd field by value: {kind, why?, settings, text, st}.
 function planManaged(file, want, allowed) {
-  checkAncestors(path.dirname(file), file);
+  checkAncestors(fs, path, path.dirname(file), file);
   if (!fs.existsSync(file)) return { kind: "added", settings: {}, text: "", st: null };
   const st = fs.lstatSync(file);
   if (st.isSymbolicLink() || !st.isFile()) return { kind: "conflict", why: "not a regular file" };
@@ -143,22 +144,9 @@ function writeManaged(w) {
     throw new Error("verification failed after write: " + w.label + (backup ? "; backup at " + backup : ""));
 }
 
-// Every existing component from root down to the file must be a real directory.
-function checkAncestors(root, file) {
-  const rel = path.relative(root, file);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) throw new Error("path escapes its root: " + file);
-  let cur = root;
-  for (const part of [""].concat(path.dirname(rel) === "." ? [] : path.dirname(rel).split(path.sep))) {
-    cur = part ? path.join(cur, part) : cur;
-    if (!fs.existsSync(cur)) return;
-    const st = fs.lstatSync(cur);
-    if (st.isSymbolicLink() || !st.isDirectory()) throw new Error("not a real directory: " + cur);
-  }
-}
-
 // Returns "same", "added", "changed", or "conflict".
 function plan(file, root, want, allowed) {
-  checkAncestors(root, file);
+  checkAncestors(fs, path, root, file);
   if (!fs.existsSync(file)) return "added";
   const st = fs.lstatSync(file);
   if (st.isSymbolicLink() || !st.isFile()) return "conflict";
@@ -179,7 +167,7 @@ try {
       const runtimeRoot = path.dirname(expand(launcher));
       const agentHome = path.join(runtimeRoot, 'agent');
       const pkg = path.join(runtimeRoot, 'app', 'node_modules', '@earendil-works', 'pi-coding-agent', 'package.json');
-      checkAncestors(home, path.join(agentHome, 'skills', 'probe'));
+      checkAncestors(fs, path, home, path.join(agentHome, 'skills', 'probe'));
       if (fs.existsSync(pkg) && JSON.parse(fs.readFileSync(pkg, 'utf8')).version === '1.0.0') {
         CLIENT_HOMES.pi = agentHome;
         SKILL_ROOTS.pi = path.join(agentHome, 'skills');
