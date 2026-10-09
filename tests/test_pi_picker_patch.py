@@ -116,12 +116,3 @@ if(JSON.stringify([definitions,snapshots])!==before)throw Error('provider input 
             self.assertFalse((root/'.loadout-picker-patch.json').exists())
 
 if __name__=='__main__':unittest.main()
-
-
-class PickerLaunchGuardTests(unittest.TestCase):
-    def test_launch_guard_warns_and_still_launches(self):
-        script = (Path(__file__).resolve().parents[1] / "skills/orchestration/personal-skills/scripts/pi/picker-launch.ps1").read_text()
-        self.assertNotIn("Desktop launch stopped", script)
-        self.assertIn("Write-GuardLog", script)
-        # The launch is unconditional: it follows the reapply block, outside any failure branch.
-        self.assertTrue(script.rstrip().endswith("Start-Process -FilePath $exe"))

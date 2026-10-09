@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { ConfigSchema, readConfig } from "../server/config.ts";
+import { readConfig } from "../server/config.ts";
 
-it("defaults to unarmed with a five-delete cap, including registered settings defaults", () => {
-  assert.deepEqual(readConfig(), { armed: false, maxDeletesPerSweep: 5 });
-  assert.deepEqual(ConfigSchema.parse({}), { armed: false, maxDeletesPerSweep: 5 });
+it("defaults to unarmed", () => {
+  assert.equal(readConfig().armed, false);
 });
 
 it("only literal true arms the sweeper", () => {

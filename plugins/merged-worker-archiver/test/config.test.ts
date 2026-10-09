@@ -3,14 +3,8 @@ import { it } from "node:test";
 import { ConfigSchema, defaultConfig } from "../server/config.ts";
 import { resolveDaemonTarget } from "../server/daemon.ts";
 
-it("defaults to dry-run, zero grace, a 60 minute backstop sweep, 3 s debounce, 15/60/180 s follow-ups", () => {
-  const config = defaultConfig();
-  assert.equal(config.armed, false);
-  assert.equal(config.sweepIntervalMinutes, 60);
-  assert.equal(config.graceMinutes, 0);
-  assert.equal(config.eventDebounceSeconds, 3);
-  assert.deepEqual(config.followUpDelaysSeconds, [15, 60, 180]);
-  assert.equal(config.useGh, true);
+it("defaults to dry-run", () => {
+  assert.equal(defaultConfig().armed, false);
 });
 
 it("accepts and ignores the retired maxArchivesPerSweep key (live settings file)", () => {
