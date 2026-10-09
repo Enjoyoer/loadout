@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "ff2f12dfbf30e8a29e18247ca370970857bdc51c",
+  "source_commit": "10327643c912977f320ad0e7fc5d8889139a6137",
   "skill_count": 22,
   "file_count": 129,
   "files": [
@@ -192,7 +192,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5408,
-      "sha256": "802dfa12606301b8eb602325e8de324de0b4ecf5534f6e83a4ffe0902e7cad7d"
+      "sha256": "0a4ae071a2efc875964d0101a1c62e9b5f94129b34229f4422d71db66764efc2"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -317,8 +317,8 @@
       "path": "skills/orchestration/opc/scripts/cloud-lane.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 23896,
-      "sha256": "dc5d9ff2c8f8af24ba11327060478af5afcfcb9d6307cb8dc916c4d8605b9e8f"
+      "bytes": 24154,
+      "sha256": "50ac23364fac7d7f8c8c212d036af7f1b84ae9b359320dcbb90478415ae1a374"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
