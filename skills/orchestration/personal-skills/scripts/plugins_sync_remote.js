@@ -1,13 +1,15 @@
 // Stage, install, and confirm verified Loadout Paseo plugins on this host.
 // Shipped gzip+base64 by plugins_sync.py; stdin is the gzip+base64 JSON payload
-// {dry_run, plugin_root, stage, install, migrate_path, plugins: {id: {pin, files: {rel: {sha256, data, prior}}}}}.
+// {dry_run, plugin_root, stage, install, migrate_path, plugins: {id: {pin, files: {rel: {sha256, data, prior}}, removed}}};
+// removed maps paths no longer published to their published hashes.
 // Never writes plugin settings, plugin state, or pluginsEnabled, and never arms a plugin. The one
 // exception is migrate_path: `paseo plugin remove` deletes <PASEO_HOME>/plugin-settings/<id>, so a
 // migration backs that directory up first and restores the host's own bytes, hash-verified.
-// checkAncestors comes from remote_common.js, which fleet.run_node ships ahead of this file.
+// Helpers come from remote_common.js, which fleet.run_node ships ahead of this file.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execSync, execFileSync } = require("child_process");
 const result = { status: null, plugins: {}, conflicts: [], daemon: null, error: null };
+const recordPath = path.join(loadoutDir(path, os), "plugins-sync.json");
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
   process.exit(code);
@@ -118,8 +120,10 @@ try {
   const data = {};
   for (const id of Object.keys(p.plugins)) if (!/^[a-z0-9-]+$/.test(id)) throw new Error("invalid plugin id from source: " + id);
   for (const [id, plugin] of Object.entries(p.plugins))
-    for (const [rel, f] of Object.entries(plugin.files)) {
+    for (const rel of [...Object.keys(plugin.files), ...Object.keys(plugin.removed || {})]) {
       if (rel.split("/").some(x => !x || x === "." || x === "..")) throw new Error("invalid path from source: " + rel);
+      const f = plugin.files[rel];
+      if (!f) continue;
       const buf = Buffer.from(f.data, "base64");
       if (sha(buf) !== f.sha256) throw new Error("hash mismatch in transfer: " + id + "/" + rel);
       data[id + "/" + rel] = buf;
@@ -141,10 +145,18 @@ try {
 
   // 1. Stage: preflight every file of every staged plugin before writing any.
   const root = expand(p.plugin_root);
-  const writes = [];
+  const writes = [], removes = [], plan = {};
+  const record = fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, "utf8")) : {};
+  const recorded = JSON.stringify(record);
   for (const id of p.stage) {
-    const dir = path.join(root, id), plugin = p.plugins[id];
+    const dir = path.join(root, id), plugin = p.plugins[id], rec = record[dir];
     const info = result.plugins[id] = { staged: "same", checked: false, installed: null, running: null };
+    // Only a passed check recorded for this exact source skips the check. Any other recorded check
+    // also reloads once the check passes, since the daemon may still run older code.
+    const digest = sha(JSON.stringify(Object.keys(plugin.files).sort().map(r => [r, plugin.files[r].sha256])));
+    const recheck = !rec ? "no check recorded" : rec.digest !== digest ? "source changed since the last check"
+      : rec.check !== "passed" ? "last check failed" : null;
+    plan[id] = { digest, recheck, reload: !!rec && !!recheck };
     for (const [rel, f] of Object.entries(plugin.files)) {
       const file = path.join(dir, ...rel.split("/"));
       checkAncestors(fs, path, root, file);
@@ -153,6 +165,15 @@ try {
       const have = st.isFile() && !st.isSymbolicLink() ? sha(fs.readFileSync(file)) : null;
       if (have === f.sha256) continue;
       if (have && f.prior.includes(have)) { writes.push({ id, file, buf: data[id + "/" + rel] }); info.staged = "changed"; }
+      else result.conflicts.push(id + "/" + rel);
+    }
+    // A file no longer published is deleted only while it matches a published version; an edit is a conflict.
+    for (const [rel, hashes] of Object.entries(plugin.removed || {})) {
+      const file = path.join(dir, ...rel.split("/"));
+      checkAncestors(fs, path, dir, file);
+      if (SKIP.has(rel.split("/")[0]) || !fs.existsSync(file)) continue;
+      const st = fs.lstatSync(file);
+      if (st.isFile() && hashes.includes(sha(fs.readFileSync(file)))) { removes.push(file); (info.removed = info.removed || []).push(rel); info.staged = "changed"; }
       else result.conflicts.push(id + "/" + rel);
     }
   }
@@ -185,6 +206,7 @@ try {
   if (p.dry_run) {
     let blockedHere = !!gate, migrating = false;
     for (const id of p.stage) {
+      if (result.plugins[id].staged === "same" && plan[id].recheck) result.plugins[id].checked = "would run (" + plan[id].recheck + ")";
       if (!p.install.includes(id)) continue;
       const info = result.plugins[id], from = elsewhere[id];
       if (gate) info.installed = "blocked: " + gate;
@@ -193,34 +215,40 @@ try {
       else if (from) { info.installed = "would migrate from " + from.path + " (settings backed up and restored)"; migrating = true; }
       else info.installed = "would install or reload";
     }
-    const changed = migrating || p.stage.some(id => result.plugins[id].staged === "changed");
+    const changed = migrating || p.stage.some(id => result.plugins[id].staged === "changed" || plan[id].reload);
     result.status = blockedHere ? "blocked" : changed ? "would update" : "same";
     done(0);
   }
 
   for (const w of writes) {
     fs.mkdirSync(path.dirname(w.file), { recursive: true });
-    fs.writeFileSync(w.file + ".loadout-tmp", w.buf);
-    fs.renameSync(w.file + ".loadout-tmp", w.file);
+    replaceFile(fs, w.file, w.buf);
     if (sha(fs.readFileSync(w.file)) !== sha(w.buf)) throw new Error("verification failed after write: " + w.file);
   }
+  for (const file of removes) fs.unlinkSync(file);
 
   let failed = false;
   // 2. Check: npm ci (no dependency install scripts) and the package's check (or typecheck) script,
-  // when staged source changed or deps are missing.
+  // when staged source changed, deps are missing, or no passed check is recorded for this source.
   for (const id of p.stage) {
-    const dir = path.join(root, id), info = result.plugins[id];
-    if (info.staged === "same" && fs.existsSync(path.join(dir, "node_modules"))) { info.checked = "skipped (unchanged)"; continue; }
+    const dir = path.join(root, id), info = result.plugins[id], { digest, recheck } = plan[id];
+    if (info.staged === "same" && !recheck && fs.existsSync(path.join(dir, "node_modules"))) { info.checked = "skipped (unchanged)"; continue; }
     const scripts = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).scripts || {};
     const script = scripts.check ? "check" : scripts.typecheck ? "typecheck" : null;
     try {
       sh("npm", ["ci", "--ignore-scripts"], dir);
       if (script) sh("npm", ["run", script], dir);
-      info.checked = script || "no check script";
+      info.checked = (script || "no check script") + (info.staged === "same" && recheck ? " (rerun: " + recheck + ")" : "");
+      record[dir] = { digest, check: "passed" };
     } catch (e) {
       info.checked = "FAILED: " + String(e.stderr || e.message).trim().split("\n").slice(-3).join(" ").slice(0, 300);
+      record[dir] = { digest, check: "failed" };
       failed = true;
     }
+  }
+  if (JSON.stringify(record) !== recorded) {
+    fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+    replaceFile(fs, recordPath, JSON.stringify(record, null, 2), 0o600);
   }
 
   // 3. Install or reload, then confirm running and enabled.
@@ -239,7 +267,7 @@ try {
       }
       if (from) info.installed = migrate(id, dir, from.path);
       else if (!current) { paseo(["plugin", "install", dir]); info.installed = "installed"; }
-      else if (info.staged === "changed") { paseo(["plugin", "reload", id]); info.installed = "reloaded"; }
+      else if (info.staged === "changed" || plan[id].reload) { paseo(["plugin", "reload", id]); info.installed = "reloaded"; }
       else info.installed = "already installed";
       const listed = JSON.parse(paseo(["plugin", "ls", "--json"])).find(x => x.id === id);
       info.running = !!listed && listed.status === "running" && listed.enabled === true;
@@ -249,7 +277,7 @@ try {
       failed = true;
     }
   }
-  const changed = p.stage.some(id => result.plugins[id].staged === "changed")
+  const changed = p.stage.some(id => result.plugins[id].staged === "changed" || plan[id].reload)
     || Object.values(result.plugins).some(x => x.installed === "installed" || x.installed === "reloaded"
       || String(x.installed).startsWith("migrated"));
   result.status = failed ? "failed" : blocked ? "blocked" : changed ? "updated" : "same";

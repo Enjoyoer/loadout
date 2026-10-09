@@ -35,16 +35,23 @@ def plugin_payload(pub: publication.Publication, ids: list) -> dict:
     if unknown:
         raise fleet.FleetError(f"plugins not in the manifest: {unknown}")
     prior = pub.prior()
-    out = {plugin_id: {"pin": pins[plugin_id], "files": {}} for plugin_id in ids}
+    out = {plugin_id: {"pin": pins[plugin_id], "files": {}, "removed": {}} for plugin_id in ids}
     for entry in pub.manifest["plugin_files"]:
         if entry["plugin"] in out:
             rel = "/".join(entry["path"].split("/")[2:])
             out[entry["plugin"]]["files"][rel] = {"sha256": entry["sha256"], "prior": prior.get(entry["path"], []),
                                                   "data": base64.b64encode(pub.blob(entry)).decode()}
+    # Paths an earlier publication had and this one does not, with every hash they were published with.
+    for path, hashes in prior.items():
+        parts = path.split("/")
+        if parts[0] == "plugins" and len(parts) > 2 and parts[1] in out:
+            rel = "/".join(parts[2:])
+            if rel not in out[parts[1]]["files"]:
+                out[parts[1]]["removed"][rel] = hashes
     return out
 
 
-def describe(result: dict) -> list:
+def describe(result: dict, dry_run: bool = False) -> list:
     if result["status"] == "failed" and result.get("error"):
         return [f"FAILED: {result['error']}"]
     if result["status"] == "conflict":
@@ -60,6 +67,10 @@ def describe(result: dict) -> list:
             lines.append(f"  {plugin_id}: installed source {info['state']}{detail}")
         else:
             parts = [f"staged {info['staged']}"]
+            removed = info.get("removed", [])
+            if removed:
+                more = f" (+{len(removed) - 8} more)" if len(removed) > 8 else ""
+                parts.append(f"{'would remove' if dry_run else 'removed'} unpublished {', '.join(removed[:8])}{more}")
             if info["checked"]:
                 parts.append(f"check {info['checked']}")
             if info["installed"]:
@@ -92,7 +103,7 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
                                     TIMEOUT_SECONDS)
     if result is None:
         result = {"status": "failed", "error": output}
-    lines = describe(result)
+    lines = describe(result, state["dry_run"])
     emit(f"{name}: plugins {lines[0]}")
     for line in lines[1:]:
         emit(f"{name}: {line.strip()}")
