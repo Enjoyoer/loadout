@@ -338,14 +338,21 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
   };
 }
 
+/** A turn start seen while a send was in flight, noted before the store records it. */
+export type TurnObservation = { turnId: string | null; startedAt: string | null };
+
 // Undoes a send claim after the transport refused the message. It starts from the current stored value and resets only
-// the fields the claim set, so a concurrent writer's changes survive. A turn that started after the claim means the
-// message may have reached the daemon after all, so the record turns uncertain instead of being re-armed for a second send.
-export function releaseClaim(current: ResumeRecord, before: ResumeRecord, claimed: ResumeRecord, now = Date.now()): ResumeRecord {
+// the fields the claim set, so a concurrent writer's changes survive. A turn that started after the claim, whether the
+// store already holds it or only the in-flight observation does, means the message may have reached the daemon after
+// all, so the record turns uncertain with that turn kept instead of being re-armed for a second send.
+export function releaseClaim(current: ResumeRecord, before: ResumeRecord, claimed: ResumeRecord, observed: TurnObservation | null = null, now = Date.now()): ResumeRecord {
   if (current.state !== "resuming") return current;
   const updatedAt = new Date(now).toISOString();
-  if (current.resumeTurnId && current.resumeTurnId !== before.resumeTurnId) {
-    return { ...current, state: "uncertain", terminalReason: "turn-started-during-failed-send", updatedAt };
+  const storedTurn = current.resumeTurnId && current.resumeTurnId !== before.resumeTurnId ? current.resumeTurnId : null;
+  const turnId = storedTurn ?? observed?.turnId ?? null;
+  if (turnId) {
+    const resumeStartedAt = storedTurn ? current.resumeStartedAt : observed?.startedAt ?? null;
+    return { ...current, state: "uncertain", resumeTurnId: turnId, resumeStartedAt, terminalReason: "turn-started-during-failed-send", updatedAt };
   }
   const claimAttempt = claimed.attempts.at(-1);
   return {

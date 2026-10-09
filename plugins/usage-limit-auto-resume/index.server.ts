@@ -3,7 +3,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { PaseoApi } from "@getpaseo/client";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
 import { openDaemonClient } from "./server/daemon.ts";
-import { afterTransientFailure, buildFailedTransientRecord, buildRecord, buildTransientRecord, failureSignature, lastUserMessage, continuationPrompt, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, releaseClaim, shouldResume, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeRecord, type ResumeState } from "./server/model.ts";
+import { afterTransientFailure, buildFailedTransientRecord, buildRecord, buildTransientRecord, failureSignature, lastUserMessage, continuationPrompt, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, releaseClaim, shouldResume, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeRecord, type ResumeState, type TurnObservation } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
@@ -18,6 +18,8 @@ export default function contribute(server: PluginServerContext, openClient = ope
   let running = false;
   let client: Awaited<ReturnType<typeof openDaemonClient>> | null = null;
   let stateErrorLogged = false;
+  // One entry per agent with a send in flight; see processRecord.
+  const inFlight = new Map<string, TurnObservation>();
 
   // An unreadable state file fails closed until the owner fixes or moves it; say so once, not on every poll or event.
   function failed(action: string, error: unknown) {
@@ -104,34 +106,44 @@ export default function contribute(server: PluginServerContext, openClient = ope
     const stableMessageId = messageId(record);
     const prompt = record.kind === "transient" ? record.retryPrompt! : continuationPrompt(record);
     const sentAt = new Date().toISOString();
-    const claimed = await store.update(record.recordId, (value) => ({
-      ...value,
-      state: "resuming",
-      sentAt,
-      verificationDeadlineAt: new Date(Date.now() + currentConfig.verificationTimeoutSeconds * 1000).toISOString(),
-      attempts: [...value.attempts, { at: sentAt, messageId: stableMessageId, result: "unknown" }],
-      updatedAt: sentAt,
-    }));
-    if (!claimed) return;
+    // The turn_started handler fills this in before any await of its own, so the outcome below sees a turn that started
+    // during the send even when the handler's store write lands after it.
+    const observed: TurnObservation = { turnId: null, startedAt: null };
+    inFlight.set(record.agentId, observed);
     try {
-      await api.agents.ref(record.agentId).send(prompt, { messageId: stableMessageId });
-      await store.update(record.recordId, (value) => ({
+      const claimed = await store.update(record.recordId, (value) => ({
         ...value,
-        state: "verifying",
-        attempts: value.attempts.map((attempt) => attempt.messageId === stableMessageId ? { ...attempt, result: "sent" } : attempt),
-        updatedAt: new Date().toISOString(),
+        state: "resuming",
+        sentAt,
+        verificationDeadlineAt: new Date(Date.now() + currentConfig.verificationTimeoutSeconds * 1000).toISOString(),
+        attempts: [...value.attempts, { at: sentAt, messageId: stableMessageId, result: "unknown" }],
+        updatedAt: sentAt,
       }));
-      log(`${record.kind === "transient" ? "retry" : "resume"}-sent agentId=${record.agentId} messageId=${stableMessageId}`);
-    } catch (error) {
-      if (isTransportNotConnected(error)) {
-        // Undo the claim and stay parked; the next sweep opens a fresh client. A turn that started meanwhile turns it uncertain instead.
-        const released = await store.update(record.recordId, (value) => releaseClaim(value, record, claimed));
-        if (released?.state === "uncertain") log(`resume-uncertain agentId=${record.agentId} recordId=${record.recordId} reason=${released.terminalReason}`);
-        else log(`send-deferred agentId=${record.agentId} recordId=${record.recordId} reason=${JSON.stringify(errorMessage(error))}`);
-        return;
+      if (!claimed) return;
+      try {
+        await api.agents.ref(record.agentId).send(prompt, { messageId: stableMessageId });
+        await store.update(record.recordId, (value) => ({
+          ...value,
+          state: "verifying",
+          resumeTurnId: value.resumeTurnId ?? observed.turnId,
+          resumeStartedAt: value.resumeStartedAt ?? observed.startedAt,
+          attempts: value.attempts.map((attempt) => attempt.messageId === stableMessageId ? { ...attempt, result: "sent" } : attempt),
+          updatedAt: new Date().toISOString(),
+        }));
+        log(`${record.kind === "transient" ? "retry" : "resume"}-sent agentId=${record.agentId} messageId=${stableMessageId}`);
+      } catch (error) {
+        if (isTransportNotConnected(error)) {
+          // Undo the claim and stay parked; the next sweep opens a fresh client. A turn that started meanwhile turns it uncertain instead.
+          const released = await store.update(record.recordId, (value) => releaseClaim(value, record, claimed, observed));
+          if (released?.state === "uncertain") log(`resume-uncertain agentId=${record.agentId} recordId=${record.recordId} reason=${released.terminalReason}`);
+          else log(`send-deferred agentId=${record.agentId} recordId=${record.recordId} reason=${JSON.stringify(errorMessage(error))}`);
+          return;
+        }
+        await store.update(record.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: `send:${errorMessage(error)}`, updatedAt: new Date().toISOString() }));
+        log(`resume-uncertain agentId=${record.agentId} reason=${JSON.stringify(errorMessage(error))}`);
       }
-      await store.update(record.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: `send:${errorMessage(error)}`, updatedAt: new Date().toISOString() }));
-      log(`resume-uncertain agentId=${record.agentId} reason=${JSON.stringify(errorMessage(error))}`);
+    } finally {
+      if (inFlight.get(record.agentId) === observed) inFlight.delete(record.agentId);
     }
   }
 
@@ -193,16 +205,24 @@ export default function contribute(server: PluginServerContext, openClient = ope
   }
 
   const removeTurnStarted = server.on("agent.turn_started", (event) => {
+    const turnId = event.turnId;
+    if (!turnId) return;
+    // Synchronous, before any await: a send still in flight for this agent keeps the turn even if its rollback commits
+    // ahead of the store write below.
+    const pending = inFlight.get(event.agent.id);
+    if (pending && !pending.turnId) {
+      pending.turnId = turnId;
+      pending.startedAt = new Date().toISOString();
+    }
     void (async () => {
-      if (!event.turnId) return;
       const active = await store.activeForAgent(event.agent.id);
       if (!active || !["resuming", "verifying"].includes(active.state) || active.resumeTurnId) return;
       // Check again inside the update: a rolled-back claim must not pick up a turn identity.
       const next = await store.update(active.recordId, (value) => ["resuming", "verifying"].includes(value.state) && !value.resumeTurnId
-        ? { ...value, resumeTurnId: event.turnId, resumeStartedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+        ? { ...value, resumeTurnId: turnId, resumeStartedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
         : value);
-      if (next?.resumeTurnId !== event.turnId) return;
-      log(`resume-turn-started agentId=${event.agent.id} turnId=${event.turnId}`);
+      if (next?.resumeTurnId !== turnId) return;
+      log(`resume-turn-started agentId=${event.agent.id} turnId=${turnId}`);
     })().catch((error) => failed("turn-started-handler-failed", error));
   });
 

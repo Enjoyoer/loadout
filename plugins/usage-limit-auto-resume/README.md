@@ -27,7 +27,7 @@ Host-scoped settings are stored by Paseo at `<PASEO_HOME>/plugin-settings/usage-
 
 Resume records live in `<PASEO_HOME>/plugin-state/usage-limit-auto-resume/state.json`. A missing file means no records. If the file is unreadable, corrupt, or from another state version, the plugin logs one `state-unreadable` error line and changes nothing until the file is fixed or moved aside. It never renames or replaces the file itself.
 
-A send that fails with `Transport not connected` never reached the daemon, so the record stays parked and the next sweep retries on a fresh connection. That rollback starts from the stored record and undoes only what the send claim set (state, send time, deadline, and the new attempt). If a turn started on the agent after the claim, the message may have arrived after all, so the record becomes `uncertain` with its turn identity and deadline kept, and nothing is sent again. Any other send error marks the record `uncertain`.
+A send that fails with `Transport not connected` never reached the daemon, so the record stays parked and the next sweep retries on a fresh connection. That rollback starts from the stored record and undoes only what the send claim set (state, send time, deadline, and the new attempt). If a turn started on the agent after the claim, the message may have arrived after all, so the record becomes `uncertain` with its turn identity and deadline kept, and nothing is sent again. The turn start is noted in memory the moment the event arrives, before the plugin writes it to the state file, so this holds even when the rollback is stored first. Any other send error marks the record `uncertain`.
 
 ```bash
 npm ci
