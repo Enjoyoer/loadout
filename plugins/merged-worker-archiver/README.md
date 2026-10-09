@@ -15,8 +15,11 @@ Checked with read-only git in the worktree (`GIT_OPTIONAL_LOCKS=0`, no prompts, 
 `fetch`, never writes refs or the index):
 
 1. **Ancestry**: `HEAD` is an ancestor of one of the existing local base refs:
-   the exact `baseRef` the worktree was cut from, `refs/heads/<baseRefName>`, or that
-   branch's configured upstream. The base comes from Paseo's own worktree metadata,
+   the exact `baseRef` the worktree was cut from, `refs/heads/<baseRefName>`, or the base
+   branch's configured upstream (`<baseRefName>@{upstream}`, else
+   `refs/remotes/origin/<baseRefName>`). A candidate naming the worker branch itself, such
+   as the `refs/remotes/origin/<branch>` that `git push -u` sets as its upstream, is never
+   used. The base comes from Paseo's own worktree metadata,
    `<git-dir>/paseo/worktree.json`. No metadata means no base, which means skip.
 2. **Pull request** (squash merges), only when ancestry fails and `useGh` is true:
    `gh pr view <branch> --json number,state,mergeCommit,headRefOid,headRefName,baseRefName`

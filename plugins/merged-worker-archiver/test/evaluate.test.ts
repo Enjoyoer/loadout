@@ -119,6 +119,15 @@ describe("git skip rules", () => {
     ],
     ["empty reflog", { reflog: [], ancestors: { "refs/heads/main": 0 } }, /^ambiguous\(branch reflog empty\)$/],
     ["commits not in base, no gh", { gh: null }, /^not-merged\(ahead=2/],
+    [
+      "pushed with -u but not merged into base",
+      {
+        refs: { "refs/heads/main": true, "refs/remotes/origin/main": true, "refs/remotes/origin/opc/feature": true },
+        ancestors: { "refs/heads/main": 1, "refs/remotes/origin/main": 1, "refs/remotes/origin/opc/feature": 0 },
+        gh: null,
+      },
+      /^not-merged\(ahead=2 of refs\/heads\/main; gh unavailable\)$/,
+    ],
     ["git timeout", { timeoutOn: "--porcelain=v1" }, /^git-timeout\(status\)$/],
     ["git error on ancestry", { failOn: "--is-ancestor", ancestors: { "refs/heads/main": 0 } }, /^git-error\(is-ancestor refs\/heads\/main:exit=128/],
     ["git error on status", { failOn: "--porcelain=v1" }, /^git-error\(status:exit=128/],

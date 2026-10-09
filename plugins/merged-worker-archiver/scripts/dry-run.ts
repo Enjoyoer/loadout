@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { createPaseoClient, type PaseoClient } from "@getpaseo/client";
+import type { PaseoClient } from "@getpaseo/client";
 import { ConfigSchema, defaultConfig, type ArchiverConfig } from "../server/config.ts";
 import { openDaemonClient, resolveDaemonTarget } from "../server/daemon.ts";
 import { createCommonDirResolver, nodeFileSystem, runCommand } from "../server/io.ts";
@@ -35,7 +35,7 @@ async function run(): Promise<void> {
   if (grace !== null && (!Number.isFinite(grace) || grace < 0)) throw new Error("--grace must be a non-negative number");
   const config = await readConfig(argValue("--config"), grace);
   const target = resolveDaemonTarget();
-  const client = host ? await openDaemonClient() : await openDaemonClient();
+  const client = await openDaemonClient();
   const sweeper = new Sweeper({
     acquireApi: async () => ({ api: clientApi(client), release: async () => client.close() }),
     log: (line) => console.log(line),
