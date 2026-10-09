@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "53365be46429c14768cbd243336000b36154be2f",
+  "source_commit": "56c58a7341727537f0659f216eaf78e1d15f32e6",
   "skill_count": 22,
-  "file_count": 124,
+  "file_count": 125,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -776,18 +776,25 @@
       "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
     },
     {
+      "path": "skills/web-browser/frontend-design/NOTICE.txt",
+      "category": "web-browser",
+      "skill": "frontend-design",
+      "bytes": 488,
+      "sha256": "fa15e6a706f3d3457344a202e9cfe51965a90b063e5aa300410b9230fc83b9b9"
+    },
+    {
       "path": "skills/web-browser/frontend-design/SKILL.md",
       "category": "web-browser",
       "skill": "frontend-design",
-      "bytes": 4277,
-      "sha256": "08834ebc6382f9b6c561f854e0041b85973876584f545ac4930cabbdd142bd9e"
+      "bytes": 9390,
+      "sha256": "d91970639e9f5c37682ac7ab60094d35f1c7c1f38d731bd56396563aee10c1d3"
     },
     {
       "path": "skills/web-browser/frontend-design/agents/openai.yaml",
       "category": "web-browser",
       "skill": "frontend-design",
-      "bytes": 230,
-      "sha256": "b622eb18a7d622a10e9d9d380d593f7f57d249f8e854bc672514910740dadc23"
+      "bytes": 242,
+      "sha256": "8619bcd4919d1e072ed021884e6d802e07837f3b2d4b284d8626ad3e19d1a1ec"
     },
     {
       "path": "skills/web-browser/pake/SKILL.md",
