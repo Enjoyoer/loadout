@@ -43,6 +43,7 @@ RELAY_SETTLE_SECONDS = float(os.environ.get("LOADOUT_RELAY_SETTLE_SECONDS", 3))
 RELAY_RESEND_SECONDS = float(os.environ.get("LOADOUT_RELAY_RESEND_SECONDS", 10))
 PROMPT = re.compile(r"[$#%>\u276f]\s*$")
 RELOAD_TIMEOUT_SECONDS = 90
+WRITE_TIMEOUT_SECONDS = 300
 RELAY_INLINE_LIMIT = 4000
 RELAY_CHUNK_SIZE = 2000
 
@@ -180,6 +181,7 @@ class Runner:
         offer = host.get("paseo_offer")
         self.offer_path = (fleet_dir / Path(offer).expanduser()) if offer else None
         self.mode = "local" if self.local else host["transport"]
+        self.cleanup_warning: Optional[str] = None
 
     def base_env(self) -> dict:
         return {k: v for k, v in os.environ.items() if k not in AGENT_VARS}
@@ -199,9 +201,13 @@ class Runner:
         if self.mode in {"local", "ssh"}:
             raw, boot = staged_payload(program, data)
             command = (["node", "-e", boot] if self.mode == "local" else
-                       ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", self.name,
-                        f'node -e "{boot}"'])
-            done = subprocess.run(command, input=raw, capture_output=True, text=True)
+                       ["ssh", *fleet.SSH_OPTIONS, self.name, f'node -e "{boot}"'])
+            # Without the agent session's PASEO_HOME, the merge finds the host's own Paseo home.
+            try:
+                done = subprocess.run(command, input=raw, capture_output=True, text=True, env=self.base_env(),
+                                      timeout=WRITE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f"timed out after {WRITE_TIMEOUT_SECONDS}s")
             if done.returncode and "@@LOADOUT-RESULT" not in done.stdout:
                 raise RuntimeError(f"provider transport failed (exit {done.returncode})")
             return done.stdout + done.stderr
@@ -210,18 +216,25 @@ class Runner:
     def write_relay(self, program: str, data: str) -> str:
         if self.host["os"] == "windows":
             raise RuntimeError("paseo-relay provider sync needs a POSIX shell on the host")
-        terminal = None
+        terminal = output = None
         try:
             self.cleanup(None)
             workspace = json.loads(self.paseo("workspace", "create", "--isolation", "local", "--path", "/tmp",
                                               "--title", RELAY_TITLE, "--json"))["workspaceId"]
             terminal = json.loads(self.paseo("terminal", "create", "--workspace", workspace,
                                              "--name", RELAY_TITLE, "--json"))["id"]
-            return self.run_in_terminal(terminal, program, data)
+            output = self.run_in_terminal(terminal, program, data)
+            return output
         finally:
             # Every exit path, including a create that failed after the host made
             # the workspace, ends with no sync workspace left on the host.
-            self.cleanup(terminal)
+            try:
+                self.cleanup(terminal)
+            except RuntimeError as error:
+                if output is None:
+                    raise
+                # The merge already ran: keep its result and report the leftover after it.
+                self.cleanup_warning = str(error)
 
     def run_in_terminal(self, terminal: str, program: str, data: str) -> str:
         self.wait_for_prompt(terminal)
@@ -311,7 +324,7 @@ class Runner:
             command = ["paseo", "reload"]
             env = self.relay_env()
         else:
-            command = ["ssh", "-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", self.name, "paseo reload"]
+            command = ["ssh", "-n", *fleet.SSH_OPTIONS, self.name, "paseo reload"]
             env = self.base_env()
         try:
             done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=RELOAD_TIMEOUT_SECONDS)
@@ -335,17 +348,18 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
         return "FAILED"
     if result is None:
         emit(f"{name}: write FAILED: no result from the merge program: {output.strip()[-300:]}")
-        return "FAILED"
-    if result["error"]:
+    elif result["error"]:
         emit(f"{name}: write FAILED: {result['error']}")
-        return "FAILED"
-    state = "CHANGED" if result["changed"] else "unchanged"
-    if dry_run and result["changed"]:
-        state = "would change (dry run)"
-    backup = f"; backup {result['backup']}" if result["backup"] else ""
-    emit(f"{name}: write {state}; labels {'verified' if result['verified'] else 'MISMATCH'}; "
-         f"preserved [{', '.join(result['preserved'])}]{backup}")
-    if not result["verified"]:
+    else:
+        state = "CHANGED" if result["changed"] else "unchanged"
+        if dry_run and result["changed"]:
+            state = "would change (dry run)"
+        backup = f"; backup {result['backup']}" if result["backup"] else ""
+        emit(f"{name}: write {state}; labels {'verified' if result['verified'] else 'MISMATCH'}; "
+             f"preserved [{', '.join(result['preserved'])}]{backup}")
+    if runner.cleanup_warning:
+        emit(f"{name}: cleanup warning: {runner.cleanup_warning}; the next run archives it")
+    if result is None or result["error"] or not result["verified"]:
         return "FAILED"
     if dry_run:
         emit(f"{name}: reload skipped (dry run)")

@@ -25,6 +25,8 @@ import fleet
 import publication
 
 REMOTE_JS = Path(__file__).resolve().parent / "plugins_sync_remote.js"
+# A host runs npm ci and the package check for every changed plugin.
+TIMEOUT_SECONDS = 1200
 
 
 def plugin_payload(pub: publication.Publication, ids: list) -> dict:
@@ -81,7 +83,8 @@ def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Ca
                    "stage": paseo.get("stage", []) if paseo.get("plugin_root") is not None else [],
                    "install": paseo.get("install", []) if paseo.get("plugin_root") is not None else [],
                    "plugins": plugin_payload(pub, ids)}
-        result, output = fleet.run_node(name, name == fleet_doc["source_host"], REMOTE_JS, payload)
+        result, output = fleet.run_node(name, name == fleet_doc["source_host"], REMOTE_JS, payload,
+                                        TIMEOUT_SECONDS)
         if result is None:
             result = {"status": "failed", "error": output}
         lines = describe(result)

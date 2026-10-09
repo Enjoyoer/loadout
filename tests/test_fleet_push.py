@@ -122,6 +122,16 @@ class FleetPushTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("conflict: hand-edited on the host, nothing written: notes.txt", out)
 
+    def test_leftover_temp_file_on_host_is_not_a_conflict(self):
+        self.push()
+        (self.target("desktop") / "hosts.json.loadout-tmp").write_text("cut off")
+        (self.target("desktop") / "global/.DS_Store").write_bytes(b"\0")
+        (self.source / "global/AGENTS.md").write_text("# Global v2\n")
+        code, out = self.push("--host", "desktop")
+        self.assertEqual(code, 0, out)
+        self.assertIn("desktop: fleet updated (~1)", out)
+        self.assertEqual((self.target("desktop") / "global/AGENTS.md").read_text(), "# Global v2\n")
+
     def test_existing_copy_without_record(self):
         shutil.copytree(self.source, self.target("desktop"))
         code, out = self.push("--host", "desktop")
