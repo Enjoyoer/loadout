@@ -237,8 +237,9 @@ export function buildCloudFollowUpCommand({ sessionId, messagePath }) {
 
 // Pre-authorized by the toggle: one local managed Worker, then stop.
 // The local route comes from route.mjs resolveCloudFallback: the lane's class through the Pi catalog with its quota
-// pace, or an owner-named route, so the fallback runs on Pi without native authorization.
-export function authorizeCloudFallback(taskPath, { route, reason } = {}) {
+// pace, or an owner-named route, so the fallback runs on Pi without native authorization. record(task), when given,
+// writes the fallback's lane route in the same task update, so a failure leaves neither the fallback nor the route.
+export function authorizeCloudFallback(taskPath, { route, reason, record = null } = {}) {
   validateRoleRoute('worker', route);
   if (isGptOrWebRoute(route)) throw Error('cloud fallback stays on a Claude route');
   if (typeof reason !== 'string' || !reason.trim() || /[\r\n]/.test(reason)) throw Error('cloud fallback reason must be one line');
@@ -247,6 +248,7 @@ export function authorizeCloudFallback(taskPath, { route, reason } = {}) {
     if (task.cloud.fallback) throw Error('cloud fallback already used; stop and report to the owner');
     if (task.cloud.reason === NO_CREDITS) throw Error('no cloud credits: tell the owner; a local fallback needs their decision');
     task.cloud.fallback = { authorized_by: 'cloud-toggle', route: structuredClone(route), reason };
+    record?.(task);
   });
   return Object.freeze({ route, reason });
 }

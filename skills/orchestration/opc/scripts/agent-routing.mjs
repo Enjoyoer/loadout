@@ -1,4 +1,4 @@
-import { describePace, paceLevel, poolPace, ROUTING_DEFAULTS, validPace } from './quota-pace.mjs';
+import { describePace, paceLevel, POOL_NAMES, poolPace, ROUTING_DEFAULTS, validPace } from './quota-pace.mjs';
 
 const efforts = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const model = /^(?=.{1,128}$)[A-Za-z0-9][A-Za-z0-9._/-]{0,127}(?:\[[A-Za-z0-9][A-Za-z0-9._-]{0,31}\])?$/;
@@ -91,23 +91,37 @@ export function materializeFixedRoute(role, catalog, surface = 'pi') {
 const routeText = route => `model=${route.model ?? route.label}; effort=${route.effort ?? 'model-fixed'}; Fast=${route.fastMode ? 'on' : 'off'}`;
 
 // A recorded Worker route comes from the owner or from a task-class default with its pace inputs and reason.
-function validateWorkerRoute(route) {
-  const rule = route?.source === 'task-default' && Object.hasOwn(WORKER_DEFAULT_ROUTES, route.kind)
-    ? WORKER_DEFAULT_ROUTES[route.kind] : null;
-  const keys = ['role', 'source', 'model', 'effort', 'fastMode', ...(rule ? ['kind', 'pace', 'reason'] : [])];
+// A recorded route is checked for shape only, so a later class-table change never strands its task.
+export function validateRecordedWorkerRoute(route) {
+  const taskDefault = route?.source === 'task-default';
+  const keys = ['role', 'source', 'model', 'effort', 'fastMode', ...(taskDefault ? ['kind', 'pace', 'reason'] : [])];
   if (!route || typeof route !== 'object' || Array.isArray(route) || route.role !== 'worker' ||
       Object.keys(route).length !== keys.length || keys.some(key => !Object.hasOwn(route, key)) ||
-      (route.source !== 'owner-explicit' && !rule) || !isValidModelId(route.model) ||
+      (route.source !== 'owner-explicit' && !taskDefault) || !isValidModelId(route.model) ||
       !efforts.has(route.effort) || typeof route.fastMode !== 'boolean' ||
-      (rule && (route.fastMode !== rule.fastMode ||
-        (rule.range ? !validPace(route.pace, LABEL_POOLS[rule.label]) : route.pace !== null) ||
-        route.effort !== classLevel(rule, route.pace) ||
+      (taskDefault && (typeof route.kind !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(route.kind) ||
+        (route.pace !== null && !(Object.hasOwn(POOL_NAMES, route.pace?.pool ?? '') && validPace(route.pace, route.pace.pool))) ||
         typeof route.reason !== 'string' || !route.reason.trim() || /[\r\n]/.test(route.reason)))) {
     throw Error('recorded owner or task-default route required for worker');
   }
   return Object.freeze({ model: route.model, effort: route.effort, fastMode: route.fastMode, source: route.source,
-    ...(rule ? { kind: route.kind, pace: route.pace, reason: route.reason } : {}) });
+    ...(taskDefault ? { kind: route.kind, pace: route.pace, reason: route.reason } : {}) });
 }
+
+// A route being recorded or launched must also match today's class table: class, Fast, pace pool, and level.
+function validateWorkerRoute(route) {
+  const valid = validateRecordedWorkerRoute(route);
+  const rule = Object.hasOwn(WORKER_DEFAULT_ROUTES, route.kind ?? '') ? WORKER_DEFAULT_ROUTES[route.kind] : null;
+  if (route.source === 'task-default' && (!rule || route.fastMode !== rule.fastMode ||
+      (rule.range ? route.pace?.pool !== LABEL_POOLS[rule.label] : route.pace !== null) ||
+      route.effort !== classLevel(rule, route.pace))) {
+    throw Error('recorded owner or task-default route required for worker');
+  }
+  return valid;
+}
+
+export const workerRouteUnresolved = () => Error('Worker route unresolved; ask the owner for the exact model and effort ' +
+  `(task classes: ${[...Object.keys(WORKER_DEFAULT_ROUTES), ...Object.keys(OWNER_RULE_ROUTES)].join(', ')})`);
 
 // An owner-named model and effort always win unadjusted; otherwise the task class selects a catalog label,
 // and the class's quota pool pace may move its level within the class range. quota is a readQuota result.
@@ -130,9 +144,7 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog,
     }
     return Object.freeze({ role: 'worker', source: 'owner-explicit', model: row.id, effort: rule.effort, fastMode: rule.fastMode });
   }
-  if (!Object.hasOwn(WORKER_DEFAULT_ROUTES, taskKind ?? '')) {
-    throw Error(`Worker route unresolved; ask the owner for the exact model and effort (task classes: ${[...Object.keys(WORKER_DEFAULT_ROUTES), ...Object.keys(OWNER_RULE_ROUTES)].join(', ')})`);
-  }
+  if (!Object.hasOwn(WORKER_DEFAULT_ROUTES, taskKind ?? '')) throw workerRouteUnresolved();
   const rule = WORKER_DEFAULT_ROUTES[taskKind];
   const row = resolveCatalogLabel(rows, rule.label);
   const pace = rule.range ? poolPace(quota, LABEL_POOLS[rule.label], settings) : null;

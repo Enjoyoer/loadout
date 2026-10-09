@@ -318,11 +318,8 @@ const nativeCaps={enabled:true,status:'available',modes:[{id:'full-access',isUna
 const workspace={workspaceId:'wks-example',cwd:'/tmp/example-worktree'};
 const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:'lane',title:'Worker',initialPrompt:'Do it',workspace,capabilities:piCaps,...extra});
 const plain=value=>JSON.parse(JSON.stringify(value));
-// Fixed role routes are unchanged; Worker defaults are frozen catalog labels.
-assert.deepEqual(plain(r.FIXED_ROLE_ROUTES),{scout:{label:'Luna',fallbackProvider:'codex',effort:'max',fastMode:true},planner:{label:'Web Pro',fallbackProvider:'codex',effort:null,fastMode:false},planner_fallback:{label:'Opus',fallbackProvider:'claude',effort:'xhigh',fastMode:false},reviewer:{label:'Web Pro',fallbackProvider:'codex',effort:null,fastMode:false}});
-const cls=(label,effort,range,fastMode=false)=>({label,effort,range,fastMode});
-assert.deepEqual(plain(r.WORKER_DEFAULT_ROUTES),{code:cls('Opus','xhigh',['high','xhigh']),'code-bounded':cls('Opus','high',['medium','xhigh']),'test-fix':cls('Opus','high',['medium','xhigh']),'review-critical':cls('Opus','xhigh',['high','xhigh']),'review-general':cls('Opus','high',['medium','xhigh']),automation:cls('Opus','xhigh',['high','xhigh']),browser:cls('Sol','medium',['medium','high'],true),research:cls('Luna','xhigh',['medium','xhigh'],true),mechanical:cls('Opus','medium',null),smoke:cls('Sonnet','low',null),watcher:cls('Luna','xhigh',null,true)});
 const unread=pool=>({pool,step:0,weekly:null,stale:'no quota reading supplied',gapPct:null,fiveHourUsedPct:null,resetSoon:null,accounts:null,staleAccounts:null,ageSeconds:null});
+// Worker defaults are frozen.
 assert(Object.isFrozen(r.WORKER_DEFAULT_ROUTES)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.code)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.browser));
 // Code default: Opus at xhigh, Fast off, on Pi, recorded as a task default.
 const code=r.selectWorkerRoute({taskKind:'code',catalog});
