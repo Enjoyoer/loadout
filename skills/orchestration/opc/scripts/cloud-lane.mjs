@@ -8,7 +8,10 @@ import { pathToFileURL } from 'node:url';
 import { isGptOrWebRoute, validateRoleRoute } from './agent-routing.mjs';
 import { readTask, updateTask } from './task-state.mjs';
 
+// Owner rule: every cloud session runs Opus 5.5 at xhigh, whatever the lane's class or route. Launch and follow-up
+// commands always pass this pair and take no model or effort from callers.
 export const CLOUD_ROUTE = Object.freeze({ model: 'claude-opus-5-5[1m]', effort: 'xhigh', fastMode: false });
+const cloudModelFlags = `--model '${CLOUD_ROUTE.model}' --effort ${CLOUD_ROUTE.effort}`;
 export const CLOUD_LIMITS = Object.freeze({ draftPrMinutes: 20, idleMinutes: 90, hardCapMinutes: 360, followUps: 1 });
 // What the session page shows when a stall is suspected; unknown (page unreadable) is treated like waiting.
 export const SESSION_PAGE_STATES = Object.freeze(['working', 'waiting', 'unknown', 'failed']);
@@ -140,7 +143,7 @@ export function buildCloudBrief({ brief, branch, baseRef }) {
 
 export function buildCloudLaunchCommand({ briefPath, profile = readCloudProfile() }) {
   if (!text(briefPath) || /["$`\\]/.test(briefPath)) throw Error('plain brief file path required');
-  return `${profilePrefix(profile)}claude --cloud "$(cat "${briefPath}")" --model '${CLOUD_ROUTE.model}' --effort ${CLOUD_ROUTE.effort}`;
+  return `${profilePrefix(profile)}claude --cloud "$(cat "${briefPath}")" ${cloudModelFlags}`;
 }
 
 export function buildCloudHeartbeatRequest({ taskPath, repo, branch }) {
@@ -263,7 +266,7 @@ export function buildCloudFollowUpCommand({ sessionId, messagePath, profile = re
   if (!/^session_[A-Za-z0-9_-]+$/.test(sessionId ?? '') || !text(messagePath) || /["$`\\]/.test(messagePath)) {
     throw Error('cloud session id and plain message file path required');
   }
-  return `${profilePrefix(profile)}claude -p "$(cat "${messagePath}")" --cloud ${sessionId}`;
+  return `${profilePrefix(profile)}claude -p "$(cat "${messagePath}")" --cloud ${sessionId} ${cloudModelFlags}`;
 }
 
 // Pre-authorized by the toggle: one local managed Worker, then stop.
