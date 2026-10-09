@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "bd4ebfd2128a98fd9c35cb752bf2883b8a6b4d39",
+  "source_commit": "6fd1488ca7af9c87d97b0ea1f91cb9aca01d6681",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -192,7 +192,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5408,
-      "sha256": "fcdf337c76c0757d3b2523bdce94dfd2e214f799159237490af262504e8a7b6c"
+      "sha256": "131564422bb79c2a1b6b2db5fb31cd423a9118c002878a2a689bd21db500cdbe"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -205,8 +205,8 @@
       "path": "skills/orchestration/opc/references/cloud-lane.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 6470,
-      "sha256": "8c64c3f2505c544dbc9ebe51756ce40bb5c5832575ab3a8848f38e615014f1d4"
+      "bytes": 7034,
+      "sha256": "8f9cea9c1c72a30154d64d9c4a78bea31f260eab091bad718818dbb9e16a74a0"
     },
     {
       "path": "skills/orchestration/opc/references/codex-sites.md",
@@ -317,15 +317,15 @@
       "path": "skills/orchestration/opc/scripts/cloud-lane.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 24154,
-      "sha256": "50ac23364fac7d7f8c8c212d036af7f1b84ae9b359320dcbb90478415ae1a374"
+      "bytes": 26103,
+      "sha256": "3aa31a7248dccdd47751c8caf17b6bcca73900ed52d2810605250aa8d398826b"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 10281,
-      "sha256": "9c6f612b0e3eb49c9b5063cb8ab20fb9a544f203cab2ad988eaf3cad3b360800"
+      "bytes": 11043,
+      "sha256": "57e298ec58ad49f7f5ff1455ff74457c2be4ad811cbcac4579b3e8b03f7046bc"
     },
     {
       "path": "skills/orchestration/opc/scripts/paseo-worker.mjs",
@@ -359,8 +359,8 @@
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 19994,
-      "sha256": "da2ab62425f08d2bb7b06d61c3920cc1ad5948f24c31d9d31aff9cf93e286848"
+      "bytes": 21506,
+      "sha256": "efbebc529af633f5f4d2498f9476864208c803984d6e57b4b77518b2647b7b34"
     },
     {
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
