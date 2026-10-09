@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { assertRepository, git, gitEnvironment, processAlive, readTask, updateTask } from './task-state.mjs';
+import { assertRepository, git, gitEnvironment, readTask, sameProcess, updateTask } from './task-state.mjs';
 import { requireReviewDelivery } from './web-reviewer.mjs';
 
 // Receipts are convenient bookkeeping, not a security boundary against trusted Workers.
@@ -31,10 +31,22 @@ function idle(task) {
 }
 // Only the recorded process clears 'running'; once it is gone the run was interrupted. Every entry point that judges
 // whether the task is busy (test, verify, merge, planner launch, reconcile) runs this first.
+function stopGroup(pid, signal = 'SIGKILL') {
+  if (!Number.isSafeInteger(pid) || pid < 1) return;
+  try {
+    if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 5000 });
+    else process.kill(-pid, signal);
+  } catch (error) { if (error.code !== 'ESRCH' && error.status !== 128) throw error; }
+}
 export function recoverTests(taskPath) {
-  const stale=t=>t.tests?.status==='running'&&!processAlive(t.tests.pid);
+  const stale=t=>t.tests?.status==='running'&&!sameProcess(t.tests.pid,t.tests.started_at);
   if(!stale(readTask(taskPath)))return null;
-  return updateTask(taskPath,t=>{if(stale(t))t.tests={...t.tests,status:'failed',reason:'interrupted'};}).tests;
+  return updateTask(taskPath,t=>{
+    if(stale(t)) {
+      if(t.tests.child_pid && sameProcess(t.tests.child_pid,t.tests.child_started_at)) stopGroup(t.tests.child_pid);
+      t.tests={...t.tests,status:'failed',reason:'interrupted'};
+    }
+  }).tests;
 }
 export async function runTests(taskPath, {argv}) {
   if(!Array.isArray(argv) || !argv.length || argv.some(a=>typeof a !== 'string') || !argv[0]) throw Error('test argv required');
@@ -43,12 +55,13 @@ export async function runTests(taskPath, {argv}) {
   const source=sourceIdentity(task);
   updateTask(taskPath,t=>{idle(t);t.tests={...source,argv,status:'running',pid:process.pid,started_at:new Date().toISOString()};});
   let code,child,signal=null;
-  const stop=name=>{signal??=name;child?.kill(name);};
+  const stop=name=>{signal??=name;if(child?.pid)stopGroup(child.pid,name);};
   for(const name of ['SIGINT','SIGTERM'])process.on(name,stop);
   try {
     code=await new Promise((resolve,reject)=>{
-      child=spawn(argv[0],argv.slice(1),{cwd:task.repository.working_directory,env:gitEnvironment(),stdio:'inherit'});
+      child=spawn(argv[0],argv.slice(1),{cwd:task.repository.working_directory,env:gitEnvironment(),stdio:'inherit',detached:true});
       child.once('error',reject); child.once('close',code=>resolve(code));
+      child.once('spawn',()=>{try { updateTask(taskPath,t=>{t.tests.child_pid=child.pid;t.tests.child_started_at=new Date().toISOString();}); } catch(error) { stopGroup(child.pid); reject(error); }});
     });
   } catch(error) {
     updateTask(taskPath,t=>{t.tests.status='failed';});

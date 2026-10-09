@@ -202,16 +202,39 @@ export function assessCloudProgress({ launchedAt, now, pr = null, lastPushAt = n
   return { state: 'running', reason: null };
 }
 
-// Record the launch before creating its heartbeat, so a PM that stops in between leaves a lane to reconcile.
+// Persist intent before sending the session command. An interrupted command remains uncertain, never retry blindly.
+export function beginCloudLaunch(taskPath, { branch, repo, launchedAt = new Date().toISOString() }) {
+  if (!branchPattern.test(branch ?? '') || !repoPattern.test(repo ?? '') || !text(launchedAt)) throw Error('cloud lane marker, repo, and launch time required');
+  return updateTask(taskPath, task => {
+    if (task.cloud) throw Error('cloud lane already recorded; reconcile it, never launch a second session');
+    task.cloud = { status: 'launching', session_id: null, url: null, branch, repo, launched_at: launchedAt,
+      heartbeat_id: null, route: { ...CLOUD_ROUTE }, progress: null, reason: null, fallback: null,
+      suspect: null, active_at: null, follow_ups: 0 };
+  }).cloud;
+}
+
+export function recordCloudLaunchFailure(taskPath, reason) {
+  if (!text(reason)) throw Error('launch uncertainty reason required');
+  return updateTask(taskPath, task => {
+    if (task.cloud?.status !== 'launching') throw Error('no launching cloud lane');
+    task.cloud.status = 'uncertain'; task.cloud.reason = reason;
+  }).cloud;
+}
+
+// Complete the pre-recorded intent after capture, then create and bind the heartbeat.
 export function recordCloudLaunch(taskPath, { sessionId, url, branch, repo, launchedAt }) {
   if (![sessionId, url, repo, launchedAt].every(text) || !branchPattern.test(branch ?? '')) {
     throw Error('cloud session id, URL, branch, repo, and launch time required');
   }
   return updateTask(taskPath, task => {
-    if (task.cloud) throw Error('cloud lane already recorded; reconcile it, never launch a second session');
-    task.cloud = { status: 'running', session_id: sessionId, url, branch, repo, launched_at: launchedAt,
-      heartbeat_id: null, route: { ...CLOUD_ROUTE }, progress: null, reason: null, fallback: null,
-      suspect: null, active_at: null, follow_ups: 0 };
+    if (task.cloud?.status === 'launching' && task.cloud.branch === branch && task.cloud.repo === repo) {
+      task.cloud.status = 'running'; task.cloud.session_id = sessionId; task.cloud.url = url;
+    } else if (!task.cloud) {
+      // Existing callers that already captured a session can still record it directly.
+      task.cloud = { status: 'running', session_id: sessionId, url, branch, repo, launched_at: launchedAt,
+        heartbeat_id: null, route: { ...CLOUD_ROUTE }, progress: null, reason: null, fallback: null,
+        suspect: null, active_at: null, follow_ups: 0 };
+    } else throw Error('cloud lane already recorded; reconcile it, never launch a second session');
   }).cloud;
 }
 
@@ -365,6 +388,15 @@ function runClaude(args, profileArg) {
 
 function main(argv) {
   const [state, ...rest] = argv;
+  if (state === 'reconcile') {
+    if (!rest.length || rest.some(path => path.startsWith('--'))) throw Error('usage: cloud-lane.mjs reconcile <task.json> [task.json...]');
+    for (const path of rest) {
+      const cloud = readTask(path).cloud;
+      if (cloud && ['launching', 'uncertain', 'running'].includes(cloud.status) && !cloud.heartbeat_id)
+        console.log(JSON.stringify({ task: path, status: cloud.status, branch: cloud.branch, session_id: cloud.session_id, url: cloud.url }));
+    }
+    return;
+  }
   const flag = name => { const i = rest.indexOf(name); return i === -1 ? null : rest[i + 1]; };
   if (state === 'launch') {
     if (!plainPath(rest[0])) throw Error('usage: cloud-lane.mjs launch <brief file> --profile <dir>|none');

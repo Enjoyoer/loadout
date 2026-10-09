@@ -54,6 +54,65 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(rerun.returncode, 0, rerun.stderr)
         self.assertEqual(json.loads(rerun.stdout.strip().splitlines()[-1])["status"], "passed")
 
+    def test_reused_live_pid_does_not_keep_tests_running(self):
+        task = json.loads(Path(self.task).read_text())
+        task['tests'] = {'status': 'running', 'pid': os.getpid(), 'started_at': '2020-01-01T00:00:00.000Z'}
+        Path(self.task).write_text(json.dumps(task))
+        done = run('node', str(SCRIPTS / 'delivery.mjs'), 'reconcile', self.task)
+        self.assertEqual(json.loads(done.stdout)['reason'], 'interrupted', done.stderr)
+
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX process groups only')
+    def test_recovery_kills_test_grandchild_group(self):
+        pidfile = Path(self.task).parent / 'grandchild.pid'
+        command = ('import subprocess,time; p=subprocess.Popen([' + repr(sys.executable) +
+                   ',"-c","import time; time.sleep(120)"]); open(' + repr(str(pidfile)) +
+                   ',"w").write(str(p.pid)); time.sleep(120)')
+        runner = subprocess.Popen(['node', str(SCRIPTS / 'delivery.mjs'), 'test', self.task,
+                                   sys.executable, '-c', command], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                if pidfile.exists() and json.loads(Path(self.task).read_text()).get('tests', {}).get('child_pid'):
+                    break
+                time.sleep(.05)
+            self.assertTrue(pidfile.exists())
+            grandchild = int(pidfile.read_text())
+            runner.kill()
+            runner.wait(timeout=5)
+            done = run('node', str(SCRIPTS / 'delivery.mjs'), 'reconcile', self.task)
+            self.assertEqual(json.loads(done.stdout)['reason'], 'interrupted', done.stderr)
+            for _ in range(30):
+                state = subprocess.run(['ps', '-p', str(grandchild), '-o', 'stat='], capture_output=True, text=True)
+                if not state.stdout.strip() or state.stdout.lstrip().startswith('Z'):
+                    break
+                time.sleep(.05)
+            else:
+                self.fail('grandchild still running after recovery')
+        finally:
+            if runner.poll() is None:
+                runner.kill()
+            if pidfile.exists():
+                try:
+                    os.kill(int(pidfile.read_text()), 9)
+                except ProcessLookupError:
+                    pass
+
+    def test_cloud_intent_precedes_command_and_failed_launch_refuses_retry(self):
+        done = run('node', '--input-type=module', '-e', f'''
+            import {{ beginCloudLaunch, recordCloudLaunchFailure }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
+            import {{ readTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            const task = {json.dumps(self.task)}, lane = {{branch:'opc/example',repo:'example/app'}};
+            beginCloudLaunch(task,lane);
+            if (readTask(task).cloud.status !== 'launching') throw Error('intent missing before command');
+            recordCloudLaunchFailure(task,'capture interrupted');
+            try {{ beginCloudLaunch(task,lane); throw Error('second launch allowed'); }}
+            catch (error) {{ if (!error.message.includes('already recorded')) throw error; }}
+            console.log('refused');
+        ''')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn('refused', done.stdout)
+        listed = run('node', str(SCRIPTS / 'cloud-lane.mjs'), 'reconcile', self.task)
+        self.assertEqual(json.loads(listed.stdout)['status'], 'uncertain', listed.stderr)
+
     def test_live_lock_replacing_stale_lock_before_reclaim_survives(self):
         dead = subprocess.Popen([sys.executable, "-c", ""])
         dead.wait()
