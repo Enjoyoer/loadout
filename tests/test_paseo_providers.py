@@ -98,6 +98,7 @@ def assert_fakes_run(env, names=("ssh", "paseo")):
             raise AssertionError(f"fake {name} is not the binary on PATH")
 
 
+@unittest.skipIf(os.name == "nt", "fake ssh and paseo are POSIX shell scripts")
 class ProviderSyncTest(unittest.TestCase):
     def setUp(self):
         if not shutil.which("node"):

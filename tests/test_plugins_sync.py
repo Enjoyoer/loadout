@@ -103,6 +103,7 @@ class Fixture(unittest.TestCase):
         return path.read_text() if path.exists() else ""
 
 
+@unittest.skipIf(os.name == "nt", "fake ssh, npm and paseo are POSIX shell scripts")
 class RemotePluginTest(Fixture):
     def setUp(self):
         super().setUp()
@@ -310,6 +311,7 @@ class RemotePluginTest(Fixture):
         self.assertEqual(json.loads(out), [c[1] for c in cases])
 
 
+@unittest.skipIf(os.name == "nt", "fake ssh, npm and paseo are POSIX shell scripts")
 class PluginsSyncDriverTest(Fixture):
     def setUp(self):
         super().setUp()

@@ -25,6 +25,9 @@ FAKE_SSH = textwrap.dedent("""\
     HOME="$FAKE_ROOT/hosts/$host" exec sh -c "$*"
     """)
 
+# Windows cannot run the fake; the transfer checks below never reach ssh and still run there.
+needs_fake_ssh = unittest.skipIf(os.name == "nt", "fake ssh is a POSIX shell script")
+
 HOSTS = {
     "schema_version": 2,
     "source_host": "laptop",
@@ -57,8 +60,9 @@ class FleetPushTest(unittest.TestCase):
         (bin_dir / "ssh").chmod(0o755)
         self.env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.root / "hosts/laptop"),
                     "FAKE_ROOT": str(self.root)}
-        done = subprocess.run(["ssh", "--fake-ok"], env=self.env, capture_output=True, text=True)
-        self.assertEqual(done.stdout.strip(), "fake", "fake ssh is not the binary on PATH")
+        if os.name != "nt":
+            done = subprocess.run(["ssh", "--fake-ok"], env=self.env, capture_output=True, text=True)
+            self.assertEqual(done.stdout.strip(), "fake", "fake ssh is not the binary on PATH")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -75,6 +79,7 @@ class FleetPushTest(unittest.TestCase):
         return {p.relative_to(directory).as_posix(): p.read_bytes() for p in directory.rglob("*")
                 if p.is_file() and p.name != fleet.SYNC_RECORD}
 
+    @needs_fake_ssh
     def test_first_push_copies_to_ssh_hosts_only(self):
         code, out = self.push()
         self.assertEqual(code, 0, out)
@@ -93,6 +98,7 @@ class FleetPushTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(out.count("fleet same"), 2, out)
 
+    @needs_fake_ssh
     def test_source_edits_and_removals_flow_to_unedited_copies(self):
         self.push()
         (self.source / "global/AGENTS.md").write_text("# Global v2\n")
@@ -106,6 +112,7 @@ class FleetPushTest(unittest.TestCase):
         self.assertEqual(self.snapshot(self.target("desktop")), self.snapshot(self.source))
         self.assertNotIn("devbox", out)
 
+    @needs_fake_ssh
     def test_hand_edit_on_host_is_a_conflict_and_nothing_is_written(self):
         self.push()
         (self.target("desktop") / "hosts.json").write_text("{}")
@@ -116,6 +123,7 @@ class FleetPushTest(unittest.TestCase):
         self.assertEqual((self.target("desktop") / "global/AGENTS.md").read_text(), "# Global\n")
         self.assertIn("devbox: fleet updated (~1)", out)
 
+    @needs_fake_ssh
     def test_file_added_on_host_is_a_conflict(self):
         self.push()
         (self.target("devbox") / "notes.txt").write_text("local")
@@ -123,6 +131,7 @@ class FleetPushTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("conflict: hand-edited on the host, nothing written: notes.txt", out)
 
+    @needs_fake_ssh
     def test_leftover_temp_file_on_host_is_not_a_conflict(self):
         self.push()
         (self.target("desktop") / "hosts.json.loadout-tmp").write_text("cut off")
@@ -133,6 +142,7 @@ class FleetPushTest(unittest.TestCase):
         self.assertIn("desktop: fleet updated (~1)", out)
         self.assertEqual((self.target("desktop") / "global/AGENTS.md").read_text(), "# Global v2\n")
 
+    @needs_fake_ssh
     def test_existing_copy_without_record(self):
         shutil.copytree(self.source, self.target("desktop"))
         code, out = self.push("--host", "desktop")
@@ -145,12 +155,14 @@ class FleetPushTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("conflict", out)
 
+    @needs_fake_ssh
     def test_dry_run_writes_nothing(self):
         code, out = self.push("--dry-run")
         self.assertEqual(code, 0, out)
         self.assertEqual(out.count("fleet would update (+2)"), 2, out)
         self.assertFalse(self.target("desktop").exists())
 
+    @needs_fake_ssh
     def test_symlinked_target_is_refused(self):
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
@@ -161,6 +173,7 @@ class FleetPushTest(unittest.TestCase):
         self.assertIn("desktop: fleet FAILED: not a real directory", out)
         self.assertEqual(list(elsewhere.iterdir()), [])
 
+    @needs_fake_ssh
     def test_unreachable_host_fails_only_that_host(self):
         (self.root / "down-desktop").touch()
         code, out = self.push()
@@ -168,6 +181,7 @@ class FleetPushTest(unittest.TestCase):
         self.assertIn("desktop: fleet FAILED: no result from host (exit 255)", out)
         self.assertIn("devbox: fleet updated", out)
 
+    @needs_fake_ssh
     def test_source_host_and_unknown_host(self):
         self.assertEqual(self.push("--host", "laptop"), (0, f"fleet: config {self.source}\nlaptop: fleet source (not pushed)\n"))
         code, out = self.push("--host", "nowhere")
