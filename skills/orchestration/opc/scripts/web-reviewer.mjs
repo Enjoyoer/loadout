@@ -90,7 +90,7 @@ export function prepareReviewLaunch(taskPath, { pr, contextPack, capabilities, q
       title: `OPC Simplifier PR ${pr} ${head.slice(0, 12)}`,
       provider: round.provider, initialPrompt, notifyOnFinish: true,
       settings: modeId ? { modeId } : {},
-      labels: { 'opc.review-round': round.id, 'opc.run': task.id },
+      labels: { role: 'worker', 'opc.review-round': round.id, 'opc.run': task.id },
     }),
   });
 }

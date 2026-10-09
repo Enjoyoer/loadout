@@ -126,7 +126,7 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
       settings: { ...requestedSettings, ...(modeId ? { modeId } : {}) },
       // Fast is the Pi Fast toggle label; Off leaves it absent, as the toggle shows Off.
       // An explicit Standard label would refuse every turn on a route without service tiers.
-      labels: { ...labels(workerLabels), 'opc.worker-task': taskId, 'opc.worker-lane': lane,
+      labels: { ...labels(workerLabels), role: 'worker', 'opc.worker-task': taskId, 'opc.worker-lane': lane,
         ...(pi && route?.fastMode === true ? { 'opc.service-tier': 'fast' } : {}),
         ...(role === 'worker' && typeof route?.source === 'string' ? { 'opc.route-source': route.source } : {}) },
     }),

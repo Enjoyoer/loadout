@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,62 @@ class PiSurfaceTest(unittest.TestCase):
                     {'email': 'owner@example.test', 'home': '/h', 'port': 80}]:
             with self.assertRaisesRegex(ValueError, 'gmail'):
                 build({**spec, 'gmail': bad}, root)
+
+    def test_launch_drops_gmail_only_for_worker_labels(self):
+        import http.server, threading
+        labels = {}
+        class Daemon(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                body = json.dumps({'jsonrpc': '2.0', 'id': 'launch-labels', 'result': {'structuredContent': {'snapshot': {'labels': labels}}}}).encode()
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)
+            def log_message(self, *args): pass
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Daemon)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close); self.addCleanup(server.shutdown)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve(); app = root/'app/node_modules/@earendil-works/pi-coding-agent'
+            (app/'dist/bundle').mkdir(parents=True); (root/'agent').mkdir()
+            (app/'package.json').write_text('{"version": "1.0.0"}'); (app/'dist/bundle/cli.js').write_text('')
+            (root/'launch.mjs').write_bytes((PI/'launch.mjs').read_bytes())
+            (root/'runtime.json').write_text(json.dumps({'paseoMcp': {'url': f'http://127.0.0.1:{server.server_port}/mcp/agents'}}))
+            (root/'agent/settings.json').write_text(json.dumps({'codemode': {'mode': 'on'}, 'defaultTools': ['+codemode'], 'extensions': [str(root/'fleet-routing.mjs')]}))
+            (root/'agent/models.json').write_text('{}')
+            (root/'agent/mcp.json').write_text(json.dumps({'mcpServers': {'paseo': {'command': 'python3'}, 'gmail': {'command': 'stub'}}}))
+            for agent, role, has_gmail in (('agent-worker-1', 'worker', False), ('agent-pm-0001', 'pm', True)):
+                labels.clear(); labels['role'] = role
+                done = subprocess.run(['node', str(root/'launch.mjs'), '--model', 'fleet/fake'], capture_output=True, text=True,
+                                      env={**os.environ, 'PASEO_AGENT_ID': agent})
+                self.assertEqual(done.returncode, 0, done.stderr)
+                servers = json.loads((root/'agents'/agent/'mcp.json').read_text())['mcpServers']
+                self.assertIn('paseo', servers); self.assertEqual('gmail' in servers, has_gmail)
+
+    def test_gmail_guard_refuses_workers_and_forwards_others(self):
+        import http.server, threading
+        labels = {}
+        class Daemon(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                body = json.dumps({'jsonrpc': '2.0', 'id': 'loadout-gmail-guard', 'result': {'structuredContent': {'snapshot': {'labels': labels}}}}).encode()
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)
+            def log_message(self, *args): pass
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Daemon)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close); self.addCleanup(server.shutdown)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ('gmail_guard.py', 'mcp_bridge.py', 'credential.py'): (root/name).write_bytes((PI/name).read_bytes())
+            (root/'runtime.json').write_text('{}')
+            (root/'stub.py').write_text("import json,sys\nfor line in sys.stdin:\n    r=json.loads(line)\n    print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':{'content':[{'type':'text','text':'stub mail'}]}}),flush=True)\n")
+            call = json.dumps({'jsonrpc': '2.0', 'id': 7, 'method': 'tools/call', 'params': {'name': 'search_gmail_messages', 'arguments': {}}}) + '\n'
+            env = {**os.environ, 'LOADOUT_PI_MCP_URL': f'http://127.0.0.1:{server.server_port}/mcp/agents?callerAgentId=agent-0001'}
+            for role, text, error in (('worker', 'Gmail is not available to Worker agents', True), ('pm', 'stub mail', None)):
+                labels.clear(); labels['role'] = role
+                done = subprocess.run([sys.executable, str(root/'gmail_guard.py'), sys.executable, str(root/'stub.py')],
+                                      input=call, capture_output=True, text=True, env=env, timeout=30)
+                reply = json.loads(done.stdout)
+                self.assertEqual(reply['id'], 7); self.assertEqual(reply['result']['content'][0]['text'], text)
+                self.assertEqual(reply['result'].get('isError'), error)
 
     def test_router_base_url_requires_https_unless_loopback(self):
         sys.path.insert(0, str(PI))

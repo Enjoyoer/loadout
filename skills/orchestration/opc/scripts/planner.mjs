@@ -78,7 +78,7 @@ export function preparePlannerLaunch(taskPath, { contextPack, capabilities, surf
       provider: route.provider,
       initialPrompt,
       notifyOnFinish: true,
-      labels: { 'opc.planner-round': round.id, 'opc.run': task.id },
+      labels: { role: 'worker', 'opc.planner-round': round.id, 'opc.run': task.id },
       settings: { ...requestedSettings, ...(modeId ? { modeId } : {}) },
     }),
   });
