@@ -27,7 +27,7 @@ def patch_text(text):
         if count != 1: raise ValueError('Unsupported client profile browser: preserve original bundle')
     return result
 
-def run(root, action, preferences_script=None):
+def run(root, action, preferences_script=None, preferences_sha256=None):
     root=Path(root).resolve();state=root/'.loadout-picker-patch.json'
     if action=='rollback':
         info=json.loads(state.read_text())
@@ -43,8 +43,15 @@ def run(root, action, preferences_script=None):
         if 'buildSelectableProviderSelectorProviders=function' in text:candidates.append(p)
     if len(candidates)!=1:raise ValueError('Expected exactly one supported web client bundle')
     p=candidates[0];data=p.read_bytes()
+    info=json.loads(state.read_text()) if state.exists() else {}
+    # Pin the preferences script: the state file sits beside the bundle, so a
+    # swapped script is refused unless its new sha256 is passed explicitly.
+    # State written before the pin existed falls back to its recorded script.
+    pinned=preferences_sha256 or info.get('preferences_sha256') or (digest(info['preferences_script'].encode()) if info.get('preferences_script') else None)
+    if preferences_script and pinned and digest(preferences_script.encode())!=pinned.lower():
+        raise ValueError('Preferences script sha256 '+digest(preferences_script.encode())+' differs from the pinned one; review the script, then pass --preferences-sha256 to accept it')
     if state.exists():
-        info=json.loads(state.read_text());row=next((r for r in info['files'] if root/r['path']==p),None)
+        row=next((r for r in info['files'] if root/r['path']==p),None)
         if row and digest(data)==row['after']:
             intact=all(digest((root/r['path']).read_bytes())==r['after'] for r in info['files'])
             if intact and info.get('patch_revision') == PATCH_REVISION and (preferences_script is None or info.get('preferences_script') == preferences_script):
@@ -79,7 +86,8 @@ def run(root, action, preferences_script=None):
         backup.write_bytes(before)
         records.append({'path':str(target.relative_to(root)),'backup':str(backup.relative_to(root)),
             'before':digest(before),'after':digest(updated)})
-    info={'patch_revision':PATCH_REVISION,'preferences_script':preferences_script,'files':records}
+    info={'patch_revision':PATCH_REVISION,'preferences_script':preferences_script,
+        'preferences_sha256':digest(preferences_script.encode()) if preferences_script else None,'files':records}
     state.write_text(json.dumps(info,indent=2)+'\n')
     for target,before,updated in changes:
         target.write_bytes(updated)
@@ -87,5 +95,5 @@ def run(root, action, preferences_script=None):
     return {'picker':'verified','changed':True,'bundle':str(p),'rollback':'picker-patch.py ROOT rollback'}
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('root');p.add_argument('action',choices=['check','apply','reapply','rollback']);p.add_argument('--preferences-script',type=Path);a=p.parse_args()
-    print(json.dumps(run(a.root,a.action,a.preferences_script.read_text() if a.preferences_script else None)))
+    p=argparse.ArgumentParser();p.add_argument('root');p.add_argument('action',choices=['check','apply','reapply','rollback']);p.add_argument('--preferences-script',type=Path);p.add_argument('--preferences-sha256');a=p.parse_args()
+    print(json.dumps(run(a.root,a.action,a.preferences_script.read_text() if a.preferences_script else None,a.preferences_sha256)))
