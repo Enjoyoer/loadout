@@ -21,6 +21,7 @@ import paseo_providers  # noqa: E402
 FAKE_SSH = textwrap.dedent("""\
     #!/bin/sh
     while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
+    [ "$1" = "--" ] && shift
     [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
     host="$1"; shift
     echo "ssh $host" >> "$FAKE_ROOT/calls.log"
@@ -188,7 +189,7 @@ class ProviderSyncTest(unittest.TestCase):
     def test_long_relay_payload_is_bounded_verified_and_idempotent(self):
         (self.root / "input-limit").touch()
         catalog = self.long_payload()
-        # First chunk is lost, then resent safely before later chunks run.
+        # The first send is lost, then resent safely before the chunks run.
         (self.root / "drop-sends").write_text("1")
         with patch.dict(os.environ, self.env):
             runner = paseo_providers.Runner(HOSTS["hosts"][2], "laptop", self.fleet)
@@ -275,7 +276,8 @@ class ProviderSyncTest(unittest.TestCase):
         code, out = self.run_sync("--host", "tablet")
         self.assertEqual(code, 0, out)
         self.assertIn("tablet (paseo-relay): write CHANGED", out)
-        self.assertEqual(self.calls().count("terminal send-keys"), 1)
+        # unset HISTFILE, then the payload.
+        self.assertEqual(self.calls().count("terminal send-keys"), 2)
         calls = self.calls().splitlines()
         send = next(i for i, line in enumerate(calls) if "send-keys" in line)
         self.assertEqual(sum("terminal capture" in line for line in calls[:send]), 5)
@@ -285,7 +287,7 @@ class ProviderSyncTest(unittest.TestCase):
         code, out = self.run_sync("--host", "tablet")
         self.assertEqual(code, 0, out)
         self.assertIn("tablet (paseo-relay): write CHANGED", out)
-        self.assertEqual(self.calls().count("terminal send-keys"), 2)
+        self.assertEqual(self.calls().count("terminal send-keys"), 3)
 
     def test_relay_resend_is_bounded_to_one(self):
         (self.root / "drop-sends").write_text("5")

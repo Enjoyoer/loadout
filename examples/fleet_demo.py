@@ -24,6 +24,7 @@ FAKE_SSH = textwrap.dedent(r"""
     #!/bin/sh
     # Stand-in for ssh: run the command with HOME set to the simulated host's folder.
     while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
+    [ "$1" = "--" ] && shift
     host="$1"; shift
     unset CODEX_HOME XDG_CONFIG_HOME
     HOME="$DEMO_ROOT/hosts/$host" exec sh -c "$*"

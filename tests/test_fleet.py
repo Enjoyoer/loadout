@@ -153,6 +153,9 @@ class ValidateTest(unittest.TestCase):
         self.check_error(fleet_doc(host("a"), host("a")), "listed twice")
         self.check_error(fleet_doc(host("a", os="beos")), "os 'beos'")
 
+    def test_host_name_cannot_start_with_a_dash(self):
+        self.check_error(fleet_doc(host("a"), host("-oProxyCommand=x")), "not start with '-'")
+
     def test_global_clients(self):
         self.check_error(fleet_doc(**{"global": {"cursor": "~/x"}}), "unknown keys ['cursor']")
 

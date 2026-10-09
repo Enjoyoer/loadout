@@ -19,6 +19,7 @@ FAKE_SSH = textwrap.dedent(r"""
     #!/bin/sh
     [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
     while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
+    [ "$1" = "--" ] && shift
     host="$1"; shift
     echo "ssh $host $*" >> "$FAKE_ROOT/calls.log"
     unset CODEX_HOME

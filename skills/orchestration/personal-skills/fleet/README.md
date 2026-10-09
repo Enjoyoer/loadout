@@ -46,7 +46,7 @@ Put skills that must stay private (personal, account-bound, or holding credentia
 - `transport`: default for every host, `ssh` or `paseo-relay`. Record host names, not IP addresses that may change.
 - `notes`: optional free text.
 - `hosts[]`: one entry per host.
-  - `name`: address used by the transport; for `ssh`, the SSH alias.
+  - `name`: address used by the transport; for `ssh`, the SSH alias. Letters, digits, `.`, `_` and `-`, not starting with `-`.
   - `os`: `macos`, `windows`, or `linux`.
   - `transport`: optional, overrides the top-level value.
     - `ssh`: files and commands travel over SSH.
@@ -117,6 +117,7 @@ Optional. `python3 scripts/client_config.py [--dry-run] [--host <name>] [--updat
   - `top`: top-level keys. Missing keys are inserted before the blank lines that precede the first section header.
   - `sections`: named sections such as `model_providers.<id>`, each a map of keys. A missing section is appended.
   - `reportOnly`: top-level keys that are printed per host and never written.
+  - Key, section, and `reportOnly` names are bare TOML keys, optionally dotted (letters, digits, `_`, `-`); a host refuses any other name and writes nothing.
   - Values are strings, numbers, or booleans. The merge is line-based and keeps CRLF, comments, and every other key and section.
 - `claude`: managed parts of Claude Code `~/.claude/settings.json`.
   - `settings`: top-level keys, each replaced whole.

@@ -17,6 +17,7 @@ import fleet  # noqa: E402
 FAKE_SSH = textwrap.dedent("""\
     #!/bin/sh
     while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
+    [ "$1" = "--" ] && shift
     [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
     host="$1"; shift
     [ -e "$FAKE_ROOT/down-$host" ] && { echo "ssh: connect to host $host: timed out" >&2; exit 255; }
@@ -181,6 +182,17 @@ class FleetPushTest(unittest.TestCase):
         result = fleet.parse_result(done.stdout)
         self.assertEqual(result["status"], "failed")
         self.assertIn("hash mismatch in transfer: hosts.json", result["error"])
+        self.assertFalse(self.target("desktop").exists())
+
+    def test_backslash_path_is_refused_before_writing(self):
+        files = fleet.fleet_files(self.source)
+        files["..\\escape.json"] = files["hosts.json"]
+        body = fleet.pack(json.dumps({"dry_run": False, "target": str(self.target("desktop")), "files": files}).encode())
+        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(fleet.PUSH_JS.read_bytes())],
+                              input=body, capture_output=True, text=True)
+        result = fleet.parse_result(done.stdout)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("invalid path from source: ..\\escape.json", result["error"])
         self.assertFalse(self.target("desktop").exists())
 
 
