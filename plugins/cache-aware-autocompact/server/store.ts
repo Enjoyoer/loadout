@@ -10,7 +10,7 @@ export type StateEntry = {
   createdAt: string;
   /** Original request time, retained when a late result replaces the reservation. */
   attemptedAt?: string;
-  outcome: "compact-requested" | "would-compact" | "compacted" | "compaction-failed" | "skip" | "send-failed";
+  outcome: "compact-requested" | "would-compact" | "compacted" | "compaction-failed" | "compaction-unconfirmed" | "skip" | "send-failed";
   reason: string;
 };
 type State = { version: 1; entries: StateEntry[]; turns?: Checkpoint[] };
