@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Owner cloud toggle: route eligible editing Workers to one Claude Code cloud session.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -72,8 +72,10 @@ function profileDir(value) {
   return dir;
 }
 
+// Only a confirmed-absent file means the default login; any other error (unreadable, dangling link) fails closed,
+// so a broken profile can never bill the default account silently.
 export function readCloudProfile({ path = defaultProfilePath() } = {}) {
-  if (!existsSync(path)) return null;
+  try { lstatSync(path); } catch (error) { if (error?.code === 'ENOENT') return null; throw error; }
   if (process.platform === 'win32') throw Error(`cloud profile is supported on POSIX hosts only: ${path}`);
   return profileDir(readFileSync(path, 'utf8'));
 }
@@ -369,7 +371,7 @@ function main(argv) {
   if (!['on', 'off', 'all'].includes(state)) {
     throw Error('usage: cloud-lane.mjs on|off|all|status | allow|disallow <owner/repo|owner/*> [--fleet host,...] | profile <dir>|none');
   }
-  setCloudToggle(state, { authStatus: state === 'on' ? readAuthStatus() : null });
+  setCloudToggle(state, { authStatus: state === 'off' ? null : readAuthStatus() });
   console.log(`local: ${state}`);
   pushToFleet(hosts, [state]);
 }
