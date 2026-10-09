@@ -104,9 +104,13 @@ const readJson = (path, what) => {
 
 async function readCatalog(path) {
   if (path) return catalogRows(readJson(path, 'catalog'));
-  // On Windows the paseo CLI is an npm .cmd shim, which only a shell can start; the arguments are fixed.
-  const { stdout } = await promisify(execFile)('paseo', ['provider', 'models', 'pi', '--json'],
-    { timeout: 60000, maxBuffer: 16 << 20, encoding: 'utf8', shell: process.platform === 'win32' });
+  // On Windows the paseo CLI is an npm .cmd shim, which only cmd.exe can start. The words are fixed, so cmd.exe gets
+  // them as one quoted command line, as shell: true would build it; arguments plus shell: true is deprecated (DEP0190).
+  const [file, args, verbatim] = process.platform === 'win32'
+    ? [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '"paseo provider models pi --json"'], true]
+    : ['paseo', ['provider', 'models', 'pi', '--json'], false];
+  const { stdout } = await promisify(execFile)(file, args,
+    { timeout: 60000, maxBuffer: 16 << 20, encoding: 'utf8', windowsVerbatimArguments: verbatim });
   return catalogRows(JSON.parse(stdout));
 }
 
