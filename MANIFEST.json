@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "4e4588b4fe86f6ff2c5b36f19e4808c8d85c15fd",
+  "source_commit": "fecf032ff98b2491096e0fb75d2721a9c056dbbb",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -331,15 +331,15 @@
       "path": "skills/orchestration/opc/scripts/paseo-worker.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 8332,
-      "sha256": "257226a95d0759d652d6f6621a3f229779806b1c50e930a519a8935e1a8ad0d9"
+      "bytes": 8348,
+      "sha256": "45a76ee79361c096f403549ea413d348d12b1b7536d33b6aec645fc15b8d9ca5"
     },
     {
       "path": "skills/orchestration/opc/scripts/planner.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 7673,
-      "sha256": "cd0b99af881791ea3e98fc77b9e39d91b16740fe68a99f591dac1b54469cb280"
+      "bytes": 7689,
+      "sha256": "04b4ab37aaa9bd2e5cfbb985cbd05ee50dad8d983ac3c8960b63cced11fbc1af"
     },
     {
       "path": "skills/orchestration/opc/scripts/quota-pace.mjs",
@@ -373,8 +373,8 @@
       "path": "skills/orchestration/opc/scripts/web-reviewer.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 14167,
-      "sha256": "dea3cf52968643cffccc71a896f178684419905962ea944a080d750c5cb1fde7"
+      "bytes": 14183,
+      "sha256": "9992b01769a7bce4b568ff2933846e5df115eb81b36bc50cf0c2983e8b6ed3b8"
     },
     {
       "path": "skills/orchestration/opc/scripts/worker.mjs",
@@ -443,8 +443,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 24367,
-      "sha256": "99504842caf8fa8d4a4b244261cca01bcfb2f9399de7b589aae2801738c3a509"
+      "bytes": 24622,
+      "sha256": "edc1bc86e64dd7ace256f48e3201c28be38a8ee34587e160b7183bac1713c436"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/client-config.json",
@@ -590,8 +590,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 3710,
-      "sha256": "5dfd78c5aa086a661145b915616c523058ef2c1f262a18e5bb7bf4645480e5a9"
+      "bytes": 4871,
+      "sha256": "0f58c15d580b6d748811577b27b64ab51f1d766bcb511081b4434e5e16135a1d"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/mcp_bridge.py",
