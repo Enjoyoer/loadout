@@ -43,19 +43,6 @@ export function within(child, parent) {
   return !path || (path !== '..' && !path.startsWith('../') && !path.startsWith('..\\') && !isAbsolute(path));
 }
 
-function validateWorker(worker, task) {
-  if (worker == null) return;
-  if (typeof worker !== 'object' || worker.run_id !== task.id || worker.owner !== task.owner ||
-      !['running', 'finished', 'blocked'].includes(worker.status) || !Array.isArray(worker.turns) ||
-      worker.route_source !== 'owner-explicit' || typeof worker.model !== 'string' || !worker.model ||
-      !efforts.includes(worker.effort) ||
-      typeof worker.fast_mode !== 'boolean' ||
-      (worker.native_authorization != null && worker.native_authorization !== 'owner-explicit')) {
-    throw Error('invalid Worker record');
-  }
-  if (worker.status === 'finished' && !worker.thread_id) throw Error('finished Worker lacks thread identity');
-}
-
 function catalogRound(round, label, role) {
   return round.role === role && round.catalog_label === label && typeof round.catalog_model_id === 'string' &&
     round.catalog_model_id.length > 0 && ['pi', 'codex', 'claude'].some(provider => round.provider === `${provider}/${round.catalog_model_id}`);
@@ -210,7 +197,10 @@ function validate(task, path) {
   if (typeof (task.ui ?? false) !== 'boolean') throw Error('UI choice must be boolean');
   if (task.ui && task.browser_review) throw Error('UI work never uses the web reviewer (owner rule)');
   if (!['ready', 'cancelled'].includes(task.status)) throw Error('invalid task status');
-  validateWorker(task.worker, task);
+  // Only the native CLI Worker (worker.mjs, removed in OPC 7.28) wrote task.worker; a leftover record is refused, never read or dropped.
+  if (task.worker != null) {
+    throw Error('task.worker holds a native CLI Worker record, which OPC 7.28 removed; create a fresh task');
+  }
   validatePlanner(task.planner);
   validateReviewer(task.reviewer, task);
   validateCloud(task.cloud);
@@ -266,7 +256,6 @@ export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'H
     },
     contract_version: 2,
     status: 'ready',
-    worker: null,
     planner: null,
     tests: null,
     merge: null,
@@ -341,13 +330,6 @@ export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
     const result = mutator(task);
     if (result?.then) throw Error('task mutation must be synchronous');
     if (identity(old) !== identity(task)) throw Error('immutable task identity changed');
-    if (old.worker) {
-      for (const key of ['run_id', 'owner', 'model', 'effort', 'fast_mode', 'route_source', 'native_authorization', 'thread_id']) {
-        if (old.worker[key] != null && JSON.stringify(old.worker[key]) !== JSON.stringify(task.worker?.[key])) {
-          throw Error(`immutable Worker ${key} changed`);
-        }
-      }
-    }
     if (old.cloud) {
       for (const key of ['session_id', 'url', 'branch', 'repo', 'launched_at', 'heartbeat_id', 'route']) {
         if (key === 'heartbeat_id' && old.cloud.heartbeat_id === null) continue; // bound once, after the launch record

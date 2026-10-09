@@ -379,35 +379,6 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         done=subprocess.run(['node','--input-type=module','-e',script,(opc/'agent-routing.mjs').as_uri(),(opc/'paseo-worker.mjs').as_uri()],capture_output=True,text=True)
         self.assertEqual(done.returncode,0,done.stderr)
 
-    def test_native_cli_worker_requires_owner_authorization(self):
-        script=r"""
-import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {execFileSync} from 'node:child_process';
-const base=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'opc-native-')));const repo=path.join(base,'repo');const run=path.join(base,'run');fs.mkdirSync(repo);fs.mkdirSync(run);
-const git=(...args)=>execFileSync('git',['-C',repo,...args],{stdio:'pipe'});
-delete process.env.OPC_WORKER_CONTEXT;process.env.OPC_CODEX_BIN=path.join(base,'missing-codex');
-try{
- git('init','-q','-b','main');git('config','user.name','Test');git('config','user.email','test@example.test');git('remote','add','origin','https://github.com/example/project.git');fs.writeFileSync(path.join(repo,'seed'),'seed');git('add','.');git('commit','-qm','seed');
- const state=await import(process.argv[1]);const worker=await import(process.argv[2]);const {taskPath,task}=state.createTask({workingDirectory:repo,runDirectory:run,owner:'test'});
- const route={role:'worker',source:'owner-explicit',model:'gpt-6.1-sol',effort:'high',fastMode:false};
- await assert.rejects(worker.launchWorker(taskPath,{prompt:'do it',route}),/explicit owner authorization/);
- await assert.rejects(worker.launchWorker(taskPath,{prompt:'do it',route,nativeAuthorization:'yes'}),/explicit owner authorization/);
- await assert.rejects(worker.launchWorker(taskPath,{prompt:'do it',route:{...route,source:'task-default',kind:'browser',effort:'medium'},nativeAuthorization:'owner-explicit'}),/owner-named route/);
- // Authorized launch passes the gate and stops only at the missing native executable.
- await assert.rejects(worker.launchWorker(taskPath,{prompt:'do it',route,nativeAuthorization:'owner-explicit'}),/native Codex executable unavailable/);
- assert.equal(state.readTask(taskPath).worker,null);
- const record={run_id:task.id,owner:'test',status:'finished',thread_id:'00000000-0000-4000-8000-000000000000',model:'gpt-6.1-sol',effort:'high',fast_mode:false,route_source:'owner-explicit',turns:[],error:null,cancel_requested:false,process:null};
- assert.throws(()=>state.updateTask(taskPath,current=>{current.worker={...record,native_authorization:'yes'};}),/invalid Worker record/);
- state.updateTask(taskPath,current=>{current.worker={...record};});
- await assert.rejects(worker.resumeWorker(taskPath,{prompt:'again'}),/explicit owner authorization/);
- state.updateTask(taskPath,current=>{current.worker.native_authorization='owner-explicit';});
- await assert.rejects(worker.resumeWorker(taskPath,{prompt:'again'}),/native Codex executable unavailable/);
- assert.throws(()=>state.updateTask(taskPath,current=>{delete current.worker.native_authorization;}),/immutable Worker native_authorization/);
-}finally{fs.rmSync(base,{recursive:true,force:true});}
-"""
-        opc=ROOT/'skills/orchestration/opc/scripts'
-        done=subprocess.run(['node','--input-type=module','-e',script,(opc/'task-state.mjs').as_uri(),(opc/'worker.mjs').as_uri()],capture_output=True,text=True)
-        self.assertEqual(done.returncode,0,done.stderr)
-
     @unittest.skipIf(os.name == "nt", "fake paseo is a POSIX shell script")
     def test_shared_catalog_generates_models_and_picker_in_one_sync(self):
         import gzip,base64,os

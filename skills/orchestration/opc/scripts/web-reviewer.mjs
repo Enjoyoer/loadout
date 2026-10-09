@@ -55,7 +55,7 @@ export function buildReviewPrompt({ repo, pr, head, base, author, contextPack, r
 
 function available(task) {
   if (!task.browser_review) throw Error('review was not enabled in the initial request');
-  if (task.status !== 'ready' || task.worker?.status === 'running' || task.tests?.status === 'running' || task.merge) {
+  if (task.status !== 'ready' || task.tests?.status === 'running' || task.merge) {
     throw Error('task is busy, cancelled, or already delivering');
   }
   const previous = latest(task);

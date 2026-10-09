@@ -26,7 +26,7 @@ export function sourceIdentity(task) {
 }
 const same = (a,b) => a?.head === b.head && a?.fingerprint === b.fingerprint;
 function idle(task) {
-  if(task.status === 'cancelled' || task.worker?.status === 'running' || task.tests?.status === 'running') throw Error('task is cancelled or busy');
+  if(task.status === 'cancelled' || task.tests?.status === 'running') throw Error('task is cancelled or busy');
   if(task.merge?.status === 'pending') throw Error('merge uncertain; reconcile live GitHub state before further work');
 }
 // Only the recorded process clears 'running'; once it is gone the run was interrupted. Every entry point that judges
@@ -82,9 +82,9 @@ export function verifyDelivery(taskPath,{pr,query=github}={}) {
   recoverTests(taskPath);
   const task=readTask(taskPath),source=sourceIdentity(task), blockers=[];
   if(task.status==='cancelled')blockers.push('task cancelled');
-  if(task.worker?.status==='running')blockers.push('Worker still running');
   if(task.tests?.status!=='passed'||!same(task.tests,source))blockers.push('passing tests required on current bytes and head');
-  const workflow=task.worker?.status==='finished'&&task.worker.thread_id?'worker-completed':'direct-or-incomplete';
+  // Paseo, not the task record, tracks a managed Worker's lifecycle, so this is the label managed Workers always got.
+  const workflow='direct-or-incomplete';
   let publication=null,reviewStatus=task.browser_review?'required':'off';
   if(task.delivery!=='local') {
     if(git(task.repository.working_directory,'status','--porcelain'))blockers.push('worktree dirty');

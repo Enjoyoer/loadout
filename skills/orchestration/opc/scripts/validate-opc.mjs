@@ -76,7 +76,6 @@ export async function validatePackage(root = defaultRoot) {
   await access(resolve(root, 'agents/openai.yaml'));
   const contracts = {
     'delivery.mjs': ['runTests', 'verifyDelivery', 'mergeDelivery', 'reconcileMerge'],
-    'worker.mjs': ['launchWorker', 'resumeWorker', 'cancelWorker'],
     'task-state.mjs': ['createTask', 'readTask', 'updateTask'],
     'agent-routing.mjs': ['resolveAgentRoute', 'selectWorkerRoute', 'buildDelegatedBrief', 'selectTopology', 'isGptOrWebRoute'],
     'quota-pace.mjs': ['readRoutingSettings', 'validateRoutingSettings', 'readQuota', 'poolPace', 'paceLevel'],
