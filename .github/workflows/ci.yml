@@ -2,8 +2,9 @@ name: CI
 
 on:
   push:
-    # Every pushed branch gets the secret scan; the other jobs run only for main and pull requests.
+    # Every pushed branch and tag gets the secret scan; the other jobs run only for main and pull requests.
     branches: ['**']
+    tags: ['**']
   pull_request:
 
 permissions:
@@ -63,9 +64,18 @@ jobs:
           LOG_OPTS: ${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || 'HEAD' }}
           BEFORE: ${{ github.event.before }}
         run: |
+          # A tag push scans the commits the tag reaches that main does not, or the tagged
+          # commit alone when there are none.
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            tip=$(git rev-parse "$GITHUB_SHA^{commit}")
+            if [ -n "$(git rev-list -1 "origin/main..$tip" 2>/dev/null)" ]; then
+              LOG_OPTS="origin/main..$tip"
+            else
+              LOG_OPTS="-1 $tip"
+            fi
           # A push to any other branch scans that push's own commits. A new branch (all-zero
           # before), or a force push whose old tip was not fetched, scans the commits not on main.
-          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+          elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" != refs/heads/main ]; then
             if [ "$BEFORE" != 0000000000000000000000000000000000000000 ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
               LOG_OPTS="$BEFORE..$GITHUB_SHA"
             else
