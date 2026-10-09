@@ -77,8 +77,7 @@ def validate_evals(raw: str, errors: list[str]) -> int:
     return len(cases)
 
 
-def validate_documents(documents: dict[str, str], evals_raw: str, metadata: str, errors: list[str]) -> int:
-    del metadata
+def validate_documents(documents: dict[str, str], evals_raw: str, errors: list[str]) -> int:
     validate_links(documents, errors)
     return validate_evals(evals_raw, errors)
 
@@ -88,11 +87,10 @@ def main() -> int:
     documents = {
         "SKILL.md": read(ROOT / "SKILL.md", errors),
         "references/host-adapters.md": read(ROOT / "references" / "host-adapters.md", errors),
-        "host_adapters.py": read(ROOT / "scripts" / "host_adapters.py", errors),
     }
     evals = read(ROOT / "evals.json", errors)
-    metadata = read(ROOT / "agents" / "openai.yaml", errors)
-    eval_count = validate_documents(documents, evals, metadata, errors)
+    read(ROOT / "agents" / "openai.yaml", errors)  # presence check only
+    eval_count = validate_documents(documents, evals, errors)
     if errors:
         print(f"OPN validation failed with {len(errors)} error(s):", file=sys.stderr)
         for error in errors:

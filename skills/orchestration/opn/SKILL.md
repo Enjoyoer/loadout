@@ -46,7 +46,7 @@ OPN never grants itself delegation authority. The current user and host runtime 
 - Once chosen, the option is the default for the remainder of the OPN run and persists with the durable folder owner across sessions, so a resumed run reuses it without asking again.
 - Switch only on an explicit user request. A new objective, a resumed session, or a different task is not a switch.
 - If the host cannot expose the requested model, effort, or Fast control, use the supported setting and report the unavailable preference. Never substitute silently.
-- Record the choice in the host's own agent or thread runtime settings, where the host already keeps a model and effort. Reverify it when reusing an owner, alongside identity and scope. Do not record it in the owner's `STATUS.html` or `LESSONS.md`; the repo-lessons contract bars model-policy notes from `STATUS.html` and worker profiles from `LESSONS.md`. Do not add it to `owner_identity`; that record keeps only the fields `host_adapters.py` enforces, and this policy adds none.
+- Record the choice in the host's own agent or thread runtime settings, where the host already keeps a model and effort. Reverify it when reusing an owner, alongside identity and scope. Do not record it in the owner's `STATUS.html` or `LESSONS.md`; the repo-lessons contract bars model-policy notes from `STATUS.html` and worker profiles from `LESSONS.md`. Do not add it to `owner_identity`; that record keeps only the fields the host adapters reference lists, and this policy adds none.
 
 ## Intake and handoff
 
