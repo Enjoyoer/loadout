@@ -38,6 +38,9 @@ export const runCommand: CommandRunner = (command, args, cwd, timeoutMs) =>
     );
   });
 
+// Paths whose unexpected access() error was already logged, so a persistent one logs once.
+const loggedExistsErrors = new Set<string>();
+
 export const nodeFileSystem: FileSystem = {
   async isDirectory(path) {
     try {
@@ -51,8 +54,15 @@ export const nodeFileSystem: FileSystem = {
     try {
       await access(path);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return false;
+      // Fail closed: a path we cannot check (EACCES, EPERM, ...) counts as present, never as gone.
+      if (!loggedExistsErrors.has(path)) {
+        loggedExistsErrors.add(path);
+        console.log(`[merged-worker-archiver] exists-error treated-as-present ${JSON.stringify({ path, code: code ?? String(error) })}`);
+      }
+      return true;
     }
   },
   async readText(path) {
