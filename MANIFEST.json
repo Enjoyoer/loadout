@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "19dafbcc78e65a8ead116b05123220d41e564677",
+  "source_commit": "f1cf60dd6f1c6ca87d7c136b9c085bb876e6a2a1",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -317,8 +317,8 @@
       "path": "skills/orchestration/opc/scripts/cloud-lane.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 18136,
-      "sha256": "ecb7b4e915aeda4b437e47042f89d6d7be9bc889f705f4ef683966c46bd70bda"
+      "bytes": 18573,
+      "sha256": "eceb7e92f926da037c4ca699a02556287b3c03a6f44bf6fdfe525e1cf46093fe"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -359,8 +359,8 @@
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 18808,
-      "sha256": "1d385de21d50982e01681388356fec2bab2df41c290f96a1d7b9a16eb9cf8087"
+      "bytes": 19827,
+      "sha256": "9a0e91e1761376144a42cd91311b64c466112d2b013a7fef15b2d780bfe3ba54"
     },
     {
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
