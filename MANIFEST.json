@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "561b62cd97d2379233c0a0431a466937ec2cb8cf",
+  "source_commit": "a262f31cf9b883d15e21078ceeed6b95a8c92d36",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -156,8 +156,8 @@
       "path": "skills/orchestration/claude-cloud/SKILL.md",
       "category": "orchestration",
       "skill": "claude-cloud",
-      "bytes": 5104,
-      "sha256": "d63e0b9a0e4fce3747dceee7ec445928926570076a2eedfa8dc5b619359911d1"
+      "bytes": 5582,
+      "sha256": "9ba9300d6e362fa88d3f2ae8708e2310d6f959caa086681eea69cb3ec0c0e774"
     },
     {
       "path": "skills/orchestration/dispatching-parallel-agents/SKILL.md",
@@ -192,7 +192,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5408,
-      "sha256": "30f792b91d9b216490e90e138c8fceae6dd272d45ff7dee26c402d207dbaca3c"
+      "sha256": "5807ae0744d58e3c5ed6727cd74628fc874407f014bb42bb4a2f04d5da482504"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -205,8 +205,8 @@
       "path": "skills/orchestration/opc/references/cloud-lane.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5506,
-      "sha256": "dae760447e0c42f37bba1d5024fe9ae0d8314bfb6f775dfae7fc1986c48c422b"
+      "bytes": 6206,
+      "sha256": "2d82b1711cf23364476ed24723b73ea7711aa1619b11001438e6cd97c94ab74a"
     },
     {
       "path": "skills/orchestration/opc/references/codex-sites.md",
@@ -317,8 +317,8 @@
       "path": "skills/orchestration/opc/scripts/cloud-lane.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 20355,
-      "sha256": "1c3c08b5c5ce4909fbbb73cf84e83ce4b82a84a50e6744d0bf7bbfcfb9340e7d"
+      "bytes": 23223,
+      "sha256": "458e709b9e847d98118ad1c1b8d6731674c7018e007ad6506dd5417eb4d5a91b"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -366,8 +366,8 @@
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 6350,
-      "sha256": "56203f46304ede0b5fa6b8c3681d6a3ab745fe8dea99abc3218baf1ad9b129b0"
+      "bytes": 6389,
+      "sha256": "bd9e610df66b286c2e76243e3c112cd8d4e3c2457459b1f455bcff498e124acf"
     },
     {
       "path": "skills/orchestration/opc/scripts/web-reviewer.mjs",
