@@ -34,6 +34,7 @@ HOSTS = {
 }
 
 
+@unittest.skipIf(os.name == "nt", "fake ssh, paseo, npm and claude are POSIX shell scripts")
 class SyncTest(unittest.TestCase):
     def setUp(self):
         if not shutil.which("node"):

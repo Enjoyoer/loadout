@@ -26,6 +26,9 @@ FAKE_SSH = textwrap.dedent(r"""
     HOME="$FAKE_ROOT/hosts/$host" exec sh -c "$*"
     """).lstrip()
 
+# Windows cannot run the fake; the overlay checks below never reach ssh and still run there.
+needs_fake_ssh = unittest.skipIf(os.name == "nt", "fake ssh is a POSIX shell script")
+
 
 def entry(data, prior=()):
     digest = hashlib.sha256(data).hexdigest()
@@ -53,6 +56,9 @@ class RemotePreflightTest(unittest.TestCase):
         payload = {"dry_run": dry_run, "clients": list(clients), "files": files, "global": glob}
         env = {k: v for k, v in os.environ.items() if k not in ("CODEX_HOME", "XDG_CONFIG_HOME")}
         env["HOME"] = str(self.home)
+        # Windows reads the home from USERPROFILE and keeps the sync record under APPDATA, not ~/.config.
+        env["USERPROFILE"] = str(self.home)
+        env["APPDATA"] = str(self.home / ".config")
         done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(skills_sync.REMOTE_JS.read_bytes())],
                               input=fleet.pack(json.dumps(payload).encode()), capture_output=True, text=True, env=env)
         return fleet.parse_result(done.stdout)
@@ -177,8 +183,9 @@ class SkillsSyncTest(unittest.TestCase):
         (self.root / "hosts/desktop/.codex").mkdir()
         self.env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.root / "hosts/laptop"),
                     "LOADOUT_FLEET": str(self.fleet), "FAKE_ROOT": str(self.root)}
-        done = subprocess.run(["ssh", "--fake-ok"], env=self.env, capture_output=True, text=True)
-        self.assertEqual(done.stdout.strip(), "fake", "fake ssh is not the binary on PATH")
+        if os.name != "nt":
+            done = subprocess.run(["ssh", "--fake-ok"], env=self.env, capture_output=True, text=True)
+            self.assertEqual(done.stdout.strip(), "fake", "fake ssh is not the binary on PATH")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -191,6 +198,7 @@ class SkillsSyncTest(unittest.TestCase):
     def installed(self, host, rel):
         return self.root / "hosts" / host / rel
 
+    @needs_fake_ssh
     def test_install_from_the_verified_manifest(self):
         code, out = self.run_sync()
         self.assertEqual(code, 0, out)
@@ -211,6 +219,7 @@ class SkillsSyncTest(unittest.TestCase):
         code, out = self.run_sync()
         self.assertEqual(out.count("skills same"), 2, out)
 
+    @needs_fake_ssh
     def test_conflict_exit_code_and_dry_run(self):
         code, out = self.run_sync("--dry-run")
         self.assertEqual(code, 0, out)
@@ -228,6 +237,7 @@ class SkillsSyncTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(data)
 
+    @needs_fake_ssh
     def test_private_overlay_installs_updates_and_keeps_hand_edits(self):
         self.overlay("mine/SKILL.md", "v1")
         self.overlay("mine/__pycache__/x.pyc", "junk")
@@ -259,6 +269,7 @@ class SkillsSyncTest(unittest.TestCase):
         self.assertNotIn("skills/mine/SKILL.md", fleet.fleet_files(self.fleet))
         self.assertIn("hosts.json", fleet.fleet_files(self.fleet))
 
+    @needs_fake_ssh
     def test_overlay_name_clash_and_missing_skill_md(self):
         self.overlay("handoff/SKILL.md", "shadow")
         code, out = self.run_sync()
@@ -280,6 +291,7 @@ class SkillsSyncTest(unittest.TestCase):
         files = skills_sync.overlay_files(self.fleet, {"handoff"}, by_dest, record=False)
         self.assertEqual(files["moved/SKILL.md"]["prior"], [sha(b"published")])
 
+    @needs_fake_ssh
     def test_unknown_skill_and_host(self):
         done = subprocess.run([sys.executable, str(SCRIPTS / "skills_sync.py"), "--skills", "nope"], env=self.env,
                               capture_output=True, text=True)

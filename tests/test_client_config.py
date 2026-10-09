@@ -65,6 +65,7 @@ CLAUDE_SETTINGS = {"theme": "light", "hooks": {"x": 1}, "env": {"LOCAL_ONLY": "1
 TOKEN = "tok-SECRET-123"
 
 
+@unittest.skipIf(os.name == "nt", "fake ssh and claude are POSIX shell scripts")
 class ClientConfigTest(unittest.TestCase):
     def setUp(self):
         if not shutil.which("node"):

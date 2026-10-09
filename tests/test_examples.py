@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ class MarketplaceTest(unittest.TestCase):
 
 
 class FleetDemoTest(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "the demo's stand-in ssh is a POSIX shell script")
     def test_demo_runs_offline_and_shows_the_conflict(self):
         if not shutil.which("node"):
             self.skipTest("node is required")

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -407,6 +408,7 @@ try{
         done=subprocess.run(['node','--input-type=module','-e',script,(opc/'task-state.mjs').as_uri(),(opc/'worker.mjs').as_uri()],capture_output=True,text=True)
         self.assertEqual(done.returncode,0,done.stderr)
 
+    @unittest.skipIf(os.name == "nt", "fake paseo is a POSIX shell script")
     def test_shared_catalog_generates_models_and_picker_in_one_sync(self):
         import gzip,base64,os
         sys.path.insert(0,str(PI));sys.path.insert(0,str(PI.parent))
