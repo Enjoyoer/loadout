@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "fc32af792d4823ca7426b351644864185e48ed4d",
+  "source_commit": "6588ca936f925a10ddb1ebac2a9ecb6c541d837f",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -192,7 +192,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5408,
-      "sha256": "2de02449fc6a79451e6c936247fd7d813a76dacf557c4fdedf90da2dfd7afea6"
+      "sha256": "802dfa12606301b8eb602325e8de324de0b4ecf5534f6e83a4ffe0902e7cad7d"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -205,8 +205,8 @@
       "path": "skills/orchestration/opc/references/cloud-lane.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 6380,
-      "sha256": "2cfaa52566ea6454b02515819a8f31960113310db8e2cf1045e5672765694abf"
+      "bytes": 6470,
+      "sha256": "8c64c3f2505c544dbc9ebe51756ce40bb5c5832575ab3a8848f38e615014f1d4"
     },
     {
       "path": "skills/orchestration/opc/references/codex-sites.md",
@@ -261,8 +261,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 6025,
-      "sha256": "f1340a57f72ccddb53ea213db1bb3c45db77b4c221ace4e1a6209760e6e23170"
+      "bytes": 6063,
+      "sha256": "e6a6b109954a20d25efc6540761f827410ca22d6af6e04d36eac1d4b420f72da"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -317,8 +317,8 @@
       "path": "skills/orchestration/opc/scripts/cloud-lane.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 23480,
-      "sha256": "3fc28dc51cc8c07df40d5639de93271af4a73de328a23850f6d840d633e035d2"
+      "bytes": 23896,
+      "sha256": "dc5d9ff2c8f8af24ba11327060478af5afcfcb9d6307cb8dc916c4d8605b9e8f"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -352,8 +352,8 @@
       "path": "skills/orchestration/opc/scripts/route.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 10224,
-      "sha256": "ffb96e5bd87e46b720be7bd2b544a01124e1e930898d4de2d0eee785e7f52b9e"
+      "bytes": 10537,
+      "sha256": "43d4007f3c667a83cf9412ce278a2d9fa34a36a6cfc9eb5f8f930e7928307bd8"
     },
     {
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
