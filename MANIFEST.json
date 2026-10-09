@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "32eac99fd876917da150cce6fb233820331297a2",
+  "source_commit": "0b656a5e017e83360be57e6e2129ff1113461c10",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -1324,14 +1324,14 @@
     {
       "path": "plugins/pi-fast-toggle/package-lock.json",
       "plugin": "pi-fast-toggle",
-      "bytes": 162283,
-      "sha256": "e0ee3fb99d953527aff8238facc196cee63e31fd5b0ad2a3bca3df6dc89246fd"
+      "bytes": 24188,
+      "sha256": "c78e361552dc07f881a18581afc817d6fdac5e5918541a358257e13e2decd59e"
     },
     {
       "path": "plugins/pi-fast-toggle/package.json",
       "plugin": "pi-fast-toggle",
-      "bytes": 679,
-      "sha256": "5875a6037ca4ff2a4da01253d6b2a422f21ecaa094385975a9066f3f8f263a9e"
+      "bytes": 649,
+      "sha256": "f7705cac41248daf705753d18d34f20addf5ef5c9ccd123c9f92e41f2e9920c1"
     },
     {
       "path": "plugins/pi-fast-toggle/paseo-plugin.json",
