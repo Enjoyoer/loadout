@@ -8,7 +8,7 @@ Agent skills for Claude Code and Codex, a fleet sync that keeps them identical a
 
 - **22 skills** for multi-agent orchestration, project memory and handoffs, architecture and domain modeling, docs lookup, PDFs, frontend design, and browser automation.
 - **Fleet sync**: one command installs verified skills (every file checked against a SHA256 manifest) on every host over SSH, and never overwrites a local edit.
-- **4 Paseo plugins** that resume agents after usage limits, archive merged worker workspaces, compact idle agents before their prompt cache expires, and clean up orphaned projects. Each one only logs what it would do until you arm it.
+- **6 Paseo plugins**: five server plugins that resume agents after usage limits, archive merged worker workspaces, compact idle agents to save prompt-cache cost, clean up orphaned projects, and keep PM workers on Pi, each only logging what it would do until you arm it; plus `pi-fast-toggle`, a per-agent Fast pill for Pi agents.
 
 Each skill lives at `skills/<category>/<name>` and installs flat as `<client skills directory>/<name>`. The repository contains no credentials or private host configuration.
 
@@ -78,7 +78,7 @@ python3 skills/orchestration/personal-skills/scripts/sync.py --dry-run   # revie
 python3 skills/orchestration/personal-skills/scripts/sync.py
 ```
 
-Describe your hosts first: copy `skills/orchestration/personal-skills/fleet/example/` to `~/.config/loadout/fleet/` and edit it (see its `fleet/README.md`). Each host's `sync` list decides which steps it gets. Hosts need `node`, and remote hosts are reached over SSH.
+Describe your hosts first: copy `skills/orchestration/personal-skills/fleet/example/` to `~/.config/loadout/fleet/` and edit it (see its `fleet/README.md`). Each host's `sync` list decides which steps it gets. Hosts need `node`. Remote `ssh` hosts are reached over SSH; `paseo-relay` hosts are reached through their Paseo daemon and get provider sync only.
 
 Skills you keep private (personal, account-bound, or holding credentials) go in `skills/<name>/` inside your fleet directory. The same sync installs them next to the published ones, and they are never committed or pushed.
 
@@ -86,15 +86,16 @@ After changing a host's `plugin_root`, plugins installed from the old directory 
 
 ## Paseo plugins
 
-`plugins/<id>` holds server-only [Paseo](https://paseo.sh) plugins. Each is trusted, unsandboxed code that runs inside a daemon, so read its README before installing it.
+`plugins/<id>` holds [Paseo](https://paseo.sh) plugins. Five are server-only; `pi-fast-toggle` also adds a composer pill in the client. Each is trusted, unsandboxed code that runs inside a daemon, so read its README before installing it.
 
 | Plugin | Does | Default on a fresh install |
 |---|---|---|
-| `cache-aware-autocompact` | Sends `/compact` to idle Claude and Codex agents before their prompt cache expires | Dry-run until `armed` |
+| `cache-aware-autocompact` | Sends `/compact` to idle Claude, Codex and Pi agents before their prompt cache expires; by default it also compacts cold Claude-family agents above the context threshold (Pi GPT models are off by default) | Dry-run until `armed` |
 | `merged-worker-archiver` | Archives worker worktree workspaces whose branch is merged into its base | Dry-run until `armed` |
 | `usage-limit-auto-resume` | Resumes an agent after a usage limit or a transient provider error | Dry-run until `armed` |
 | `orphan-project-sweeper` | Deletes Paseo project rows with no active workspace and a missing root path | Dry-run until `armed` |
 | `pm-native-worker-guard` | Stops and archives native Codex or Claude Code agents created by a PM, so PM workers run on Pi | Dry-run until `armed` |
+| `pi-fast-toggle` | Adds a per-agent Fast pill to Pi agents on tier-capable models; pressing it sets the agent's service-tier label for the next turn | Inactive until its `routing.json` setting exists |
 
 Every plugin pins a Paseo version range in `paseo-plugin.json`. To install one manually, run `npm ci` and `npm run check` (or `npm run typecheck`) in its folder, confirm the daemon's `pluginsEnabled` is `true`, then run `paseo plugin install "$PWD"`. `personal-skills` stages and installs plugins across a fleet; see its `Paseo plugins` section. Plugin settings stay host-local and are never part of this repository.
 

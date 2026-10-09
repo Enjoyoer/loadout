@@ -8,6 +8,10 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - `frontend-design` is now Anthropic's official frontend-design skill, copied unmodified from the official Claude Code plugin; the skill name is unchanged.
 
 ### Added
+- `pi-fast-toggle`, a Paseo plugin with a per-agent composer pill that requests Fast on Pi agents whose model supports service tiers.
+- OPC routes Pi Workers by task class, with quota-paced effort for adjustable classes and a fixed Opus route for UI work.
+- OPC cloud lane: an owner toggle sends eligible editing lanes to one Claude Code cloud session, always Opus 5.5 at xhigh, with an optional per-host cloud profile for a second claude.ai login.
+- `cache-aware-autocompact` extends idle compaction to cold Claude-family recoveries and failed turns (`extendIdleCompaction`, default on).
 - `pm-native-worker-guard`, a dry-run-first Paseo plugin that stops and archives native Codex or Claude Code agents created by a PM and tells the PM to use the Pi provider, with an owner allowlist.
 
 ## 0.2.0 (2026-09-30)
