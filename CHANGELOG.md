@@ -17,6 +17,9 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - `cache-aware-autocompact` extends idle compaction to cold Claude-family recoveries and failed turns (`extendIdleCompaction`, default on).
 - `pm-native-worker-guard`, a dry-run-first Paseo plugin that stops and archives native Codex or Claude Code agents created by a PM and tells the PM to use the Pi provider, with an owner allowlist.
 
+### Removed
+- OPC's direct native Codex CLI Worker (`worker.mjs`) and its `task.worker` record; a task file that still carries one is refused, and managed Paseo Workers are unchanged.
+
 ## 0.2.0 (2026-09-30)
 
 ### Fixed
