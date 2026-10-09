@@ -266,12 +266,32 @@ function fleetHosts(fleet) {
   return hosts;
 }
 
+// ssh hands the remote command to sh on POSIX hosts and to cmd.exe on Windows OpenSSH, which quote differently
+// (cmd.exe keeps single quotes). So the command is the bare words `node -`, read the same by both, and the arguments
+// travel as JSON inside the program on stdin, which no shell parses and which cannot glob owner/*. The program runs
+// the host's own installed copy: the Pi skill root from its Paseo pi provider, then ~/.claude/skills, then Codex.
+export function buildFleetCommand(args) {
+  const program = `const fs = require('fs'), path = require('path'), home = require('os').homedir();
+const args = ${JSON.stringify(args)}, roots = [];
+try {
+  const command = JSON.parse(fs.readFileSync(path.join(home, '.paseo', 'config.json'), 'utf8')).agents?.providers?.pi?.command ?? [];
+  const launcher = command.find(arg => path.basename(arg) === 'launch.mjs');
+  if (launcher) roots.push(path.join(path.dirname(launcher.replace(/^~(?=$|[\\\\/])/, home)), 'agent', 'skills'));
+} catch {}
+roots.push(path.join(home, '.claude', 'skills'), path.join(process.env.CODEX_HOME || path.join(home, '.codex'), 'skills'));
+const script = roots.map(root => path.join(root, 'opc', 'scripts', 'cloud-lane.mjs')).find(file => fs.existsSync(file));
+if (!script) { console.error('OPC cloud-lane.mjs not installed under ' + roots.join(', ')); process.exit(1); }
+const done = require('child_process').spawnSync(process.execPath, [script, ...args], { stdio: 'inherit' });
+process.exitCode = done.status ?? 1;
+`;
+  return Object.freeze({ command: 'node -', input: program });
+}
+
 function pushToFleet(hosts, args) {
-  const script = '.codex/skills/opc/scripts/cloud-lane.mjs';
+  const { command, input } = buildFleetCommand(args);
   for (const host of hosts) {
-    // ssh hands the words to the remote shell; quote them so owner/* is not globbed there.
-    const ssh = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '--', host, 'node', script, ...args.map(arg => `'${arg}'`)];
-    try { console.log(`${host}: ${execFileSync('ssh', ssh, { encoding: 'utf8', timeout: 60000 }).trim()}`); }
+    const ssh = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '--', host, command];
+    try { console.log(`${host}: ${execFileSync('ssh', ssh, { encoding: 'utf8', input, timeout: 60000 }).trim()}`); }
     catch (error) {
       console.log(`${host}: FAILED ${(error.stderr || error.message).toString().trim().split('\n').at(-1)}`);
       process.exitCode = 1;
@@ -284,7 +304,12 @@ function main(argv) {
   const flag = name => { const i = rest.indexOf(name); return i === -1 ? null : rest[i + 1]; };
   // Refuse a bad host before any local change or ssh call.
   const hosts = fleetHosts(flag('--fleet'));
-  if (state === 'status') { console.log(`${readCloudToggle().replace(/^default$/, 'default (code class only)')}; repos: ${[...readCloudRepos()].join(', ') || 'none'}`); return; }
+  if (state === 'status') {
+    // Each host prints its own effective toggle: on, off, or default (code class only).
+    console.log(`${hosts.length ? 'local: ' : ''}${readCloudToggle().replace(/^default$/, 'default (code class only)')}; repos: ${[...readCloudRepos()].join(', ') || 'none'}`);
+    pushToFleet(hosts, ['status']);
+    return;
+  }
   if (state === 'allow' || state === 'disallow') {
     console.log(`local repos: ${[...setCloudRepo(rest[0], state === 'allow')].join(', ') || 'none'}`);
     pushToFleet(hosts, [state, rest[0]]);

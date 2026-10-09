@@ -29,7 +29,8 @@ function idle(task) {
   if(task.status === 'cancelled' || task.worker?.status === 'running' || task.tests?.status === 'running') throw Error('task is cancelled or busy');
   if(task.merge?.status === 'pending') throw Error('merge uncertain; reconcile live GitHub state before further work');
 }
-// Only the recorded process clears 'running'; once it is gone the run was interrupted.
+// Only the recorded process clears 'running'; once it is gone the run was interrupted. Every entry point that judges
+// whether the task is busy (test, verify, merge, planner launch, reconcile) runs this first.
 export function recoverTests(taskPath) {
   const stale=t=>t.tests?.status==='running'&&!processAlive(t.tests.pid);
   if(!stale(readTask(taskPath)))return null;
@@ -78,6 +79,7 @@ function exact(task,state,pr,head,repo) {
   }
 }
 export function verifyDelivery(taskPath,{pr,query=github}={}) {
+  recoverTests(taskPath);
   const task=readTask(taskPath),source=sourceIdentity(task), blockers=[];
   if(task.status==='cancelled')blockers.push('task cancelled');
   if(task.worker?.status==='running')blockers.push('Worker still running');
@@ -110,6 +112,7 @@ export function verifyDelivery(taskPath,{pr,query=github}={}) {
   return {status:blockers.length?'blocked':'verified',blockers,workflow,...source,publication};
 }
 export function mergeDelivery(taskPath,{pr,query=github}={}) {
+  recoverTests(taskPath);
   let task=readTask(taskPath);
   if(task.delivery!=='merge')throw Error('merge not authorized by task');
   if(task.merge?.status==='pending')return reconcileMerge(taskPath,{query});
@@ -148,7 +151,7 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).hr
     if(command==='test')result=await runTests(path,{argv:args});
     else if(command==='verify')result=verifyDelivery(path,{pr:Number(args[0])});
     else if(command==='merge')result=mergeDelivery(path,{pr:Number(args[0])});
-    else if(command==='reconcile')result=recoverTests(path)??reconcileMerge(path);
+    else if(command==='reconcile'){const tests=recoverTests(path);result=tests&&!readTask(path).merge?tests:reconcileMerge(path);}
     else throw Error('usage: delivery.mjs test <task.json> <executable> [args...] | verify <task.json> <PR> | merge <task.json> <PR> | reconcile <task.json> (interrupted tests, then merge)');
     console.log(JSON.stringify(result));
     if(['failed','blocked','pending'].includes(result.status))process.exitCode=1;

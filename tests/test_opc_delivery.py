@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -65,7 +66,7 @@ class OpcDeliveryTest(unittest.TestCase):
             try {{ updateTask({json.dumps(self.task)}, () => {{}}, {{ beforeReclaim }}); }}
             catch (error) {{ console.log(error.message); }}
         """)
-        self.assertIn("task lock busy", done.stdout, done.stderr)
+        self.assertIn("task lock contention", done.stdout, done.stderr)
         self.assertEqual(lock.read_text(), str(os.getpid()))
         self.assertEqual(sorted(p.name for p in lock.parent.iterdir() if ".lock" in p.name), [lock.name])
 
@@ -133,6 +134,21 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(task["cloud"]["fallback"]["route"], result["route"])
         self.assertEqual(task["routes"]["fix-auth-fallback"]["route"], result["route"])
         self.assertEqual(task["routes"]["fix-auth"]["route"], cloud_route)
+
+    def test_empty_lock_is_stale_only_after_ten_seconds(self):
+        lock = Path(self.task + ".lock")
+        update = f"""
+            import {{ updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            try {{ updateTask({json.dumps(self.task)}, () => {{}}); console.log('updated'); }}
+            catch (error) {{ console.log(error.message); }}
+        """
+        for age, expected in ((11, "updated"), (2, "task lock busy")):
+            with self.subTest(age=age):
+                lock.write_text("")
+                os.utime(lock, (time.time() - age,) * 2)
+                done = run("node", "--input-type=module", "-e", update)
+                self.assertIn(expected, done.stdout, done.stderr)
+                self.assertEqual(lock.exists(), age == 2)
 
 
 if __name__ == "__main__":

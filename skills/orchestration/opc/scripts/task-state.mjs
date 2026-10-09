@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, linkSync, lstatSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { validateRecordedWorkerRoute } from './agent-routing.mjs';
 
@@ -279,10 +279,23 @@ export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'H
   return { taskPath, task };
 }
 
-// beforeReclaim is a test seam that runs after a dead-pid lock is read and before it is reclaimed.
+// A lock file's owner, and whether it is stale: its pid is dead, or it is empty and over 10 s old (its writer
+// crashed between open and write). A younger empty lock is still being written. null when the file is gone.
+function lockOwner(path) {
+  try {
+    const owner = readFileSync(path, 'utf8').trim(), age = Date.now() - statSync(path).mtimeMs;
+    return { owner, age, stale: /^\d+$/.test(owner) ? !processAlive(Number(owner)) : owner === '' && age > 10000 };
+  } catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
+}
+
+function releaseOwn(path) {
+  if (lockOwner(path)?.owner === String(process.pid)) unlinkSync(path);
+}
+
+// beforeReclaim is a test seam that runs after a stale lock is read and before it is reclaimed.
 export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
   canonicalPath(taskPath);
-  const lock = `${taskPath}.lock`;
+  const lock = `${taskPath}.lock`, reclaim = `${lock}.reclaim`;
   const deadline = Date.now() + 2000;
   while (true) {
     try {
@@ -290,19 +303,31 @@ export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
       break;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      // A lock whose owner died is stale. An empty lock is still being written, so it is never stale.
-      let owner = '';
-      try { owner = readFileSync(lock, 'utf8').trim(); } catch (readError) { if (readError.code !== 'ENOENT') throw readError; }
-      if (/^\d+$/.test(owner) && !processAlive(Number(owner))) {
+      const seen = lockOwner(lock);
+      if (seen?.stale) {
         beforeReclaim?.(lock);
-        // Reclaim atomically: move the lock aside, then delete it only if it still holds the dead pid we read.
-        // A different pid means another waiter already reclaimed it and its live lock was caught, so put it back
-        // without overwriting; if a newer lock appeared meanwhile, that holder keeps it.
-        const claimed = `${lock}.${randomUUID()}.stale`;
-        try { renameSync(lock, claimed); } catch (renameError) { if (renameError.code !== 'ENOENT') throw renameError; continue; }
-        if (readFileSync(claimed, 'utf8').trim() === owner) { unlinkSync(claimed); continue; }
-        try { linkSync(claimed, lock); } catch (linkError) { if (linkError.code !== 'EEXIST') throw linkError; }
-        unlinkSync(claimed);
+        // One reclaimer at a time. While we hold the reclaim marker no one else removes the task lock, its dead or
+        // crashed owner cannot release it, and an existing lock cannot be replaced (wx), so a lock that still reads
+        // stale here is the same file we judged and unlinking it removes no live holder's lock. A different owner
+        // means the lock changed hands since we read it: fail closed and touch nothing.
+        let marked = false;
+        try { writeFileSync(reclaim, String(process.pid), { flag: 'wx', mode: 0o600 }); marked = true; }
+        catch (markError) {
+          if (markError.code !== 'EEXIST') throw markError;
+          // A reclaim takes microseconds; a marker over 10 s old whose writer is gone is left by a crash.
+          const marker = lockOwner(reclaim);
+          if (marker && marker.age > 10000 && (marker.owner === '' || !processAlive(Number(marker.owner)))) {
+            try { unlinkSync(reclaim); } catch (unlinkError) { if (unlinkError.code !== 'ENOENT') throw unlinkError; }
+          }
+        }
+        if (marked) {
+          try {
+            const now = lockOwner(lock);
+            if (now && (!now.stale || now.owner !== seen.owner)) throw Error('task lock contention; another process took the lock during reclaim');
+            if (now) unlinkSync(lock);
+          } finally { releaseOwn(reclaim); }
+          continue;
+        }
       }
       if (Date.now() >= deadline) throw Error('task lock busy; do not remove ownership-uncertain lock');
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
@@ -346,8 +371,6 @@ export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
   } finally {
     if (temporary && existsSync(temporary)) unlinkSync(temporary);
     // Release only our own lock; a lock holding another pid belongs to someone else.
-    let held = '';
-    try { held = readFileSync(lock, 'utf8').trim(); } catch (readError) { if (readError.code !== 'ENOENT') throw readError; }
-    if (held === String(process.pid)) unlinkSync(lock);
+    releaseOwn(lock);
   }
 }
