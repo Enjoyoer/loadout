@@ -10,7 +10,9 @@ This reference defines the callable host surface used only after the current use
 2. Otherwise `NativeSubagentAdapter` is available when `spawn_agent`, `followup_task`, and `wait_agent` are callable.
 3. If neither set is callable, selection returns no adapter. The caller may continue directly only when it is authorized for the scope, owns it, and no existing folder owner applies. A denied operation, inaccessible resource, or mismatched owner identity remains a blocker for the dependent action and never becomes direct-work authority.
 
-The implementation accepts `delegation_authorized=True` as an explicit caller assertion. It does not infer or grant that authority.
+Selection runs only after the caller explicitly asserts that delegation is authorized; without that assertion it returns no adapter. It does not infer or grant that authority.
+
+A selected adapter calls only its own operations listed above and refuses any other. An operation that is not callable is unavailable and is reported by name.
 
 ## Adapter behavior
 
@@ -24,4 +26,4 @@ Both adapters create the Worker in place, under the delegating PM's existing con
 
 ## Owner identity
 
-`owner_identity` records only `host_adapter`, `host_local_owner_handle`, `folder`, `memory_root`, and `resumability`. The Codex adapter may add real `project_id`, `task_id`, and `thread_id` values. The native adapter never adds Codex fields. A missing or mismatched identity stops the delegated action and returns a concrete dependent blocker. It is not permission to synthesize data, take over the folder, or perform the restricted action directly.
+`owner_identity` records only `host_adapter`, `host_local_owner_handle`, `folder`, `memory_root`, and `resumability`. `host_adapter` is `codex_named_task` or `native_subagent`. `host_local_owner_handle`, `folder`, and `memory_root` must be non-empty text, and `resumability` must be a boolean. The Codex adapter may add real `project_id`, `task_id`, and `thread_id` values, only all three together and each non-empty. The native adapter never adds Codex fields. A missing or mismatched identity stops the delegated action and returns a concrete dependent blocker. It is not permission to synthesize data, take over the folder, or perform the restricted action directly.
