@@ -20,19 +20,17 @@ export class ResumeStore {
     this.filePath = filePath;
   }
 
+  // Only a missing file reads as empty. A corrupt, unreadable or other-version file throws, so the next write cannot erase its records.
   async read(): Promise<ResumeRecord[]> {
     try {
       const raw = await readFile(this.filePath, "utf8");
       const state = JSON.parse(raw) as State;
-      if (state.version !== 2 || !Array.isArray(state.records)) return defaultState().records;
+      if (state.version !== 2 || !Array.isArray(state.records)) throw new Error("invalid state");
       return state.records;
-    } catch {
-      return defaultState().records;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaultState().records;
+      throw new Error(`cannot read ${this.filePath}: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }
-
-  async write(records: ResumeRecord[]): Promise<void> {
-    await this.exclusive(() => this.persist(records));
   }
 
   // Every read-modify-write runs inside one queue, so concurrent hook handlers

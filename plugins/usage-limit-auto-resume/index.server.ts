@@ -8,13 +8,8 @@ import { ResumeStore } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
-const SEND_ENABLED = true;
 
-function snapshot(agent: AgentSnapshot): AgentSnapshot {
-  return agent;
-}
-
-export default function contribute(server: PluginServerContext) {
+export default function contribute(server: PluginServerContext, openClient = openDaemonClient) {
   const settings = server.registerSettings(defineSettings({ id: SETTINGS_ID, scope: "host", version: SETTINGS_VERSION, schema: ConfigSchema }));
   const store = new ResumeStore();
   let timer: NodeJS.Timeout | null = null;
@@ -31,8 +26,10 @@ export default function contribute(server: PluginServerContext) {
   }
 
   async function acquire(): Promise<NonNullable<typeof client>> {
-    if (client) return client;
-    client = await openDaemonClient();
+    // The client never reconnects, so one lost transport (sleep, a stalled daemon) would fail every later sweep; open a fresh one instead.
+    if (client?.getConnectionState().status === "connected") return client;
+    await release();
+    client = await openClient();
     return client;
   }
 
@@ -45,13 +42,13 @@ export default function contribute(server: PluginServerContext) {
 
   async function fetchAgent(api: PaseoApi, agentId: string): Promise<AgentSnapshot | null> {
     const result = await api.agents.ref(agentId).refresh();
-    return result?.agent ? snapshot(result.agent as AgentSnapshot) : null;
+    return result?.agent ? result.agent as AgentSnapshot : null;
   }
 
   const isUsageLimitError = (message: string, code?: string) => failureSignature(message, code) !== null;
 
   async function processRecord(record: ResumeRecord, currentConfig: Config) {
-    if (!currentConfig.armed || !SEND_ENABLED) {
+    if (!currentConfig.armed) {
       log(`would-resume agentId=${record.agentId} reason=${record.failureSignature} recordId=${record.recordId}`);
       return;
     }
@@ -118,7 +115,7 @@ export default function contribute(server: PluginServerContext) {
   }
 
   async function reconcile(record: ResumeRecord, currentConfig: Config) {
-    if (!currentConfig.armed || !SEND_ENABLED) return;
+    if (!currentConfig.armed) return;
     if (!record.sentAt) {
       await store.update(record.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: "send-receipt-missing", updatedAt: new Date().toISOString() }));
       return;
@@ -209,7 +206,7 @@ export default function contribute(server: PluginServerContext) {
               return;
             }
             const attempts = active.attempts.length;
-            const exhausted = !active.failedOutcome && attempts >= (currentConfig.transientMaxAttempts ?? 3);
+            const exhausted = !active.failedOutcome && attempts >= currentConfig.transientMaxAttempts;
             await store.update(active.recordId, (value) => afterTransientFailure(value, assistant, user.text, sentMessageId!, agent.lastUserMessageAt!, currentConfig));
             log(`retry-${exhausted ? "exhausted" : "scheduled"} agentId=${event.agent.id} attempts=${attempts}`);
             return;
@@ -302,9 +299,9 @@ export default function contribute(server: PluginServerContext) {
     })().catch((error) => log(`permission-handler-failed reason=${JSON.stringify(errorMessage(error))}`));
   });
 
-  void config().then((currentConfig) => {
-    if (!currentConfig) return;
-    timer = setInterval(() => void sweep(), currentConfig.pollIntervalSeconds * 1000);
+  // Poll even when settings are invalid or unreadable at startup; every sweep reads them again.
+  void config().catch(() => null).then((currentConfig) => {
+    timer = setInterval(() => void sweep(), (currentConfig ?? ConfigSchema.parse({})).pollIntervalSeconds * 1000);
     timer.unref?.();
     void sweep();
   });
