@@ -70,29 +70,39 @@ def describe(result: dict) -> list:
     return lines
 
 
-def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Callable[[str], None],
-        migrate_path: bool = False) -> dict:
+def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[str], None],
+              migrate_path: bool = False) -> dict:
+    """Read the publication once per sync, so every host gets the same source commit."""
     pub = publication.Publication(publication.find_checkout(fleet_doc))
     emit(f"source_commit {pub.source[:12]}")
-    statuses = {}
-    for host in targets:
-        name = host["name"]
-        paseo = host["paseo"]
-        ids = paseo.get("stage", []) or [p["id"] for p in pub.manifest["plugins"]]
-        payload = {"dry_run": dry_run, "migrate_path": migrate_path, "plugin_root": paseo.get("plugin_root"),
-                   "stage": paseo.get("stage", []) if paseo.get("plugin_root") is not None else [],
-                   "install": paseo.get("install", []) if paseo.get("plugin_root") is not None else [],
-                   "plugins": plugin_payload(pub, ids)}
-        result, output = fleet.run_node(name, name == fleet_doc["source_host"], REMOTE_JS, payload,
-                                        TIMEOUT_SECONDS)
-        if result is None:
-            result = {"status": "failed", "error": output}
-        lines = describe(result)
-        emit(f"{name}: plugins {lines[0]}")
-        for line in lines[1:]:
-            emit(f"{name}: {line.strip()}")
-        statuses[name] = "FAILED" if result["status"] == "failed" else result["status"]
-    return statuses
+    return {"fleet_doc": fleet_doc, "dry_run": dry_run, "migrate_path": migrate_path, "pub": pub}
+
+
+def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
+    name = host["name"]
+    paseo = host["paseo"]
+    pub = state["pub"]
+    ids = paseo.get("stage", []) or [p["id"] for p in pub.manifest["plugins"]]
+    payload = {"dry_run": state["dry_run"], "migrate_path": state["migrate_path"],
+               "plugin_root": paseo.get("plugin_root"),
+               "stage": paseo.get("stage", []) if paseo.get("plugin_root") is not None else [],
+               "install": paseo.get("install", []) if paseo.get("plugin_root") is not None else [],
+               "plugins": plugin_payload(pub, ids)}
+    result, output = fleet.run_node(name, name == state["fleet_doc"]["source_host"], REMOTE_JS, payload,
+                                    TIMEOUT_SECONDS)
+    if result is None:
+        result = {"status": "failed", "error": output}
+    lines = describe(result)
+    emit(f"{name}: plugins {lines[0]}")
+    for line in lines[1:]:
+        emit(f"{name}: {line.strip()}")
+    return "FAILED" if result["status"] == "failed" else result["status"]
+
+
+def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Callable[[str], None],
+        migrate_path: bool = False) -> dict:
+    state = preflight(fleet_doc, fleet_dir, dry_run, emit, migrate_path)
+    return {host["name"]: run_host(state, host, emit) for host in targets}
 
 
 def main(argv: Optional[list] = None) -> int:

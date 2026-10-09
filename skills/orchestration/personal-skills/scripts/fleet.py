@@ -307,22 +307,22 @@ def describe_push(result: dict) -> str:
     return status + (f" ({' '.join(parts)})" if parts else "")
 
 
+def push_to(host: dict, files: dict, dry_run: bool, emit) -> str:
+    """Push the fleet files to one host other than the source host. Returns its status."""
+    if host["transport"] != "ssh":
+        emit(f"{host['name']}: fleet not needed ({host['transport']})")
+        return "not needed"
+    result = push_host(host["name"], files, dry_run)
+    emit(f"{host['name']}: fleet {describe_push(result)}")
+    return "FAILED" if result["status"] == "failed" else result["status"]
+
+
 def push(fleet: dict, directory: Path, dry_run: bool, only: Optional[str], emit) -> dict:
     """Push the fleet to every other ssh host. Returns a status per host."""
     files = fleet_files(directory)
     targets, relays = push_targets(fleet)
-    statuses = {}
-    for host in relays:
-        if only in (None, host["name"]):
-            emit(f"{host['name']}: fleet not needed ({host['transport']})")
-            statuses[host["name"]] = "not needed"
-    for host in targets:
-        if only not in (None, host["name"]):
-            continue
-        result = push_host(host["name"], files, dry_run)
-        emit(f"{host['name']}: fleet {describe_push(result)}")
-        statuses[host["name"]] = "FAILED" if result["status"] == "failed" else result["status"]
-    return statuses
+    return {host["name"]: push_to(host, files, dry_run, emit) for host in relays + targets
+            if only in (None, host["name"])}
 
 
 def main(argv: Optional[list[str]] = None) -> int:

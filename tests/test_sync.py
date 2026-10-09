@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import re
@@ -7,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills/orchestration/personal-skills/scripts"
@@ -157,6 +160,20 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(self.row(out, "devbox"), {"skills": "updated"})
         self.assertTrue((self.root / "hosts/devbox/.codex/skills").is_dir())
 
+    def test_skills_sync_builds_the_publication_once(self):
+        sys.path.insert(0, str(SCRIPTS))
+        import publication
+        import sync
+        (self.fleet / "hosts.json").write_text(json.dumps({**HOSTS, "hosts": HOSTS["hosts"][:2]}))
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(sync.signal, "signal"), \
+                mock.patch("publication.Publication", side_effect=publication.Publication) as built, \
+                contextlib.redirect_stdout(out):
+            code = sync.main(["--only", "skills"])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertEqual(self.row(out.getvalue(), "laptop"), {"skills": "updated"})
+        self.assertEqual(self.row(out.getvalue(), "desktop"), {"skills": "updated"})
+        self.assertEqual(built.call_count, 1)
 
 
 class SyncFlagsTest(unittest.TestCase):
@@ -165,14 +182,14 @@ class SyncFlagsTest(unittest.TestCase):
         import plugins_sync
         import sync
         seen = []
-        original = plugins_sync.run
-        plugins_sync.run = lambda *args: seen.append(args[-1]) or {}
+        original = plugins_sync.preflight
+        plugins_sync.preflight = lambda *args: seen.append(args[-1]) or {}
         try:
             for flag in ([], ["--migrate-path"]):
                 args = sync.argparse.Namespace(dry_run=True, migrate_path=bool(flag), update_claude=False)
-                sync.scope_runner("plugins", args)({}, None, [], print)
+                sync.preflight("plugins", {}, None, [], args, print)
         finally:
-            plugins_sync.run = original
+            plugins_sync.preflight = original
         self.assertEqual(seen, [False, True])
 
 

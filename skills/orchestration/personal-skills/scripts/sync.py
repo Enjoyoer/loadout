@@ -3,9 +3,11 @@
 
 Runs, in order: fleet validate, fleet push, skills, plugins, providers,
 client-config, honoring each host's `sync` list, then prints one table of
-host by scope. Each step runs one host at a time, so an error on one host
-fails that cell only. A conflict, or a fleet push failure, on a host stops the
-later scopes for that host only. Run with --dry-run first.
+host by scope. Each step's preflight (publication, overlay, catalog, token)
+runs once, and an error there fails that step for every host. The step then
+runs one host at a time, so an error on one host fails that cell only. A
+conflict, or a fleet push failure, on a host stops the later scopes for that
+host only. Run with --dry-run first.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import argparse
 import signal
 import sys
+import traceback
 from typing import Callable, Optional
 
 import client_config
@@ -26,36 +29,47 @@ OK = {"same", "updated", "would update", "not needed", "source", "drift", "skipp
 STOPS = {"conflict"}
 
 
-def scope_runner(step: str, args) -> Callable:
+def preflight(step: str, doc: dict, fleet_dir, targets: list, args, emit: Callable) -> Callable:
+    """Build a step's shared state once; returns the step's run for one host."""
+    if step == "fleet":
+        files = fleet.fleet_files(fleet_dir)
+        return lambda host: fleet.push_to(host, files, args.dry_run, emit)
     if step == "skills":
-        return lambda doc, path, targets, emit: skills_sync.run(doc, path, targets, args.dry_run, emit)
-    if step == "plugins":
-        return lambda doc, path, targets, emit: plugins_sync.run(doc, path, targets, args.dry_run, emit,
-                                                                  args.migrate_path)
-    if step == "providers":
-        return lambda doc, path, targets, emit: paseo_providers.run(doc, path, targets, args.dry_run, emit)
-    return lambda doc, path, targets, emit: client_config.run(doc, path, targets, args.dry_run,
-                                                              args.update_claude, emit)
+        module, state = skills_sync, skills_sync.preflight(doc, fleet_dir, args.dry_run, emit)
+    elif step == "plugins":
+        module, state = plugins_sync, plugins_sync.preflight(doc, fleet_dir, args.dry_run, emit, args.migrate_path)
+    elif step == "providers":
+        module, state = paseo_providers, paseo_providers.preflight(doc, fleet_dir, args.dry_run)
+    else:
+        module, state = client_config, client_config.preflight(doc, fleet_dir, targets, args.dry_run,
+                                                               args.update_claude)
+    return lambda host: module.run_host(state, host, emit)
 
 
-def per_host(step: str, names: list, run: Callable, emit: Callable) -> dict:
-    """Run a step for each host on its own; any error fails that host and the next one still runs."""
-    printed: set = set()
+def failed(error: Exception, prefix: str, emit: Callable) -> None:
+    """Report an error. Anything but a FleetError is a fault in this code, so its traceback follows."""
+    if isinstance(error, fleet.FleetError):
+        emit(f"{prefix}FAILED: {error}")
+        return
+    emit(f"{prefix}FAILED: {type(error).__name__}: {error}")
+    for line in "".join(traceback.format_exception(type(error), error, error.__traceback__)).rstrip().splitlines():
+        emit(line)
 
-    def once(line: str) -> None:
-        # Every call repeats the step's header line, such as source_commit; print it once.
-        if line not in printed:
-            printed.add(line)
-            emit(line)
 
+def run_step(step: str, doc: dict, fleet_dir, targets: list, args, emit: Callable) -> dict:
+    """Preflight once, then run each host on its own; any host error fails that host and the next one still runs."""
+    try:
+        run = preflight(step, doc, fleet_dir, targets, args, emit)
+    except Exception as error:  # one message, and every host of the step fails
+        failed(error, "", emit)
+        return {host["name"]: "FAILED" for host in targets}
     statuses = {}
-    for name in names:
+    for host in targets:
         try:
-            statuses.update(run(name, once))
+            statuses[host["name"]] = run(host)
         except Exception as error:  # a bad result from one host must not end the run
-            detail = error if isinstance(error, fleet.FleetError) else f"{type(error).__name__}: {error}"
-            emit(f"{name}: {step} FAILED: {detail}")
-            statuses[name] = "FAILED"
+            failed(error, f"{host['name']}: {step} ", emit)
+            statuses[host["name"]] = "FAILED"
     return statuses
 
 
@@ -112,8 +126,8 @@ def main(argv: Optional[list] = None) -> int:
             for h in hosts:
                 if h == doc["source_host"]:
                     cells[h]["fleet"] = "source"
-            statuses = per_host(step, [h for h in hosts if h != doc["source_host"]],
-                                lambda h, out: fleet.push(doc, source.path, args.dry_run, h, out), emit)
+            others = [host for host in doc["hosts"] if host["name"] in hosts and host["name"] != doc["source_host"]]
+            statuses = run_step(step, doc, source.path, others, args, emit) if others else {}
             for h, status in statuses.items():
                 cells[h]["fleet"] = status
                 if status not in OK:
@@ -131,8 +145,7 @@ def main(argv: Optional[list] = None) -> int:
         if not targets:
             emit("no hosts")
             continue
-        runner = scope_runner(step, args)
-        statuses = per_host(step, list(targets), lambda h, out: runner(doc, source.path, [targets[h]], out), emit)
+        statuses = run_step(step, doc, source.path, list(targets.values()), args, emit)
         for h, status in statuses.items():
             cells[h][step] = status
             if status in STOPS:
