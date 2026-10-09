@@ -7,7 +7,7 @@ import type { PaseoClient } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server.ts";
 import { ConfigSchema } from "../server/config.ts";
-import { buildRecord, type AgentSnapshot } from "../server/model.ts";
+import { buildRecord, type AgentSnapshot, type ResumeRecord } from "../server/model.ts";
 import { ResumeStore } from "../server/store.ts";
 
 const agent: AgentSnapshot = {
@@ -172,14 +172,16 @@ it("keeps the turn from a claim when the rollback commits before the turn-start 
   const logs: string[] = [];
   console.log = (line: string) => { logs.push(line); };
   mock.timers.enable({ apis: ["setInterval"] });
-  // Hold the handler's store read, and so its write, until the rollback has committed.
+  // Hold the store write the handler makes while it is dispatched until the rollback has committed.
   let releaseHandler!: () => void;
   const handlerGate = new Promise<void>((resolve) => { releaseHandler = resolve; });
-  let handlerRead: Promise<unknown> | null = null;
-  const activeForAgent = ResumeStore.prototype.activeForAgent;
-  mock.method(ResumeStore.prototype, "activeForAgent", function (this: ResumeStore, agentId: string) {
-    handlerRead = handlerGate.then(() => activeForAgent.call(this, agentId));
-    return handlerRead;
+  let handlerWrite: Promise<unknown> | null = null;
+  let holdingHandler = false;
+  const update = ResumeStore.prototype.update;
+  mock.method(ResumeStore.prototype, "update", function (this: ResumeStore, ...args: Parameters<ResumeStore["update"]>) {
+    if (!holdingHandler) return update.apply(this, args);
+    handlerWrite = handlerGate.then(() => update.apply(this, args));
+    return handlerWrite;
   });
   try {
     const config = ConfigSchema.parse({ armed: true, pollIntervalSeconds: 5 });
@@ -198,7 +200,9 @@ it("keeps the turn from a claim when the rollback commits before the turn-start 
         send: async () => {
           sends += 1;
           claimedDeadline = (await store.read())[0]!.verificationDeadlineAt;
+          holdingHandler = true;
           handlers.get("agent.turn_started")!({ turnId: "turn-2", agent: { id: agent.id } });
+          holdingHandler = false;
           throw new Error("Transport not connected (status: disconnected)");
         },
       }) },
@@ -210,8 +214,91 @@ it("keeps the turn from a claim when the rollback commits before the turn-start 
     const cleanup = contribute(server, open);
     await until(() => logs.some((line) => line.includes("resume-uncertain") || line.includes("send-deferred")));
     assert.notEqual((await store.read())[0]?.state, "resuming", "rollback committed while the handler is still held");
+    assert.ok(handlerWrite, "the handler's write was held");
     releaseHandler();
-    await handlerRead;
+    await handlerWrite;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const [stored] = await store.read();
+    assert.equal(stored?.state, "uncertain");
+    assert.equal(stored?.resumeTurnId, "turn-2");
+    assert.ok(claimedDeadline);
+    assert.equal(stored?.verificationDeadlineAt, claimedDeadline);
+    assert.equal(stored?.attempts.length, 1);
+    // The next sweep must not send again.
+    const reads = settingsReads;
+    mock.timers.tick(5000);
+    assert.ok(settingsReads > reads, "next sweep ran");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(sends, 1);
+    (cleanup as () => void)();
+  } finally {
+    mock.restoreAll();
+    mock.timers.reset();
+    console.log = originalLog;
+    if (previousHome === undefined) delete process.env.PASEO_HOME;
+    else process.env.PASEO_HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+it("keeps the turn from a claim when it starts while the rollback write is still being persisted", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-rollback-write-"));
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  const originalLog = console.log;
+  const logs: string[] = [];
+  console.log = (line: string) => { logs.push(line); };
+  mock.timers.enable({ apis: ["setInterval"] });
+  try {
+    const config = ConfigSchema.parse({ armed: true, pollIntervalSeconds: 5 });
+    const record = buildRecord(agent, "out of credits", undefined, config, Date.now() - 6 * 3600_000, "turn-1")!;
+    const store = new ResumeStore();
+    await store.upsert(record);
+    const handlers = new Map<string, (event: unknown) => void>();
+    let sends = 0;
+    let settingsReads = 0;
+    let claimedDeadline: string | null = null;
+    let sendFailed = false;
+    let holdingRollback = false;
+    let handlerQueued!: () => void;
+    const handlerWrite = new Promise<void>((resolve) => { handlerQueued = resolve; });
+    const update = ResumeStore.prototype.update;
+    mock.method(ResumeStore.prototype, "update", function (this: ResumeStore, ...args: Parameters<ResumeStore["update"]>) {
+      // The sweep waits on the held rollback, so a write requested meanwhile is the handler's.
+      if (holdingRollback) handlerQueued();
+      return update.apply(this, args);
+    });
+    type Persisting = { persist(records: ResumeRecord[]): Promise<void> };
+    const persist = (ResumeStore.prototype as unknown as Persisting).persist;
+    mock.method(ResumeStore.prototype as unknown as Persisting, "persist", async function (this: Persisting, records: ResumeRecord[]) {
+      // The rollback updater has already produced parked; deliver turn_started before that write lands.
+      if (sendFailed && !holdingRollback && records.find((value) => value.recordId === record.recordId)?.state === "parked") {
+        holdingRollback = true;
+        handlers.get("agent.turn_started")!({ turnId: "turn-2", agent: { id: agent.id } });
+        await Promise.race([handlerWrite, new Promise((resolve) => setTimeout(resolve, 1000))]);
+      }
+      return persist.call(this, records);
+    });
+    const open = async () => ({
+      getConnectionState: () => ({ status: "connected" }),
+      close: async () => undefined,
+      agents: { ref: () => ({
+        refresh: async () => ({ agent }),
+        send: async () => {
+          sends += 1;
+          claimedDeadline = (await store.read())[0]!.verificationDeadlineAt;
+          sendFailed = true;
+          throw new Error("Transport not connected (status: disconnected)");
+        },
+      }) },
+    } as unknown as PaseoClient);
+    const server = {
+      registerSettings: () => ({ read: async () => { settingsReads += 1; return { status: "ready", revision: "r1", values: config }; } }),
+      on: (name: string, handler: (event: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
+    } as unknown as PluginServerContext;
+    const cleanup = contribute(server, open);
+    await until(() => logs.some((line) => line.includes("resume-uncertain") || line.includes("send-deferred")));
+    assert.ok(holdingRollback, "turn_started arrived while the rollback write was held");
     await new Promise((resolve) => setTimeout(resolve, 20));
     const [stored] = await store.read();
     assert.equal(stored?.state, "uncertain");

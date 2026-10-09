@@ -3,7 +3,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { PaseoApi } from "@getpaseo/client";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
 import { openDaemonClient } from "./server/daemon.ts";
-import { afterTransientFailure, buildFailedTransientRecord, buildRecord, buildTransientRecord, failureSignature, lastUserMessage, continuationPrompt, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, releaseClaim, shouldResume, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeRecord, type ResumeState, type TurnObservation } from "./server/model.ts";
+import { afterTransientFailure, applyClaimTurn, buildFailedTransientRecord, buildRecord, buildTransientRecord, failureSignature, lastUserMessage, continuationPrompt, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, releaseClaim, shouldResume, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
@@ -19,7 +19,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
   let client: Awaited<ReturnType<typeof openDaemonClient>> | null = null;
   let stateErrorLogged = false;
   // One entry per agent with a send in flight; see processRecord.
-  const inFlight = new Map<string, TurnObservation>();
+  const inFlight = new Map<string, InFlightClaim>();
 
   // An unreadable state file fails closed until the owner fixes or moves it; say so once, not on every poll or event.
   function failed(action: string, error: unknown) {
@@ -106,17 +106,25 @@ export default function contribute(server: PluginServerContext, openClient = ope
     const stableMessageId = messageId(record);
     const prompt = record.kind === "transient" ? record.retryPrompt! : continuationPrompt(record);
     const sentAt = new Date().toISOString();
-    // The turn_started handler fills this in before any await of its own, so the outcome below sees a turn that started
-    // during the send even when the handler's store write lands after it.
-    const observed: TurnObservation = { turnId: null, startedAt: null };
-    inFlight.set(record.agentId, observed);
+    // The turn_started handler fills in the turn before any await of its own, so the outcome below sees a turn that
+    // started during the send even when the handler's store write lands after it.
+    const claim: InFlightClaim = {
+      recordId: record.recordId,
+      attempt: { at: sentAt, messageId: stableMessageId, result: "unknown" },
+      sentAt,
+      verificationDeadlineAt: new Date(Date.now() + currentConfig.verificationTimeoutSeconds * 1000).toISOString(),
+      released: false,
+      turnId: null,
+      startedAt: null,
+    };
+    inFlight.set(record.agentId, claim);
     try {
       const claimed = await store.update(record.recordId, (value) => ({
         ...value,
         state: "resuming",
         sentAt,
-        verificationDeadlineAt: new Date(Date.now() + currentConfig.verificationTimeoutSeconds * 1000).toISOString(),
-        attempts: [...value.attempts, { at: sentAt, messageId: stableMessageId, result: "unknown" }],
+        verificationDeadlineAt: claim.verificationDeadlineAt,
+        attempts: [...value.attempts, claim.attempt],
         updatedAt: sentAt,
       }));
       if (!claimed) return;
@@ -125,8 +133,8 @@ export default function contribute(server: PluginServerContext, openClient = ope
         await store.update(record.recordId, (value) => ({
           ...value,
           state: "verifying",
-          resumeTurnId: value.resumeTurnId ?? observed.turnId,
-          resumeStartedAt: value.resumeStartedAt ?? observed.startedAt,
+          resumeTurnId: value.resumeTurnId ?? claim.turnId,
+          resumeStartedAt: value.resumeStartedAt ?? claim.startedAt,
           attempts: value.attempts.map((attempt) => attempt.messageId === stableMessageId ? { ...attempt, result: "sent" } : attempt),
           updatedAt: new Date().toISOString(),
         }));
@@ -134,8 +142,14 @@ export default function contribute(server: PluginServerContext, openClient = ope
       } catch (error) {
         if (isTransportNotConnected(error)) {
           // Undo the claim and stay parked; the next sweep opens a fresh client. A turn that started meanwhile turns it uncertain instead.
-          const released = await store.update(record.recordId, (value) => releaseClaim(value, record, claimed, observed));
-          if (released?.state === "uncertain") log(`resume-uncertain agentId=${record.agentId} recordId=${record.recordId} reason=${released.terminalReason}`);
+          let settled = await store.update(record.recordId, (value) => {
+            const next = releaseClaim(value, record, claimed, claim);
+            if (value.state === "resuming" && next.state === record.state) claim.released = true;
+            return next;
+          });
+          // A turn that started while the rollback was being written was not visible to it; settle it before the claim ends.
+          if (settled?.state === record.state && claim.turnId) settled = await store.update(record.recordId, (value) => applyClaimTurn(value, claim));
+          if (settled?.state === "uncertain") log(`resume-uncertain agentId=${record.agentId} recordId=${record.recordId} reason=${settled.terminalReason}`);
           else log(`send-deferred agentId=${record.agentId} recordId=${record.recordId} reason=${JSON.stringify(errorMessage(error))}`);
           return;
         }
@@ -143,7 +157,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
         log(`resume-uncertain agentId=${record.agentId} reason=${JSON.stringify(errorMessage(error))}`);
       }
     } finally {
-      if (inFlight.get(record.agentId) === observed) inFlight.delete(record.agentId);
+      if (inFlight.get(record.agentId) === claim) inFlight.delete(record.agentId);
     }
   }
 
@@ -214,7 +228,14 @@ export default function contribute(server: PluginServerContext, openClient = ope
       pending.turnId = turnId;
       pending.startedAt = new Date().toISOString();
     }
+    const claim = pending?.turnId === turnId ? pending : null;
     void (async () => {
+      if (claim) {
+        // Claim-aware: attach the turn while the claim stands, or bring the claim back if its rollback already landed.
+        const next = await store.update(claim.recordId, (value) => applyClaimTurn(value, claim));
+        if (next?.resumeTurnId === turnId) log(`resume-turn-started agentId=${event.agent.id} turnId=${turnId}`);
+        return;
+      }
       const active = await store.activeForAgent(event.agent.id);
       if (!active || !["resuming", "verifying"].includes(active.state) || active.resumeTurnId) return;
       // Check again inside the update: a rolled-back claim must not pick up a turn identity.
