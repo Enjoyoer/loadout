@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "94587b55ab49a54f0c23ee92fed2d665a59da8b2",
+  "source_commit": "80f172febddf6db643d815785b49f5d6c98c7f00",
   "skill_count": 22,
   "file_count": 124,
   "files": [
@@ -875,7 +875,7 @@
     }
   ],
   "plugin_count": 6,
-  "plugin_file_count": 101,
+  "plugin_file_count": 102,
   "plugins": [
     {
       "id": "cache-aware-autocompact",
@@ -1434,14 +1434,14 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 6570,
-      "sha256": "efccc79318c054aa4f07bf0b34396bc345486e2f611e790290a7456f16f57938"
+      "bytes": 6850,
+      "sha256": "9cd5ca4f4555ae65152b0f7b46741903638d990f919938dd64d828b3c26e34ab"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 18260,
-      "sha256": "c81e9efe8a50afd866401486f99c4da2b4ebecd173cb228b1a71799ef9641384"
+      "bytes": 18448,
+      "sha256": "b434f138f98f46b1035e9aafb869c3ede156f2d860b277bb9b6dc3933dff8d80"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
@@ -1482,14 +1482,20 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/store.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 3119,
-      "sha256": "4fc5c443712993e446d94fab33caf4c1f9ce70d5e7c53e43f80a3b3e1a9daa47"
+      "bytes": 3321,
+      "sha256": "72709d890a37ac26f55bee114601152b653468e8834fa91205ce655f2fe7dae2"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/daemon.test.ts",
       "plugin": "usage-limit-auto-resume",
       "bytes": 2279,
       "sha256": "c8cb86bad8c4680858d1079bf53f7a48d5bd2185b39ccdb005f14d8be34a5416"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/test/index.test.ts",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 3355,
+      "sha256": "5d975481cf6dd5b991bb9726cae95325ca419f8cad1b9086723fd98e9c37a85f"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/model.test.ts",
@@ -1500,8 +1506,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/test/store.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 2785,
-      "sha256": "d6058806bb0a77fce81480a95bcc61fd767896cd818798b21d07ad10e39b63e6"
+      "bytes": 3222,
+      "sha256": "5ce836f0c26ade893d3a9dcb9c87521d99375771406381aeb98db5fa048dc00d"
     },
     {
       "path": "plugins/usage-limit-auto-resume/tsconfig.json",
