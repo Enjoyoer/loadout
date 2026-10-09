@@ -29,6 +29,10 @@ SYNC_RECORD = ".loadout-sync.json"
 SKIP_NAMES = {SYNC_RECORD, ".DS_Store"}
 # Remote programs travel gzip+base64 so they survive cmd.exe and terminal quoting.
 BOOT = "eval(require('zlib').gunzipSync(Buffer.from(process.argv[1],'base64')).toString())"
+# Keepalives end a session whose host went to sleep or dropped off within about a minute.
+SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=15",
+               "-o", "ServerAliveCountMax=4"]
+PUSH_TIMEOUT_SECONDS = 180
 RESULT = re.compile(r"@@LOADOUT-RESULT (.*?) @@END", re.S)
 SCHEMA_VERSIONS = {1, 2}
 TRANSPORTS = {"ssh", "paseo-relay"}
@@ -270,8 +274,7 @@ def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Opti
         # Inside an agent session, keep daemon commands off the agent's own identity.
         env = {k: v for k, v in os.environ.items() if k not in ("PASEO_AGENT_ID", "PASEO_AGENT_CWD")}
     else:
-        command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", name,
-                   f'node -e "{BOOT}" -- {pack(program.read_bytes())}']
+        command = ["ssh", *SSH_OPTIONS, name, f'node -e "{BOOT}" -- {pack(program.read_bytes())}']
     try:
         done = subprocess.run(command, input=body, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
@@ -284,7 +287,8 @@ def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Opti
 
 
 def push_host(name: str, files: dict, dry_run: bool) -> dict:
-    result, error = run_node(name, False, PUSH_JS, {"dry_run": dry_run, "target": None, "files": files})
+    result, error = run_node(name, False, PUSH_JS, {"dry_run": dry_run, "target": None, "files": files},
+                             PUSH_TIMEOUT_SECONDS)
     return result if result is not None else {"status": "failed", "error": error}
 
 

@@ -142,6 +142,21 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(self.row(out, "devbox"), {"skills": "updated", "client-config": "FAILED"})
         self.assertIn("FAILED: cannot read", out)
 
+    def test_non_fleet_error_on_one_host_fails_that_host_only(self):
+        # desktop answers with a cut-off result, so parsing it raises a JSON error, not a FleetError.
+        bin_dir = self.root / "bin"
+        (bin_dir / "ssh").rename(bin_dir / "fake-ssh")
+        (bin_dir / "ssh").write_text('#!/bin/sh\ncase " $* " in *" desktop "*) echo "@@LOADOUT-RESULT {cut @@END"; exit 0 ;; esac\n'
+                                     'exec "$(dirname "$0")/fake-ssh" "$@"\n')
+        (bin_dir / "ssh").chmod(0o755)
+        assert_fakes_run(self.env, ("ssh",))
+        code, out = self.sync("--only", "skills")
+        self.assertEqual(code, 1, out)
+        self.assertIn("desktop: skills FAILED: JSONDecodeError:", out)
+        self.assertEqual(self.row(out, "desktop"), {"skills": "FAILED"})
+        self.assertEqual(self.row(out, "devbox"), {"skills": "updated"})
+        self.assertTrue((self.root / "hosts/devbox/.codex/skills").is_dir())
+
 
 
 class SyncFlagsTest(unittest.TestCase):

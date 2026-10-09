@@ -3,8 +3,9 @@
 
 Runs, in order: fleet validate, fleet push, skills, plugins, providers,
 client-config, honoring each host's `sync` list, then prints one table of
-host by scope. A conflict, or a fleet push failure, on a host stops the later
-scopes for that host only. Run with --dry-run first.
+host by scope. Each step runs one host at a time, so an error on one host
+fails that cell only. A conflict, or a fleet push failure, on a host stops the
+later scopes for that host only. Run with --dry-run first.
 """
 
 from __future__ import annotations
@@ -35,6 +36,27 @@ def scope_runner(step: str, args) -> Callable:
         return lambda doc, path, targets, emit: paseo_providers.run(doc, path, targets, args.dry_run, emit)
     return lambda doc, path, targets, emit: client_config.run(doc, path, targets, args.dry_run,
                                                               args.update_claude, emit)
+
+
+def per_host(step: str, names: list, run: Callable, emit: Callable) -> dict:
+    """Run a step for each host on its own; any error fails that host and the next one still runs."""
+    printed: set = set()
+
+    def once(line: str) -> None:
+        # Every call repeats the step's header line, such as source_commit; print it once.
+        if line not in printed:
+            printed.add(line)
+            emit(line)
+
+    statuses = {}
+    for name in names:
+        try:
+            statuses.update(run(name, once))
+        except Exception as error:  # a bad result from one host must not end the run
+            detail = error if isinstance(error, fleet.FleetError) else f"{type(error).__name__}: {error}"
+            emit(f"{name}: {step} FAILED: {detail}")
+            statuses[name] = "FAILED"
+    return statuses
 
 
 def table(hosts: list, steps: list, cells: dict) -> str:
@@ -90,29 +112,27 @@ def main(argv: Optional[list] = None) -> int:
             for h in hosts:
                 if h == doc["source_host"]:
                     cells[h]["fleet"] = "source"
-            statuses = fleet.push(doc, source.path, args.dry_run, args.host, emit)
+            statuses = per_host(step, [h for h in hosts if h != doc["source_host"]],
+                                lambda h, out: fleet.push(doc, source.path, args.dry_run, h, out), emit)
             for h, status in statuses.items():
                 cells[h]["fleet"] = status
                 if status not in OK:
                     stopped.add(h)
             continue
         scoped = {host["name"] for host in fleet.hosts_for(doc, step)}
-        targets = []
+        targets = {}
         for h in hosts:
             if h not in scoped:
                 cells[h][step] = "skipped"
             elif h in stopped:
                 cells[h][step] = "stopped"
             else:
-                targets.append(next(host for host in doc["hosts"] if host["name"] == h))
+                targets[h] = next(host for host in doc["hosts"] if host["name"] == h)
         if not targets:
             emit("no hosts")
             continue
-        try:
-            statuses = scope_runner(step, args)(doc, source.path, targets, emit)
-        except fleet.FleetError as error:
-            emit(f"FAILED: {error}")
-            statuses = {host["name"]: "FAILED" for host in targets}
+        runner = scope_runner(step, args)
+        statuses = per_host(step, list(targets), lambda h, out: runner(doc, source.path, [targets[h]], out), emit)
         for h, status in statuses.items():
             cells[h][step] = status
             if status in STOPS:

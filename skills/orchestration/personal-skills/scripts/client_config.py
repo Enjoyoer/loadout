@@ -19,6 +19,9 @@ from typing import Callable, Optional
 import fleet
 
 MERGE_JS = Path(__file__).resolve().parent / "client_config_merge.js"
+TIMEOUT_SECONDS = 300
+# --update-claude lets the host run `claude update` for up to 10 minutes.
+UPDATE_TIMEOUT_SECONDS = 900
 CATALOG_KEYS = {"token_file", "codex", "claude", "roles", "hosts"}
 CODEX_KEYS = {"top", "sections", "reportOnly"}
 CLAUDE_KEYS = {"minVersion", "settings", "env", "token_env"}
@@ -166,7 +169,8 @@ def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, update_c
         payload = {"codex": wanted["codex"], "claude": wanted["claude"],
                    "token": token if wanted["claude"]["token_env"] else None,
                    "stamp": stamp, "dry_run": dry_run, "update_claude": update_claude}
-        result, output = fleet.run_node(name, name == fleet_doc["source_host"], MERGE_JS, payload)
+        result, output = fleet.run_node(name, name == fleet_doc["source_host"], MERGE_JS, payload,
+                                        UPDATE_TIMEOUT_SECONDS if update_claude else TIMEOUT_SECONDS)
         if result is None or result.get("error"):
             error = output if result is None else result["error"]
             if token:

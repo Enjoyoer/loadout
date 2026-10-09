@@ -382,8 +382,12 @@ class ProviderSyncTest(unittest.TestCase):
     def test_relay_cleanup_failure_is_reported(self):
         (self.root / "fail-archive").touch()
         code, out = self.run_sync("--host", "tablet")
-        self.assertEqual(code, 1, out)
-        self.assertIn("relay workspace cleanup failed: ws-1", out)
+        # The merge ran, so its result stands, the leftover is a warning after it, and the reload still runs.
+        self.assertEqual(code, 0, out)
+        lines = out.splitlines()
+        write = next(i for i, line in enumerate(lines) if "tablet (paseo-relay): write CHANGED" in line)
+        self.assertIn("tablet (paseo-relay): cleanup warning: relay workspace cleanup failed: ws-1", lines[write + 1])
+        self.assertIn("tablet (paseo-relay): reload ok", lines[write + 2])
 
     def test_host_selection(self):
         code, out = self.run_sync("--host", "nowhere")

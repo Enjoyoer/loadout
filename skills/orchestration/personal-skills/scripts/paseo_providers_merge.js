@@ -15,7 +15,7 @@ function labelsMatch(providers) {
   });
 }
 try {
-  const cfgPath = p.config_path || path.join(os.homedir(), ".paseo", "config.json");
+  const cfgPath = p.config_path || path.join(process.env.PASEO_HOME || path.join(os.homedir(), ".paseo"), "config.json");
   const raw = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, "utf8") : "{}";
   const expand = value => value.replace(/^~(?=[/\\]|$)/, os.homedir())
     .replace(/%([^%]+)%/g, (_, key) => process.env[key] || (() => { throw Error('missing host env ' + key); })());

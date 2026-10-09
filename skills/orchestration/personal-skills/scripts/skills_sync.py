@@ -23,6 +23,7 @@ import fleet
 import publication
 
 REMOTE_JS = Path(__file__).resolve().parent / "skills_sync_remote.js"
+TIMEOUT_SECONDS = 300
 MAX_LISTED = 8
 OVERLAY = "skills"
 OVERLAY_HISTORY = ".loadout-overlay.json"
@@ -148,7 +149,8 @@ def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Ca
         files.update({dest: f for dest, f in overlay.items()
                       if dest.split("/")[0] not in exclude and (only is None or dest.split("/")[0] in only)})
         payload = {"dry_run": dry_run, "clients": host.get("clients", []), "files": files, "global": glob}
-        result, output = fleet.run_node(name, name == fleet_doc["source_host"], REMOTE_JS, payload)
+        result, output = fleet.run_node(name, name == fleet_doc["source_host"], REMOTE_JS, payload,
+                                        TIMEOUT_SECONDS)
         if result is None:
             result = {"status": "failed", "error": output}
         note = f"; excluded {', '.join(sorted(exclude))}" if exclude else ""

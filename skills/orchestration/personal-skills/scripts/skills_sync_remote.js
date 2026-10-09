@@ -252,7 +252,8 @@ try {
   if (Object.entries(records).some(([f, h]) => record[f] !== h)) {
     Object.assign(record, records);
     fs.mkdirSync(recordDir, { recursive: true });
-    fs.writeFileSync(recordPath, JSON.stringify(record, null, 2), { mode: 0o600 });
+    fs.writeFileSync(recordPath + ".loadout-tmp", JSON.stringify(record, null, 2), { mode: 0o600 });
+    fs.renameSync(recordPath + ".loadout-tmp", recordPath);
   }
   done(0);
 } catch (e) {

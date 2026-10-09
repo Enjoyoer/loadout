@@ -54,7 +54,12 @@ function paseo(args) {
   if (process.platform === "win32" && fs.existsSync(WINDOWS_PASEO)) bins.push(`"${WINDOWS_PASEO}"`);
   let last;
   for (const bin of bins) {
-    try { return sh(bin + " " + args, undefined, 120000); } catch (e) { last = e; }
+    try { return sh(bin + " " + args, undefined, 120000); } catch (e) {
+      last = e;
+      // Fall back only when the shell found no such command (cmd.exe 9009, sh 127): a real failure
+      // of a non-idempotent command such as `plugin remove` must not run twice.
+      if (e.status !== 9009 && e.status !== 127) break;
+    }
   }
   throw new Error(("paseo " + args + ": " + String(last.stderr || last.message)).trim().slice(0, 300));
 }
