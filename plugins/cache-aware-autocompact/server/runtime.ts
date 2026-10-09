@@ -148,7 +148,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         return;
       }
       const attempts = (await store.read()).filter(entry => entry.agentId === agent.id &&
-        ["compact-requested", "compaction-failed", "send-failed"].includes(entry.outcome));
+        ["compact-requested", "compaction-failed", "compaction-unconfirmed", "send-failed"].includes(entry.outcome));
       const lastAttempt = attempts.at(-1);
       const latestUser = baseline.entries.findLast(entry => entry.item.type === "user_message");
       const realUserAfterAttempt = lastAttempt && latestUser?.item.type === "user_message" &&
@@ -197,9 +197,19 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         }
         const afterSeq = baseline.entries.at(-1)?.seqEnd ?? -1;
         if (stopped || generation !== (generations.get(checkpoint.agentId) ?? 0)) return;
+        // One window covers the settled-turn wait and the compaction row, both measured from the send.
+        const windowMs = config.compactionWindowMinutes * 60_000;
+        const sentAt = Date.now();
         await handle.send(COMMAND);
-        await handle.waitForFinish(300_000);
-        await compactionResult(handle.timeline, afterSeq, lifetime.signal);
+        await handle.waitForFinish(windowMs);
+        const observed = await compactionResult(handle.timeline, afterSeq, lifetime.signal, Math.max(0, windowMs - (Date.now() - sentAt)));
+        if (observed === "unconfirmed") {
+          // No completed row and no error by the end of the window. Backed off like a failure, but not reported as one.
+          const reason = `no completed compaction row within ${config.compactionWindowMinutes}m and no error`;
+          await record(checkpoint, "compaction-unconfirmed", reason, config, true, attemptedAt);
+          log("compaction-unconfirmed", { agentId: checkpoint.agentId, reason, strictnessTier: tier });
+          return;
+        }
         await record(checkpoint, "compacted", decision.reason, config, true, attemptedAt);
         void metrics.append({ event: "compacted", agentId: checkpoint.agentId, provider: agent.provider, model: agent.model ?? null, usage: agent.lastUsage ?? null });
         log("compacted", { agentId: checkpoint.agentId, reason: decision.reason, command: COMMAND, strictnessTier: tier });

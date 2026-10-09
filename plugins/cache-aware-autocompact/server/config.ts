@@ -12,6 +12,8 @@ export const ConfigSchema = z.object({
   thresholdTokens: z.number().int().min(1).max(10_000_000).default(100_000),
   /** Context size at which boundary checks favor recall over precision. */
   softThreshold: z.number().int().min(1).max(10_000_000).default(300_000),
+  /** How long after the /compact send to wait for the turn to settle and a completed compaction row. */
+  compactionWindowMinutes: z.number().min(1).max(120).default(20),
   /** Keep only a bounded number of durable checkpoint decisions. */
   maxStateEntries: z.number().int().min(100).max(10_000).default(2_000),
 }).strict();
