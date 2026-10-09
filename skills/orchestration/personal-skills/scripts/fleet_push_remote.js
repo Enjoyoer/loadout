@@ -1,5 +1,5 @@
 // Replace this host's fleet directory with the source host's copy.
-// Shipped gzip+base64 by fleet.py push; stdin is the gzip+base64 JSON payload
+// Shipped by fleet.py push through fleet.run_node in a digest-checked stdin envelope; process.argv[2] is the gzip+base64 JSON payload
 // {dry_run, target, files: {relative path: {sha256, data (base64)}}}.
 // A file may change only when it matches the last synced version recorded in
 // .loadout-sync.json; anything else is a hand edit and stops the host.
@@ -35,7 +35,7 @@ function walk(dir, rel, out) {
   return out;
 }
 try {
-  const p = JSON.parse(zlib.gunzipSync(Buffer.from(fs.readFileSync(0, "utf8").trim(), "base64")).toString());
+  const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toString());
   const target = p.target || defaultTarget();
   result.target = target;
   const desired = {};

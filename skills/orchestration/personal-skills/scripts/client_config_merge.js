@@ -1,5 +1,5 @@
 // Merge managed Codex and Claude Code settings into this host's client config.
-// Shipped gzip+base64 by client_config.py; stdin is the gzip+base64 JSON payload
+// Shipped by client_config.py through fleet.run_node in a digest-checked stdin envelope; process.argv[2] is the gzip+base64 JSON payload
 // {codex: {top, sections, reportOnly}, claude: {settings, env, token_env, minVersion},
 //  token, stamp, dry_run, update_claude}. The token arrives only on stdin and is
 // never printed. Only managed keys are written; everything else stays host-local.
@@ -101,7 +101,7 @@ function claudeVersion() {
 }
 
 try {
-  const p = JSON.parse(zlib.gunzipSync(Buffer.from(fs.readFileSync(0, "utf8").trim(), "base64")).toString());
+  const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toString());
   checkNames(p.codex);
 
   const codexFile = path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "config.toml");

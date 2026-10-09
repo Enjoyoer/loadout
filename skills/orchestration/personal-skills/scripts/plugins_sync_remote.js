@@ -1,5 +1,5 @@
 // Stage, install, and confirm verified Loadout Paseo plugins on this host.
-// Shipped gzip+base64 by plugins_sync.py; stdin is the gzip+base64 JSON payload
+// Shipped by plugins_sync.py through fleet.run_node in a digest-checked stdin envelope; process.argv[2] is the gzip+base64 JSON payload
 // {dry_run, plugin_root, stage, install, migrate_path, plugins: {id: {pin, files: {rel: {sha256, data, prior}}, removed}}};
 // removed maps paths no longer published to their published hashes.
 // Never writes plugin settings, plugin state, or pluginsEnabled, and never arms a plugin. The one
@@ -116,7 +116,7 @@ function migrate(id, dir, from) {
 }
 
 try {
-  const p = JSON.parse(zlib.gunzipSync(Buffer.from(fs.readFileSync(0, "utf8").trim(), "base64")).toString());
+  const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toString());
   const data = {};
   for (const id of Object.keys(p.plugins)) if (!/^[a-z0-9-]+$/.test(id)) throw new Error("invalid plugin id from source: " + id);
   for (const [id, plugin] of Object.entries(p.plugins))

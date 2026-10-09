@@ -1,5 +1,5 @@
 // Install verified Loadout skill files and global instructions on this host.
-// Shipped gzip+base64 by skills_sync.py; stdin is the gzip+base64 JSON payload
+// Shipped by skills_sync.py through fleet.run_node in a digest-checked stdin envelope; process.argv[2] is the gzip+base64 JSON payload
 // {dry_run, clients, files: {"<skill>/<file>": {sha256, data, prior}},
 //  global: {sha256, data, targets: {client: path}} | null}.
 // Preflight first, write second: a file may be replaced only when it matches the
@@ -158,7 +158,7 @@ function plan(file, root, want, allowed) {
 }
 
 try {
-  const p = JSON.parse(zlib.gunzipSync(Buffer.from(fs.readFileSync(0, "utf8").trim(), "base64")).toString());
+  const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toString());
   // A configured Loadout Pi receives the same selected, verified skill blobs.
   // Discover its home from the host's provider command, not a second fleet list.
   const cfgPath = path.join(home, '.paseo', 'config.json');

@@ -30,7 +30,9 @@ from typing import Callable, Optional
 import fleet
 
 MERGE_JS = Path(__file__).resolve().parent / "paseo_providers_merge.js"
-BOOT = fleet.BOOT
+# Short relay commands carry the program and payload on argv (see run_in_terminal); everything
+# else here uses the stdin envelope from staged_payload.
+BOOT = "eval(require('zlib').gunzipSync(Buffer.from(process.argv[1],'base64')).toString())"
 pack = fleet.pack
 parse_result = fleet.parse_result
 CONFIG_KEYS = {"providers", "env", "hosts", "pi"}

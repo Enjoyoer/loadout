@@ -190,9 +190,8 @@ class FleetPushTest(unittest.TestCase):
     def test_transfer_hash_is_checked_before_writing(self):
         files = fleet.fleet_files(self.source)
         files["hosts.json"]["sha256"] = "0" * 64
-        body = fleet.pack(json.dumps({"dry_run": False, "target": str(self.target("desktop")), "files": files}).encode())
-        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(fleet.bundle(fleet.PUSH_JS))],
-                              input=body, capture_output=True, text=True)
+        raw, digest = fleet.envelope(fleet.PUSH_JS, {"dry_run": False, "target": str(self.target("desktop")), "files": files})
+        done = subprocess.run(["node", "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True)
         result = fleet.parse_result(done.stdout)
         self.assertEqual(result["status"], "failed")
         self.assertIn("hash mismatch in transfer: hosts.json", result["error"])
@@ -201,9 +200,8 @@ class FleetPushTest(unittest.TestCase):
     def test_backslash_path_is_refused_before_writing(self):
         files = fleet.fleet_files(self.source)
         files["..\\escape.json"] = files["hosts.json"]
-        body = fleet.pack(json.dumps({"dry_run": False, "target": str(self.target("desktop")), "files": files}).encode())
-        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(fleet.bundle(fleet.PUSH_JS))],
-                              input=body, capture_output=True, text=True)
+        raw, digest = fleet.envelope(fleet.PUSH_JS, {"dry_run": False, "target": str(self.target("desktop")), "files": files})
+        done = subprocess.run(["node", "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True)
         result = fleet.parse_result(done.stdout)
         self.assertEqual(result["status"], "failed")
         self.assertIn("invalid path from source: ..\\escape.json", result["error"])

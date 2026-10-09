@@ -59,8 +59,8 @@ class RemotePreflightTest(unittest.TestCase):
         # Windows reads the home from USERPROFILE and keeps the sync record under APPDATA, not ~/.config.
         env["USERPROFILE"] = str(self.home)
         env["APPDATA"] = str(self.home / ".config")
-        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(fleet.bundle(skills_sync.REMOTE_JS))],
-                              input=fleet.pack(json.dumps(payload).encode()), capture_output=True, text=True, env=env)
+        raw, digest = fleet.envelope(skills_sync.REMOTE_JS, payload)
+        done = subprocess.run(["node", "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True, env=env)
         return fleet.parse_result(done.stdout)
 
     def skill(self, rel):
