@@ -20,9 +20,8 @@ try {
   const expand = value => value.replace(/^~(?=[/\\]|$)/, os.homedir())
     .replace(/%([^%]+)%/g, (_, key) => {
       // A host value lands in config.json and its backups in plain text, so never copy a secret.
-      // PAT, PASSWD and PWD count only as a whole underscore part, so PATH or LOCALAPPDATA pass.
-      if (/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH/i.test(key) || /(?:^|_)(?:PAT|PASSWD|PWD)(?:_|$)/i.test(key))
-        throw Error('refusing secret-looking host env ' + key);
+      // PAT, PASSWD and PWD only as a whole _ part, so PATH and LOCALAPPDATA pass.
+      if (/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|(^|_)(PAT|PASSWD|PWD)(_|$)/i.test(key)) throw Error('refusing secret-looking host env ' + key);
       return process.env[key] || (() => { throw Error('missing host env ' + key); })();
     });
   for (const env of Object.values(p.env)) for (const key of Object.keys(env)) env[key] = expand(env[key]);
