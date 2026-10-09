@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "417b18ffb6b31ce339453f59404a592496bdb230",
+  "source_commit": "1d952fb062c9bbb46de15c9b8d1ca543f1950369",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -946,14 +946,14 @@
     {
       "path": "plugins/cache-aware-autocompact/package-lock.json",
       "plugin": "cache-aware-autocompact",
-      "bytes": 21228,
-      "sha256": "49ca9bddd4babffb09235a2cf1fab72098301ca2daf2a1f8883101337bf94f5b"
+      "bytes": 21229,
+      "sha256": "ca63a941877aab5969d07c1555c1b41ae7f7db3c75bc94439cab8ec9082aa1c2"
     },
     {
       "path": "plugins/cache-aware-autocompact/package.json",
       "plugin": "cache-aware-autocompact",
-      "bytes": 899,
-      "sha256": "13f04028e7e46d31e8138a85c2f660872202445361aa208b29b7bc193ff7e991"
+      "bytes": 900,
+      "sha256": "423be62bbe778f1ad5f9de61f7d59ede4ec938fc56990f95381fd245222bdd35"
     },
     {
       "path": "plugins/cache-aware-autocompact/paseo-plugin.json",
@@ -1084,14 +1084,14 @@
     {
       "path": "plugins/merged-worker-archiver/package-lock.json",
       "plugin": "merged-worker-archiver",
-      "bytes": 21226,
-      "sha256": "9edee1b290bd07ef35ad579fe0235ae9773fbc7cec3989194cce94ecac76141a"
+      "bytes": 21227,
+      "sha256": "96d440416d09db782d3f969c28d0b071dcad9126fd1b7c096c130e5be1eee913"
     },
     {
       "path": "plugins/merged-worker-archiver/package.json",
       "plugin": "merged-worker-archiver",
-      "bytes": 1011,
-      "sha256": "933e5feefe1e29adec8643b464abfe0ad23304297f4f2e06ead747d4b8da7b8d"
+      "bytes": 1012,
+      "sha256": "d036304bb470992789ab4725f27d4f344807c0a1e579c78d5c95ae354aa8279f"
     },
     {
       "path": "plugins/merged-worker-archiver/paseo-plugin.json",
@@ -1204,14 +1204,14 @@
     {
       "path": "plugins/orphan-project-sweeper/package-lock.json",
       "plugin": "orphan-project-sweeper",
-      "bytes": 21226,
-      "sha256": "16d5a5633ebe8b8889afd9e7d3bdb7073ba5c363088594d817887f3ac57ca69f"
+      "bytes": 21227,
+      "sha256": "d18cbc6f436845cff8fe6f282aa353bb5b3397bdb731e2c90ce173f8960da32c"
     },
     {
       "path": "plugins/orphan-project-sweeper/package.json",
       "plugin": "orphan-project-sweeper",
-      "bytes": 963,
-      "sha256": "53e45b4c89f7f0edee4a8b2c66238fd66f75a9a5318172d5538cc93965ea62dd"
+      "bytes": 964,
+      "sha256": "9cbf05d1c9f3e7b3fceff8d2fec7706545dfbe4070ec95ddc53d4bdc04cf8644"
     },
     {
       "path": "plugins/orphan-project-sweeper/paseo-plugin.json",
@@ -1372,14 +1372,14 @@
     {
       "path": "plugins/pm-native-worker-guard/package-lock.json",
       "plugin": "pm-native-worker-guard",
-      "bytes": 21226,
-      "sha256": "70e0fbe055433f57b6da3cf909152b6abf0df9d5dee9b715111a7f3583f021f2"
+      "bytes": 21227,
+      "sha256": "ab064ea3b81b3024a5739181dbbbad88a300e0588fcf69f38453a1f3ce67bb6b"
     },
     {
       "path": "plugins/pm-native-worker-guard/package.json",
       "plugin": "pm-native-worker-guard",
-      "bytes": 981,
-      "sha256": "f88df6e6426acf3999f890942a6af34e2eff388467c2e6838815341e9fbf4f0e"
+      "bytes": 982,
+      "sha256": "63eb7906ff379797196153e1b9670369f3e2b8c5eb0bead6e1a6a6994221e52c"
     },
     {
       "path": "plugins/pm-native-worker-guard/paseo-plugin.json",
@@ -1468,14 +1468,14 @@
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 21228,
-      "sha256": "780055b96c5faa8538d14451870d1f3ffd30d009682bcb2d27eff4f545e1d8d8"
+      "bytes": 21229,
+      "sha256": "c7fae69bd66d4ca1e0d46d651b8ef62b5062f3c8cdf3c036ea31b187b5abbc8e"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package.json",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 889,
-      "sha256": "f4a3d73fd7daddb17d1bcd2a541b7ce6a317174c49842922a53087da00646e25"
+      "bytes": 890,
+      "sha256": "c13fa6e215a7e5e4cdd76aebd81b75a84488f8e6af33a71d1c43ee4fda13a566"
     },
     {
       "path": "plugins/usage-limit-auto-resume/paseo-plugin.json",
