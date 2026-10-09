@@ -30,11 +30,12 @@ const repoPattern = new RegExp(`^${repoPart}/${repoPart}$`);
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const minutes = (from, to) => (Date.parse(to) - Date.parse(from)) / 60000;
 
-// Missing means default: on for eligible code-class Workers only. on covers any eligible editing class; off disables.
+// Missing means default: on for eligible code-class Workers only. on covers any eligible editing class; all also covers
+// ui (the cloud route is Opus xhigh, which meets the ui rule); off disables.
 export function readCloudToggle({ path = defaultTogglePath() } = {}) {
   if (!existsSync(path)) return 'default';
   const value = readFileSync(path, 'utf8').trim();
-  if (value !== 'on' && value !== 'off') throw Error(`cloud toggle must contain on or off: ${path}`);
+  if (!['on', 'off', 'all'].includes(value)) throw Error(`cloud toggle must contain on, off, or all: ${path}`);
   return value;
 }
 
@@ -92,9 +93,9 @@ export function setCloudProfile(value, { path = defaultProfilePath(), authStatus
 const profilePrefix = profile => profile ? `CLAUDE_CONFIG_DIR='${profileDir(profile)}' ` : '';
 
 export function setCloudToggle(state, { path = defaultTogglePath(), authStatus = null } = {}) {
-  if (state !== 'on' && state !== 'off') throw Error('cloud toggle state must be on or off');
-  if (state === 'on' && authStatus?.authMethod !== 'claude.ai') {
-    throw Error('cloud toggle on requires a claude.ai login on this host');
+  if (!['on', 'off', 'all'].includes(state)) throw Error('cloud toggle state must be on, off, or all');
+  if (state !== 'off' && authStatus?.authMethod !== 'claude.ai') {
+    throw Error(`cloud toggle ${state} requires a claude.ai login on this host`);
   }
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${state}\n`);
@@ -122,10 +123,13 @@ export function checkCloudEligibility({ githubRemote, claudeAppInstalled, selfCo
 // The toggle is the owner's standing explicit Worker route choice; off, ineligible, or another class returns null
 // and the task takes its local route. A class-less call with the toggle on is the PM's own editing-lane judgment.
 export const CLOUD_EDITING_CLASSES = Object.freeze(['code', 'code-bounded', 'test-fix', 'mechanical', 'automation']);
+export const CLOUD_ALL_CLASSES = Object.freeze([...CLOUD_EDITING_CLASSES, 'ui']);
+export const cloudClasses = toggle => toggle === 'all' ? CLOUD_ALL_CLASSES : toggle === 'on' ? CLOUD_EDITING_CLASSES
+  : toggle === 'default' ? ['code'] : [];
 export function resolveCloudWorkerRoute({ toggle, eligibility, taskClass = null }) {
-  if (!['on', 'off', 'default'].includes(toggle)) throw Error('cloud toggle must be on, off, or default');
+  if (!['on', 'off', 'all', 'default'].includes(toggle)) throw Error('cloud toggle must be on, off, all, or default');
   if (toggle === 'off' || eligibility?.eligible !== true) return null;
-  if (toggle === 'default' ? taskClass !== 'code' : taskClass != null && !CLOUD_EDITING_CLASSES.includes(taskClass)) return null;
+  if (toggle === 'default' ? taskClass !== 'code' : taskClass != null && !cloudClasses(toggle).includes(taskClass)) return null;
   return Object.freeze({ role: 'worker', source: 'owner-explicit', ...CLOUD_ROUTE });
 }
 
@@ -345,7 +349,7 @@ function main(argv) {
     const profile = readCloudProfile();
     let login = 'unknown';
     try { const auth = readAuthStatus(profile); login = `${auth.authMethod ?? 'none'} ${auth.email ?? ''}`.trim(); } catch {}
-    console.log(`${hosts.length ? 'local: ' : ''}${readCloudToggle().replace(/^default$/, 'default (code class only)')}; repos: ${[...readCloudRepos()].join(', ') || 'none'}; ` +
+    console.log(`${hosts.length ? 'local: ' : ''}${readCloudToggle().replace(/^default$/, 'default (code class only)').replace(/^all$/, 'all (editing classes and ui)')}; repos: ${[...readCloudRepos()].join(', ') || 'none'}; ` +
       `login: ${profile ? `profile ${profile}` : 'default'} (${login})`);
     pushToFleet(hosts, ['status']);
     return;
@@ -362,8 +366,8 @@ function main(argv) {
     pushToFleet(hosts, [state, rest[0]]);
     return;
   }
-  if (state !== 'on' && state !== 'off') {
-    throw Error('usage: cloud-lane.mjs on|off|status | allow|disallow <owner/repo|owner/*> [--fleet host,...] | profile <dir>|none');
+  if (!['on', 'off', 'all'].includes(state)) {
+    throw Error('usage: cloud-lane.mjs on|off|all|status | allow|disallow <owner/repo|owner/*> [--fleet host,...] | profile <dir>|none');
   }
   setCloudToggle(state, { authStatus: state === 'on' ? readAuthStatus() : null });
   console.log(`local: ${state}`);

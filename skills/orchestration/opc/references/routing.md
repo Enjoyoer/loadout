@@ -31,7 +31,7 @@ Code and automation never run on Sol. The planner keeps its fixed role route: We
 
 ## UI work
 
-UI work runs only on Opus xhigh, Fast off. The `ui` class resolves to an owner-explicit route with the reason `ui: owner rule, Opus xhigh, no GPT`; neither the pace nor the cloud lane touches it. UI work never uses a GPT or web model: no Sol, Luna, or Astra Worker, no Luna scouts, no web planner or fallback, and no web reviewer. Create its task with `createTask({..., ui: true})` and pass `ui: true` to `selectTopology`: the task refuses browser review, the planner refuses to launch, `recordWorkerRoute` refuses GPT and web routes, and the topology runs no scouts or planner. An owner-named GPT or web model for UI work is refused; ask the owner for a Claude model instead.
+UI work runs only on Opus xhigh, Fast off. The `ui` class resolves to an owner-explicit route with the reason `ui: owner rule, Opus xhigh, no GPT`; the pace never touches it, and the cloud lane takes it only when the toggle is `all`. UI work never uses a GPT or web model: no Sol, Luna, or Astra Worker, no Luna scouts, no web planner or fallback, and no web reviewer. Create its task with `createTask({..., ui: true})` and pass `ui: true` to `selectTopology`: the task refuses browser review, the planner refuses to launch, `recordWorkerRoute` refuses GPT and web routes, and the topology runs no scouts or planner. An owner-named GPT or web model for UI work is refused; ask the owner for a Claude model instead.
 
 ## Cloud lane
 
