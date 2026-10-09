@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "472613c9f2b1afe978f13902c0e13aef24c8d4a9",
+  "source_commit": "417b18ffb6b31ce339453f59404a592496bdb230",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -192,7 +192,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5408,
-      "sha256": "e1eae15947623d8132f4537e545e835658ba1827aba26a38adb08a792a2e07eb"
+      "sha256": "2de02449fc6a79451e6c936247fd7d813a76dacf557c4fdedf90da2dfd7afea6"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -226,8 +226,8 @@
       "path": "skills/orchestration/opc/references/imp-execution.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4333,
-      "sha256": "ee33c3a18e43fa4a762b68cbc8166c63e6f51ec1963c50e997d3d5e68d9d950f"
+      "bytes": 4335,
+      "sha256": "cea99485ba30d87e0abce357227781d87179b26b02750d50cb677e33704ee8e8"
     },
     {
       "path": "skills/orchestration/opc/references/maintenance.md",
@@ -443,8 +443,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 24367,
-      "sha256": "99504842caf8fa8d4a4b244261cca01bcfb2f9399de7b589aae2801738c3a509"
+      "bytes": 24501,
+      "sha256": "0b09a07eb1d8182228810466595756624ee47f49771c2c67756c8c224c79c18f"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/client-config.json",
