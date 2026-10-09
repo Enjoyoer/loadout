@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "5a53ab68373c46e1d5cdd61a1290318fadbadcc6",
+  "source_commit": "46783a4feac8b77f4b5172891fee87fa5e740442",
   "skill_count": 22,
   "file_count": 124,
   "files": [
@@ -875,7 +875,7 @@
     }
   ],
   "plugin_count": 6,
-  "plugin_file_count": 102,
+  "plugin_file_count": 101,
   "plugins": [
     {
       "id": "cache-aware-autocompact",
@@ -1020,8 +1020,8 @@
     {
       "path": "plugins/cache-aware-autocompact/test/retry.test.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 1201,
-      "sha256": "30f085ae8629c7c25b3108c6f7ab654633c6fd0baec2dbcec8f52e92c49a81b8"
+      "bytes": 549,
+      "sha256": "4e3c8e4e6112db9b5f7a2569134eca9462fb6539ded6ab2ba055fb74f696aa37"
     },
     {
       "path": "plugins/cache-aware-autocompact/test/store.test.ts",
@@ -1128,8 +1128,8 @@
     {
       "path": "plugins/merged-worker-archiver/test/config.test.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 1731,
-      "sha256": "68ada88abee9bae4e102d3c7073e661f95624264cbc13dd45846db36d7a788ce"
+      "bytes": 1390,
+      "sha256": "942c61fd10a9d89720c537f2a0b05e3f3640e6f168905ebbad66dcb4bf526083"
     },
     {
       "path": "plugins/merged-worker-archiver/test/daemon.test.ts",
@@ -1154,12 +1154,6 @@
       "plugin": "merged-worker-archiver",
       "bytes": 5702,
       "sha256": "b1209832891f07b0cbad0482d71effb5b3d3a25785bd7e86b08c5dfcc190cfae"
-    },
-    {
-      "path": "plugins/merged-worker-archiver/test/sweeper.test.ts",
-      "plugin": "merged-worker-archiver",
-      "bytes": 0,
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
       "path": "plugins/merged-worker-archiver/tsconfig.json",
@@ -1224,8 +1218,8 @@
     {
       "path": "plugins/orphan-project-sweeper/test/config.test.ts",
       "plugin": "orphan-project-sweeper",
-      "bytes": 1713,
-      "sha256": "2a476d4b2a926d4203ab00742055083a7d62b531d15875aed475761065c9ee66"
+      "bytes": 1519,
+      "sha256": "4e9ec8fc82060dae3cb69f590c5067cf3e07244b58a42c4b566e8a57a88a0b3f"
     },
     {
       "path": "plugins/orphan-project-sweeper/test/daemon.test.ts",
