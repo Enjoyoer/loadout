@@ -126,8 +126,8 @@ class RemotePluginTest(Fixture):
         payload = {"dry_run": dry_run, "migrate_path": migrate, "plugin_root": root, "stage": list(stage), "install": list(install),
                    "plugins": {"demo": {"pin": pin, "files": files}}}
         env = {**self.env, "HOME": str(self.home)}
-        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(fleet.bundle(plugins_sync.REMOTE_JS))],
-                              input=fleet.pack(json.dumps(payload).encode()), capture_output=True, text=True, env=env)
+        raw, digest = fleet.envelope(plugins_sync.REMOTE_JS, payload)
+        done = subprocess.run(["node", "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True, env=env)
         return fleet.parse_result(done.stdout)
 
     def test_stage_check_install_confirm_then_same(self):
@@ -225,6 +225,28 @@ class RemotePluginTest(Fixture):
         self.assertEqual(got["status"], "failed")
         self.assertIn("FAILED: check failed: type error", got["plugins"]["demo"]["checked"])
         self.assertEqual(got["plugins"]["demo"]["installed"], "skipped (check failed)")
+
+    def test_rerun_after_a_failed_check_checks_again(self):
+        self.run_remote()
+        files = {rel: blob(data) for rel, data in PLUGIN_FILES.items()}
+        files["server/index.ts"] = blob(b"export const v = 2\n", [hashlib.sha256(b"export {}\n").hexdigest()])
+        (self.root / "fail-check").touch()
+        self.assertEqual(self.run_remote(files)["plugins"]["demo"]["installed"], "skipped (check failed)")
+        got = self.run_remote(files)
+        self.assertEqual(got["status"], "failed", got)
+        self.assertEqual(got["plugins"]["demo"]["staged"], "same")
+        self.assertIn("FAILED: check failed: type error", got["plugins"]["demo"]["checked"])
+        self.assertEqual(got["plugins"]["demo"]["installed"], "skipped (check failed)")
+        self.assertEqual(self.calls().count("npm run check"), 3)
+        self.assertNotIn("plugin reload", self.calls())
+        (self.root / "fail-check").unlink()
+        got = self.run_remote(files)
+        self.assertEqual(got["status"], "updated", got)
+        self.assertEqual(got["plugins"]["demo"]["checked"], "check (rerun: last check failed)")
+        # The failed runs staged v2 without reloading, so the daemon still ran v1.
+        self.assertEqual(got["plugins"]["demo"]["installed"], "reloaded")
+        got = self.run_remote(files)
+        self.assertEqual((got["status"], got["plugins"]["demo"]["checked"]), ("same", "skipped (unchanged)"))
 
     def test_not_running_after_install_fails(self):
         (self.root / "not-running").touch()

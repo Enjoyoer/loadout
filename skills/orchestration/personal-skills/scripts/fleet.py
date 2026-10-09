@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -29,8 +30,16 @@ PUSH_JS = Path(__file__).resolve().parent / "fleet_push_remote.js"
 COMMON_JS = Path(__file__).resolve().parent / "remote_common.js"
 SYNC_RECORD = ".loadout-sync.json"
 SKIP_NAMES = {SYNC_RECORD, ".DS_Store"}
-# Remote programs travel gzip+base64 so they survive cmd.exe and terminal quoting.
-BOOT = "eval(require('zlib').gunzipSync(Buffer.from(process.argv[1],'base64')).toString())"
+# A remote program and its payload travel together on stdin as one base64 envelope, so the
+# command line holds only this fixed boot and the envelope's sha256: short enough for cmd.exe
+# whatever the program's size, and free of shell quoting. The boot runs nothing unless the
+# envelope matches the digest, then hands the program its payload in process.argv[2].
+BOOT = ("const loadoutRaw=require('fs').readFileSync(0,'utf8').trim();"
+        "if(require('crypto').createHash('sha256').update(loadoutRaw).digest('hex')!==process.argv[1])"
+        "{console.error('loadout transfer digest mismatch; nothing ran');process.exit(9)}"
+        "const loadoutEnvelope=JSON.parse(Buffer.from(loadoutRaw,'base64').toString());"
+        "process.argv[2]=loadoutEnvelope[1];"
+        "eval(require('zlib').gunzipSync(Buffer.from(loadoutEnvelope[0],'base64')).toString())")
 # Keepalives end a session whose host went to sleep or dropped off within about a minute.
 SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=4"]
@@ -242,6 +251,16 @@ def bundle(program: Path) -> bytes:
     return COMMON_JS.read_bytes() + b"\n" + program.read_bytes()
 
 
+def envelope(program: Path, payload: dict) -> tuple:
+    """The stdin envelope for BOOT, carrying the bundled program and the payload, and its sha256 for argv.
+
+    A random nonce rides along, so the digest on the command line reveals nothing about a secret in the payload.
+    """
+    parts = [pack(bundle(program)), pack(json.dumps(payload).encode()), secrets.token_hex(16)]
+    raw = base64.b64encode(json.dumps(parts).encode()).decode()
+    return raw, hashlib.sha256(raw.encode()).hexdigest()
+
+
 def parse_result(output: str) -> Optional[dict]:
     match = RESULT.search(output)
     if not match:
@@ -274,21 +293,21 @@ def push_targets(fleet: dict) -> tuple:
 
 
 def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Optional[float] = None) -> tuple:
-    """Run a Loadout node program, bundled with remote_common.js, on a host with a gzip+base64 JSON payload on stdin.
+    """Run a Loadout node program, bundled with remote_common.js, on a host with a JSON payload.
 
-    Returns (result dict or None, raw output). Secrets travel only on stdin.
+    Program and payload travel on stdin in one envelope; argv carries only BOOT and the envelope's
+    digest. Returns (result dict or None, raw output). Secrets travel only on stdin.
     """
-    body = pack(json.dumps(payload).encode())
-    script = pack(bundle(program))
+    raw, digest = envelope(program, payload)
     env = None
     if local:
-        command = ["node", "-e", BOOT, "--", script]
+        command = ["node", "-e", BOOT, "--", digest]
         # Inside an agent session, keep daemon commands off the agent's own identity.
         env = {k: v for k, v in os.environ.items() if k not in ("PASEO_AGENT_ID", "PASEO_AGENT_CWD")}
     else:
-        command = ["ssh", *SSH_OPTIONS, "--", name, f'node -e "{BOOT}" -- {script}']
+        command = ["ssh", *SSH_OPTIONS, "--", name, f'node -e "{BOOT}" -- {digest}']
     try:
-        done = subprocess.run(command, input=body, capture_output=True, text=True, timeout=timeout, env=env)
+        done = subprocess.run(command, input=raw, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return None, f"timed out after {timeout}s"
     output = done.stdout + done.stderr

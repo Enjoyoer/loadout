@@ -1,5 +1,5 @@
 // Install verified Loadout skill files and global instructions on this host.
-// Shipped gzip+base64 by skills_sync.py; stdin is the gzip+base64 JSON payload
+// Shipped by skills_sync.py through fleet.run_node in a digest-checked stdin envelope; process.argv[2] is the gzip+base64 JSON payload
 // {dry_run, clients, files: {"<skill>/<file>": {sha256, data, prior}},
 //  global: {sha256, data, targets: {client: path}} | null}.
 // Preflight first, write second: a file may be replaced only when it matches the
@@ -7,10 +7,13 @@
 // (global instructions). Anything else is a conflict and nothing is written.
 // global.claude may be "managed-settings:claudeMd": the claudeMd string field of
 // Claude Code's managed-settings.json, preflighted by value; only that field changes.
-// checkAncestors comes from remote_common.js, which fleet.run_node ships ahead of this file.
+// keep (null: retire nothing) names skills never retired. The record's skills section lists each
+// skill file the sync installed or found current; a recorded skill not in keep is removed while
+// every file in it is one of those, unedited, and otherwise kept, reported, and dropped from the record.
+// Helpers come from remote_common.js, which fleet.run_node ships ahead of this file.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execFileSync } = require("child_process");
-const result = { status: null, clients: {}, added: [], changed: [], same: 0, conflicts: [], elevation: [], error: null };
+const result = { status: null, clients: {}, added: [], changed: [], same: 0, conflicts: [], elevation: [], retired: [], kept: [], error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
   process.exit(code);
@@ -20,10 +23,7 @@ const home = os.homedir();
 const codexHome = process.env.CODEX_HOME || path.join(home, ".codex");
 const CLIENT_HOMES = { codex: codexHome, claude: path.join(home, ".claude"), opencode: path.join(home, ".config", "opencode") };
 const SKILL_ROOTS = { codex: path.join(codexHome, "skills"), claude: path.join(home, ".claude", "skills") };
-const recordDir = process.platform === "win32"
-  ? path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "loadout")
-  : path.join(process.env.XDG_CONFIG_HOME || path.join(home, ".config"), "loadout");
-const recordPath = path.join(recordDir, "global-sync.json");
+const recordPath = path.join(loadoutDir(path, os), "global-sync.json");
 const MANAGED_CLAUDE_MD = "managed-settings:claudeMd";
 // Every other global target is a path: ~, /, $VAR or ${VAR}, %VAR%, or a drive like C:\.
 const GLOBAL_PATH = /^(~([\\/]|$)|\/|\$\{?[A-Za-z_]|%[A-Za-z_][A-Za-z0-9_]*%|[A-Za-z]:[\\/])/;
@@ -111,15 +111,15 @@ function sudo(...args) {
 function writeManaged(w) {
   const { plan, bytes, elevate } = w.managed, st = plan.st, file = w.file;
   const mode = st ? st.mode & 0o7777 : 0o644;
-  const backup = st ? `${file}.bak-${stamp}` : null, staged = file + ".loadout-tmp";
+  const backup = st ? `${file}.bak-${stamp}` : null, staged = file + ".loadout-tmp-" + crypto.randomBytes(8).toString("hex");
   if (!elevate) {
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       if (backup) { fs.copyFileSync(file, backup, fs.constants.COPYFILE_EXCL); fs.chmodSync(backup, mode); }
-      fs.writeFileSync(staged, bytes, { mode });
-      fs.chmodSync(staged, mode);
-      if (st && process.platform !== "win32") try { fs.chownSync(staged, st.uid, st.gid); } catch { /* keep the user's group */ }
-      fs.renameSync(staged, file);
+      replaceFile(fs, file, bytes, mode, fd => {
+        fs.fchmodSync(fd, mode);
+        if (st && process.platform !== "win32") try { fs.fchownSync(fd, st.uid, st.gid); } catch { /* keep the user's group */ }
+      });
     } catch (e) {
       if (e.code !== "EACCES" && e.code !== "EPERM") throw e;
       throw new Error(`not permitted to write ${file} (${e.code})`
@@ -134,6 +134,8 @@ function writeManaged(w) {
       sudo("cp", tmp, staged);
       if (st) sudo("chown", `${st.uid}:${st.gid}`, staged);
       sudo("chmod", mode.toString(8), staged);
+      const own = fs.lstatSync(staged);
+      if (!own.isFile() || own.uid !== (st ? st.uid : 0)) throw new Error("staged file is not ours: " + staged);
       sudo("mv", "-f", staged, file);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   }
@@ -156,7 +158,7 @@ function plan(file, root, want, allowed) {
 }
 
 try {
-  const p = JSON.parse(zlib.gunzipSync(Buffer.from(fs.readFileSync(0, "utf8").trim(), "base64")).toString());
+  const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toString());
   // A configured Loadout Pi receives the same selected, verified skill blobs.
   // Discover its home from the host's provider command, not a second fleet list.
   const cfgPath = path.join(home, '.paseo', 'config.json');
@@ -184,7 +186,22 @@ try {
     if (sha(data[rel]) !== f.sha256) throw new Error("hash mismatch in transfer: " + rel);
   }
   const record = fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, "utf8")) : {};
+  const before = JSON.stringify(record), owned = record.skills || {}, roots = [], drops = [];
   const writes = [], records = {};
+  const retire = (root, skill, label) => {
+    const dir = path.join(root, skill), tree = {};
+    checkAncestors(fs, path, root, dir);
+    const walk = d => fs.readdirSync(d).forEach(n => {
+      const f = path.join(d, n), st = fs.lstatSync(f);
+      if (st.isDirectory()) walk(f); else tree[path.relative(root, f).split(path.sep).join("/")] = st.isFile() && sha(fs.readFileSync(f));
+    });
+    let mine = false;
+    if (fs.existsSync(dir)) {
+      if (fs.lstatSync(dir).isDirectory()) { walk(dir); mine = Object.entries(tree).every(([r, h]) => h && owned[root][r] === h); }
+      result[mine ? "retired" : "kept"].push(label);
+    }
+    drops.push({ root, skill, dir: mine && dir });
+  };
   const consider = (file, root, want, allowed, label, bytes, isGlobal) => {
     const kind = plan(file, root, want, allowed);
     if (kind === "conflict") result.conflicts.push(label);
@@ -206,9 +223,13 @@ try {
     if (!CLIENT_HOMES[client] || !fs.existsSync(CLIENT_HOMES[client])) { result.clients[client] = "absent"; continue; }
     const root = SKILL_ROOTS[client];
     result.clients[client] = root ? "present" : "no skill directory";
-    if (root)
+    if (root) {
+      roots.push(root);
       for (const [rel, f] of Object.entries(p.files))
         consider(path.join(root, ...rel.split("/")), root, f.sha256, f.prior, client + ":" + rel, data[rel], false);
+      for (const skill of p.keep ? new Set(Object.keys(owned[root] || {}).map(r => r.split("/")[0])) : [])
+        if (!p.keep.includes(skill)) retire(root, skill, client + ":" + skill);
+    }
     if (p.global && p.global.targets[client]) {
       const g = Buffer.from(p.global.data, "base64");
       if (sha(g) !== p.global.sha256) throw new Error("hash mismatch in transfer: global instructions");
@@ -220,7 +241,7 @@ try {
   }
   if (result.conflicts.length) { result.status = "conflict"; done(5); }
   for (const w of writes) result[w.kind].push(w.label);
-  result.status = writes.length ? (p.dry_run ? "would update" : "updated") : "same";
+  result.status = writes.length + result.retired.length + result.kept.length ? (p.dry_run ? "would update" : "updated") : "same";
   if (p.dry_run) done(0);
   // Elevation is checked before any write, and never prompts.
   for (const w of writes.filter(x => x.managed && x.managed.elevate)) {
@@ -231,17 +252,19 @@ try {
   for (const w of writes) {
     if (w.managed) { writeManaged(w); records[w.key] = sha(w.data); continue; }
     fs.mkdirSync(path.dirname(w.file), { recursive: true });
-    const tmp = w.file + ".loadout-tmp";
-    fs.writeFileSync(tmp, w.data);
-    fs.renameSync(tmp, w.file);
+    replaceFile(fs, w.file, w.data);
     if (sha(fs.readFileSync(w.file)) !== sha(w.data)) throw new Error("verification failed after write: " + w.label);
     if (w.global) records[w.key] = sha(w.data);
   }
-  if (Object.entries(records).some(([f, h]) => record[f] !== h)) {
-    Object.assign(record, records);
-    fs.mkdirSync(recordDir, { recursive: true });
-    fs.writeFileSync(recordPath + ".loadout-tmp", JSON.stringify(record, null, 2), { mode: 0o600 });
-    fs.renameSync(recordPath + ".loadout-tmp", recordPath);
+  for (const d of drops) {
+    if (d.dir) fs.rmSync(d.dir, { recursive: true });
+    for (const r of Object.keys(owned[d.root])) if (r.startsWith(d.skill + "/")) delete owned[d.root][r];
+  }
+  for (const root of roots) for (const [rel, f] of Object.entries(p.files)) (owned[root] = owned[root] || {})[rel] = f.sha256;
+  Object.assign(record, records, Object.keys(owned).length ? { skills: owned } : {});
+  if (JSON.stringify(record) !== before) {
+    fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+    replaceFile(fs, recordPath, JSON.stringify(record, null, 2), 0o600);
   }
   done(0);
 } catch (e) {

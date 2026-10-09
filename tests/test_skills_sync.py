@@ -52,15 +52,15 @@ class RemotePreflightTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_remote(self, files, clients=("claude",), glob=None, dry_run=False):
-        payload = {"dry_run": dry_run, "clients": list(clients), "files": files, "global": glob}
+    def run_remote(self, files, clients=("claude",), glob=None, dry_run=False, keep=None):
+        payload = {"dry_run": dry_run, "clients": list(clients), "files": files, "global": glob, "keep": keep}
         env = {k: v for k, v in os.environ.items() if k not in ("CODEX_HOME", "XDG_CONFIG_HOME")}
         env["HOME"] = str(self.home)
         # Windows reads the home from USERPROFILE and keeps the sync record under APPDATA, not ~/.config.
         env["USERPROFILE"] = str(self.home)
         env["APPDATA"] = str(self.home / ".config")
-        done = subprocess.run(["node", "-e", fleet.BOOT, "--", fleet.pack(fleet.bundle(skills_sync.REMOTE_JS))],
-                              input=fleet.pack(json.dumps(payload).encode()), capture_output=True, text=True, env=env)
+        raw, digest = fleet.envelope(skills_sync.REMOTE_JS, payload)
+        done = subprocess.run(["node", "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True, env=env)
         return fleet.parse_result(done.stdout)
 
     def skill(self, rel):
@@ -146,6 +146,29 @@ class RemotePreflightTest(unittest.TestCase):
         self.assertFalse((self.home / ".codex").exists(), "absent client gets no global file")
         record = json.loads((self.home / ".config/loadout/global-sync.json").read_text())
         self.assertEqual(record, {str(target): sha(b"g2")})
+
+    def test_retires_a_recorded_skill_and_keeps_unrecorded_or_edited_ones(self):
+        files = {"demo/SKILL.md": entry(b"d"), "old/SKILL.md": entry(b"o"), "old/refs/a.md": entry(b"a"),
+                 "edited/SKILL.md": entry(b"e")}
+        self.assertEqual(self.run_remote(files, keep=["demo", "edited", "old"])["status"], "updated")
+        self.skill("edited/SKILL.md").write_bytes(b"my edit")
+        self.skill("mine").mkdir()
+        self.skill("mine/SKILL.md").write_bytes(b"never synced")
+        published = {"demo/SKILL.md": entry(b"d")}
+        got = self.run_remote(published, keep=["demo"], dry_run=True)
+        self.assertEqual((got["status"], got["retired"], got["kept"]), ("would update", ["claude:old"], ["claude:edited"]))
+        self.assertIn("would retire unpublished: claude:old", skills_sync.describe(got))
+        self.assertTrue(self.skill("old/refs/a.md").exists())
+        got = self.run_remote(published, keep=["demo"])
+        self.assertEqual((got["status"], got["retired"], got["kept"]), ("updated", ["claude:old"], ["claude:edited"]))
+        self.assertFalse(self.skill("old").exists())
+        self.assertEqual(self.skill("edited/SKILL.md").read_bytes(), b"my edit")
+        self.assertEqual(self.skill("mine/SKILL.md").read_bytes(), b"never synced")
+        record = json.loads((self.home / ".config/loadout/global-sync.json").read_text())
+        self.assertEqual([sorted(owned) for owned in record["skills"].values()], [["demo/SKILL.md"]])
+        got = self.run_remote(published, keep=["demo"])
+        self.assertEqual((got["status"], got["retired"], got["kept"]), ("same", [], []))
+        self.assertTrue(self.skill("edited").exists() and self.skill("mine").exists())
 
     def test_dry_run_writes_nothing(self):
         got = self.run_remote({"demo/SKILL.md": entry(b"v2")}, dry_run=True)
@@ -288,7 +311,7 @@ class SkillsSyncTest(unittest.TestCase):
         by_dest = skills_sync.published_prior_by_dest(Pub())
         self.assertEqual(by_dest, {"moved/SKILL.md": {sha(b"published")}})
         self.overlay("moved/SKILL.md", "private")
-        files = skills_sync.overlay_files(self.fleet, {"handoff"}, by_dest, record=False)
+        files = skills_sync.overlay_files(self.fleet, {"handoff"}, by_dest)
         self.assertEqual(files["moved/SKILL.md"]["prior"], [sha(b"published")])
 
     @needs_fake_ssh

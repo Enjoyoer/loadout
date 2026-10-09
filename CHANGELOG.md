@@ -10,6 +10,12 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ### Fixed
 - Fleet push, skills sync, and plugins sync share one destination path check. Plugins sync now also refuses a file path that leaves the plugin root, and all three refuse a dangling symlink among a destination's parent directories.
+- Plugins sync records each staged plugin's check result on the host and runs a failed or missing check again, instead of reporting success on a rerun; a plugin whose re-check passes is reloaded. Files no longer published are removed from the staged plugin directory while unedited.
+- Provider sync records a reload owed after a write and retries it on the next run; a retry that fails is `FAILED`, not a warning.
+- Skills sync retires a skill it installed (per the host's sync record) once it is no longer published, keeping and reporting a locally edited one, and records an overlay hash only after a host accepts it.
+- A failed shared preflight in `sync.py` stops the later scopes for that step's hosts.
+- The skills, plugins, and client-config programs write through uniquely named temp files and rename one only while it is still the file they wrote.
+- Fleet sync's remote programs travel on stdin with their payload in one SHA256-checked envelope, so the ssh command line is a short fixed boot and Windows hosts stay far below the `cmd.exe` length limit; a corrupted envelope runs nothing.
 
 ### Added
 - `pi-fast-toggle`, a Paseo plugin with a per-agent composer pill that requests Fast on Pi agents whose model supports service tiers.

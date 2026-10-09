@@ -4,8 +4,10 @@
 Reads <fleet>/paseo-providers.json, merges its pinned provider fields into each
 host's ~/.paseo/config.json (every other provider and host-local field is kept,
 and the file is backed up in place), then reloads the daemon. Write and reload
-are reported separately; a reload failure after an unchanged write is only a
-warning.
+are reported separately. A write that may have changed the config leaves a
+reload owed to that host, recorded on the source host until a reload succeeds,
+so the next run retries it and a failed retry is a failure. A reload failure
+after an unchanged write with nothing owed is only a warning.
 """
 
 from __future__ import annotations
@@ -28,7 +30,9 @@ from typing import Callable, Optional
 import fleet
 
 MERGE_JS = Path(__file__).resolve().parent / "paseo_providers_merge.js"
-BOOT = fleet.BOOT
+# Short relay commands carry the program and payload on argv (see run_in_terminal); everything
+# else here uses the stdin envelope from staged_payload.
+BOOT = "eval(require('zlib').gunzipSync(Buffer.from(process.argv[1],'base64')).toString())"
 pack = fleet.pack
 parse_result = fleet.parse_result
 CONFIG_KEYS = {"providers", "env", "hosts", "pi"}
@@ -46,6 +50,39 @@ RELOAD_TIMEOUT_SECONDS = 90
 WRITE_TIMEOUT_SECONDS = 300
 RELAY_INLINE_LIMIT = 4000
 RELAY_CHUNK_SIZE = 2000
+# Beside the config fleet directory, never inside a fleet directory, so the fleet push never carries it.
+RELOADS_FILE = "provider-reloads.json"
+
+
+def reloads_path() -> Path:
+    """The source host's record of reloads owed, by host name, to the run stamp of the write."""
+    windows = os.name == "nt"
+    fleet_dir = fleet.config_fleet_dir(os.environ, windows) or Path.home() / "AppData" / "Roaming" / "loadout" / "fleet"
+    return fleet_dir.parent / RELOADS_FILE
+
+
+def owed_reloads() -> dict:
+    path = reloads_path()
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except ValueError as error:
+        raise fleet.FleetError(f"unreadable reload record {path}: {error}") from error
+
+
+def set_owed(host: str, stamp: Optional[str]) -> None:
+    """Record (stamp) or clear (None) the reload owed to host; written whole through a temp file."""
+    path = reloads_path()
+    owed = owed_reloads()
+    if owed.get(host) == stamp:
+        return
+    if stamp is None:
+        owed.pop(host, None)
+    else:
+        owed[host] = stamp
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}-{secrets.token_hex(4)}.tmp")
+    tmp.write_text(json.dumps(owed, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def staged_payload(program: str, data: str) -> tuple[str, str]:
@@ -343,12 +380,18 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
               emit: Callable[[str], None]) -> str:
     """Returns "same", "updated", "would update", or "FAILED"."""
     name = f"{runner.name} ({runner.mode})"
+    owed = owed_reloads().get(runner.name)
+    if not dry_run and not owed:
+        # Owed from before the write: it can land even when its result never comes back.
+        set_owed(runner.name, stamp)
     try:
         output = runner.write(program, pack(json.dumps(payload(config, runner.name, stamp, dry_run)).encode()))
         result = parse_result(output)
     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
         emit(f"{name}: write FAILED: {error}")
         return "FAILED"
+    if not dry_run and not owed and result is not None and not result["wrote"]:
+        set_owed(runner.name, None)
     if result is None:
         emit(f"{name}: write FAILED: no result from the merge program: {output.strip()[-300:]}")
     elif result["error"]:
@@ -364,19 +407,21 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
         emit(f"{name}: cleanup warning: {runner.cleanup_warning}; the next run archives it")
     if result is None or result["error"] or not result["verified"]:
         return "FAILED"
+    retry = f" (owed since {owed})" if owed else ""
     if dry_run:
-        emit(f"{name}: reload skipped (dry run)")
-        return "would update" if result["changed"] else "same"
+        emit(f"{name}: reload{retry} skipped (dry run)" + ("; the real run retries it" if owed else ""))
+        return "would update" if result["changed"] or owed else "same"
     try:
-        emit(f"{name}: reload {runner.reload()}")
+        emit(f"{name}: reload{retry} {runner.reload()}")
     except (RuntimeError, OSError, subprocess.SubprocessError) as error:
-        if not result["changed"]:
-            # Nothing was written, so the daemon's config is what a prior run left; not a sync failure.
+        if not result["changed"] and not owed:
+            # Nothing was written and no earlier write waits on a reload, so the daemon's config is current.
             emit(f"{name}: reload warning (config unchanged, not a failure): {error}")
             return "same"
-        emit(f"{name}: reload FAILED: {error}")
+        emit(f"{name}: reload{retry} FAILED: {error}; the next run retries it")
         return "FAILED"
-    return "updated" if result["changed"] else "same"
+    set_owed(runner.name, None)
+    return "updated" if result["changed"] or owed else "same"
 
 
 def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool) -> dict:

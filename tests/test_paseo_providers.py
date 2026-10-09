@@ -412,6 +412,29 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertIn("tablet (paseo-relay): reload warning (config unchanged, not a failure): request timed out", out)
         self.assertNotIn("FAILED", out)
 
+    def test_rerun_retries_an_owed_reload_and_fails_if_it_fails_again(self):
+        (self.root / "fail-reload-tablet").touch()
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 1, out)
+        self.assertIn("tablet (paseo-relay): write CHANGED", out)
+        code, out = self.run_sync("--host", "tablet", "--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"tablet \(paseo-relay\): reload \(owed since \S+\) skipped \(dry run\); the real run retries it")
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 1, out)
+        self.assertIn("tablet (paseo-relay): write unchanged", out)
+        self.assertRegex(out, r"tablet \(paseo-relay\): reload \(owed since \S+\) FAILED: request timed out")
+        self.assertEqual(self.calls().count("paseo tablet reload"), 2)
+        (self.root / "fail-reload-tablet").unlink()
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"tablet \(paseo-relay\): reload \(owed since \S+\) ok")
+        # Nothing is owed after a reload succeeds, so a later failure with an unchanged config is a warning.
+        (self.root / "fail-reload-tablet").touch()
+        code, out = self.run_sync("--host", "tablet")
+        self.assertEqual(code, 0, out)
+        self.assertIn("reload warning (config unchanged, not a failure)", out)
+
     def test_relay_cleanup_failure_is_reported(self):
         (self.root / "fail-archive").touch()
         code, out = self.run_sync("--host", "tablet")

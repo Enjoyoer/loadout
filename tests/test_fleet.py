@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -162,8 +163,34 @@ class ValidateTest(unittest.TestCase):
         self.check_error(fleet_doc(**{"global": {"cursor": "~/x"}}), "unknown keys ['cursor']")
 
 
+class RunNodeEnvelopeTest(unittest.TestCase):
+    def test_corrupted_envelope_fails_and_runs_nothing(self):
+        if not shutil.which("node"):
+            self.skipTest("node is required")
+        with tempfile.TemporaryDirectory() as tmp:
+            program = Path(tmp) / "probe.js"
+            program.write_text('const p = JSON.parse(require("zlib").gunzipSync(Buffer.from(process.argv[2], "base64")).toString());\n'
+                               'require("fs").writeFileSync(p.marker, "ran");\n'
+                               'process.stdout.write("\\n@@LOADOUT-RESULT {\\"status\\":\\"ok\\"} @@END\\n");\n')
+            marker = Path(tmp) / "ran"
+            # Intact, the program runs with its payload.
+            self.assertEqual(fleet.run_node("here", True, program, {"marker": str(marker)})[0], {"status": "ok"})
+            marker.unlink()
+            run = subprocess.run
+
+            def corrupt(command, **kwargs):  # one character of the envelope changes in transit
+                raw = kwargs["input"]
+                return run(command, **{**kwargs, "input": raw[:100] + ("B" if raw[100] == "A" else "A") + raw[101:]})
+
+            with mock.patch.object(fleet.subprocess, "run", side_effect=corrupt):
+                result, output = fleet.run_node("here", True, program, {"marker": str(marker)})
+            self.assertIsNone(result)
+            self.assertIn("no result from host (exit 9): loadout transfer digest mismatch; nothing ran", output)
+            self.assertFalse(marker.exists())
+
+
 class WindowsCommandLengthTest(unittest.TestCase):
-    """run_node puts the packed program on the ssh command line, which a Windows host runs through cmd.exe."""
+    """run_node's ssh command line, which a Windows host runs through cmd.exe, must not grow with the programs."""
 
     CMD_LIMIT = 8191
     # OpenSSH on Windows runs a remote command as "<cmd.exe>" /c "<command>". The count adds that wrapper to the

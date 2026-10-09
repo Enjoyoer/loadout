@@ -4,10 +4,10 @@
 Runs, in order: fleet validate, fleet push, skills, plugins, providers,
 client-config, honoring each host's `sync` list, then prints one table of
 host by scope. Each step's preflight (publication, overlay, catalog, token)
-runs once, and an error there fails that step for every host. The step then
-runs one host at a time, so an error on one host fails that cell only. A
-conflict, or a fleet push failure, on a host stops the later scopes for that
-host only. Run with --dry-run first.
+runs once, and an error there fails that step for every host and stops their
+later scopes. The step then runs one host at a time, so an error on one host
+fails that cell only. A conflict, or a fleet push failure, on a host stops the
+later scopes for that host only. Run with --dry-run first.
 """
 
 from __future__ import annotations
@@ -56,13 +56,16 @@ def failed(error: Exception, prefix: str, emit: Callable) -> None:
         emit(line)
 
 
-def run_step(step: str, doc: dict, fleet_dir, targets: list, args, emit: Callable) -> dict:
-    """Preflight once, then run each host on its own; any host error fails that host and the next one still runs."""
+def run_step(step: str, doc: dict, fleet_dir, targets: list, args, emit: Callable) -> tuple:
+    """Preflight once, then run each host on its own; any host error fails that host and the next one still runs.
+
+    Returns (status per host, whether the shared preflight failed).
+    """
     try:
         run = preflight(step, doc, fleet_dir, targets, args, emit)
     except Exception as error:  # one message, and every host of the step fails
         failed(error, "", emit)
-        return {host["name"]: "FAILED" for host in targets}
+        return {host["name"]: "FAILED" for host in targets}, True
     statuses = {}
     for host in targets:
         try:
@@ -70,7 +73,7 @@ def run_step(step: str, doc: dict, fleet_dir, targets: list, args, emit: Callabl
         except Exception as error:  # a bad result from one host must not end the run
             failed(error, f"{host['name']}: {step} ", emit)
             statuses[host["name"]] = "FAILED"
-    return statuses
+    return statuses, False
 
 
 def table(hosts: list, steps: list, cells: dict) -> str:
@@ -127,7 +130,7 @@ def main(argv: Optional[list] = None) -> int:
                 if h == doc["source_host"]:
                     cells[h]["fleet"] = "source"
             others = [host for host in doc["hosts"] if host["name"] in hosts and host["name"] != doc["source_host"]]
-            statuses = run_step(step, doc, source.path, others, args, emit) if others else {}
+            statuses = run_step(step, doc, source.path, others, args, emit)[0] if others else {}
             for h, status in statuses.items():
                 cells[h]["fleet"] = status
                 if status not in OK:
@@ -145,16 +148,16 @@ def main(argv: Optional[list] = None) -> int:
         if not targets:
             emit("no hosts")
             continue
-        statuses = run_step(step, doc, source.path, list(targets.values()), args, emit)
+        statuses, shared_failed = run_step(step, doc, source.path, list(targets.values()), args, emit)
         for h, status in statuses.items():
             cells[h][step] = status
-            if status in STOPS:
+            if status in STOPS or shared_failed:
                 stopped.add(h)
 
     print("\n" + table(hosts, steps, cells))
     bad = {c for row in cells.values() for c in row.values()} - OK - {"stopped"}
     if stopped:
-        print(f"\nstopped after a conflict or fleet failure: {', '.join(sorted(stopped))}")
+        print(f"\nstopped after a conflict, a fleet failure, or a failed shared preflight: {', '.join(sorted(stopped))}")
     return 1 if bad else 0
 
 
