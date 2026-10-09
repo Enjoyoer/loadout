@@ -80,7 +80,7 @@ export async function validatePackage(root = defaultRoot) {
     'task-state.mjs': ['createTask', 'readTask', 'updateTask'],
     'agent-routing.mjs': ['resolveAgentRoute', 'selectWorkerRoute', 'buildDelegatedBrief', 'selectTopology', 'isGptOrWebRoute'],
     'quota-pace.mjs': ['readRoutingSettings', 'validateRoutingSettings', 'readQuota', 'poolPace', 'paceLevel'],
-    'route.mjs': ['resolveWorkerRoute', 'recordWorkerRoute'],
+    'route.mjs': ['resolveWorkerRoute', 'recordWorkerRoute', 'resolveCloudFallback'],
     'planner.mjs': ['buildPlannerPrompt', 'preparePlannerLaunch', 'bindPlannerAgent',
       'recordPlannerLaunchFailure', 'collectPlanner', 'authorizePlannerFallback'],
     'web-reviewer.mjs': ['buildReviewPrompt', 'prepareReviewLaunch', 'bindReviewAgent',

@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isGptOrWebRoute, validateRoleRoute } from './agent-routing.mjs';
 import { readTask, updateTask } from './task-state.mjs';
 
 export const CLOUD_ROUTE = Object.freeze({ model: 'claude-opus-5-5[1m]', effort: 'xhigh', fastMode: false });
@@ -234,17 +235,20 @@ export function buildCloudFollowUpCommand({ sessionId, messagePath }) {
   return `claude -p "$(cat "${messagePath}")" --cloud ${sessionId}`;
 }
 
-// Pre-authorized by the toggle: one local managed Worker on the same model and effort, then stop.
-export function authorizeCloudFallback(taskPath) {
-  let route;
+// Pre-authorized by the toggle: one local managed Worker, then stop.
+// The local route comes from route.mjs resolveCloudFallback: the lane's class through the Pi catalog with its quota
+// pace, or an owner-named route, so the fallback runs on Pi without native authorization.
+export function authorizeCloudFallback(taskPath, { route, reason } = {}) {
+  validateRoleRoute('worker', route);
+  if (isGptOrWebRoute(route)) throw Error('cloud fallback stays on a Claude route');
+  if (typeof reason !== 'string' || !reason.trim() || /[\r\n]/.test(reason)) throw Error('cloud fallback reason must be one line');
   updateTask(taskPath, task => {
     if (task.cloud?.status !== 'dead') throw Error('cloud fallback requires a heartbeat-recorded dead cloud lane');
     if (task.cloud.fallback) throw Error('cloud fallback already used; stop and report to the owner');
     if (task.cloud.reason === NO_CREDITS) throw Error('no cloud credits: tell the owner; a local fallback needs their decision');
-    task.cloud.fallback = { authorized_by: 'cloud-toggle', route: { ...CLOUD_ROUTE } };
-    route = Object.freeze({ role: 'worker', source: 'owner-explicit', ...CLOUD_ROUTE });
+    task.cloud.fallback = { authorized_by: 'cloud-toggle', route: structuredClone(route), reason };
   });
-  return route;
+  return Object.freeze({ route, reason });
 }
 
 function readAuthStatus() {

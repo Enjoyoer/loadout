@@ -8,12 +8,13 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { isGptOrWebRoute, materializeFixedRoute, OWNER_RULE_ROUTES, routeReason, selectWorkerRoute,
   WORKER_DEFAULT_ROUTES } from './agent-routing.mjs';
-import { checkCloudEligibility, CLOUD_EDITING_CLASSES, readCloudToggle, resolveCloudWorkerRoute } from './cloud-lane.mjs';
+import { authorizeCloudFallback, checkCloudEligibility, CLOUD_EDITING_CLASSES, readCloudToggle,
+  resolveCloudWorkerRoute } from './cloud-lane.mjs';
 import { readQuota, readRoutingSettings } from './quota-pace.mjs';
 import { readTask, updateTask } from './task-state.mjs';
 
 const usage = 'usage: route.mjs --class <class> [--pq-file FILE] [--catalog FILE] [--cloud-facts FILE] ' +
-  '[--owner-model ID --owner-effort LEVEL [--owner-fast on|off]] [--task TASK_JSON --lane SLUG]';
+  '[--owner-model ID --owner-effort LEVEL [--owner-fast on|off]] [--task TASK_JSON --lane SLUG [--cloud-fallback]]';
 
 // cloud is { toggle, eligibility } from readCloudToggle and checkCloudEligibility, or null when not checked.
 // An owner route is returned unchanged; owner-rule classes (ui) skip the cloud lane and the pace; quota is read
@@ -41,6 +42,17 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
   const quota = rule.range ? await readQuota({ settings: routing, pqFile, home }) : null;
   const route = selectWorkerRoute({ taskKind: taskClass, catalog, quota, settings: routing });
   return Object.freeze({ route, reason: `${note}${routeReason(route)}` });
+}
+
+// After a dead cloud lane, its one local fallback Worker resolves like any local route for the lane's class
+// (default code): Pi catalog label, quota pace, and reason, or an owner-named route. authorizeCloudFallback records it.
+export async function resolveCloudFallback(taskPath, { taskClass = 'code', ownerRoute = null, catalog, pqFile = null,
+  settings = null, home } = {}) {
+  if (!CLOUD_EDITING_CLASSES.includes(taskClass)) throw Error(`cloud fallback class must be one of ${CLOUD_EDITING_CLASSES.join(', ')}`);
+  const cloud = readTask(taskPath).cloud;
+  if (cloud?.status !== 'dead') throw Error('cloud fallback requires a heartbeat-recorded dead cloud lane');
+  const local = await resolveWorkerRoute({ taskClass, ownerRoute, catalog, pqFile, settings, home });
+  return authorizeCloudFallback(taskPath, { route: local.route, reason: `cloud lane dead (${cloud.reason}), local fallback: ${local.reason}` });
 }
 
 // One route per lane. Repairs and resumes reuse the recorded entry; a different route for the lane is refused.
@@ -82,11 +94,13 @@ async function readCatalog(path) {
 
 async function main(argv) {
   const flags = {};
-  for (let i = 0; i < argv.length; i += 2) {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--cloud-fallback') { flags['cloud-fallback'] = true; continue; }
     if (!argv[i].startsWith('--') || argv[i + 1] == null || argv[i + 1].startsWith('--')) throw Error(usage);
-    flags[argv[i].slice(2)] = argv[i + 1];
+    flags[argv[i].slice(2)] = argv[++i];
   }
-  const known = ['class', 'pq-file', 'catalog', 'cloud-facts', 'owner-model', 'owner-effort', 'owner-fast', 'task', 'lane'];
+  const known = ['class', 'pq-file', 'catalog', 'cloud-facts', 'owner-model', 'owner-effort', 'owner-fast', 'task', 'lane',
+    'cloud-fallback'];
   const unknown = Object.keys(flags).find(key => !known.includes(key));
   if (unknown) throw Error(`unknown option --${unknown}; ${usage}`);
   if (!!flags['owner-model'] !== !!flags['owner-effort'] || !!flags.task !== !!flags.lane ||
@@ -103,6 +117,13 @@ async function main(argv) {
   }
   const ownerRoute = flags['owner-model'] ? { role: 'worker', source: 'owner-explicit', model: flags['owner-model'],
     effort: flags['owner-effort'], fastMode: flags['owner-fast'] === 'on' } : null;
+  if (flags['cloud-fallback']) {
+    if (!flags.task) throw Error('--cloud-fallback needs --task and --lane');
+    const resolved = await resolveCloudFallback(resolve(flags.task), { taskClass: flags.class ?? 'code', ownerRoute,
+      catalog: await readCatalog(flags.catalog), pqFile: flags['pq-file'] ?? null });
+    recordWorkerRoute(resolve(flags.task), { lane: flags.lane, ...resolved });
+    return resolved;
+  }
   if (!ownerRoute && !flags.class) throw Error(usage);
   const catalog = ownerRoute ? null : await readCatalog(flags.catalog);
   const cloud = flags['cloud-facts'] ? { toggle: readCloudToggle(),

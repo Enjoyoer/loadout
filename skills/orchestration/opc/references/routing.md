@@ -35,7 +35,7 @@ UI work runs only on Opus xhigh, Fast off. The `ui` class resolves to an owner-e
 
 ## Cloud lane
 
-For `code`, check the [cloud lane](cloud-lane.md "branch:cloud") first: pass `--cloud-facts` with the `checkCloudEligibility` facts, or `cloud: {toggle, eligibility}` to `resolveWorkerRoute`. An eligible lane gets the cloud route. Otherwise the local route applies, and the reason says why the cloud lane was not used.
+For `code`, check the [cloud lane](cloud-lane.md "branch:cloud") first: pass `--cloud-facts` with the `checkCloudEligibility` facts, or `cloud: {toggle, eligibility}` to `resolveWorkerRoute`. An eligible lane gets the cloud route. Otherwise the local route applies, and the reason says why the cloud lane was not used. After a dead cloud lane, `resolveCloudFallback` (or `--cloud-fallback`) gives its one local fallback Worker that same local route.
 
 ## Pace
 
