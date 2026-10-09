@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "22e504408bde7e761f8c232c3f1960d0ba5ff76c",
+  "source_commit": "671d7b9fd98137fe92eba4191309e0ec4e633b77",
   "skill_count": 22,
   "file_count": 125,
   "files": [
@@ -991,8 +991,8 @@
     {
       "path": "plugins/cache-aware-autocompact/server/store.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 3122,
-      "sha256": "84109676420759c8f0b5067f089e197fd4b4fb14250583424bdcc670e19844f8"
+      "bytes": 3390,
+      "sha256": "1ee70d62b2b52c0417718a8d339206ed7785353315e42bafc815117b876998cc"
     },
     {
       "path": "plugins/cache-aware-autocompact/server/timer.ts",
@@ -1033,8 +1033,8 @@
     {
       "path": "plugins/cache-aware-autocompact/test/store.test.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 1081,
-      "sha256": "5073f2d247bf6ee2a00ad8728908fbaba37ebd23424a4d02edb45f6556548c27"
+      "bytes": 1889,
+      "sha256": "8971a577fad2ae81dcaf43b6b7dd378f6958c13ec522d888b01f6e9041536c73"
     },
     {
       "path": "plugins/cache-aware-autocompact/test/timer.test.ts",
