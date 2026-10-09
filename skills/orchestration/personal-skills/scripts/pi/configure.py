@@ -2,6 +2,7 @@
 import argparse, copy, csv, io, json, os, re, shutil, subprocess, sys, tomllib
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 from credential import expand
 
 FILES = ("credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs")
@@ -9,7 +10,8 @@ FILES = ("credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs")
 # Optional read-only Gmail (workspace-mcp). Read-only is enforced three times: the
 # server's --read-only mode (gmail.readonly scope, write tools removed), an explicit
 # --disabled-tools list, and a Pi allowlist on a hidden server. Only `email`, `home`
-# and `port` are configurable; the token and client JSON stay in `home`, owner-only.
+# and `port` are configurable; the token and client JSON stay in `home`, owner-only:
+# POSIX refuses a group- or other-accessible `home`, Windows relies on the runtime ACL step.
 GMAIL_READ_TOOLS = ("search_gmail_messages", "get_gmail_message_content", "get_gmail_messages_content_batch",
                     "get_gmail_thread_content", "get_gmail_threads_content_batch", "get_gmail_attachment_content",
                     "list_gmail_labels")
@@ -23,6 +25,8 @@ def gmail_server(cfg):
     port = cfg.get("port", 47863)
     if not isinstance(port, int) or not 1024 < port < 65536: raise ValueError("gmail port invalid")
     home = expand(cfg["home"])
+    if os.name != "nt" and home.exists() and home.stat().st_mode & 0o077:
+        raise ValueError("gmail home " + str(home) + " is group- or other-accessible; run chmod 700 on it")
     exe = home / "venv" / ("Scripts/workspace-mcp.exe" if os.name == "nt" else "bin/workspace-mcp")
     return {"command": str(exe),
             "args": ["--single-user", "--tools", "gmail", "--read-only", "--disabled-tools", *GMAIL_BLOCKED_TOOLS],
@@ -92,6 +96,9 @@ def build(spec, root):
         base = doc
     if not isinstance(base, str) or not base.startswith(("http://", "https://")):
         raise ValueError("route base URL required")
+    # The router key is sent as a Bearer header, so plain HTTP is allowed only on loopback.
+    if not base.startswith("https://") and urlsplit(base).hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("route base URL must use https unless the host is loopback")
     helper = "!" + " ".join(quote(v) for v in [spec.get("python", sys.executable), str(root / "credential.py"), str(root / "runtime.json")])
     if {'codemode', 'defaultTools', 'extensions', 'skills'} & spec.get('settings', {}).keys():
         raise ValueError('Codemode and its runtime check are fixed, not overridable settings')

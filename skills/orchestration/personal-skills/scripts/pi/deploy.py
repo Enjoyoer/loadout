@@ -101,7 +101,10 @@ def main():
         runtime_before[name] = base64.b64encode(target.read_bytes()).decode() if target.exists() else None
     record = {'config':str(config), 'backup':str(backup), 'before_sha256':sha(before),
         'after_sha256':sha(after), 'root':str(root), 'runtime_before':runtime_before}
-    state.parent.mkdir(parents=True, exist_ok=True); state.write_text(json.dumps(record,indent=2)+'\n'); state.chmod(0o600)
+    state.parent.mkdir(parents=True, exist_ok=True)
+    # Owner-only from creation: the record holds base64 copies of the prior runtime files.
+    with os.fdopen(os.open(state, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o600), 'w') as handle:
+        handle.write(json.dumps(record,indent=2)+'\n')
     app = root / 'app'; pkg = app / 'node_modules/@earendil-works/pi-coding-agent/package.json'
     if not pkg.exists():
         app.mkdir(parents=True, exist_ok=True)
