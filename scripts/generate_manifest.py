@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# Canonical sources that plugins vendor into their own directories; not a plugin, so never published.
+SHARED_PLUGIN_DIR = "_shared"
 
 
 def git(*args: str) -> bytes:
@@ -44,6 +46,8 @@ def build(source: str) -> dict:
     plugin_files = []
     plugins = []
     for path, parts in committed(source, "plugin", 3):
+        if parts[1] == SHARED_PLUGIN_DIR:
+            continue
         blob = git("cat-file", "blob", f"{source}:{path}")
         plugin_files.append({
             "path": path,
