@@ -10,7 +10,7 @@ from urllib.parse import urlparse, parse_qs
 from credential import read_value
 
 
-def forward(url, payload, spec, timeout=120):
+def forward(url, payload, spec):
     parsed = urlparse(url)
     if parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', 'localhost', '::1'}:
         raise ValueError('Paseo MCP requires local HTTP')
@@ -19,7 +19,7 @@ def forward(url, payload, spec, timeout=120):
     if 'mcpCredential' in spec:
         headers['Authorization'] = read_value(spec['mcpCredential'])
     request = urllib.request.Request(url, json.dumps(payload).encode(), headers, method='POST')
-    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=timeout) as response:
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=120) as response:
         raw = response.read().decode()
         if not raw: return None
         if response.headers.get_content_type() == 'text/event-stream':
