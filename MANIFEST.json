@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "4a3820309b3d85b27cbae5cbe5a04a158786b094",
+  "source_commit": "32eac99fd876917da150cce6fb233820331297a2",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -903,7 +903,7 @@
     }
   ],
   "plugin_count": 6,
-  "plugin_file_count": 103,
+  "plugin_file_count": 107,
   "plugins": [
     {
       "id": "cache-aware-autocompact",
@@ -976,8 +976,8 @@
     {
       "path": "plugins/cache-aware-autocompact/server/daemon.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 2559,
-      "sha256": "76417970bcf229a1c9d79bf8ddb51f511a9550038d63f13b043a373e99682567"
+      "bytes": 933,
+      "sha256": "77d618517f661fd1d74d43910ee879050c3b8288227257d2cb0f283e351897dc"
     },
     {
       "path": "plugins/cache-aware-autocompact/server/metrics.ts",
@@ -1020,6 +1020,12 @@
       "plugin": "cache-aware-autocompact",
       "bytes": 1383,
       "sha256": "baba6025c58e92e43ff3b784d0a0d0fe708593c814bba2e498b9dbeff4f7fb7a"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/server/vendor/daemon-target.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 2414,
+      "sha256": "9a903868b0d317b771277d2d2daef5c845f9fd325ed1cc0a44069bd49eec9e70"
     },
     {
       "path": "plugins/cache-aware-autocompact/test/compaction.test.ts",
@@ -1114,8 +1120,8 @@
     {
       "path": "plugins/merged-worker-archiver/server/daemon.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 2529,
-      "sha256": "9a3f435852ab4e4bfb8b8a9cce9fcd65c13b1478964de7ec8accebd72b92d2da"
+      "bytes": 903,
+      "sha256": "1f5ae9de5e0535fa2dce4ce65e90e750c1af829a884cb43fbabd3dec42e2ca7e"
     },
     {
       "path": "plugins/merged-worker-archiver/server/evaluate.ts",
@@ -1152,6 +1158,12 @@
       "plugin": "merged-worker-archiver",
       "bytes": 2084,
       "sha256": "4bd95f50485dc7f38663557174cf032dff32e99cc003fe80cb90afe9be9c45eb"
+    },
+    {
+      "path": "plugins/merged-worker-archiver/server/vendor/daemon-target.ts",
+      "plugin": "merged-worker-archiver",
+      "bytes": 2414,
+      "sha256": "9a903868b0d317b771277d2d2daef5c845f9fd325ed1cc0a44069bd49eec9e70"
     },
     {
       "path": "plugins/merged-worker-archiver/test/config.test.ts",
@@ -1246,14 +1258,20 @@
     {
       "path": "plugins/orphan-project-sweeper/server/daemon.ts",
       "plugin": "orphan-project-sweeper",
-      "bytes": 3600,
-      "sha256": "fc3364281c384d81eee80bd6671ecbe7baf8771fa4e6a312ef6717d02a3ac34d"
+      "bytes": 1705,
+      "sha256": "60924b57b8324bee91614a91deb6a847e7854db879fd96dd7d9036f7e50beb69"
     },
     {
       "path": "plugins/orphan-project-sweeper/server/sweeper.ts",
       "plugin": "orphan-project-sweeper",
       "bytes": 13935,
       "sha256": "eacdd17935e383bca1b6f00dca84eabf01a340a3c2f4277cf15f116335df2f6c"
+    },
+    {
+      "path": "plugins/orphan-project-sweeper/server/vendor/daemon-target.ts",
+      "plugin": "orphan-project-sweeper",
+      "bytes": 2414,
+      "sha256": "9a903868b0d317b771277d2d2daef5c845f9fd325ed1cc0a44069bd49eec9e70"
     },
     {
       "path": "plugins/orphan-project-sweeper/test/config.test.ts",
@@ -1504,8 +1522,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/daemon.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 2123,
-      "sha256": "61d0d8ac2e52106d5990bf23829c81b94e761367b2262ad0429fbfc43b03c4e0"
+      "bytes": 1060,
+      "sha256": "4787dd1d74b95054e1bed0631ff8fb13d54c66facb7094fa4cd8425cd1cbf3ee"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/model.ts",
@@ -1518,6 +1536,12 @@
       "plugin": "usage-limit-auto-resume",
       "bytes": 3493,
       "sha256": "9c64afb3a2cbed07f98665957bf40d2dec0c8e5ce52f7dabfd23bbeeee353b77"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/server/vendor/daemon-target.ts",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 2414,
+      "sha256": "9a903868b0d317b771277d2d2daef5c845f9fd325ed1cc0a44069bd49eec9e70"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/daemon.test.ts",

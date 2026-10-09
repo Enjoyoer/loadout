@@ -7,6 +7,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 ### Changed
 - `frontend-design` is now Anthropic's official frontend-design skill, copied unmodified from the official Claude Code plugin; the skill name is unchanged.
 - `merged-worker-archiver` caps archives per sweep again (`maxArchivesPerSweep`, default 5; the rest are deferred to the next sweep) and treats git-ignored files in a worktree as dirty, so an ignored `.env`, local notes, or `node_modules` now block archival.
+- `cache-aware-autocompact`, `merged-worker-archiver`, `orphan-project-sweeper`, and `usage-limit-auto-resume` now share one fail-closed daemon endpoint resolver. Its canonical source is `plugins/_shared/daemon-target.ts`, each plugin vendors a byte-identical copy, and CI fails when a copy drifts. Endpoint resolution is unchanged.
 
 ### Fixed
 - Fleet push, skills sync, and plugins sync share one destination path check. Plugins sync now also refuses a file path that leaves the plugin root, and all three refuse a dangling symlink among a destination's parent directories.

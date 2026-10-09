@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    # Every pushed branch and tag gets the secret scan; the other jobs run only for main and pull requests.
+    # Every pushed branch and tag gets the secret scan and the vendored helper check; the other jobs run only for main and pull requests.
     branches: ['**']
     tags: ['**']
   pull_request:
@@ -83,6 +83,10 @@ jobs:
             fi
           fi
           "$RUNNER_TEMP/gitleaks" git --redact --verbose --no-banner --log-opts="$LOG_OPTS" .
+      - name: Check vendored plugin helpers
+        # Runs even when the scan fails, so both results are reported.
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_vendored.py
 
   plugins:
     # Ubuntu legs keep their original check names, which branch protection may require.
