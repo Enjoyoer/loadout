@@ -338,6 +338,26 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
   };
 }
 
+// Undoes a send claim after the transport refused the message. It starts from the current stored value and resets only
+// the fields the claim set, so a concurrent writer's changes survive. A turn that started after the claim means the
+// message may have reached the daemon after all, so the record turns uncertain instead of being re-armed for a second send.
+export function releaseClaim(current: ResumeRecord, before: ResumeRecord, claimed: ResumeRecord, now = Date.now()): ResumeRecord {
+  if (current.state !== "resuming") return current;
+  const updatedAt = new Date(now).toISOString();
+  if (current.resumeTurnId && current.resumeTurnId !== before.resumeTurnId) {
+    return { ...current, state: "uncertain", terminalReason: "turn-started-during-failed-send", updatedAt };
+  }
+  const claimAttempt = claimed.attempts.at(-1);
+  return {
+    ...current,
+    state: before.state,
+    sentAt: current.sentAt === claimed.sentAt ? before.sentAt : current.sentAt,
+    verificationDeadlineAt: current.verificationDeadlineAt === claimed.verificationDeadlineAt ? before.verificationDeadlineAt : current.verificationDeadlineAt,
+    attempts: current.attempts.filter((attempt) => !(attempt.messageId === claimAttempt?.messageId && attempt.at === claimAttempt.at)),
+    updatedAt,
+  };
+}
+
 export function shouldResume(record: ResumeRecord, agent: AgentSnapshot, config: ResumeConfig, now = Date.now()): { ok: true } | { ok: false; reason: string } {
   if (record.state !== "parked" && record.state !== "detected") return { ok: false, reason: `state=${record.state}` };
   // Failed-turn records always resume; only the backoff (capped at its last step) limits them.

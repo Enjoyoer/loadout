@@ -3,7 +3,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { PaseoApi } from "@getpaseo/client";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
 import { openDaemonClient } from "./server/daemon.ts";
-import { afterTransientFailure, buildFailedTransientRecord, buildRecord, buildTransientRecord, failureSignature, lastUserMessage, continuationPrompt, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, shouldResume, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeRecord, type ResumeState } from "./server/model.ts";
+import { afterTransientFailure, buildFailedTransientRecord, buildRecord, buildTransientRecord, failureSignature, lastUserMessage, continuationPrompt, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, releaseClaim, shouldResume, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeRecord, type ResumeState } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
@@ -124,9 +124,10 @@ export default function contribute(server: PluginServerContext, openClient = ope
       log(`${record.kind === "transient" ? "retry" : "resume"}-sent agentId=${record.agentId} messageId=${stableMessageId}`);
     } catch (error) {
       if (isTransportNotConnected(error)) {
-        // Undo the claim and stay parked; the next sweep opens a fresh client.
-        await store.update(record.recordId, (value) => value.state === "resuming" ? { ...record, updatedAt: new Date().toISOString() } : value);
-        log(`send-deferred agentId=${record.agentId} recordId=${record.recordId} reason=${JSON.stringify(errorMessage(error))}`);
+        // Undo the claim and stay parked; the next sweep opens a fresh client. A turn that started meanwhile turns it uncertain instead.
+        const released = await store.update(record.recordId, (value) => releaseClaim(value, record, claimed));
+        if (released?.state === "uncertain") log(`resume-uncertain agentId=${record.agentId} recordId=${record.recordId} reason=${released.terminalReason}`);
+        else log(`send-deferred agentId=${record.agentId} recordId=${record.recordId} reason=${JSON.stringify(errorMessage(error))}`);
         return;
       }
       await store.update(record.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: `send:${errorMessage(error)}`, updatedAt: new Date().toISOString() }));
@@ -196,7 +197,11 @@ export default function contribute(server: PluginServerContext, openClient = ope
       if (!event.turnId) return;
       const active = await store.activeForAgent(event.agent.id);
       if (!active || !["resuming", "verifying"].includes(active.state) || active.resumeTurnId) return;
-      await store.update(active.recordId, (value) => ({ ...value, resumeTurnId: event.turnId, resumeStartedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+      // Check again inside the update: a rolled-back claim must not pick up a turn identity.
+      const next = await store.update(active.recordId, (value) => ["resuming", "verifying"].includes(value.state) && !value.resumeTurnId
+        ? { ...value, resumeTurnId: event.turnId, resumeStartedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+        : value);
+      if (next?.resumeTurnId !== event.turnId) return;
       log(`resume-turn-started agentId=${event.agent.id} turnId=${event.turnId}`);
     })().catch((error) => failed("turn-started-handler-failed", error));
   });
