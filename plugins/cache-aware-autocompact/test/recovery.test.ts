@@ -49,8 +49,9 @@ async function fixture(run: (f: ReturnType<typeof harness> & { store: StateStore
   const dir = await mkdtemp(path.join(root, "rearm-test-"));
   const file = path.join(dir, "state.json");
   const f = { ...harness(), file, store: new StateStore(file) };
-  // A state write can still be landing when a test ends; rm retries ENOTEMPTY.
-  try { await run(f); } finally { await f.cleanup(); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
+  // Drain every scheduler and store before the directory goes, so no state write is still landing in it.
+  // rm still retries, since Windows can hold a just-written file open briefly.
+  try { await run(f); } finally { await f.dispose(f.store); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
 }
 function harness() {
   let snapshots = [agent()];
@@ -59,6 +60,9 @@ function harness() {
   let compactFails = false;
   let sendGate: Promise<void> | null = null;
   let cleanup: () => Promise<void> = async () => {};
+  // Every scheduler started and every store handed to one, for the final teardown.
+  const stops: Array<() => Promise<void>> = [];
+  const stores = new Set<StateStore>();
   let writeJson: WriteJson | undefined;
   let snapshotListener: (() => void) | undefined;
   const updates = new Set<PaseoAgentUpdateHandler>();
@@ -125,12 +129,21 @@ function harness() {
     },
     writeStateWith(writer: WriteJson) { writeJson = writer; },
     start(store: StateStore | undefined, armed = true, piGptEnabled = false, extendIdleCompaction = true) {
+      if (store) stores.add(store);
       cleanup = startScheduler(server, { store, writeJson, timerApi: timers, metrics: { append: async (record) => { metrics.push(record); } },
         now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed, piGptEnabled, extendIdleCompaction }),
         openApi: async () => { if (bootstrapFails) throw new Error("Unavailable"); return api; },
         log: (action, data) => { logs.push({ action, data }); } });
+      stops.push(cleanup);
     },
     cleanup() { return cleanup(); },
+    // Final teardown only; a test reloading the scheduler calls cleanup() and may pass the same store again.
+    // Stops every scheduler (again, for those already stopped, which is harmless), then closes every store
+    // passed in, since a scheduler leaves those open: close waits for the store's write in flight and drops later ones.
+    async dispose(...owned: StateStore[]) {
+      for (const stop of stops) await stop();
+      for (const store of new Set([...stores, ...owned])) await store.close();
+    },
     async recovered() { await until(() => logs.some((line) => line.action === "rearm-summary")); },
   };
 }
