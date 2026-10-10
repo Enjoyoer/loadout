@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Owner cloud toggle: route eligible editing Workers to one Claude Code cloud session.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isGptOrWebRoute, validateRoleRoute } from './agent-routing.mjs';
 import { readTask, updateTask } from './task-state.mjs';
 
@@ -63,11 +63,15 @@ export function setCloudRepo(repo, allowed, { path = defaultReposPath() } = {}) 
 }
 
 // Optional cloud profile: a second Claude Code config directory (CLAUDE_CONFIG_DIR) whose claude.ai login holds the
-// cloud credits, while the host's default login stays as it is. Missing means the default login. POSIX hosts only,
-// because the launch and follow-up commands set it as an sh prefix.
+// cloud credits, while the host's default login stays as it is. Missing means the default login. On POSIX the launch
+// and follow-up commands set it as an sh prefix; on Windows they run this script's launch and follow-up subcommands,
+// which pass it in the environment of a claude started without a shell.
+const WINDOWS = process.platform === 'win32';
+// Characters a path may not hold: quotes and shell expansion, plus backslash on POSIX and % and ! on Windows.
+const UNSAFE_PATH = WINDOWS ? /['"$`%!\r\n]/ : /['"$`\\\r\n]/;
 function profileDir(value) {
-  const dir = (value ?? '').trim().replace(/^~(?=$|\/)/, homedir());
-  if (!isAbsolute(dir) || /['"$`\\\r\n]/.test(dir)) throw Error('cloud profile must be one absolute directory path without quotes');
+  const dir = (value ?? '').trim().replace(/^~(?=$|[\\/])/, homedir());
+  if (!isAbsolute(dir) || UNSAFE_PATH.test(dir)) throw Error('cloud profile must be one absolute directory path without quotes');
   if (!existsSync(dir) || !statSync(dir).isDirectory()) throw Error(`cloud profile directory missing: ${dir}`);
   return dir;
 }
@@ -76,14 +80,12 @@ function profileDir(value) {
 // so a broken profile can never bill the default account silently.
 export function readCloudProfile({ path = defaultProfilePath() } = {}) {
   try { lstatSync(path); } catch (error) { if (error?.code === 'ENOENT') return null; throw error; }
-  if (process.platform === 'win32') throw Error(`cloud profile is supported on POSIX hosts only: ${path}`);
   return profileDir(readFileSync(path, 'utf8'));
 }
 
 // Setting a profile requires that directory's claude.ai login (readAuthStatus with the new profile); none clears it.
 export function setCloudProfile(value, { path = defaultProfilePath(), authStatus = readAuthStatus } = {}) {
   if (value === 'none') { rmSync(path, { force: true }); return null; }
-  if (process.platform === 'win32') throw Error('cloud profile is supported on POSIX hosts only');
   const dir = profileDir(value);
   const status = typeof authStatus === 'function' ? authStatus(dir) : authStatus;
   if (status?.authMethod !== 'claude.ai') throw Error(`cloud profile ${dir} is not logged in to claude.ai`);
@@ -147,8 +149,16 @@ export function buildCloudBrief({ brief, branch, baseRef }) {
     '- Do not edit project memory files (STATUS.html, LESSONS.md).\n';
 }
 
+// Windows: PowerShell 5.1 and cmd.exe mangle a brief's quotes on a native command line, so the command runs this
+// script, which reads the file and starts claude with an argv array and the profile in its environment.
+const SCRIPT = fileURLToPath(import.meta.url);
+const CLOUD_MODEL_ARGS = ['--model', CLOUD_ROUTE.model, '--effort', CLOUD_ROUTE.effort];
+const plainPath = path => text(path) && !(WINDOWS ? /["$`%!\r\n]/ : /["$`\\]/).test(path);
+const windowsProfileArg = profile => `--profile "${profile ? profileDir(profile) : 'none'}"`;
+
 export function buildCloudLaunchCommand({ briefPath, profile = readCloudProfile() }) {
-  if (!text(briefPath) || /["$`\\]/.test(briefPath)) throw Error('plain brief file path required');
+  if (!plainPath(briefPath)) throw Error('plain brief file path required');
+  if (WINDOWS) return `node "${SCRIPT}" launch "${briefPath}" ${windowsProfileArg(profile)}`;
   return `${profilePrefix(profile)}claude --cloud "$(cat "${briefPath}")" ${cloudModelFlags}`;
 }
 
@@ -269,9 +279,10 @@ export function buildCloudFollowUp({ branch }) {
 
 // Print mode queues a follow-up into the existing session; without -p the CLI reports attaching as not enabled.
 export function buildCloudFollowUpCommand({ sessionId, messagePath, profile = readCloudProfile() }) {
-  if (!/^session_[A-Za-z0-9_-]+$/.test(sessionId ?? '') || !text(messagePath) || /["$`\\]/.test(messagePath)) {
+  if (!/^session_[A-Za-z0-9_-]+$/.test(sessionId ?? '') || !plainPath(messagePath)) {
     throw Error('cloud session id and plain message file path required');
   }
+  if (WINDOWS) return `node "${SCRIPT}" follow-up ${sessionId} "${messagePath}" ${windowsProfileArg(profile)}`;
   return `${profilePrefix(profile)}claude -p "$(cat "${messagePath}")" --cloud ${sessionId} ${cloudModelFlags}`;
 }
 
@@ -341,9 +352,30 @@ function pushToFleet(hosts, args) {
   }
 }
 
+// Start claude without a shell: the file's text is one argv element, and the profile travels in the environment.
+function runClaude(args, profileArg) {
+  if (profileArg == null) throw Error('--profile <dir>|none required');
+  const profile = profileArg === 'none' ? null : profileDir(profileArg);
+  const env = { ...process.env };
+  if (profile) env.CLAUDE_CONFIG_DIR = profile; else delete env.CLAUDE_CONFIG_DIR;
+  const done = spawnSync('claude', [...args, ...CLOUD_MODEL_ARGS], { stdio: 'inherit', env });
+  if (done.error) throw done.error;
+  process.exitCode = done.status ?? 1;
+}
+
 function main(argv) {
   const [state, ...rest] = argv;
   const flag = name => { const i = rest.indexOf(name); return i === -1 ? null : rest[i + 1]; };
+  if (state === 'launch') {
+    if (!plainPath(rest[0])) throw Error('usage: cloud-lane.mjs launch <brief file> --profile <dir>|none');
+    return runClaude(['--cloud', readFileSync(rest[0], 'utf8')], flag('--profile'));
+  }
+  if (state === 'follow-up') {
+    if (!/^session_[A-Za-z0-9_-]+$/.test(rest[0] ?? '') || !plainPath(rest[1])) {
+      throw Error('usage: cloud-lane.mjs follow-up <session id> <message file> --profile <dir>|none');
+    }
+    return runClaude(['-p', readFileSync(rest[1], 'utf8'), '--cloud', rest[0]], flag('--profile'));
+  }
   // Refuse a bad host before any local change or ssh call.
   const hosts = fleetHosts(flag('--fleet'));
   if (state === 'status') {
@@ -369,7 +401,8 @@ function main(argv) {
     return;
   }
   if (!['on', 'off', 'all'].includes(state)) {
-    throw Error('usage: cloud-lane.mjs on|off|all|status | allow|disallow <owner/repo|owner/*> [--fleet host,...] | profile <dir>|none');
+    throw Error('usage: cloud-lane.mjs on|off|all|status | allow|disallow <owner/repo|owner/*> [--fleet host,...] | profile <dir>|none' +
+      ' | launch <brief file> --profile <dir>|none | follow-up <session id> <message file> --profile <dir>|none');
   }
   setCloudToggle(state, { authStatus: state === 'off' ? null : readAuthStatus() });
   console.log(`local: ${state}`);
