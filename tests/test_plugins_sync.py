@@ -74,13 +74,22 @@ class RemotePluginTest(Fixture):
         return self.home / "plugins/demo" / rel
 
     def run_remote(self, files=None, stage=("demo",), install=("demo",), root="~/plugins", dry_run=False, pin=">=0.9.2 <0.11.0",
-                   migrate=False):
+                   migrate=False, removed=None, edit=None):
         files = files or {rel: blob(data) for rel, data in PLUGIN_FILES.items()}
         payload = {"dry_run": dry_run, "migrate_path": migrate, "plugin_root": root, "stage": list(stage), "install": list(install),
-                   "plugins": {"demo": {"pin": pin, "files": files}}}
+                   "plugins": {"demo": {"pin": pin, "files": files, "removed": removed or {}}}}
         env = {**self.env, "HOME": str(self.home), "USERPROFILE": str(self.home)}
+        node = ["node"]
+        if edit:
+            # Preloaded into the host program: `paseo daemon status`, after preflight, also edits this file.
+            hook = self.root / "edit-on-daemon-status.js"
+            hook.write_text('const cp = require("child_process"), run = cp.execFileSync;\n'
+                            'cp.execFileSync = (file, args, ...rest) => { const out = run(file, args, ...rest);\n'
+                            '  if ((args || []).includes("status")) require("fs").writeFileSync(process.env.LOADOUT_TEST_EDIT, "edited during the sync\\n");\n'
+                            '  return out; };\n')
+            node, env = ["node", "-r", str(hook)], {**env, "LOADOUT_TEST_EDIT": str(edit)}
         raw, digest = fleet.envelope(plugins_sync.REMOTE_JS, payload)
-        done = subprocess.run(["node", "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True, env=env)
+        done = subprocess.run([*node, "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True, env=env)
         return fleet.parse_result(done.stdout)
 
     def test_stage_check_install_confirm_then_same(self):
@@ -111,6 +120,36 @@ class RemotePluginTest(Fixture):
         self.assertEqual((got["status"], got["conflicts"]), ("conflict", ["demo/server/index.ts"]))
         self.assertFalse(self.staged("server/new.ts").exists())
         self.assertEqual(self.calls(), "")
+
+    def test_obsolete_file_edited_after_preflight_is_kept(self):
+        v1 = {**{r: blob(d) for r, d in PLUGIN_FILES.items()}, "server/old.ts": blob(b"old\n")}
+        self.assertEqual(self.run_remote(v1)["status"], "updated")
+        (self.root / "calls.log").unlink()
+        # old.ts matches its published version at preflight and is edited while the daemon is asked its version.
+        got = self.run_remote(removed={"server/old.ts": [hashlib.sha256(b"old\n").hexdigest()]}, edit=self.staged("server/old.ts"))
+        self.assertEqual(got["status"], "failed", got)
+        self.assertIn("changed since preflight, not removed: " + str(self.staged("server/old.ts")), got["error"])
+        self.assertEqual(self.staged("server/old.ts").read_text(), "edited during the sync\n")
+        self.assertEqual(sorted(p.name for p in self.staged("server").iterdir()), ["index.ts", "old.ts"])
+        self.assertNotIn("plugin reload", self.calls())
+
+    def test_staged_file_edited_after_preflight_is_not_replaced(self):
+        self.run_remote()
+        files = {rel: blob(data) for rel, data in PLUGIN_FILES.items()}
+        files["server/index.ts"] = blob(b"export const v = 2\n", [hashlib.sha256(b"export {}\n").hexdigest()])
+        got = self.run_remote(files, edit=self.staged("server/index.ts"))
+        self.assertEqual(got["status"], "failed", got)
+        self.assertIn("changed since preflight, nothing written there: " + str(self.staged("server/index.ts")), got["error"])
+        self.assertEqual(self.staged("server/index.ts").read_text(), "edited during the sync\n")
+        self.assertEqual(sorted(p.name for p in self.staged("server").iterdir()), ["index.ts"])
+
+    def test_path_that_aliases_on_windows_or_macos_is_refused(self):
+        for rel in ("..\\sibling/new.js", "server/index.ts:stream", "server/new.js.", "server/INDEX.ts"):
+            with self.subTest(rel=rel):
+                got = self.run_remote({**{r: blob(d) for r, d in PLUGIN_FILES.items()}, rel: blob(b"x")})
+                self.assertEqual(got["status"], "failed", got)
+                self.assertTrue(got["error"].startswith(("invalid path from source: ", "paths from source name one file")), got)
+                self.assertFalse((self.home / "plugins").exists())
 
     def test_symlinked_ancestor_is_refused(self):
         elsewhere = self.home / "elsewhere"

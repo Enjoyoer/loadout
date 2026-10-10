@@ -16,12 +16,22 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import json
 import os
+import re
 import sys
+import tempfile
+import unicodedata
+import time
 from pathlib import Path
 from typing import Callable, Optional
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 import fleet
 import publication
@@ -32,6 +42,13 @@ MAX_LISTED = 8
 OVERLAY = "skills"
 OVERLAY_HISTORY = ".loadout-overlay.json"
 OVERLAY_SKIP = {".DS_Store", "__pycache__", OVERLAY_HISTORY}
+# Every read-modify-write of the overlay history holds an OS lock on this file beside it, waiting at most
+# this long for another sync. The file is never deleted, and the OS drops the lock when its holder exits.
+OVERLAY_LOCK = OVERLAY_HISTORY + ".lock"
+OVERLAY_LOCK_SECONDS = 15
+# A path part a Windows host splits, drops or maps (backslash, colon, control character, trailing dot or
+# space, device name); hosts refuse such a path, so the overlay is refused here first.
+NON_PORTABLE = re.compile(r"[\\:\x00-\x1f]|[. ]$|^(con|prn|aux|nul|com\d|lpt\d)(\.|$)", re.I)
 
 
 def payload_files(pub: publication.Publication, only: Optional[set], exclude: set = frozenset()) -> dict:
@@ -80,18 +97,20 @@ def overlay_files(fleet_dir: Path, published: set, prior_by_dest: dict) -> dict:
 
     Every hash a host has accepted is kept in skills/.loadout-overlay.json, so a
     later version replaces an installed earlier one while hand edits stay conflicts.
+    Each file is marked private, so a host writes it owner-only.
     """
     root = fleet_dir / OVERLAY
     if not root.is_dir():
         return {}
     history = overlay_history(fleet_dir)
-    files = {}
+    files, folded = {}, {}
+    published_folded = {name.casefold() for name in published}
     for skill in sorted(root.iterdir()):
         if skill.name.startswith(".") or skill.name in OVERLAY_SKIP:
             continue
         if skill.is_symlink() or not skill.is_dir():
             raise fleet.FleetError(f"overlay entry is not a skill directory: {skill.name}")
-        if skill.name in published:
+        if skill.name.casefold() in published_folded:
             raise fleet.FleetError(f"overlay skill {skill.name} has the same name as a published skill")
         if not (skill / "SKILL.md").is_file():
             raise fleet.FleetError(f"overlay skill {skill.name} has no SKILL.md")
@@ -103,20 +122,75 @@ def overlay_files(fleet_dir: Path, published: set, prior_by_dest: dict) -> dict:
                 raise fleet.FleetError(f"symlink in the overlay: {rel.as_posix()}")
             if not path.is_file():
                 continue
+            dest = rel.as_posix()
+            # Hosts refuse a path that is not portable, or two that are one file on macOS or Windows.
+            key = unicodedata.normalize("NFC", dest).casefold()
+            if any(NON_PORTABLE.search(part) for part in rel.parts) or key in folded:
+                raise fleet.FleetError(f"overlay path is not portable to every host: {dest}"
+                                       + (f" (one file with {folded[key]} on macOS or Windows)" if key in folded else ""))
+            folded[key] = dest
             data = path.read_bytes()
             digest = hashlib.sha256(data).hexdigest()
-            dest = rel.as_posix()
             prior = set(history.get(dest, [])) | prior_by_dest.get(dest, set())
-            files[dest] = {"sha256": digest, "data": base64.b64encode(data).decode(), "prior": sorted(prior)}
+            files[dest] = {"sha256": digest, "data": base64.b64encode(data).decode(), "prior": sorted(prior),
+                           "private": True}
     return files
 
 
+@contextlib.contextmanager
+def overlay_lock(fleet_dir: Path):
+    """Hold the overlay history's OS lock, waiting at most OVERLAY_LOCK_SECONDS for another sync."""
+    lock = fleet_dir / OVERLAY / OVERLAY_LOCK
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        deadline = time.monotonic() + OVERLAY_LOCK_SECONDS
+        while True:
+            try:
+                if os.name == "nt":
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if time.monotonic() >= deadline:
+                    raise fleet.FleetError(f"the overlay history stayed locked for {OVERLAY_LOCK_SECONDS}s by another "
+                                           f"skills sync: {lock}") from error
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                os.lseek(fd, 0, os.SEEK_SET)
+                with contextlib.suppress(OSError):
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    finally:
+        os.close(fd)  # also releases the lock
+
+
 def record_overlay(fleet_dir: Path, files: dict) -> None:
-    """Add the overlay hashes a host has accepted to the overlay history."""
-    history = overlay_history(fleet_dir)
-    merged = {**history, **{dest: sorted(set(history.get(dest, [])) | {f["sha256"]}) for dest, f in files.items()}}
-    if merged != history:
-        (fleet_dir / OVERLAY / OVERLAY_HISTORY).write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n")
+    """Add the overlay hashes a host has accepted to the overlay history.
+
+    One read-modify-write under the history's lock, so a concurrent sync's hashes are kept, written whole
+    through an exclusively created temp file and an atomic replace, so a failed write leaves the old history.
+    """
+    path = fleet_dir / OVERLAY / OVERLAY_HISTORY
+    with overlay_lock(fleet_dir):
+        history = overlay_history(fleet_dir)
+        merged = {**history, **{dest: sorted(set(history.get(dest, [])) | {f["sha256"]}) for dest, f in files.items()}}
+        if merged == history:
+            return
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=OVERLAY_HISTORY + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as out:
+                out.write(json.dumps(merged, indent=2, sort_keys=True) + "\n")
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
 
 
 def global_payload(fleet_doc: dict, fleet_dir: Path) -> Optional[dict]:

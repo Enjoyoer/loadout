@@ -1,10 +1,14 @@
 // Install verified Loadout skill files and global instructions on this host.
 // Shipped by skills_sync.py through fleet.run_node in a digest-checked stdin envelope; process.argv[2] is the gzip+base64 JSON payload
-// {dry_run, clients, files: {"<skill>/<file>": {sha256, data, prior}},
+// {dry_run, clients, files: {"<skill>/<file>": {sha256, data, prior, private}},
 //  global: {sha256, data, targets: {client: path}} | null}.
 // Preflight first, write second: a file may be replaced only when it matches the
 // desired blob or a prior publication (skills), or the last synced version
 // (global instructions). Anything else is a conflict and nothing is written.
+// The record also accepts a skill file's last synced version, and a version a cut-off run
+// recorded as pending before writing it. Each write checks its file again right before it.
+// A private file (from the fleet's overlay) is written 0600 in 0700 directories it creates, and
+// one installed before that loses group and other access.
 // global.claude may be "managed-settings:claudeMd": the claudeMd string field of
 // Claude Code's managed-settings.json, preflighted by value; only that field changes.
 // keep (null: retire nothing) names skills never retired. The record's skills section lists each
@@ -112,6 +116,12 @@ function writeManaged(w) {
   const { plan, bytes, elevate } = w.managed, st = plan.st, file = w.file;
   const mode = st ? st.mode & 0o7777 : 0o644;
   const backup = st ? `${file}.bak-${stamp}` : null, staged = file + ".loadout-tmp-" + crypto.randomBytes(8).toString("hex");
+  // Right before the replace, the file must still hold what preflight read.
+  const check = () => {
+    checkAncestors(fs, path, path.dirname(file), file);
+    if (st ? fs.readFileSync(file, "utf8") !== plan.text : fs.existsSync(file))
+      throw new Error("changed since preflight, nothing written there: " + file + (backup ? "; backup at " + backup : ""));
+  };
   if (!elevate) {
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -119,7 +129,7 @@ function writeManaged(w) {
       replaceFile(fs, file, bytes, mode, fd => {
         fs.fchmodSync(fd, mode);
         if (st && process.platform !== "win32") try { fs.fchownSync(fd, st.uid, st.gid); } catch { /* keep the user's group */ }
-      });
+      }, check);
     } catch (e) {
       if (e.code !== "EACCES" && e.code !== "EPERM") throw e;
       throw new Error(`not permitted to write ${file} (${e.code})`
@@ -132,11 +142,17 @@ function writeManaged(w) {
       fs.writeFileSync(tmp, bytes, { mode: 0o600 });
       if (backup) sudo("cp", "-p", file, backup); else sudo("mkdir", "-p", path.dirname(file));
       sudo("cp", tmp, staged);
-      if (st) sudo("chown", `${st.uid}:${st.gid}`, staged);
-      sudo("chmod", mode.toString(8), staged);
-      const own = fs.lstatSync(staged);
-      if (!own.isFile() || own.uid !== (st ? st.uid : 0)) throw new Error("staged file is not ours: " + staged);
-      sudo("mv", "-f", staged, file);
+      try {
+        if (st) sudo("chown", `${st.uid}:${st.gid}`, staged);
+        sudo("chmod", mode.toString(8), staged);
+        const own = fs.lstatSync(staged);
+        if (!own.isFile() || own.uid !== (st ? st.uid : 0)) throw new Error("staged file is not ours: " + staged);
+        check();
+        sudo("mv", "-f", staged, file);
+      } catch (e) {
+        try { sudo("rm", "-f", staged); } catch { /* the error on its way out says more */ }
+        throw e;
+      }
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   }
   const now = JSON.parse(fs.readFileSync(file, "utf8")), after = fs.statSync(file);
@@ -146,15 +162,15 @@ function writeManaged(w) {
     throw new Error("verification failed after write: " + w.label + (backup ? "; backup at " + backup : ""));
 }
 
-// Returns "same", "added", "changed", or "conflict".
+// Returns [kind, have]: "same", "added", "changed", or "conflict", and the hash a changed file has now.
 function plan(file, root, want, allowed) {
-  checkAncestors(fs, path, root, file);
-  if (!fs.existsSync(file)) return "added";
-  const st = fs.lstatSync(file);
-  if (st.isSymbolicLink() || !st.isFile()) return "conflict";
+  checkAncestors(fs, path, root, file, baseFor(path, home, root));
+  let st;
+  try { st = fs.lstatSync(file); } catch (e) { if (e.code === "ENOENT") return ["added", null]; throw e; }
+  if (st.isSymbolicLink() || !st.isFile()) return ["conflict"];
   const have = sha(fs.readFileSync(file));
-  if (have === want) return "same";
-  return allowed.includes(have) ? "changed" : "conflict";
+  if (have === want) return ["same"];
+  return allowed.includes(have) ? ["changed", have] : ["conflict"];
 }
 
 try {
@@ -179,15 +195,25 @@ try {
     }
   }
   const data = {};
+  // Portable paths, so a file stays inside its own skill directory on every host.
+  checkPaths(Object.keys(p.files));
   for (const [rel, f] of Object.entries(p.files)) {
-    const parts = rel.split("/");
-    if (parts.length < 2 || parts.some(x => !x || x === "." || x === "..")) throw new Error("invalid path from source: " + rel);
+    if (rel.split("/").length < 2) throw new Error("invalid path from source: " + rel);
     data[rel] = Buffer.from(f.data, "base64");
     if (sha(data[rel]) !== f.sha256) throw new Error("hash mismatch in transfer: " + rel);
   }
   const record = fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, "utf8")) : {};
-  const before = JSON.stringify(record), owned = record.skills || {}, roots = [], drops = [];
+  const owned = record.skills || {}, pending = record.pending || {}, roots = [], drops = [], settled = [];
   const writes = [], records = {};
+  let saved = JSON.stringify(record);
+  const save = () => {
+    if (JSON.stringify(record) === saved) return;
+    fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+    replaceFile(fs, recordPath, JSON.stringify(record, null, 2), 0o600);
+    saved = JSON.stringify(record);
+  };
+  // Versions this sync wrote at key that the record still accepts: pending ones, and a skill file's last synced one.
+  const accepted = (key, root, rel) => [...(pending[key] || []), ...(root && owned[root] && owned[root][rel] ? [owned[root][rel]] : [])];
   // A skill directory's entries, sorted: file hash, "dir", or false for anything else; null if it is not a directory.
   const snapshot = (root, dir) => {
     if (!fs.existsSync(dir) || !fs.lstatSync(dir).isDirectory()) return null;
@@ -203,21 +229,23 @@ try {
   const mine = (root, tree) => !!tree && tree.every(([r, h]) => h === "dir" || (h && owned[root][r] === h));
   const retire = (root, skill, label) => {
     const dir = path.join(root, skill);
-    checkAncestors(fs, path, root, dir);
+    checkAncestors(fs, path, root, dir, baseFor(path, home, root));
     const tree = snapshot(root, dir), ours = mine(root, tree);
     if (fs.existsSync(dir)) result[ours ? "retired" : "kept"].push(label);
     drops.push({ root, skill, dir: ours && dir, tree, label });
   };
-  const consider = (file, root, want, allowed, label, bytes, isGlobal) => {
-    const kind = plan(file, root, want, allowed);
+  const consider = (file, root, want, allowed, label, bytes, isGlobal, isPrivate) => {
+    const [kind, have] = plan(file, root, want, allowed);
+    settled.push(file);
     if (kind === "conflict") result.conflicts.push(label);
     else if (kind === "same") { result.same++; if (isGlobal) records[file] = want; }
-    else writes.push({ file, key: file, label, kind, data: bytes, global: isGlobal });
+    else writes.push({ file, key: file, root, label, kind, have: have ? [have] : null, data: bytes, global: isGlobal, private: !!isPrivate });
   };
   const considerManaged = (label, g) => {
     const file = managedSettingsPath(), key = file + "#claudeMd", claudeMd = g.toString("utf8");
     if (!Buffer.from(claudeMd, "utf8").equals(g)) throw new Error("global instructions are not UTF-8 text; claudeMd needs text");
-    const plan = planManaged(file, p.global.sha256, record[key] ? [record[key]] : []);
+    const plan = planManaged(file, p.global.sha256, [...(record[key] ? [record[key]] : []), ...accepted(key)]);
+    settled.push(key);
     if (plan.kind === "conflict") return result.conflicts.push(`${label} (managed settings claudeMd${plan.why ? ": " + plan.why : ""})`);
     if (plan.kind === "same") { result.same++; records[key] = p.global.sha256; return; }
     const elevate = !canWrite(file);
@@ -232,9 +260,11 @@ try {
     if (root) {
       roots.push(root);
       for (const [rel, f] of Object.entries(p.files))
-        consider(path.join(root, ...rel.split("/")), root, f.sha256, f.prior, client + ":" + rel, data[rel], false);
+        consider(path.join(root, ...rel.split("/")), root, f.sha256, [...f.prior, ...accepted(path.join(root, ...rel.split("/")), root, rel)],
+          client + ":" + rel, data[rel], false, f.private);
+      // A skill renamed only in case is the kept skill itself on a macOS or Windows host, so it stays.
       for (const skill of p.keep ? new Set(Object.keys(owned[root] || {}).map(r => r.split("/")[0])) : [])
-        if (!p.keep.includes(skill)) retire(root, skill, client + ":" + skill);
+        if (!p.keep.some(k => foldPath(k) === foldPath(skill))) retire(root, skill, client + ":" + skill);
     }
     if (p.global && p.global.targets[client]) {
       const g = Buffer.from(p.global.data, "base64");
@@ -242,7 +272,7 @@ try {
       const target = p.global.targets[client];
       if (target === MANAGED_CLAUDE_MD && client === "claude") { considerManaged(client + ":global", g); continue; }
       const file = globalFile(client, target);
-      consider(file, path.dirname(file), p.global.sha256, record[file] ? [record[file]] : [], client + ":global", g, true);
+      consider(file, path.dirname(file), p.global.sha256, [...(record[file] ? [record[file]] : []), ...accepted(file)], client + ":global", g, true);
     }
   }
   if (result.conflicts.length) { result.status = "conflict"; done(5); }
@@ -255,19 +285,46 @@ try {
       throw new Error(`${w.file} is not writable; run the sync from an administrator shell; nothing written`);
     try { sudo("true"); } catch (e) { throw new Error("elevation needs a password; nothing written (" + e.message + ")"); }
   }
+  // Before any change, record each version this run writes as pending, so a run cut off part way
+  // recognizes its own writes next time instead of reporting them as local edits.
+  for (const w of writes) pending[w.key] = [...new Set([...(pending[w.key] || []), sha(w.data)])];
+  if (writes.length) { record.pending = pending; save(); }
+  const written = new Set();
   for (const w of writes) {
+    // Two clients can share one global target: the first write installs it for both.
+    if (written.has(w.key)) continue;
+    written.add(w.key);
     if (w.managed) { writeManaged(w); records[w.key] = sha(w.data); continue; }
-    fs.mkdirSync(path.dirname(w.file), { recursive: true });
-    replaceFile(fs, w.file, w.data);
+    // Right before the replace: the directories down to the file, and the file still as preflight found it.
+    const check = () => { checkAncestors(fs, path, w.root, w.file, baseFor(path, home, w.root)); checkUnchanged(fs, w.file, w.have); };
+    check();
+    fs.mkdirSync(w.root, { recursive: true });
+    fs.mkdirSync(path.dirname(w.file), { recursive: true, ...(w.private ? { mode: 0o700 } : {}) });
+    // A file keeps stricter permissions it already had.
+    const mode = (w.private ? 0o600 : 0o666) & (w.have && process.platform !== "win32" ? fs.lstatSync(w.file).mode : 0o777);
+    replaceFile(fs, w.file, w.data, mode, null, check);
     if (sha(fs.readFileSync(w.file)) !== sha(w.data)) throw new Error("verification failed after write: " + w.label);
     if (w.global) records[w.key] = sha(w.data);
   }
+  // A private file a sync installed before private files were owner-only, and its directories below the
+  // skills root, lose group and other access. Opened without following a link, so only that entry changes.
+  const tighten = file => {
+    let fd;
+    try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); } catch (e) { if (e.code === "ENOENT") return; throw e; }
+    try { const mode = fs.fstatSync(fd).mode; if (mode & 0o077) fs.fchmodSync(fd, mode & 0o700); } finally { fs.closeSync(fd); }
+  };
+  if (process.platform !== "win32")
+    for (const root of roots) for (const [rel, f] of Object.entries(p.files)) if (f.private) {
+      const parts = rel.split("/");
+      checkAncestors(fs, path, root, path.join(root, ...parts), baseFor(path, home, root));
+      for (let i = 1; i <= parts.length; i++) tighten(path.join(root, ...parts.slice(0, i)));
+    }
   for (const d of drops) {
     // Verify again right before removal: ancestors, tree, file types, and recorded hashes. A skill that
     // changed since preflight, or cannot be verified, is kept and reported as kept.
     let why = null;
     if (d.dir) try {
-      checkAncestors(fs, path, d.root, d.dir);
+      checkAncestors(fs, path, d.root, d.dir, baseFor(path, home, d.root));
       const now = snapshot(d.root, d.dir);
       if (JSON.stringify(now) !== JSON.stringify(d.tree) || !mine(d.root, now)) why = "changed since preflight";
     } catch (e) { why = "could not be verified again: " + e.message; }
@@ -277,10 +334,9 @@ try {
   }
   for (const root of roots) for (const [rel, f] of Object.entries(p.files)) (owned[root] = owned[root] || {})[rel] = f.sha256;
   Object.assign(record, records, Object.keys(owned).length ? { skills: owned } : {});
-  if (JSON.stringify(record) !== before) {
-    fs.mkdirSync(path.dirname(recordPath), { recursive: true });
-    replaceFile(fs, recordPath, JSON.stringify(record, null, 2), 0o600);
-  }
+  for (const key of settled) delete pending[key];
+  if (Object.keys(pending).length) record.pending = pending; else delete record.pending;
+  save();
   done(0);
 } catch (e) {
   result.status = "failed";
