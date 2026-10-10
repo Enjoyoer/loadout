@@ -10,18 +10,18 @@ It prints one JSON object, `{route, reason}`. Add `--owner-model ID --owner-effo
 
 ## Classes
 
-Labels resolve through the target Pi catalog. The pace moves an adjustable class within its range (medium < high < xhigh). Fixed classes never move.
+Labels resolve through the target Pi catalog. Routes are the minimum (owner rule): every range starts at the class default, so the pace can raise an adjustable class within its range (medium < high < xhigh) but never lower it, and no quota mode lowers any route. Fixed classes never move.
 
 | Class | Use for | Default | Range | Fast |
 |---|---|---|---|---|
 | `code` | multi-step, multi-file, money, auth, prod changes | Opus medium | medium..high | off |
 | `code-bounded` | single file, clear spec | Opus medium | medium..high | off |
 | `test-fix` | make CI green | Opus medium | medium..high | off |
-| `review-critical` | read-only security, money, architecture review | Sol xhigh | fixed, Codex mode | off |
-| `review-general` | other read-only review | Sol xhigh | fixed, Codex mode | off |
+| `review-critical` | read-only security, money, architecture review | Sol xhigh | fixed | off |
+| `review-general` | other read-only review | Sol xhigh | fixed | off |
 | `automation` | computer use that builds automation code | Opus medium | medium..high | off |
-| `browser` | one-time browser or computer-use execution | Astra medium | medium..high, Codex mode | on |
-| `research` | read-only lookup | Luna xhigh | medium..xhigh | on |
+| `browser` | one-time browser or computer-use execution | Astra medium | medium..high | on |
+| `research` | read-only lookup | Luna xhigh | fixed | on |
 | `mechanical` | small mechanical edits, test removals, config syncs | Opus medium | fixed | off |
 | `smoke` | smokes, canaries | Sonnet low | fixed | off |
 | `watcher` | watchers, heartbeats | Luna xhigh | fixed | on |
@@ -29,11 +29,9 @@ Labels resolve through the target Pi catalog. The pace moves an adjustable class
 
 Local code lanes default to Opus medium; a cloud lane is always Opus xhigh, and `ui` stays Opus xhigh everywhere. Code and automation never run on a GPT model. The planner keeps its fixed role route: Web Pro, then Opus xhigh only after an owner yes following a Pro failure. Fast means Pi's Fast toggle on GPT routes, never native Codex `fast_mode`.
 
-## Codex mode
+## Web reviewer
 
-The owner's Codex quota mode lives in `~/.config/opc/routing.json` as `codexFallback` (default `false`). Set it with `node scripts/route.mjs --codex-fallback on|off|status` when the owner says Codex runs on its fallback account, or is back on its first account. While it is on, `review-critical`, `review-general`, and `browser` resolve to an owner-explicit Sol medium route (Fast as the class has it) with the reason `<class>: Codex on its fallback account (routing.json codexFallback), owner rule Sol medium`, and the pace never moves it. Read-only Luna classes (`research`, `watcher`, scouts) keep their routes. Run fewer GPT lanes in this mode.
-
-The `reviewer` fixed role is separate: it is the one ChatGPT web lane (Web Pro) for browser review of a task, not a Worker class, and neither the class table nor the Codex mode changes it.
+The `reviewer` fixed role is separate: it is the one ChatGPT web lane (Web Pro) for browser review of a task, not a Worker class, and the class table does not change it.
 
 ## UI work
 
@@ -69,7 +67,7 @@ Some stale accounts still adjust, and the reason shows "N of M stale".
 
 ## Settings
 
-The optional owner file `~/.config/opc/routing.json` tunes `behindPoints` (default 10), `aheadPoints` (10), `resetSoonHours` (24), `resetSoonLeftPct` (15), `fiveHourNoUpPct` (75), `fiveHourDownPct` (90), and `pq`. `pq` is an argv array, default `["~/.local/bin/pq", "--json"]`; a leading `~` in its first element is expanded. A host without pq can name another host, for example `["ssh", "<alias>", "~/.local/bin/pq", "--json"]`. pq runs without a shell and has 15 seconds to answer. A file with unknown keys or bad values is ignored: the defaults apply and the reason names the error, for example `routing.json invalid (unknown key x), defaults used`. `codexFallback` is the Codex mode above; the review and browser classes read it. Other fixed classes, `ui`, and the planner never read this file or the quota.
+The optional owner file `~/.config/opc/routing.json` tunes `behindPoints` (default 10), `aheadPoints` (10), `resetSoonHours` (24), `resetSoonLeftPct` (15), `fiveHourNoUpPct` (75), `fiveHourDownPct` (90), and `pq`. `pq` is an argv array, default `["~/.local/bin/pq", "--json"]`; a leading `~` in its first element is expanded. A host without pq can name another host, for example `["ssh", "<alias>", "~/.local/bin/pq", "--json"]`. pq runs without a shell and has 15 seconds to answer. A file with unknown keys or bad values is ignored: the defaults apply and the reason names the error, for example `routing.json invalid (unknown key x), defaults used`. A `codexFallback` key left by OPC 7.30 is accepted and ignored. Fixed classes, `ui`, and the planner never read this file or the quota.
 
 ## Errors
 
