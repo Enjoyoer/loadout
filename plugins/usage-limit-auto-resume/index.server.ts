@@ -3,7 +3,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { PaseoApi } from "@getpaseo/client";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
 import { openDaemonClient } from "./server/daemon.ts";
-import { afterTransientFailure, applyClaimTurn, buildFailedTransientRecord, buildRecord, buildTransientRecord, failureSignature, lastUserMessage, continuationPrompt, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, releaseClaim, shouldResume, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
+import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, releaseClaim, resumePrompt, shouldResume, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
@@ -72,6 +72,13 @@ export default function contribute(server: PluginServerContext, openClient = ope
     return result?.agent ? result.agent as AgentSnapshot : null;
   }
 
+  // An incomplete page proves nothing, so the record is treated as superseded as before.
+  async function ownMessageIsLatest(api: PaseoApi, record: ResumeRecord): Promise<boolean> {
+    const page = await api.agents.ref(record.agentId).timeline.refetch({ direction: "before", limit: 200 });
+    if (page.error || page.gap || page.staleCursor || page.hasNewer) return false;
+    return isOwnLatestMessage(record, lastUserMessage(page.entries.map((entry) => entry.item)));
+  }
+
   const isUsageLimitError = (message: string, code?: string) => failureSignature(message, code) !== null;
 
   async function processRecord(record: ResumeRecord, currentConfig: Config) {
@@ -115,40 +122,59 @@ export default function contribute(server: PluginServerContext, openClient = ope
       }
     }
     const stableMessageId = messageId(record);
-    const prompt = record.kind === "transient" ? record.retryPrompt! : continuationPrompt(record);
+    const prompt = resumePrompt(record);
     const sentAt = new Date().toISOString();
     // The turn_started handler fills in the turn before any await of its own, so the outcome below sees a turn that
-    // started during the send even when the handler's store write lands after it.
+    // started during the send even when the handler's store write lands after it. The permission and archive handlers
+    // likewise set cancelled at once, so a send that has not started yet sees them.
     const claim: InFlightClaim = {
       recordId: record.recordId,
       attempt: { at: sentAt, messageId: stableMessageId, result: "unknown" },
       sentAt,
       verificationDeadlineAt: new Date(Date.now() + currentConfig.verificationTimeoutSeconds * 1000).toISOString(),
       released: false,
+      cancelled: null,
       turnId: null,
       startedAt: null,
     };
     inFlight.set(record.agentId, claim);
     try {
-      const claimed = await store.update(record.recordId, (value) => ({
+      // Claim only the record the gates checked: still in that state, unwritten since, at the same attempt, and with no
+      // safety event seen for the agent. A decision another handler stored, or is about to store, stands.
+      const claimed = await store.update(record.recordId, (value) => claim.cancelled || value.state !== record.state || value.updatedAt !== record.updatedAt || value.attempts.length !== record.attempts.length ? value : {
         ...value,
         state: "resuming",
         sentAt,
         verificationDeadlineAt: claim.verificationDeadlineAt,
         attempts: [...value.attempts, claim.attempt],
         updatedAt: sentAt,
-      }));
-      if (!claimed) return;
+      });
+      if (!claimed || !holdsClaim(claimed, claim)) {
+        log(`send-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${claim.cancelled?.reason ?? "record-changed"}`);
+        return;
+      }
+      // A safety event that arrived while the claim was being written: nothing was sent, so undo the claim and store
+      // that event's decision.
+      const cancelled = claim.cancelled;
+      if (cancelled) {
+        await store.update(record.recordId, (value) => value.state === "resuming"
+          ? { ...releaseClaim(value, record, claimed), state: cancelled.state, terminalReason: cancelled.reason }
+          : value);
+        log(`send-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${cancelled.reason}`);
+        return;
+      }
       try {
         await api.agents.ref(record.agentId).send(prompt, { messageId: stableMessageId });
-        await store.update(record.recordId, (value) => ({
+        // Only the live claim moves on to verification. A permission request, an archive or a turn end stored while the
+        // send was in flight keeps its state.
+        await store.update(record.recordId, (value) => holdsClaim(value, claim) ? {
           ...value,
           state: "verifying",
           resumeTurnId: value.resumeTurnId ?? claim.turnId,
           resumeStartedAt: value.resumeStartedAt ?? claim.startedAt,
           attempts: value.attempts.map((attempt) => attempt.messageId === stableMessageId ? { ...attempt, result: "sent" } : attempt),
           updatedAt: new Date().toISOString(),
-        }));
+        } : value);
         log(`${record.kind === "transient" ? "retry" : "resume"}-sent agentId=${record.agentId} messageId=${stableMessageId}`);
       } catch (error) {
         if (isTransportNotConnected(error)) {
@@ -184,7 +210,19 @@ export default function contribute(server: PluginServerContext, openClient = ope
       await store.update(record.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: "agent-missing-after-send", updatedAt: new Date().toISOString() }));
       return;
     }
-    const decision = verificationDecision(record, agent);
+    let current = record;
+    // The send is itself a user message, so the agent's latest user time moves past the record's. Take that time only
+    // when the newest user row is this attempt's own message; any other newer message still supersedes the record.
+    const lastUserMessageAt = agent.lastUserMessageAt ?? null;
+    if (lastUserMessageAt && lastUserMessageAt !== record.lastUserMessageAt && await ownMessageIsLatest(api, record)) {
+      const correlated = await store.update(record.recordId, (value) => value.state === record.state && value.updatedAt === record.updatedAt
+        ? { ...value, lastUserMessageAt, updatedAt: new Date().toISOString() }
+        : value);
+      // Changed meanwhile; the next sweep decides on the stored record.
+      if (correlated?.lastUserMessageAt !== lastUserMessageAt) return;
+      current = correlated;
+    }
+    const decision = verificationDecision(current, agent);
     if (decision.state === "pending") return;
     if (decision.state === "done" && !record.resumeTurnId) {
       await store.update(record.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: "resume-turn-not-observed", updatedAt: new Date().toISOString() }));
@@ -206,9 +244,12 @@ export default function contribute(server: PluginServerContext, openClient = ope
     try {
       const currentConfig = await config();
       if (!currentConfig) return;
+      // One snapshot per sweep. A terminal record never acts again, so only an actionable one is read afresh: work on
+      // an earlier record may have changed it.
       for (const record of await store.read()) {
+        if (!isActive(record)) continue;
         if (record.state === "detected") {
-          await store.update(record.recordId, (value) => ({ ...value, state: "parked", updatedAt: new Date().toISOString() }));
+          await store.update(record.recordId, (value) => value.state === "detected" ? { ...value, state: "parked", updatedAt: new Date().toISOString() } : value);
         }
         const latest = (await store.read()).find((value) => value.recordId === record.recordId);
         if (!latest) continue;
@@ -282,10 +323,11 @@ export default function contribute(server: PluginServerContext, openClient = ope
               log(`retry-uncertain agentId=${event.agent.id} reason=retry-identity-ambiguous`);
               return;
             }
-            const attempts = active.attempts.length;
-            const exhausted = !active.failedOutcome && attempts >= currentConfig.transientMaxAttempts;
-            await store.update(active.recordId, (value) => afterTransientFailure(value, assistant, user.text, sentMessageId!, agent.lastUserMessageAt!, currentConfig));
-            log(`retry-${exhausted ? "exhausted" : "scheduled"} agentId=${event.agent.id} attempts=${attempts}`);
+            // Re-park only the attempt this turn ended; a decision another handler stored meanwhile stands.
+            const next = await store.update(active.recordId, (value) => value.state === "verifying" && value.resumeTurnId === event.turnId
+              ? afterTransientFailure(value, assistant, user.text, sentMessageId!, agent.lastUserMessageAt!, currentConfig)
+              : value);
+            if (next?.state === "parked" || next?.state === "exhausted") log(`retry-${next.state === "exhausted" ? "exhausted" : "scheduled"} agentId=${event.agent.id} attempts=${attemptCount(next)}`);
             return;
           }
           if ((event.outcome.kind === "completed" && isUsageLimitAssistantText(assistant)) || (event.outcome.kind === "failed" && !failedTransient)) {
@@ -356,7 +398,15 @@ export default function contribute(server: PluginServerContext, openClient = ope
     })().catch((error) => failed("turn-handler-failed", error)));
   });
 
+  // Synchronous, before any await: a send claimed for this agent but not started yet must not go out. The handler's own
+  // store write follows.
+  const cancelInFlight = (agentId: string, cancel: ClaimCancel) => {
+    const pending = inFlight.get(agentId);
+    if (pending && !pending.cancelled) pending.cancelled = cancel;
+  };
+
   const removeArchived = server.on("agent.archived", (event) => {
+    cancelInFlight(event.agent.id, { state: "superseded", reason: "agent-archived" });
     track((async () => {
       const records = await store.read();
       for (const record of records.filter((value) => value.agentId === event.agent.id && !["done", "superseded", "exhausted", "uncertain"].includes(value.state))) {
@@ -367,6 +417,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
   });
 
   const removePermission = server.on("agent.permission_requested", (event) => {
+    cancelInFlight(event.agent.id, { state: "uncertain", reason: "permission-requested" });
     track((async () => {
       const active = await store.activeForAgent(event.agent.id);
       if (active) {
