@@ -143,8 +143,9 @@ export function buildCloudBrief({ brief, branch, baseRef }) {
   }
   return `${brief.trim()}\n\nCloud session rules (the launcher cannot answer questions):\n` +
     `- Base your work on ${baseRef}. Push only to this session's own working branch; pushes to any other branch name are rejected.\n` +
-    `- Immediately open a draft PR from that branch against ${baseRef.replace(/^origin\//, '')}, titled "[${branch}] <short summary>". Keep the title prefix exactly.\n` +
-    '- Commit and push after every milestone so progress is visible on the remote.\n' +
+    '- The session container can restart without warning, and a restart loses every commit not yet pushed.\n' +
+    `- Before any other work, push a first small commit (for example a short plan file or the first trivial change) and open a draft PR from that branch against ${baseRef.replace(/^origin\//, '')}, titled "[${branch}] <short summary>". Keep the title prefix exactly.\n` +
+    '- Then commit and push after each completed fix or step, so a restart loses at most one step. Never hold more than one step unpushed.\n' +
     '- When done and checks pass, mark the PR ready for review. Leave it unmerged.\n' +
     '- Do not edit project memory files (STATUS.html, LESSONS.md).\n';
 }
@@ -317,7 +318,8 @@ export function buildCloudFollowUp({ branch }) {
   if (!branchPattern.test(branch ?? '')) throw Error('cloud lane marker required');
   return 'Launcher check-in: nothing has reached the remote recently. Commit and push your current work to your own ' +
     `working branch now, keep the draft PR titled "[${branch}] ..." open (open it now if missing), and continue. ` +
-    'If you are blocked, write the blocker in the PR description, then push.';
+    'If the session restarted and nothing was pushed, start again from the base, push a first small commit, open the draft PR, ' +
+    'and push after each step. If you are blocked, write the blocker in the PR description, then push.';
 }
 
 // Print mode queues a follow-up into the existing session; without -p the CLI reports attaching as not enabled.
