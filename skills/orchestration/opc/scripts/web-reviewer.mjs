@@ -195,13 +195,14 @@ export function requireReviewApproval(task, { pr, head, state, reviews }) {
 
 // A terminal Pro failure makes review unavailable, not silently approved. Delivery
 // may continue after normal PM verification for the same PR. It never becomes
-// approval evidence. CHANGES_REQUESTED remains a blocking formal verdict.
+// approval evidence. Any reviewer's current CHANGES_REQUESTED blocks delivery,
+// with review unavailable or with the recorded approval.
 export function requireReviewDelivery(task, { pr, head, state, reviews }) {
+  if (currentChangesRequested(state, reviews, head).length) {
+    throw Error('current exact-head non-author CHANGES_REQUESTED review blocks delivery');
+  }
   const round = latest(task);
   if (round?.status === 'failed' && round.unavailable === true && round.pr === pr) {
-    if (currentChangesRequested(state, reviews, head).length) {
-      throw Error('current exact-head non-author CHANGES_REQUESTED review blocks delivery');
-    }
     return { status: 'unavailable', reason: round.failure };
   }
   return { status: 'approved', review: requireReviewApproval(task, { pr, head, state, reviews }) };

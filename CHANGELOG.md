@@ -12,6 +12,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - OPC test recovery records the cleanup of a test command whose pid another process now holds as `cleanup incomplete: PID reused` (was `incomplete: PID reused`).
 
 ### Fixed
+- OPC delivery is blocked by any non-author reviewer's current exact-head `CHANGES_REQUESTED` review when the recorded web review approved that head, not only when review was unavailable.
 - `cache-aware-autocompact`, `pm-native-worker-guard`, and `usage-limit-auto-resume` state writes survive a host crash on Linux and macOS: the shared atomic writer flushes the state directory after the rename before it resolves, and on its first write to a directory it also flushes each parent it may have created; an unexpected error checking or flushing one rejects the write. On Windows the rename is not flushed, so a host crash soon after a write can bring back the previous state.
 - The state readers of `cache-aware-autocompact`, `pm-native-worker-guard`, and `usage-limit-auto-resume` reject a malformed record (a missing id, an unknown state or outcome, an unparseable time) through their fail-closed unreadable-state path instead of acting on it.
 - `pm-native-worker-guard` records a PM notice as `sending` before it goes out. A notice whose outcome cannot be recorded is never sent again (`notify-unrecorded`), and one that cannot be reserved waits for the PM's next turn end. Concurrent first state reads share one read, so a slow read cannot roll back a newer write.

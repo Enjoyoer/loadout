@@ -613,6 +613,42 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(task["routes"]["fix-auth-fallback"]["route"], result["route"])
         self.assertEqual(task["routes"]["fix-auth"]["route"], cloud_route)
 
+    def test_changes_request_from_another_reviewer_blocks_recorded_approval(self):
+        # Reviewer alice's approval is recorded and stays her newest review; bob then requests changes on the same head.
+        runs = Path(self.task).parent.parent / "review-run"
+        runs.mkdir()
+        created = run("node", "--input-type=module", "-e", f"""
+            import {{ createTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            console.log(createTask({{ workingDirectory: {json.dumps(str(self.repo))}, runDirectory: {json.dumps(str(runs))}, owner: 'test',
+              baseRef: 'main', delivery: 'pr', browserReview: true }}).taskPath);
+        """)
+        self.assertEqual(created.returncode, 0, created.stderr)
+        task_path = created.stdout.strip()
+        tested = run("node", str(SCRIPTS / "delivery.mjs"), "test", task_path, sys.executable, "-c", "")
+        self.assertEqual(tested.returncode, 0, tested.stderr)
+        head = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        task = json.loads(Path(task_path).read_text())
+        task["reviewer"] = {"rounds": [{
+            "id": "00000000-0000-4000-8000-000000000001", "pr": 7, "head": head, "role": "reviewer", "catalog_label": "Web Pro",
+            "catalog_model_id": "gpt-pro", "provider": "codex/gpt-pro", "status": "approved", "agent_id": "agent-review",
+            "review_id": 1, "reviewer_login": "alice", "review_url": "https://github.com/example/app/pull/7#pullrequestreview-1"}]}
+        Path(task_path).write_text(json.dumps(task))
+        done = run("node", "--input-type=module", "-e", f"""
+            import {{ verifyDelivery }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())};
+            const head = {json.dumps(head)}, side = {{ sha: head, ref: 'main', repo: {{ full_name: 'example/app' }} }};
+            const pr = {{ number: 7, head: side, base: side, user: {{ login: 'author' }}, state: 'open', merged: false, draft: false,
+              html_url: 'https://github.com/example/app/pull/7', merge_commit_sha: null }};
+            const approval = {{ id: 1, state: 'APPROVED', commit_id: head, user: {{ login: 'alice' }} }};
+            const changes = {{ id: 2, state: 'CHANGES_REQUESTED', commit_id: head, user: {{ login: 'bob' }} }};
+            const verify = reviews => verifyDelivery({json.dumps(task_path)}, {{ pr: 7, query: args => args[1].endsWith('/reviews?per_page=100') ? reviews : pr }});
+            console.log(JSON.stringify([verify([approval]), verify([approval, changes])].map(({{ status, blockers }}) => [status, blockers])));
+        """)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        approved, requested = json.loads(done.stdout)
+        self.assertEqual(approved, ["verified", []])
+        self.assertEqual(requested[0], "blocked")
+        self.assertIn("current exact-head non-author CHANGES_REQUESTED review blocks delivery", requested[1])
+
     def test_empty_lock_is_stale_only_after_ten_seconds(self):
         lock = Path(self.task + ".lock")
         update = f"""
