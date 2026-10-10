@@ -113,11 +113,12 @@ export function recordedLaneEntry(task, lane, route) {
 
 const classLevel = (rule, pace) => (rule.range ? paceLevel(rule.effort, pace?.step ?? 0, rule.range) : rule.effort);
 
+// Every range starts at its default below its ceiling (WORKER_DEFAULT_ROUTES), so a step up always raises the level and
+// a step down always stays at the floor.
 function classReason(kind, rule, pace, effort) {
   if (!rule.range) return `${kind} fixed at ${rule.label} ${rule.effort}`;
-  const outcome = pace.stale ? null : pace.step > 0 ? (effort === rule.effort ? `already at ceiling ${effort}` : `up to ${effort}`)
-    : pace.step < 0 ? (effort === rule.effort ? `already at floor ${effort}` : `down to ${effort}`)
-      : pace.weekly > 0 ? 'no level up' : `kept ${effort}`;
+  const outcome = pace.stale ? null : pace.step > 0 ? `up to ${effort}` : pace.step < 0 ? `already at floor ${effort}`
+    : pace.weekly > 0 ? 'no level up' : `kept ${effort}`;
   return [`${kind} default ${rule.effort}`, describePace(pace), ...(outcome ? [outcome] : [])].join(', ');
 }
 
