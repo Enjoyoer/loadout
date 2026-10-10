@@ -20,7 +20,8 @@ export const FIXED_ROLE_ROUTES = Object.freeze({
 // [floor, ceiling] the quota pace may move the default within (medium < high < xhigh); null means fixed.
 const workerClass = (label, effort, range, fastMode = false) =>
   Object.freeze({ label, effort, range: range && Object.freeze(range), fastMode });
-// Local code lanes default to Opus medium (owner rule); the cloud lane and ui stay Opus xhigh.
+// Local code lanes default to Opus medium (owner rule); the cloud lane and ui stay Opus xhigh. Routes are the minimum
+// (owner rule): every range starts at its default, so the pace can raise a level but never lower one.
 export const WORKER_DEFAULT_ROUTES = Object.freeze({
   code: workerClass('Opus', 'medium', ['medium', 'high']),
   'code-bounded': workerClass('Opus', 'medium', ['medium', 'high']),
@@ -29,7 +30,7 @@ export const WORKER_DEFAULT_ROUTES = Object.freeze({
   'review-general': workerClass('Sol', 'xhigh', null),
   automation: workerClass('Opus', 'medium', ['medium', 'high']),
   browser: workerClass('Astra', 'medium', ['medium', 'high'], true),
-  research: workerClass('Luna', 'xhigh', ['medium', 'xhigh'], true),
+  research: workerClass('Luna', 'xhigh', null, true),
   mechanical: workerClass('Opus', 'medium', null),
   smoke: workerClass('Sonnet', 'low', null),
   watcher: workerClass('Luna', 'xhigh', null, true),
@@ -40,10 +41,6 @@ export const LABEL_POOLS = Object.freeze({ Opus: 'claude', Sonnet: 'claude', Fab
 export const OWNER_RULE_ROUTES = Object.freeze({
   ui: Object.freeze({ label: 'Opus', effort: 'xhigh', fastMode: false, reason: 'ui: owner rule, Opus xhigh, no GPT' }),
 });
-// Owner rule: while Codex quota runs on its fallback account (routing.json codexFallback), these GPT classes run
-// Sol medium. Read-only Luna classes keep their routes. The route is owner-explicit, so the pace never moves it.
-export const CODEX_FALLBACK_CLASSES = Object.freeze(['review-critical', 'review-general', 'browser']);
-export const CODEX_FALLBACK_ROUTE = Object.freeze({ label: 'Sol', effort: 'medium' });
 // UI work never uses GPT models or the ChatGPT web lane (owner rule).
 export const GPT_WEB_LABELS = Object.freeze(['Sol', 'Luna', 'Astra', 'Web Pro', 'Web Extra']);
 export function isGptOrWebRoute(route, catalog = null) {
@@ -131,7 +128,7 @@ export const workerRouteUnresolved = () => Error('Worker route unresolved; ask t
 // An owner-named model and effort always win unadjusted; otherwise the task class selects a catalog label,
 // and the class's quota pool pace may move its level within the class range. quota is a readQuota result.
 export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog, quota = null,
-  settings = ROUTING_DEFAULTS, codexFallback = false } = {}) {
+  settings = ROUTING_DEFAULTS } = {}) {
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   if (ownerRoute) {
     if (ownerRoute.source !== 'owner-explicit') throw Error('owner Worker route must have source owner-explicit');
@@ -151,14 +148,6 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog,
   }
   if (!Object.hasOwn(WORKER_DEFAULT_ROUTES, taskKind ?? '')) throw workerRouteUnresolved();
   const rule = WORKER_DEFAULT_ROUTES[taskKind];
-  if (codexFallback === true && CODEX_FALLBACK_CLASSES.includes(taskKind)) {
-    const row = resolveCatalogLabel(rows, CODEX_FALLBACK_ROUTE.label);
-    if (!row.thinkingOptions?.some(option => option.id === CODEX_FALLBACK_ROUTE.effort)) {
-      throw Error(`${CODEX_FALLBACK_ROUTE.label} does not serve required thinking ${CODEX_FALLBACK_ROUTE.effort}; the Worker lane stops`);
-    }
-    return Object.freeze({ role: 'worker', source: 'owner-explicit', model: row.id, effort: CODEX_FALLBACK_ROUTE.effort,
-      fastMode: rule.fastMode });
-  }
   const row = resolveCatalogLabel(rows, rule.label);
   const pace = rule.range ? poolPace(quota, LABEL_POOLS[rule.label], settings) : null;
   const effort = classLevel(rule, pace);
