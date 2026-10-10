@@ -120,7 +120,7 @@ Optional. `python3 scripts/client_config.py [--dry-run] [--host <name>] [--updat
   - `sections`: named sections such as `model_providers.<id>`, each a map of keys. A missing section is appended.
   - `reportOnly`: top-level keys that are printed per host and never written.
   - Key, section, and `reportOnly` names are bare TOML keys, optionally dotted (letters, digits, `_`, `-`); a host refuses any other name and writes nothing.
-  - Values are strings, numbers, or booleans. The merge is line-based and keeps CRLF, comments, and every other key and section.
+  - Values are strings, numbers, or booleans. The merge is line-based and keeps CRLF, comments, and every other key and section. It reads headers with trailing comments, array tables, quoted keys, and values that span lines (multiline strings, arrays), and replaces a managed key's whole value. A file it cannot read safely, or a result that would define a table or key twice (for example a section already set by dotted keys), is refused and nothing is written.
 - `claude`: managed parts of Claude Code `~/.claude/settings.json`.
   - `settings`: top-level keys, each replaced whole.
   - `env`: keys merged into `env`.
@@ -129,7 +129,7 @@ Optional. `python3 scripts/client_config.py [--dry-run] [--host <name>] [--updat
 - `roles.local`, `roles.remote`: layers with `codex` (`top`, `sections`) and `claude` (`settings`, `env`, `token_env`). The source host is `local` and every other host `remote`.
 - `hosts.<name>`: the same layer for one host, plus an optional `role` that overrides the default.
 
-Only these keys are written. Everything else stays host-local. A missing client is skipped. Each changed file is backed up in place as `<file>.bak-loadout-<stamp>` and replaced atomically; a second run reports `unchanged`.
+Only these keys are written. Everything else stays host-local. A missing client is skipped. Each changed file is backed up in place as `<file>.bak-loadout-<stamp>-<random>`, a new file that never overwrites an earlier backup, holding exactly the bytes the merge read, and replaced atomically only while it still holds them: a file changed by anyone else during the merge is left as is, the host fails, and the next run merges onto the new revision. A second run reports `unchanged`.
 
 
 ### Desktop picker defaults and update guard

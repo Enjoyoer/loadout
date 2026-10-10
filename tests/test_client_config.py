@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills/orchestration/personal-skills/scripts"
@@ -178,6 +179,56 @@ class ClientConfigTest(unittest.TestCase):
         code, out = self.run_sync("--host", "devbox")
         self.assertEqual(code, 2)
         self.assertIn("does not have the client-config sync scope", out)
+
+
+class LocalMergeTest(unittest.TestCase):
+    """The host program run here, as on the source host, against a temporary home."""
+
+    def setUp(self):
+        if not shutil.which("node"):
+            self.skipTest("node is required")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.codex = Path(tmp.name) / ".codex"
+        self.codex.mkdir()
+        env = mock.patch.dict(os.environ, {"HOME": tmp.name, "USERPROFILE": tmp.name, "CODEX_HOME": str(self.codex)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def merge(self, text, top=None, sections=None, stamp="20261010-000000"):
+        (self.codex / "config.toml").write_bytes(text.encode())
+        payload = {"codex": {"top": top or {}, "sections": sections or {}, "reportOnly": []},
+                   "claude": {"settings": {}, "env": {}, "token_env": None, "minVersion": None},
+                   "token": None, "stamp": stamp, "dry_run": False, "update_claude": False}
+        result, output = fleet.run_node("here", True, client_config.MERGE_JS, payload, 60)
+        self.assertIsNotNone(result, output)
+        return result, (self.codex / "config.toml").read_bytes().decode()
+
+    def test_backups_from_one_stamp_never_overwrite_each_other(self):
+        self.merge('model = "first"\n', {"model": "second"})
+        self.merge('model = "second"\n', {"model": "third"})
+        backups = sorted(p.read_text() for p in self.codex.glob("config.toml.bak-loadout-20261010-000000-*"))
+        self.assertEqual(backups, ['model = "first"\n', 'model = "second"\n'])
+
+    def test_headers_with_comments_array_tables_and_multiline_strings_keep_their_scope(self):
+        text = "\n".join(["# host settings", 'model = "m"', "", "[[skills.config]]", 'path = "/x"', "enabled = true", "",
+                          "[model_providers.example_router] # host-local comment", 'base_url = "https://old.example.test"',
+                          'instructions = """', "[model_providers.example_router]", "enabled = false", '"""', ""])
+        result, after = self.merge(text, {"enabled": True},
+                                   {"model_providers.example_router": {"base_url": "https://router.example.test/v1"}})
+        self.assertIsNone(result["error"], result)
+        lines = text.split("\n")
+        self.assertEqual(after.split("\n"), [*lines[:2], "enabled = true", *lines[2:8],
+                                              'base_url = "https://router.example.test/v1"', *lines[9:]])
+        # A dotted key already defines the section, so appending its header would make the file invalid.
+        dotted = 'model_providers.example_router.base_url = "https://old.example.test"\n'
+        result, after = self.merge(dotted, sections={"model_providers.example_router": {"wire_api": "responses"}})
+        self.assertEqual(result["error"], "refused, nothing written: the merged config.toml would define "
+                                          "[model_providers.example_router] twice")
+        self.assertEqual(after, dotted)
+        result, after = self.merge("[model_providers.example_router\n", {"model": "m"})
+        self.assertEqual(result["error"], "refused, nothing written: config.toml line 1 is TOML the merge cannot read safely")
+        self.assertEqual(after, "[model_providers.example_router\n")
 
 
 class VersionAndCatalogTest(unittest.TestCase):

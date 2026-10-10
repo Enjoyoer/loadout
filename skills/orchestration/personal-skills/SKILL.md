@@ -73,7 +73,7 @@ Pi providers use the same fleet rows, generated during this step. See [the Pi su
 
 ## Client config
 
-For hosts whose `sync` includes `client-config`, the client-config step (`scripts/client_config.py`) writes only the managed Codex `config.toml` and Claude Code `settings.json` keys from `<fleet>/client-config.json`, backing up each changed file first. The source host runs locally and other hosts over SSH. A secret from `token_file` travels only on SSH stdin and is never printed. Report each client per host, the host-local `reportOnly` values, and the Claude Code version against `minVersion`.
+For hosts whose `sync` includes `client-config`, the client-config step (`scripts/client_config.py`) writes only the managed Codex `config.toml` and Claude Code `settings.json` keys from `<fleet>/client-config.json`, backing up each changed file first under a new name and replacing it only while it still holds the revision the merge read. A Codex file the merge cannot read safely, or a result that would define a table or key twice, is refused with nothing written. The source host runs locally and other hosts over SSH. A secret from `token_file` travels only on SSH stdin and is never printed. Report each client per host, the host-local `reportOnly` values, and the Claude Code version against `minVersion`.
 
 ## Local-edit protection
 
