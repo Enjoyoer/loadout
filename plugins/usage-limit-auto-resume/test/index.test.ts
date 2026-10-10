@@ -35,6 +35,33 @@ function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
 }
 
 /**
+ * The plugin instances one test starts. dispose() runs each one's cleanup (timer, hooks, client), even when the test
+ * failed before its own cleanup call, then waits until the startup chain, sweeps and hook handlers each plugin still
+ * has running have finished, and with them their state writes. Tests release the gates they own, then dispose, and
+ * remove PASEO_HOME only once dispose() has returned, so nothing a plugin started writes to a removed home or logs
+ * into a later test's captured console. If that work has not settled within the bound, dispose() throws and the test
+ * keeps the home instead of deleting it under a write still in flight.
+ */
+function pluginTracker() {
+  const started: Array<ReturnType<typeof contribute>> = [];
+  return {
+    start(server: PluginServerContext, open: Parameters<typeof contribute>[1]) {
+      const plugin = contribute(server, open);
+      started.push(plugin);
+      return plugin;
+    },
+    async dispose(home: string) {
+      for (const plugin of started) plugin();
+      try {
+        await within(Promise.all(started.map((plugin) => plugin.idle())), 10_000, "the plugin's startup, sweeps and hook handlers settling");
+      } catch (error) {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; kept PASEO_HOME ${home}`);
+      }
+    },
+  };
+}
+
+/**
  * Fires the poll interval until the next sweep has run to completion. A sweep starts only after the previous one has
  * returned (the plugin's running guard) and reads settings first, so a further sweep reading settings is the signal
  * that the next one finished. Needs mocked setInterval timers.
@@ -51,6 +78,7 @@ async function completeNextSweep(settingsReads: () => number, intervalMs: number
 
 it("opens a fresh daemon client on the sweep after the cached client's transport died", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-sweep-"));
+  const plugins = pluginTracker();
   const previousHome = process.env.PASEO_HOME;
   process.env.PASEO_HOME = home;
   const originalLog = console.log;
@@ -78,7 +106,7 @@ it("opens a fresh daemon client on the sweep after the cached client's transport
       registerSettings: () => ({ read: async () => ({ status: "ready", revision: "r1", values: config }) }),
       on: () => () => undefined,
     } as unknown as PluginServerContext;
-    const cleanup = contribute(server, open);
+    const cleanup = plugins.start(server, open);
     await until(() => clients[0]?.refreshes === 1);
     await new Promise((resolve) => setImmediate(resolve));
     clients[0]!.status = "disconnected"; // the transport was disposed, as after liveness timeouts during sleep
@@ -89,16 +117,21 @@ it("opens a fresh daemon client on the sweep after the cached client's transport
     assert.equal(clients[0]!.refreshes, 1);
     (cleanup as () => void)();
   } finally {
-    mock.timers.reset();
-    console.log = originalLog;
-    if (previousHome === undefined) delete process.env.PASEO_HOME;
-    else process.env.PASEO_HOME = previousHome;
+    try {
+      await plugins.dispose(home);
+    } finally {
+      mock.timers.reset();
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
     await rm(home, { recursive: true, force: true });
   }
 });
 
 it("leaves the record parked when the send fails because the transport is not connected", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-send-"));
+  const plugins = pluginTracker();
   const previousHome = process.env.PASEO_HOME;
   process.env.PASEO_HOME = home;
   const originalLog = console.log;
@@ -122,7 +155,7 @@ it("leaves the record parked when the send fails because the transport is not co
       registerSettings: () => ({ read: async () => ({ status: "ready", revision: "r1", values: config }) }),
       on: () => () => undefined,
     } as unknown as PluginServerContext;
-    const cleanup = contribute(server, open);
+    const cleanup = plugins.start(server, open);
     await until(() => logs.some((line) => line.includes("send-deferred")));
     (cleanup as () => void)();
     assert.equal(sends, 1);
@@ -131,15 +164,20 @@ it("leaves the record parked when the send fails because the transport is not co
     assert.equal(stored?.terminalReason, null);
     assert.deepEqual(stored?.attempts, []);
   } finally {
-    console.log = originalLog;
-    if (previousHome === undefined) delete process.env.PASEO_HOME;
-    else process.env.PASEO_HOME = previousHome;
+    try {
+      await plugins.dispose(home);
+    } finally {
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
     await rm(home, { recursive: true, force: true });
   }
 });
 
 it("keeps the turn identity and deadline when a turn starts during a claim and the send then loses its transport", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-race-"));
+  const plugins = pluginTracker();
   const previousHome = process.env.PASEO_HOME;
   process.env.PASEO_HOME = home;
   const originalLog = console.log;
@@ -169,7 +207,7 @@ it("keeps the turn identity and deadline when a turn starts during a claim and t
       registerSettings: () => ({ read: async () => ({ status: "ready", revision: "r1", values: config }) }),
       on: (name: string, handler: (event: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
     } as unknown as PluginServerContext;
-    const cleanup = contribute(server, open);
+    const cleanup = plugins.start(server, open);
     await until(() => logs.some((line) => line.includes("resume-uncertain") || line.includes("send-deferred")));
     (cleanup as () => void)();
     const [stored] = await store.read();
@@ -179,15 +217,20 @@ it("keeps the turn identity and deadline when a turn starts during a claim and t
     assert.equal(stored?.verificationDeadlineAt, claimedDeadline);
     assert.equal(stored?.attempts.length, 1);
   } finally {
-    console.log = originalLog;
-    if (previousHome === undefined) delete process.env.PASEO_HOME;
-    else process.env.PASEO_HOME = previousHome;
+    try {
+      await plugins.dispose(home);
+    } finally {
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
     await rm(home, { recursive: true, force: true });
   }
 });
 
 it("keeps the turn from a claim when the rollback commits before the turn-start handler's store write", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-late-turn-"));
+  const plugins = pluginTracker();
   const previousHome = process.env.PASEO_HOME;
   process.env.PASEO_HOME = home;
   const originalLog = console.log;
@@ -233,7 +276,7 @@ it("keeps the turn from a claim when the rollback commits before the turn-start 
       registerSettings: () => ({ read: async () => { settingsReads += 1; return { status: "ready", revision: "r1", values: config }; } }),
       on: (name: string, handler: (event: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
     } as unknown as PluginServerContext;
-    const cleanup = contribute(server, open);
+    const cleanup = plugins.start(server, open);
     await until(() => logs.some((line) => line.includes("resume-uncertain") || line.includes("send-deferred")));
     assert.notEqual((await store.read())[0]?.state, "resuming", "rollback committed while the handler is still held");
     assert.ok(handlerWrite, "the handler's write was held");
@@ -250,18 +293,25 @@ it("keeps the turn from a claim when the rollback commits before the turn-start 
     assert.equal(sends, 1);
     (cleanup as () => void)();
   } finally {
-    mock.restoreAll();
-    mock.timers.reset();
-    console.log = originalLog;
-    if (previousHome === undefined) delete process.env.PASEO_HOME;
-    else process.env.PASEO_HOME = previousHome;
-    // A sweep that proved the previous one finished may still be reading; retry rather than mask a failure.
+    // A held handler write never lands on its own; open the gate so the plugin can settle before it is drained.
+    releaseHandler();
+    try {
+      await plugins.dispose(home);
+    } finally {
+      mock.restoreAll();
+      mock.timers.reset();
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
+    // Windows can still hold a just-written file open for a moment; retry rather than mask a failure.
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
 });
 
 it("keeps the turn from a claim when it starts while the rollback write is still being persisted", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-rollback-write-"));
+  const plugins = pluginTracker();
   const previousHome = process.env.PASEO_HOME;
   process.env.PASEO_HOME = home;
   const originalLog = console.log;
@@ -319,7 +369,7 @@ it("keeps the turn from a claim when it starts while the rollback write is still
       registerSettings: () => ({ read: async () => { settingsReads += 1; return { status: "ready", revision: "r1", values: config }; } }),
       on: (name: string, handler: (event: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
     } as unknown as PluginServerContext;
-    const cleanup = contribute(server, open);
+    const cleanup = plugins.start(server, open);
     await until(() => held.barrier !== undefined);
     // Rejects if the handler's write never queued while the rollback write was held.
     const handlerWrite = await held.barrier!;
@@ -336,12 +386,16 @@ it("keeps the turn from a claim when it starts while the rollback write is still
     assert.equal(sends, 1);
     (cleanup as () => void)();
   } finally {
-    mock.restoreAll();
-    mock.timers.reset();
-    console.log = originalLog;
-    if (previousHome === undefined) delete process.env.PASEO_HOME;
-    else process.env.PASEO_HOME = previousHome;
-    // A sweep that proved the previous one finished may still be reading; retry rather than mask a failure.
+    try {
+      await plugins.dispose(home);
+    } finally {
+      mock.restoreAll();
+      mock.timers.reset();
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
+    // Windows can still hold a just-written file open for a moment; retry rather than mask a failure.
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
 });
