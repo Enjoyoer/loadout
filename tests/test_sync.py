@@ -16,8 +16,65 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills/orchestration/personal-skills/scripts"
 EXAMPLE = REPO / "skills/orchestration/personal-skills/fleet/example"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_paseo_providers import FAKE_PASEO, FAKE_SSH, assert_fakes_run  # noqa: E402
 from test_plugins_sync import FAKE_NPM  # noqa: E402
+
+FAKE_SSH = textwrap.dedent("""\
+    #!/bin/sh
+    while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
+    [ "$1" = "--" ] && shift
+    [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
+    host="$1"; shift
+    echo "ssh $host" >> "$FAKE_ROOT/calls.log"
+    [ -e "$FAKE_ROOT/cmd-limit" ] && [ "${#*}" -gt 8191 ] && { echo 'The command line is too long' >&2; exit 1; }
+    [ -e "$FAKE_ROOT/corrupt-stdin" ] && { printf corrupt | HOME="$FAKE_ROOT/hosts/$host" sh -c "$*"; exit $?; }
+    HOME="$FAKE_ROOT/hosts/$host" exec sh -c "$*"
+    """)
+
+# PASEO_HOST holds "offer:<host>"; without it the call targets the local daemon.
+# Like the real CLI, it refuses PASEO_HOME together with PASEO_HOST. Files in
+# FAKE_ROOT shape relay faults: drop-sends (count of send-keys to lose),
+# quiet-captures (captures that return nothing), fail-create (the host makes
+# the workspace but the call fails), fail-terminal, fail-archive.
+FAKE_PASEO = textwrap.dedent(r"""
+    #!/bin/sh
+    host="${PASEO_HOST#offer:}"; [ -n "$PASEO_HOST" ] || host=local
+    echo "paseo $host $*" >> "$FAKE_ROOT/calls.log"
+    [ -n "$PASEO_HOME" ] && [ -n "$PASEO_HOST" ] && { echo "TARGET_AMBIGUOUS" >&2; exit 1; }
+    ws="$FAKE_ROOT/workspaces"; touch "$ws"
+    counter() { n=$(cat "$FAKE_ROOT/$1" 2>/dev/null || echo 0); [ "$n" -gt 0 ] && { echo $((n - 1)) > "$FAKE_ROOT/$1"; return 0; }; return 1; }
+    case "$1 $2" in
+      "--fake-ok "*) echo fake ;;
+      "reload "*) [ -e "$FAKE_ROOT/fail-reload-$host" ] && { echo "request timed out" >&2; exit 1; }; echo reloaded ;;
+      "workspace create") id="ws-$(($(wc -l < "$ws") + 1))"; echo "$id loadout-provider-sync" >> "$ws"
+        [ -e "$FAKE_ROOT/fail-create" ] && { echo "request timed out" >&2; exit 1; }; echo "{\"workspaceId\":\"$id\"}" ;;
+      "workspace ls") awk 'BEGIN{printf "["} {printf "%s{\"workspaceId\":\"%s\",\"name\":\"%s\"}", (NR>1?",":""), $1, $2} END{print "]"}' "$ws" ;;
+      "workspace archive") [ -e "$FAKE_ROOT/fail-archive" ] && exit 1; grep -v "^$3 " "$ws" > "$ws.tmp"; mv "$ws.tmp" "$ws"; echo archived ;;
+      "terminal create") [ -e "$FAKE_ROOT/fail-terminal" ] && { echo "terminal failed" >&2; exit 1; }
+        : > "$FAKE_ROOT/term.out"; echo '{"id":"term-1"}' ;;
+      "terminal send-keys")
+        [ -e "$FAKE_ROOT/input-limit" ] && [ "${#4}" -gt 3000 ] && { echo 'relay input timeout' >&2; exit 1; }
+        counter drop-sends && exit 0
+        [ -e "$FAKE_ROOT/echo-only" ] && { printf '$ %s\n' "$4" | fold -w 50 >> "$FAKE_ROOT/term.out"; exit 0; }
+        # Input sent while the shell is still starting is lost, as on a slow relay host.
+        n=$(cat "$FAKE_ROOT/quiet-captures" 2>/dev/null || echo 0); [ "$n" -gt 0 ] && exit 0
+        case "$4" in *'exec 3<'*)
+          [ -e "$FAKE_ROOT/corrupt-relay" ] && for file in "$TMPDIR"/loadout-provider-*; do printf corrupt > "$file"; done ;;
+        esac
+        { printf '$ %s\n' "$4"; HOME="$FAKE_ROOT/hosts/$host" sh -c "$4" 2>&1; } | fold -w 50 >> "$FAKE_ROOT/term.out" ;;
+      "terminal capture") counter quiet-captures && exit 0; [ -s "$FAKE_ROOT/term.out" ] && cat "$FAKE_ROOT/term.out" || echo '$ ' ;;
+      "terminal kill") ;;
+      *) echo "unexpected: $*" >&2; exit 9 ;;
+    esac
+    """).lstrip()
+
+
+def assert_fakes_run(env, names=("ssh", "paseo")):
+    """A broken fake would let the real binary run, so refuse to continue."""
+    for name in names:
+        done = subprocess.run([name, "--fake-ok"], env=env, capture_output=True, text=True)
+        if done.stdout.strip() != "fake":
+            raise AssertionError(f"fake {name} is not the binary on PATH")
+
 
 # Version lives in $HOME/claude-version; `claude update` installs 2.10.0.
 FAKE_CLAUDE = textwrap.dedent(r"""
