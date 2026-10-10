@@ -164,6 +164,14 @@ class RemotePreflightTest(unittest.TestCase):
         record = json.loads((self.home / ".config/loadout/global-sync.json").read_text())
         self.assertEqual(record, {str(target): sha(b"g2")})
 
+    def test_global_target_shared_by_two_clients(self):
+        (self.home / ".codex").mkdir()
+        glob = lambda data: {**entry(data), "targets": {"claude": "~/AGENTS.md", "codex": "~/AGENTS.md"}}
+        for data in (b"g1", b"g2"):
+            got = self.run_remote({}, clients=("codex", "claude"), glob=glob(data))
+            self.assertEqual(got["status"], "updated", got)
+            self.assertEqual((self.home / "AGENTS.md").read_bytes(), data)
+
     def test_retires_a_recorded_skill_and_keeps_unrecorded_or_edited_ones(self):
         files = {"demo/SKILL.md": entry(b"d"), "old/SKILL.md": entry(b"o"), "old/refs/a.md": entry(b"a"),
                  "edited/SKILL.md": entry(b"e")}
@@ -333,6 +341,12 @@ class SkillsSyncTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         token = self.installed("desktop", ".claude/skills/creds/refs/token.md")
         self.assertEqual((token.read_text(), stat.S_IMODE(token.stat().st_mode)), ("secret v2", 0o600))
+        # Installed by an earlier sync, before private files were owner-only: the next sync tightens them.
+        token.chmod(0o644)
+        token.parent.chmod(0o755)
+        code, out = self.run_sync("--skills", "creds", "--host", "desktop")
+        self.assertIn("desktop: skills same", out)
+        self.assertEqual((stat.S_IMODE(token.stat().st_mode), stat.S_IMODE(token.parent.stat().st_mode)), (0o600, 0o700))
 
     def test_overlay_history_is_one_locked_transaction(self):
         self.overlay("mine/SKILL.md", "v1")

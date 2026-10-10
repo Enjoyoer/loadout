@@ -195,10 +195,12 @@ try {
       else result.conflicts.push(id + "/" + rel);
     }
     // A file no longer published is deleted only while it matches a published version; an edit is a conflict.
+    // One renamed only in case is the published file itself on a macOS or Windows host, so it stays.
+    const published = new Set(Object.keys(plugin.files).map(foldPath));
     for (const [rel, hashes] of Object.entries(plugin.removed || {})) {
       const file = path.join(dir, ...rel.split("/"));
       checkAncestors(fs, path, dir, file, base);
-      if (SKIP.has(rel.split("/")[0]) || !fs.existsSync(file)) continue;
+      if (SKIP.has(rel.split("/")[0]) || published.has(foldPath(rel)) || !fs.existsSync(file)) continue;
       const st = fs.lstatSync(file);
       if (st.isFile() && hashes.includes(sha(fs.readFileSync(file)))) { removes.push({ dir, file, hashes }); (info.removed = info.removed || []).push(rel); info.staged = "changed"; }
       else result.conflicts.push(id + "/" + rel);
