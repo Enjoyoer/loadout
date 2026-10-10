@@ -188,19 +188,25 @@ try {
   const record = fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, "utf8")) : {};
   const before = JSON.stringify(record), owned = record.skills || {}, roots = [], drops = [];
   const writes = [], records = {};
-  const retire = (root, skill, label) => {
-    const dir = path.join(root, skill), tree = {};
-    checkAncestors(fs, path, root, dir);
+  // A skill directory's entries, sorted: file hash, "dir", or false for anything else; null if it is not a directory.
+  const snapshot = (root, dir) => {
+    if (!fs.existsSync(dir) || !fs.lstatSync(dir).isDirectory()) return null;
+    const tree = [];
     const walk = d => fs.readdirSync(d).forEach(n => {
-      const f = path.join(d, n), st = fs.lstatSync(f);
-      if (st.isDirectory()) walk(f); else tree[path.relative(root, f).split(path.sep).join("/")] = st.isFile() && sha(fs.readFileSync(f));
+      const f = path.join(d, n), st = fs.lstatSync(f), r = path.relative(root, f).split(path.sep).join("/");
+      if (st.isDirectory()) { tree.push([r, "dir"]); walk(f); } else tree.push([r, st.isFile() && sha(fs.readFileSync(f))]);
     });
-    let mine = false;
-    if (fs.existsSync(dir)) {
-      if (fs.lstatSync(dir).isDirectory()) { walk(dir); mine = Object.entries(tree).every(([r, h]) => h && owned[root][r] === h); }
-      result[mine ? "retired" : "kept"].push(label);
-    }
-    drops.push({ root, skill, dir: mine && dir });
+    walk(dir);
+    return tree.sort(([a], [b]) => a < b ? -1 : 1);
+  };
+  // Every file a regular one with the hash the record holds for it; directories need no record.
+  const mine = (root, tree) => !!tree && tree.every(([r, h]) => h === "dir" || (h && owned[root][r] === h));
+  const retire = (root, skill, label) => {
+    const dir = path.join(root, skill);
+    checkAncestors(fs, path, root, dir);
+    const tree = snapshot(root, dir), ours = mine(root, tree);
+    if (fs.existsSync(dir)) result[ours ? "retired" : "kept"].push(label);
+    drops.push({ root, skill, dir: ours && dir, tree, label });
   };
   const consider = (file, root, want, allowed, label, bytes, isGlobal) => {
     const kind = plan(file, root, want, allowed);
@@ -257,7 +263,16 @@ try {
     if (w.global) records[w.key] = sha(w.data);
   }
   for (const d of drops) {
-    if (d.dir) fs.rmSync(d.dir, { recursive: true });
+    // Verify again right before removal: ancestors, tree, file types, and recorded hashes. A skill that
+    // changed since preflight, or cannot be verified, is kept and reported as kept.
+    let why = null;
+    if (d.dir) try {
+      checkAncestors(fs, path, d.root, d.dir);
+      const now = snapshot(d.root, d.dir);
+      if (JSON.stringify(now) !== JSON.stringify(d.tree) || !mine(d.root, now)) why = "changed since preflight";
+    } catch (e) { why = "could not be verified again: " + e.message; }
+    if (d.dir && !why) fs.rmSync(d.dir, { recursive: true });
+    else if (d.dir) { result.retired.splice(result.retired.indexOf(d.label), 1); result.kept.push(`${d.label} (${why})`); }
     for (const r of Object.keys(owned[d.root])) if (r.startsWith(d.skill + "/")) delete owned[d.root][r];
   }
   for (const root of roots) for (const [rel, f] of Object.entries(p.files)) (owned[root] = owned[root] || {})[rel] = f.sha256;

@@ -33,13 +33,14 @@ SKIP_NAMES = {SYNC_RECORD, ".DS_Store"}
 # A remote program and its payload travel together on stdin as one base64 envelope, so the
 # command line holds only this fixed boot and the envelope's sha256: short enough for cmd.exe
 # whatever the program's size, and free of shell quoting. The boot runs nothing unless the
-# envelope matches the digest, then hands the program its payload in process.argv[2].
+# envelope matches the digest, then hands the program its payload in process.argv[2]. It holds
+# no '!', which cmd.exe strips when delayed expansion is on, so the test is a positive equality.
 BOOT = ("const loadoutRaw=require('fs').readFileSync(0,'utf8').trim();"
-        "if(require('crypto').createHash('sha256').update(loadoutRaw).digest('hex')!==process.argv[1])"
-        "{console.error('loadout transfer digest mismatch; nothing ran');process.exit(9)}"
+        "if(require('crypto').createHash('sha256').update(loadoutRaw).digest('hex')===process.argv[1]){"
         "const loadoutEnvelope=JSON.parse(Buffer.from(loadoutRaw,'base64').toString());"
         "process.argv[2]=loadoutEnvelope[1];"
-        "eval(require('zlib').gunzipSync(Buffer.from(loadoutEnvelope[0],'base64')).toString())")
+        "eval(require('zlib').gunzipSync(Buffer.from(loadoutEnvelope[0],'base64')).toString())"
+        "}else{console.error('loadout transfer digest mismatch; nothing ran');process.exit(9)}")
 # argv prefix for every ssh call; tests replace it with their fake (production always runs bare "ssh").
 SSH_COMMAND = ("ssh",)
 # Keepalives end a session whose host went to sleep or dropped off within about a minute.
@@ -56,7 +57,7 @@ OSES = {"macos", "windows", "linux"}
 # Host names are ssh aliases and reach ssh's argv, so a leading '-' would read as an option.
 HOST_NAME = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 CLIENTS = {"codex", "claude", "opencode", "pi"}
-TOP_KEYS = {"schema_version", "source_host", "transport", "notes", "hosts", "global"}
+TOP_KEYS = {"schema_version", "source_host", "transport", "notes", "hosts", "global", "skills_overlay"}
 HOST_KEYS = {"name", "os", "checkout", "clients", "paseo", "transport", "sync", "paseo_offer", "exclude_skills"}
 PASEO_KEYS = {"plugin_root", "stage", "install"}
 # global.claude may name the claudeMd field of Claude Code's managed settings instead of a file.
@@ -143,6 +144,8 @@ def validate(data: Any) -> dict:
         default_transport = "ssh"
     elif default_transport not in TRANSPORTS:
         raise FleetError(f"transport {default_transport!r} is not one of {sorted(TRANSPORTS)}")
+    if not isinstance(data.get("skills_overlay", False), bool):
+        raise FleetError("skills_overlay must be true or false")
     hosts = data.get("hosts")
     if not isinstance(hosts, list) or not hosts:
         raise FleetError("hosts must be a non-empty list")

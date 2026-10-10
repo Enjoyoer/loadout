@@ -8,6 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills/orchestration/personal-skills/scripts"))
 import fleet  # noqa: E402
+import paseo_providers  # noqa: E402
 
 
 class ResolveTest(unittest.TestCase):
@@ -215,6 +216,11 @@ class WindowsCommandLengthTest(unittest.TestCase):
                 margin = self.CMD_LIMIT - length
                 with self.subTest(program=name):
                     self.assertGreater(margin, 0, f"{name}: {length} characters, margin {margin} to the {self.CMD_LIMIT} limit")
+
+    def test_boot_strings_hold_no_exclamation_mark(self):
+        # cmd.exe strips '!' when delayed expansion is on, which would turn the digest gate around.
+        self.assertNotIn("!", fleet.BOOT)
+        self.assertNotIn("!", paseo_providers.staged_payload("program", "data")[1])
 
 
 if __name__ == "__main__":

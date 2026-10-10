@@ -144,19 +144,34 @@ try {
   }
 
   // 1. Stage: preflight every file of every staged plugin before writing any.
+  // The record keeps, per staged directory, the source digest last checked and its result, the
+  // digest the daemon last confirmed running (activated), and a reload owed by an activation that
+  // has not been confirmed yet.
   const root = expand(p.plugin_root);
   const writes = [], removes = [], plan = {};
   const record = fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, "utf8")) : {};
-  const recorded = JSON.stringify(record);
+  let saved = JSON.stringify(record, null, 2);
+  // Records from before activations were kept name the checked digest "digest" and hold no activation.
+  for (const rec of Object.values(record)) if (rec.digest && !rec.checked) { rec.checked = rec.digest; delete rec.digest; }
+  const save = () => {
+    const text = JSON.stringify(record, null, 2);
+    if (text === saved) return;
+    fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+    replaceFile(fs, recordPath, text, 0o600);
+    saved = text;
+  };
   for (const id of p.stage) {
     const dir = path.join(root, id), plugin = p.plugins[id], rec = record[dir];
     const info = result.plugins[id] = { staged: "same", checked: false, installed: null, running: null };
-    // Only a passed check recorded for this exact source skips the check. Any other recorded check
-    // also reloads once the check passes, since the daemon may still run older code.
+    // Only a passed check recorded for this exact source skips the check.
     const digest = sha(JSON.stringify(Object.keys(plugin.files).sort().map(r => [r, plugin.files[r].sha256])));
-    const recheck = !rec ? "no check recorded" : rec.digest !== digest ? "source changed since the last check"
+    const recheck = !rec ? "no check recorded" : rec.checked !== digest ? "source changed since the last check"
       : rec.check !== "passed" ? "last check failed" : null;
-    plan[id] = { digest, recheck, reload: !!rec && !!recheck };
+    // An installed plugin reloads unless the daemon was confirmed running this exact source,
+    // whatever the check record says: a passed check is not an activation.
+    const owed = rec && rec.owed ? "an earlier reload or install was not confirmed"
+      : !rec || !rec.activated ? "no activation recorded" : rec.activated !== digest ? "running source predates this one" : null;
+    plan[id] = { digest, recheck, rerun: !!rec && !!recheck, owed };
     for (const [rel, f] of Object.entries(plugin.files)) {
       const file = path.join(dir, ...rel.split("/"));
       checkAncestors(fs, path, root, file);
@@ -202,9 +217,15 @@ try {
     const current = (daemonConfig().plugins || {})[id];
     if (current && current.path && path.resolve(current.path) !== path.join(root, id)) elsewhere[id] = current;
   }
+  // Reload an installed plugin for new staged source, or for a reload still owed; name the debt when it is the reason.
+  const needsReload = id => {
+    if (result.plugins[id].staged === "changed") return true;
+    if (plan[id].owed) result.plugins[id].owed = plan[id].owed;
+    return !!plan[id].owed;
+  };
 
   if (p.dry_run) {
-    let blockedHere = !!gate, migrating = false;
+    let blockedHere = !!gate, activating = false;
     for (const id of p.stage) {
       if (result.plugins[id].staged === "same" && plan[id].recheck) result.plugins[id].checked = "would run (" + plan[id].recheck + ")";
       if (!p.install.includes(id)) continue;
@@ -212,10 +233,12 @@ try {
       if (gate) info.installed = "blocked: " + gate;
       else if (from && !p.migrate_path) { info.installed = "blocked: installed from " + from.path + " (use --migrate-path)"; blockedHere = true; }
       else if (from && from.enabled === false) { info.installed = "blocked: disabled plugin installed from " + from.path; blockedHere = true; }
-      else if (from) { info.installed = "would migrate from " + from.path + " (settings backed up and restored)"; migrating = true; }
-      else info.installed = "would install or reload";
+      else if (from) { info.installed = "would migrate from " + from.path + " (settings backed up and restored)"; activating = true; }
+      else if (!(daemonConfig().plugins || {})[id]) { info.installed = "would install"; activating = true; }
+      else if (needsReload(id)) { info.installed = "would reload"; activating = true; }
+      else info.installed = "already installed";
     }
-    const changed = migrating || p.stage.some(id => result.plugins[id].staged === "changed" || plan[id].reload);
+    const changed = activating || p.stage.some(id => result.plugins[id].staged === "changed" || plan[id].rerun);
     result.status = blockedHere ? "blocked" : changed ? "would update" : "same";
     done(0);
   }
@@ -235,26 +258,27 @@ try {
     if (info.staged === "same" && !recheck && fs.existsSync(path.join(dir, "node_modules"))) { info.checked = "skipped (unchanged)"; continue; }
     const scripts = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).scripts || {};
     const script = scripts.check ? "check" : scripts.typecheck ? "typecheck" : null;
+    // A check never touches the activation fields: the daemon still runs what it last loaded.
+    const kept = record[dir] || {};
     try {
       sh("npm", ["ci", "--ignore-scripts"], dir);
       if (script) sh("npm", ["run", script], dir);
       info.checked = (script || "no check script") + (info.staged === "same" && recheck ? " (rerun: " + recheck + ")" : "");
-      record[dir] = { digest, check: "passed" };
+      record[dir] = { ...kept, checked: digest, check: "passed" };
     } catch (e) {
       info.checked = "FAILED: " + String(e.stderr || e.message).trim().split("\n").slice(-3).join(" ").slice(0, 300);
-      record[dir] = { digest, check: "failed" };
+      record[dir] = { ...kept, checked: digest, check: "failed" };
       failed = true;
     }
   }
-  if (JSON.stringify(record) !== recorded) {
-    fs.mkdirSync(path.dirname(recordPath), { recursive: true });
-    replaceFile(fs, recordPath, JSON.stringify(record, null, 2), 0o600);
-  }
+  save();
 
-  // 3. Install or reload, then confirm running and enabled.
+  // 3. Install or reload, then confirm running and enabled. The reload is recorded as owed before
+  // the daemon is touched, and cleared only once the plugin is confirmed running, so a failed
+  // reload, a gate, or a lost connection leaves it owed for the next run.
   let blocked = false;
   for (const id of p.install) {
-    const info = result.plugins[id], dir = path.join(root, id);
+    const info = result.plugins[id], dir = path.join(root, id), rec = record[dir];
     if (typeof info.checked === "string" && info.checked.startsWith("FAILED")) { info.installed = "skipped (check failed)"; continue; }
     if (gate) { info.installed = "blocked: " + gate; blocked = true; continue; }
     const current = (daemonConfig().plugins || {})[id], from = elsewhere[id];
@@ -265,19 +289,22 @@ try {
       if (from && from.enabled === false) {
         info.installed = "blocked: disabled plugin installed from " + from.path; blocked = true; continue;
       }
+      const activate = !!from || !current || needsReload(id);
+      if (activate) { rec.owed = plan[id].digest; save(); }
       if (from) info.installed = migrate(id, dir, from.path);
       else if (!current) { paseo(["plugin", "install", dir]); info.installed = "installed"; }
-      else if (info.staged === "changed" || plan[id].reload) { paseo(["plugin", "reload", id]); info.installed = "reloaded"; }
+      else if (activate) { paseo(["plugin", "reload", id]); info.installed = "reloaded"; }
       else info.installed = "already installed";
       const listed = JSON.parse(paseo(["plugin", "ls", "--json"])).find(x => x.id === id);
       info.running = !!listed && listed.status === "running" && listed.enabled === true;
       if (!info.running) { info.installed += "; not running: " + (listed ? (listed.error || listed.status) : "missing"); failed = true; }
+      else if (activate) { rec.activated = plan[id].digest; delete rec.owed; save(); }
     } catch (e) {
       info.installed = "FAILED: " + String(e.message).slice(0, 300);
       failed = true;
     }
   }
-  const changed = p.stage.some(id => result.plugins[id].staged === "changed" || plan[id].reload)
+  const changed = p.stage.some(id => result.plugins[id].staged === "changed" || plan[id].rerun)
     || Object.values(result.plugins).some(x => x.installed === "installed" || x.installed === "reloaded"
       || String(x.installed).startsWith("migrated"));
   result.status = failed ? "failed" : blocked ? "blocked" : changed ? "updated" : "same";

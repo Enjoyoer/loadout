@@ -7,7 +7,9 @@ Code. Private skills come from the fleet directory's skills/<skill>/ overlay,
 which is never published. Each host is preflighted before any write; a changed
 file that matches no published or recorded overlay version is a conflict and
 stops that host. A skill the host's sync record shows the sync installed, and
-that is no longer published, is removed unless it was edited there.
+that is no longer published, is removed unless it was edited there. When
+hosts.json sets skills_overlay and the overlay is missing or not a directory, no
+host retires anything, and each reports `blocked` with the reason.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Callable, Optional
@@ -60,6 +63,16 @@ def overlay_history(fleet_dir: Path) -> dict:
         return json.loads(path.read_text()) if path.is_file() else {}
     except ValueError as error:
         raise fleet.FleetError(f"unreadable overlay history {path}: {error}") from error
+
+
+def overlay_problem(fleet_doc: dict, fleet_dir: Path) -> Optional[str]:
+    """Why retirement stops: hosts.json sets skills_overlay, and <fleet>/skills/ is missing or not a directory."""
+    root = fleet_dir / OVERLAY
+    if not fleet_doc.get("skills_overlay") or root.is_dir():
+        return None
+    return (f"hosts.json sets skills_overlay, but the fleet overlay skills/ "
+            f"{'is not a directory' if os.path.lexists(root) else 'is missing'}, so no host retires anything; "
+            "restore it, or leave an empty skills/ to retire its skills")
 
 
 def overlay_files(fleet_dir: Path, published: set, prior_by_dest: dict) -> dict:
@@ -122,10 +135,11 @@ def listed(labels: list) -> str:
 
 def describe(result: dict) -> str:
     status = result["status"]
+    stopped = f"; retirement stopped: {result['retire_stopped']}" if result.get("retire_stopped") else ""
     if status == "failed":
-        return f"FAILED: {result['error']}"
+        return f"FAILED: {result['error']}{stopped}"
     if status == "conflict":
-        return f"conflict: local edits, nothing written: {listed(result['conflicts'])}"
+        return f"conflict: local edits, nothing written: {listed(result['conflicts'])}{stopped}"
     retired, kept = result.get("retired", []), result.get("kept", [])
     counts = [f"+{len(result['added'])}" if result["added"] else "", f"~{len(result['changed'])}" if result["changed"] else "",
               f"-{len(retired)}" if retired else ""]
@@ -135,7 +149,8 @@ def describe(result: dict) -> str:
     dry = status == "would update"
     unpublished = (f"; {'would retire' if dry else 'retired'} unpublished: {listed(retired)}" if retired else "") + (
         f"; unpublished with local edits, {'would keep' if dry else 'kept'} and stop managing: {listed(kept)}" if kept else "")
-    return f"{status}" + (f" ({counts})" if counts else "") + (f"; {clients}" if clients else "") + elevation + unpublished
+    return (f"{status}" + (f" ({counts})" if counts else "") + (f"; {clients}" if clients else "") + elevation + unpublished
+            + stopped)
 
 
 def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[str], None],
@@ -150,13 +165,17 @@ def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[s
         unknown = sorted(only - names)
         if unknown:
             raise fleet.FleetError(f"unknown skills: {unknown}")
+    # A configured overlay that is missing must not read as an empty one: then every host retires nothing.
+    stopped = overlay_problem(fleet_doc, fleet_dir)
     glob = global_payload(fleet_doc, fleet_dir)
     selected = names if only is None else only
     emit(f"source_commit {pub.source[:12]}: {len(selected)} skills selected"
          + (f" ({len(selected & overlay_names)} from the private overlay)" if selected & overlay_names else "")
          + ("; global instructions" if glob else ""))
+    if (fleet_dir / OVERLAY).is_dir() and not fleet_doc.get("skills_overlay"):
+        emit("note: hosts.json does not set skills_overlay, so a missing skills/ overlay would not stop retirement")
     return {"fleet_doc": fleet_doc, "fleet_dir": fleet_dir, "dry_run": dry_run, "only": only, "pub": pub,
-            "overlay": overlay, "names": names, "global": glob}
+            "overlay": overlay, "retire_stopped": stopped, "names": names, "global": glob}
 
 
 def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
@@ -168,14 +187,20 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
                if dest.split("/")[0] not in exclude and (only is None or dest.split("/")[0] in only)}
     files.update(overlay)
     # A host retires a skill it recorded only when the skill is in neither the publication nor the
-    # overlay, nor excluded on this host; a run narrowed to some skills retires nothing.
-    keep = sorted(state["names"] | exclude) if only is None else None
+    # overlay, nor excluded on this host; a run narrowed to some skills, or one whose configured
+    # overlay is missing, retires nothing.
+    keep = sorted(state["names"] | exclude) if only is None and not state["retire_stopped"] else None
     payload = {"dry_run": state["dry_run"], "clients": host.get("clients", []), "files": files,
                "global": state["global"], "keep": keep}
     result, output = fleet.run_node(name, name == state["fleet_doc"]["source_host"], REMOTE_JS, payload,
                                     TIMEOUT_SECONDS)
     if result is None:
         result = {"status": "failed", "error": output}
+    if state["retire_stopped"] and only is None:
+        # Every host gets the reason, a failed or conflicted one too; one that would otherwise pass is blocked.
+        result = {**result, "retire_stopped": state["retire_stopped"]}
+        if result["status"] in ("same", "updated", "would update"):
+            result["status"] = "blocked"
     if (not state["dry_run"] and overlay and result["status"] in ("updated", "same")
             and "present" in result["clients"].values()):
         record_overlay(state["fleet_dir"], overlay)

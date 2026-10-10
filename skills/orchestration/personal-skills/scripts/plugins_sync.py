@@ -74,7 +74,8 @@ def describe(result: dict, dry_run: bool = False) -> list:
             if info["checked"]:
                 parts.append(f"check {info['checked']}")
             if info["installed"]:
-                parts.append(info["installed"])
+                # owed: why an unchanged plugin is reloaded (an earlier activation was never confirmed).
+                parts.append(info["installed"] + (f" (reload owed: {info['owed']})" if info.get("owed") else ""))
             if info["running"] is not None:
                 parts.append("running" if info["running"] else "NOT running")
             lines.append(f"  {plugin_id}: {'; '.join(parts)}")

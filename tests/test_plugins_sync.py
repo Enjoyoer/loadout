@@ -57,7 +57,7 @@ FAKE_PASEO = textwrap.dedent(r"""
         const fs=require("fs"),path=require("path");const [cfg,id]=process.argv.slice(1);
         const c=JSON.parse(fs.readFileSync(cfg,"utf8"));delete c.plugins[id];fs.writeFileSync(cfg,JSON.stringify(c));
         fs.rmSync(path.join(path.dirname(cfg),"plugin-settings",id),{recursive:true,force:true});' "$cfg" "$3" ;;
-      "plugin reload") ;;
+      "plugin reload") [ -e "$FAKE_ROOT/fail-reload" ] && { echo "reload failed" >&2; exit 1; }; true ;;
       "plugin ls") node -e '
         const fs=require("fs");const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const down=fs.existsSync(process.argv[2]);
         console.log(JSON.stringify(Object.entries(c.plugins||{}).map(([id,p])=>({id,path:p.path,enabled:p.enabled,status:down?"error":"running",error:down?"load failed":null}))));' "$cfg" "$FAKE_ROOT/not-running" ;;
@@ -247,6 +247,30 @@ class RemotePluginTest(Fixture):
         self.assertEqual(got["plugins"]["demo"]["installed"], "reloaded")
         got = self.run_remote(files)
         self.assertEqual((got["status"], got["plugins"]["demo"]["checked"]), ("same", "skipped (unchanged)"))
+
+    def test_failed_reload_after_a_passed_check_is_owed_and_the_next_run_reloads(self):
+        self.run_remote()
+        files = {rel: blob(data) for rel, data in PLUGIN_FILES.items()}
+        files["server/index.ts"] = blob(b"export const v = 2\n", [hashlib.sha256(b"export {}\n").hexdigest()])
+        (self.root / "fail-reload").touch()
+        got = self.run_remote(files)
+        self.assertEqual(got["status"], "failed", got)
+        self.assertEqual(got["plugins"]["demo"]["checked"], "check")
+        self.assertIn("FAILED: paseo plugin reload demo: reload failed", got["plugins"]["demo"]["installed"])
+        (self.root / "fail-reload").unlink()
+        # Same files and a passed check, but the daemon never confirmed v2: the reload is still owed.
+        self.assertEqual(self.run_remote(files, dry_run=True)["status"], "would update")
+        got = self.run_remote(files)
+        self.assertEqual(got["status"], "updated", got)
+        info = got["plugins"]["demo"]
+        self.assertEqual((info["staged"], info["checked"], info["installed"], info["running"]),
+                         ("same", "skipped (unchanged)", "reloaded", True))
+        self.assertEqual(plugins_sync.describe(got)[1], "  demo: staged same; check skipped (unchanged); reloaded "
+                         "(reload owed: an earlier reload or install was not confirmed); running")
+        self.assertEqual(self.calls().count("paseo plugin reload demo"), 2)
+        got = self.run_remote(files)
+        self.assertEqual((got["status"], got["plugins"]["demo"]["installed"]), ("same", "already installed"))
+        self.assertEqual(self.calls().count("paseo plugin reload demo"), 2)
 
     def test_not_running_after_install_fails(self):
         (self.root / "not-running").touch()
