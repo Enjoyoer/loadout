@@ -49,7 +49,7 @@ function cleanupTests(tests) {
   if (identity === 'same' || (identity === 'gone' && process.platform !== 'win32')) {
     return stopGroup(tests.child_pid) ? 'group signalled' : 'nothing left to signal';
   }
-  return identity === 'reused' ? 'incomplete: PID reused' : identity === 'unknown' ? 'incomplete: start time unreadable'
+  return identity === 'reused' ? 'cleanup incomplete: PID reused' : identity === 'unknown' ? 'incomplete: start time unreadable'
     : 'incomplete: root exited, and Windows cannot find its descendants';
 }
 // Only the recorded process clears 'running'; once it is gone, or its pid names a process with another start time, the
