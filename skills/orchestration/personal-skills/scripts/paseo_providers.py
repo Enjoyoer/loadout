@@ -238,7 +238,7 @@ class Runner:
         if self.mode in {"local", "ssh"}:
             raw, boot = staged_payload(program, data)
             command = (["node", "-e", boot] if self.mode == "local" else
-                       ["ssh", *fleet.SSH_OPTIONS, "--", self.name, f'node -e "{boot}"'])
+                       [*fleet.SSH_COMMAND, *fleet.SSH_OPTIONS, "--", self.name, f'node -e "{boot}"'])
             # Without the agent session's PASEO_HOME, the merge finds the host's own Paseo home.
             try:
                 done = subprocess.run(command, input=raw, capture_output=True, text=True, env=self.base_env(),
@@ -364,7 +364,7 @@ class Runner:
             command = ["paseo", "reload"]
             env = self.relay_env()
         else:
-            command = ["ssh", "-n", *fleet.SSH_OPTIONS, "--", self.name, "paseo reload"]
+            command = [*fleet.SSH_COMMAND, "-n", *fleet.SSH_OPTIONS, "--", self.name, "paseo reload"]
             env = self.base_env()
         try:
             done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=RELOAD_TIMEOUT_SECONDS)

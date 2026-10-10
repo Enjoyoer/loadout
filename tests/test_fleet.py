@@ -209,7 +209,9 @@ class WindowsCommandLengthTest(unittest.TestCase):
                 with mock.patch.object(fleet, "COMMON_JS", common), mock.patch.object(fleet.subprocess, "run") as run:
                     run.return_value = subprocess.CompletedProcess([], 0, "", "")
                     fleet.run_node("windows-host", False, program, {})
-                length = len(self.CMD_WRAPPER) + len(subprocess.list2cmdline(run.call_args.args[0]))
+                command = run.call_args.args[0]  # a string is already the command line; only argv lists are serialized
+                line = command if isinstance(command, str) else subprocess.list2cmdline(command)
+                length = len(self.CMD_WRAPPER) + len(line)
                 margin = self.CMD_LIMIT - length
                 with self.subTest(program=name):
                     self.assertGreater(margin, 0, f"{name}: {length} characters, margin {margin} to the {self.CMD_LIMIT} limit")

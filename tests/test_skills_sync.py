@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
 
@@ -16,18 +15,7 @@ sys.path.insert(0, str(SCRIPTS))
 import fleet  # noqa: E402
 import skills_sync  # noqa: E402
 
-FAKE_SSH = textwrap.dedent(r"""
-    #!/bin/sh
-    [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
-    while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
-    [ "$1" = "--" ] && shift
-    host="$1"; shift
-    unset CODEX_HOME XDG_CONFIG_HOME
-    HOME="$FAKE_ROOT/hosts/$host" exec sh -c "$*"
-    """).lstrip()
-
-# Windows cannot run the fake; the overlay checks below never reach ssh and still run there.
-needs_fake_ssh = unittest.skipIf(os.name == "nt", "fake ssh is a POSIX shell script")
+from fake_commands import assert_fake, install_fake_ssh, with_fake_ssh
 
 
 def entry(data, prior=()):
@@ -197,31 +185,29 @@ class SkillsSyncTest(unittest.TestCase):
         (self.fleet / "global").mkdir(parents=True)
         (self.fleet / "hosts.json").write_text(json.dumps(HOSTS))
         (self.fleet / "global/AGENTS.md").write_text("# Global\n")
-        bin_dir = self.root / "bin"
-        bin_dir.mkdir()
-        (bin_dir / "ssh").write_text(FAKE_SSH)
-        (bin_dir / "ssh").chmod(0o755)
+        self.ssh = install_fake_ssh(self.root / "bin")
         for host in ("laptop", "desktop"):
             (self.root / "hosts" / host / ".claude").mkdir(parents=True)
         (self.root / "hosts/desktop/.codex").mkdir()
-        self.env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.root / "hosts/laptop"),
+        self.env = {"PATH": os.environ["PATH"], "HOME": str(self.root / "hosts/laptop"),
                     "LOADOUT_FLEET": str(self.fleet), "FAKE_ROOT": str(self.root)}
-        if os.name != "nt":
-            done = subprocess.run(["ssh", "--fake-ok"], env=self.env, capture_output=True, text=True)
-            self.assertEqual(done.stdout.strip(), "fake", "fake ssh is not the binary on PATH")
+        self.env.update({k: v for k, v in os.environ.items()
+                         if k.upper() in ("SYSTEMROOT", "TEMP", "TMP")})
+        self.env["USERPROFILE"] = self.env["HOME"]
+        self.env["APPDATA"] = str(self.root / "hosts/laptop/.config")
+        assert_fake(self.ssh, self.env)
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def run_sync(self, *args):
-        done = subprocess.run([sys.executable, str(SCRIPTS / "skills_sync.py"), "--skills", "handoff,grilling", *args],
+        done = subprocess.run(with_fake_ssh(SCRIPTS / "skills_sync.py", self.ssh, "--skills", "handoff,grilling", *args),
                               env=self.env, capture_output=True, text=True, timeout=120)
         return done.returncode, done.stdout + done.stderr
 
     def installed(self, host, rel):
         return self.root / "hosts" / host / rel
 
-    @needs_fake_ssh
     def test_install_from_the_verified_manifest(self):
         code, out = self.run_sync()
         self.assertEqual(code, 0, out)
@@ -242,7 +228,6 @@ class SkillsSyncTest(unittest.TestCase):
         code, out = self.run_sync()
         self.assertEqual(out.count("skills same"), 2, out)
 
-    @needs_fake_ssh
     def test_conflict_exit_code_and_dry_run(self):
         code, out = self.run_sync("--dry-run")
         self.assertEqual(code, 0, out)
@@ -260,14 +245,13 @@ class SkillsSyncTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(data)
 
-    @needs_fake_ssh
     def test_private_overlay_installs_updates_and_keeps_hand_edits(self):
         self.overlay("mine/SKILL.md", "v1")
         self.overlay("mine/__pycache__/x.pyc", "junk")
         code, out = self.run_sync("--dry-run")
         self.assertEqual(code, 0, out)
         self.assertFalse((self.fleet / "skills/.loadout-overlay.json").exists(), "dry run records nothing")
-        done = subprocess.run([sys.executable, str(SCRIPTS / "skills_sync.py"), "--skills", "handoff,mine"],
+        done = subprocess.run(with_fake_ssh(SCRIPTS / "skills_sync.py", self.ssh, "--skills", "handoff,mine"),
                               env=self.env, capture_output=True, text=True, timeout=120)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("2 skills selected (1 from the private overlay)", done.stdout)
@@ -292,7 +276,6 @@ class SkillsSyncTest(unittest.TestCase):
         self.assertNotIn("skills/mine/SKILL.md", fleet.fleet_files(self.fleet))
         self.assertIn("hosts.json", fleet.fleet_files(self.fleet))
 
-    @needs_fake_ssh
     def test_overlay_name_clash_and_missing_skill_md(self):
         self.overlay("handoff/SKILL.md", "shadow")
         code, out = self.run_sync()
@@ -314,9 +297,8 @@ class SkillsSyncTest(unittest.TestCase):
         files = skills_sync.overlay_files(self.fleet, {"handoff"}, by_dest)
         self.assertEqual(files["moved/SKILL.md"]["prior"], [sha(b"published")])
 
-    @needs_fake_ssh
     def test_unknown_skill_and_host(self):
-        done = subprocess.run([sys.executable, str(SCRIPTS / "skills_sync.py"), "--skills", "nope"], env=self.env,
+        done = subprocess.run(with_fake_ssh(SCRIPTS / "skills_sync.py", self.ssh, "--skills", "nope"), env=self.env,
                               capture_output=True, text=True)
         self.assertEqual(done.returncode, 1)
         self.assertIn("unknown skills: ['nope']", done.stderr)
