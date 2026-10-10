@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { rm, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { describe, it } from "node:test";
-import { ResumeStore } from "../server/store.ts";
+import { ResumeStore, StateUnreadableError } from "../server/store.ts";
 import { buildRecord, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
 
 const config: ResumeConfig = {
@@ -60,6 +60,24 @@ describe("ResumeStore", () => {
     await Promise.all(records.map((record) => store.upsert(record)));
     assert.deepEqual((await store.read()).map((record) => record.agentId).sort(), ["agent-a", "agent-b", "agent-c"]);
     for (const record of records) await store.remove(record.recordId);
+  });
+
+  it("throws on a malformed record instead of acting on it, and leaves the file alone", async () => {
+    const filePath = `/tmp/usage-limit-auto-resume-malformed-${process.pid}.json`;
+    const record = buildRecord(agent, "out of credits", undefined, config, Date.now(), "turn-1")!;
+    const malformed = [null, { ...record, notBefore: "not-a-date" }, { ...record, state: "paused" }, { ...record, attempts: [{ at: record.createdAt }] }, { ...record, agentId: undefined }];
+    try {
+      for (const bad of malformed) {
+        const text = JSON.stringify({ version: 2, records: [bad, record] });
+        await writeFile(filePath, text);
+        const store = new ResumeStore(filePath);
+        await assert.rejects(store.read(), (error) => error instanceof StateUnreadableError);
+        await assert.rejects(store.upsert(record), (error) => error instanceof StateUnreadableError);
+        assert.equal(await readFile(filePath, "utf8"), text);
+      }
+    } finally {
+      await rm(filePath, { force: true });
+    }
   });
 
   it("throws on a corrupt state file instead of reading it as empty", async () => {
