@@ -24,7 +24,7 @@ node skills/orchestration/opc/scripts/validate-opc.mjs skills/orchestration/opc
 python3 examples/fleet_demo.py                 # end-to-end fleet sync against simulated hosts
 ```
 
-CI runs the same checks on every pull request.
+CI runs these checks on every pull request (repository tests on Ubuntu, macOS, and Windows; plugin checks on Ubuntu and Windows), except the fleet demo, which stays a local end-to-end check.
 
 ## Scratch work
 

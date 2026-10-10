@@ -20,8 +20,9 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ### Added
 - `pi-fast-toggle`, a Paseo plugin with a per-agent composer pill that requests Fast on Pi agents whose model supports service tiers.
-- OPC routes Pi Workers by task class, with quota-paced effort for adjustable classes and a fixed Opus route for UI work.
-- OPC cloud lane: an owner toggle sends eligible editing lanes to one Claude Code cloud session, always Opus 5.5 at xhigh, with an optional per-host cloud profile for a second claude.ai login.
+- OPC routes Pi Workers by task class. Code, code-bounded, test-fix, and automation start at Opus medium; reviews use Sol xhigh; browser uses Astra medium with Fast on; research is fixed at Luna xhigh; UI is fixed at Opus xhigh. Quota can raise an adjustable route but never lowers one; a `codexFallback` key in `routing.json` is accepted and ignored.
+- OPC cloud lane: an owner toggle sends eligible editing lanes (`on`), or editing lanes and UI (`all`), to one Claude Code cloud session, always Opus 5.5 at xhigh on launch and follow-up, with an optional per-host cloud profile for a second claude.ai login that fails closed when unreadable. A dead cloud lane gets one local fallback Worker on its class route, the `ui` route for UI work.
+- CI runs the repository tests on Ubuntu, macOS, and Windows, and plugin checks on Ubuntu and Windows.
 - `cache-aware-autocompact` extends idle compaction to cold Claude-family recoveries and failed turns (`extendIdleCompaction`, default on).
 - `pm-native-worker-guard`, a dry-run-first Paseo plugin that stops and archives native Codex or Claude Code agents created by a PM and tells the PM to use the Pi provider, with an owner allowlist.
 

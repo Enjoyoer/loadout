@@ -109,7 +109,7 @@ Every plugin pins a Paseo version range in `paseo-plugin.json`. To install one m
 python3 -m unittest discover -s tests
 ```
 
-CI runs these on Ubuntu and macOS for every pull request, together with manifest verification, the `opc` package validator, and each plugin's `npm run check` (or `typecheck`).
+CI runs these on Ubuntu, macOS, and Windows for every pull request, together with manifest verification, the `opc` package validator, and each plugin's `npm run check` (or `typecheck`) on Ubuntu and Windows.
 
 ## Publication integrity
 
