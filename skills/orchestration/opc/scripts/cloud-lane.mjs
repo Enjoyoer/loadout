@@ -473,7 +473,8 @@ function main(argv) {
   }
   if (!['on', 'off', 'all'].includes(state)) {
     throw Error('usage: cloud-lane.mjs on|off|all|status | allow|disallow <owner/repo|owner/*> [--fleet host,...] | profile <dir>|none' +
-      ' | launch <brief file> --profile <dir>|none | follow-up <session id> <message file> --profile <dir>|none');
+      ' | launch <brief file> --profile <dir>|none | follow-up <session id> <message file> --profile <dir>|none' +
+      ' | reconcile <task.json>... [--session <id> --url <url> | --no-session --reason <text>]');
   }
   setCloudToggle(state, { authStatus: state === 'off' ? null : readAuthStatus() });
   console.log(`local: ${state}`);
