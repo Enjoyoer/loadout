@@ -5,7 +5,14 @@
 // never printed. Only managed keys are written; everything else stays host-local.
 // replaceFile comes from remote_common.js, which fleet.run_node ships ahead of this file.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib");
-const { execSync } = require("child_process");
+const { execSync, execFileSync } = require("child_process");
+// Test-only hook: LOADOUT_TEST_CLAUDE is a JSON [interpreter, fake script] run as argv, without a shell.
+// It is never set outside tests; unset, claude runs through the shell strings below unchanged.
+const testClaude = process.env.LOADOUT_TEST_CLAUDE;
+function runTestClaude(arg, options) {
+  const [interpreter, script] = JSON.parse(testClaude);
+  return execFileSync(interpreter, [script, arg], options);
+}
 const result = { codex: null, claude: null, claude_code: null, error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
@@ -95,7 +102,8 @@ function versionAtLeast(have, want) {
 
 function claudeVersion() {
   try {
-    const out = execSync("claude --version", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30000 });
+    const options = { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30000 };
+    const out = testClaude ? runTestClaude("--version", options) : execSync("claude --version", options);
     return (out.trim().split(/\s+/)[0]) || null;
   } catch (e) { return null; }
 }
@@ -145,7 +153,8 @@ try {
     const have = claudeVersion();
     const cc = { have, min: p.claude.minVersion, ok: !!have && versionAtLeast(have, p.claude.minVersion), updated_to: null };
     if (!cc.ok && p.update_claude && !p.dry_run && have) {
-      try { execSync("claude update", { stdio: "ignore", timeout: 600000 }); } catch (e) { /* reported below */ }
+      const options = { stdio: "ignore", timeout: 600000 };
+      try { testClaude ? runTestClaude("update", options) : execSync("claude update", options); } catch (e) { /* reported below */ }
       cc.updated_to = claudeVersion();
       cc.ok = !!cc.updated_to && versionAtLeast(cc.updated_to, p.claude.minVersion);
     }

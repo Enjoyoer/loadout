@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b6aafc03f086f4ac3f5c3154f48033f7c42acce5",
+  "source_commit": "b860abe395793740f225b3c74a1ae0bdbf16762e",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -492,8 +492,8 @@
       "path": "skills/orchestration/personal-skills/scripts/client_config_merge.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 7187,
-      "sha256": "1e2faf3e612dafa81317f0f5318a4bb4216c9de66ecdb91c99b1dd82194a3a0a"
+      "bytes": 7771,
+      "sha256": "e47e31fc6fc9d2ea9c50650f0f45836719bbaff06a906371323da91a9534b93c"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/fleet.py",

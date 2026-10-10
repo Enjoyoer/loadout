@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,9 +16,18 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills/orchestration/personal-skills/scripts"
 EXAMPLE = REPO / "skills/orchestration/personal-skills/fleet/example"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_client_config import FAKE_CLAUDE  # noqa: E402
 from test_paseo_providers import FAKE_PASEO, FAKE_SSH, assert_fakes_run  # noqa: E402
 from test_plugins_sync import FAKE_NPM  # noqa: E402
+
+# Version lives in $HOME/claude-version; `claude update` installs 2.10.0.
+FAKE_CLAUDE = textwrap.dedent(r"""
+    #!/bin/sh
+    [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
+    case "$1" in
+      --version) echo "$(cat "$HOME/claude-version") (Claude Code)" ;;
+      update) echo 2.10.0 > "$HOME/claude-version" ;;
+    esac
+    """).lstrip()
 
 HOSTS = {
     "schema_version": 2, "source_host": "laptop", "transport": "ssh",
