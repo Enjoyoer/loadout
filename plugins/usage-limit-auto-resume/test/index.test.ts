@@ -27,6 +27,28 @@ async function until(check: () => boolean): Promise<void> {
   assert.ok(check(), "condition not reached");
 }
 
+/** Rejects unless `promise` settles within `ms`, so a barrier that never opens fails the test instead of passing on. */
+function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not happen within ${ms}ms`)), ms); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Fires the poll interval until the next sweep has run to completion. A sweep starts only after the previous one has
+ * returned (the plugin's running guard) and reads settings first, so a further sweep reading settings is the signal
+ * that the next one finished. Needs mocked setInterval timers.
+ */
+async function completeNextSweep(settingsReads: () => number, intervalMs: number): Promise<void> {
+  const before = settingsReads();
+  for (const target of [before + 1, before + 2]) {
+    await until(() => {
+      if (settingsReads() < target) mock.timers.tick(intervalMs);
+      return settingsReads() >= target;
+    });
+  }
+}
+
 it("opens a fresh daemon client on the sweep after the cached client's transport died", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-sweep-"));
   const previousHome = process.env.PASEO_HOME;
@@ -217,7 +239,6 @@ it("keeps the turn from a claim when the rollback commits before the turn-start 
     assert.ok(handlerWrite, "the handler's write was held");
     releaseHandler();
     await handlerWrite;
-    await new Promise((resolve) => setTimeout(resolve, 20));
     const [stored] = await store.read();
     assert.equal(stored?.state, "uncertain");
     assert.equal(stored?.resumeTurnId, "turn-2");
@@ -225,10 +246,7 @@ it("keeps the turn from a claim when the rollback commits before the turn-start 
     assert.equal(stored?.verificationDeadlineAt, claimedDeadline);
     assert.equal(stored?.attempts.length, 1);
     // The next sweep must not send again.
-    const reads = settingsReads;
-    mock.timers.tick(5000);
-    assert.ok(settingsReads > reads, "next sweep ran");
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await completeNextSweep(() => settingsReads, 5000);
     assert.equal(sends, 1);
     (cleanup as () => void)();
   } finally {
@@ -237,7 +255,8 @@ it("keeps the turn from a claim when the rollback commits before the turn-start 
     console.log = originalLog;
     if (previousHome === undefined) delete process.env.PASEO_HOME;
     else process.env.PASEO_HOME = previousHome;
-    await rm(home, { recursive: true, force: true });
+    // A sweep that proved the previous one finished may still be reading; retry rather than mask a failure.
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
 });
 
@@ -260,13 +279,16 @@ it("keeps the turn from a claim when it starts while the rollback write is still
     let claimedDeadline: string | null = null;
     let sendFailed = false;
     let holdingRollback = false;
-    let handlerQueued!: () => void;
-    const handlerWrite = new Promise<void>((resolve) => { handlerQueued = resolve; });
+    // Acknowledged with the handler's queued store write; wrapped so the barrier does not wait for the write itself.
+    let acknowledgeHandlerWrite!: (write: { queued: Promise<unknown> }) => void;
+    const handlerWriteQueued = new Promise<{ queued: Promise<unknown> }>((resolve) => { acknowledgeHandlerWrite = resolve; });
+    const held: { barrier?: Promise<{ queued: Promise<unknown> }> } = {};
     const update = ResumeStore.prototype.update;
     mock.method(ResumeStore.prototype, "update", function (this: ResumeStore, ...args: Parameters<ResumeStore["update"]>) {
-      // The sweep waits on the held rollback, so a write requested meanwhile is the handler's.
-      if (holdingRollback) handlerQueued();
-      return update.apply(this, args);
+      const queued = update.apply(this, args);
+      // The sweep waits on the held rollback, so a write requested meanwhile is the handler's; it is queued now.
+      if (holdingRollback) acknowledgeHandlerWrite({ queued });
+      return queued;
     });
     type Persisting = { persist(records: ResumeRecord[]): Promise<void> };
     const persist = (ResumeStore.prototype as unknown as Persisting).persist;
@@ -275,7 +297,8 @@ it("keeps the turn from a claim when it starts while the rollback write is still
       if (sendFailed && !holdingRollback && records.find((value) => value.recordId === record.recordId)?.state === "parked") {
         holdingRollback = true;
         handlers.get("agent.turn_started")!({ turnId: "turn-2", agent: { id: agent.id } });
-        await Promise.race([handlerWrite, new Promise((resolve) => setTimeout(resolve, 1000))]);
+        held.barrier = within(handlerWriteQueued, 1000, "the handler's store write queuing behind the held rollback");
+        await held.barrier;
       }
       return persist.call(this, records);
     });
@@ -297,9 +320,11 @@ it("keeps the turn from a claim when it starts while the rollback write is still
       on: (name: string, handler: (event: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
     } as unknown as PluginServerContext;
     const cleanup = contribute(server, open);
+    await until(() => held.barrier !== undefined);
+    // Rejects if the handler's write never queued while the rollback write was held.
+    const handlerWrite = await held.barrier!;
+    await handlerWrite.queued;
     await until(() => logs.some((line) => line.includes("resume-uncertain") || line.includes("send-deferred")));
-    assert.ok(holdingRollback, "turn_started arrived while the rollback write was held");
-    await new Promise((resolve) => setTimeout(resolve, 20));
     const [stored] = await store.read();
     assert.equal(stored?.state, "uncertain");
     assert.equal(stored?.resumeTurnId, "turn-2");
@@ -307,10 +332,7 @@ it("keeps the turn from a claim when it starts while the rollback write is still
     assert.equal(stored?.verificationDeadlineAt, claimedDeadline);
     assert.equal(stored?.attempts.length, 1);
     // The next sweep must not send again.
-    const reads = settingsReads;
-    mock.timers.tick(5000);
-    assert.ok(settingsReads > reads, "next sweep ran");
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await completeNextSweep(() => settingsReads, 5000);
     assert.equal(sends, 1);
     (cleanup as () => void)();
   } finally {
@@ -319,6 +341,7 @@ it("keeps the turn from a claim when it starts while the rollback write is still
     console.log = originalLog;
     if (previousHome === undefined) delete process.env.PASEO_HOME;
     else process.env.PASEO_HOME = previousHome;
-    await rm(home, { recursive: true, force: true });
+    // A sweep that proved the previous one finished may still be reading; retry rather than mask a failure.
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
 });
