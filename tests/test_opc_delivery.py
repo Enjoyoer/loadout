@@ -516,6 +516,19 @@ class OpcDeliveryTest(unittest.TestCase):
                                     provider=provider, extra=extra)
                 self.assertEqual(built["request"], {"error": "buildManagedWorkerRequest builds only Workers (role worker), not scout"})
 
+    def test_caller_labels_cannot_turn_fast_on_for_a_fast_off_route(self):
+        catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
+        self.record_code_lane(catalog)
+        for key, value in (("opc.service-tier", "fast"), ("opc.fast-requested", "true")):
+            with self.subTest(label=key):
+                built = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, task_class="code",
+                                    extra=f"{{ workerLabels: {{ {json.dumps(key)}: {json.dumps(value)} }} }}")
+                self.assertEqual(built["request"], {"error": f"Worker labels cannot set {key}; the Worker's validated route decides it"})
+        described = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, task_class="code",
+                                extra="{ workerLabels: { 'opc.run': 'run-1' } }")
+        self.assertEqual(described["request"]["labels"].get("opc.run"), "run-1", described["request"])
+        self.assertNotIn("opc.service-tier", described["request"]["labels"])
+
     def test_task_default_code_route_with_non_opus_claude_model_is_refused_without_catalog(self):
         sonnet = {**PRE_730_CODE_ROUTE, "model": "fleet/claude-sonnet-5-5", "effort": "medium"}
         fresh = self.launch(self.task, "sonnet-lane", json.dumps(sonnet), None, record_lane="sonnet-lane", task_class="code")

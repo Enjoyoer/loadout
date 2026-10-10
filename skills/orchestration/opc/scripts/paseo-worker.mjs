@@ -14,12 +14,18 @@ function adapter(value, name) {
   return value;
 }
 
+// Labels the builder derives from the validated route: the Pi Fast toggle tier, its legacy form, and the route source.
+// Caller labels are descriptive only, so a reused label set can never turn Fast on for a Fast-off route.
+const ROUTE_LABELS = Object.freeze(['opc.service-tier', 'opc.fast-requested', 'opc.route-source']);
+
 function labels(value) {
   if (value == null) return {};
   if (typeof value !== 'object' || Array.isArray(value) ||
       Object.values(value).some(item => typeof item !== 'string')) {
     throw Error('Worker labels must be string values');
   }
+  const reserved = ROUTE_LABELS.find(key => Object.hasOwn(value, key));
+  if (reserved) throw Error(`Worker labels cannot set ${reserved}; the Worker's validated route decides it`);
   return { ...value };
 }
 
