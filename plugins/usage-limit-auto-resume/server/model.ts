@@ -83,6 +83,7 @@ export type AgentSnapshot = {
   attentionReason?: string | null;
   archivedAt?: string | null;
   lastUserMessageAt?: string | null;
+  updatedAt?: string | null;
   persistence?: { provider: string; sessionId: string; nativeHandle?: string; metadata?: Record<string, unknown> } | null;
   labels?: Record<string, string>;
 };
@@ -358,12 +359,14 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
 /** A turn start seen while a send was in flight, noted before the store records it. */
 export type TurnObservation = { turnId: string | null; startedAt: string | null };
 
-/** The decision of a safety event (a permission request, an archive) that reached an agent with a send in flight. */
+/** The decision of an event (a permission request, an archive, another turn) that stops a send not yet started. */
 export type ClaimCancel = { state: ResumeState; reason: string };
 
 /**
- * One send in flight: what its claim writes, whether its rollback has replaced the claim, any turn seen meanwhile, and
- * a safety event seen before the send started.
+ * One send in flight: what its claim writes, whether its rollback has replaced the claim, and any turn seen meanwhile.
+ * The claim is unsent until send() is invoked (sendStarted). Until then a permission request, an archive, or any turn
+ * start or end for the agent cancels it, and no turn is attached to its attempt. settled resolves once the send or its
+ * cancellation is stored.
  */
 export type InFlightClaim = TurnObservation & {
   recordId: string;
@@ -372,7 +375,27 @@ export type InFlightClaim = TurnObservation & {
   verificationDeadlineAt: string;
   released: boolean;
   cancelled: ClaimCancel | null;
+  sendStarted: boolean;
+  settled: Promise<void>;
 };
+
+/** What the send checks saw of the agent's turns: its latest user message, its running turn, and its last change. */
+export type TurnMark = { lastUserMessageAt: string | null; activeTurnId: string | null; updatedAt: string | null };
+
+export function turnMark(agent: AgentSnapshot): TurnMark {
+  return { lastUserMessageAt: agent.lastUserMessageAt ?? null, activeTurnId: agent.activeTurn?.turnId ?? null, updatedAt: agent.updatedAt ?? null };
+}
+
+// The agent re-read right before send(): the send checks still pass, and its latest user message and turn are the ones
+// the claim was taken on. Returns the decision that cancels the send, or null to send.
+export function presendCancel(record: ResumeRecord, taken: TurnMark, agent: AgentSnapshot | null, config: ResumeConfig, now = Date.now()): ClaimCancel | null {
+  if (!agent) return { state: record.kind === "transient" ? "uncertain" : "superseded", reason: "agent-missing" };
+  const mark = turnMark(agent);
+  if (mark.lastUserMessageAt !== taken.lastUserMessageAt) return { state: "superseded", reason: "newer-user-message" };
+  if (mark.activeTurnId !== taken.activeTurnId || mark.updatedAt !== taken.updatedAt) return { state: "superseded", reason: "turn-changed-before-send" };
+  const gate = shouldResume(record, agent, config, now);
+  return gate.ok ? null : { state: "uncertain", reason: gate.reason };
+}
 
 const isClaimAttempt = (attempt: ResumeAttempt, claim: InFlightClaim) => attempt.messageId === claim.attempt.messageId && attempt.at === claim.attempt.at;
 
@@ -381,8 +404,8 @@ export function holdsClaim(current: ResumeRecord, claim: InFlightClaim): boolean
   return current.state === "resuming" && current.attempts.some((attempt) => isClaimAttempt(attempt, claim));
 }
 
-// Undoes a claim whose send never started because a safety event arrived first: the claim's attempt, send time and
-// deadline go. A record still resuming takes that event's decision; a state the event's handler or another writer
+// Undoes a claim whose send never started because an event or the re-read agent cancelled it: the claim's attempt, send
+// time and deadline go. A record still resuming takes that event's decision; a state the event's handler or another writer
 // already stored is kept.
 export function cancelClaim(current: ResumeRecord, before: ResumeRecord, claim: InFlightClaim, cancel: ClaimCancel, now = Date.now()): ResumeRecord {
   if (!current.attempts.some((attempt) => isClaimAttempt(attempt, claim))) return current;

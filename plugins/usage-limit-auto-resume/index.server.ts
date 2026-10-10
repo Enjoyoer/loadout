@@ -3,7 +3,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { PaseoApi } from "@getpaseo/client";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
 import { openDaemonClient } from "./server/daemon.ts";
-import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, releaseClaim, resumePrompt, shouldResume, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
+import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, releaseClaim, resumePrompt, shouldResume, transientRejectionState, turnMark, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
@@ -106,6 +106,8 @@ export default function contribute(server: PluginServerContext, openClient = ope
       }
       return;
     }
+    // The agent snapshot the last send check passed on; the claim is taken on its latest user message and turn.
+    let gated = agent;
     if (record.kind === "transient") {
       try {
         const page = await api.agents.ref(record.agentId).timeline.refetch({ direction: "before", limit: 200 });
@@ -115,6 +117,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
         const freshAgent = await fetchAgent(api, record.agentId);
         const freshGate = freshAgent ? shouldResume(record, freshAgent, currentConfig) : { ok: false as const, reason: "agent-missing" };
         if (!freshGate.ok) throw new Error(freshGate.reason);
+        gated = freshAgent!;
       } catch (error) {
         const reason = errorMessage(error);
         await store.update(record.recordId, (value) => ({ ...value, state: transientRejectionState(reason), terminalReason: reason, updatedAt: new Date().toISOString() }));
@@ -124,10 +127,13 @@ export default function contribute(server: PluginServerContext, openClient = ope
     }
     const stableMessageId = messageId(record);
     const prompt = resumePrompt(record);
+    const taken = turnMark(gated);
     const sentAt = new Date().toISOString();
-    // The turn_started handler fills in the turn before any await of its own, so the outcome below sees a turn that
-    // started during the send even when the handler's store write lands after it. The permission and archive handlers
-    // likewise set cancelled at once, so a send that has not started yet sees them.
+    // Until send() is invoked the claim is unsent: the permission, archive and turn handlers set cancelled before any
+    // await of their own, and no turn is attached to it. From then on the turn_started handler fills in the turn before
+    // any await, so the outcome below sees a turn that started during the send even when the handler's store write
+    // lands after it.
+    let markSettled!: () => void;
     const claim: InFlightClaim = {
       recordId: record.recordId,
       attempt: { at: sentAt, messageId: stableMessageId, result: "unknown" },
@@ -135,33 +141,49 @@ export default function contribute(server: PluginServerContext, openClient = ope
       verificationDeadlineAt: new Date(Date.now() + currentConfig.verificationTimeoutSeconds * 1000).toISOString(),
       released: false,
       cancelled: null,
+      sendStarted: false,
+      settled: new Promise<void>((resolve) => { markSettled = resolve; }),
       turnId: null,
       startedAt: null,
     };
     inFlight.set(record.agentId, claim);
     try {
-      // Claim only the record the gates checked: still in that state, unwritten since, at the same attempt, and with no
-      // safety event seen for the agent. A decision another handler stored, or is about to store, stands.
-      const claimed = await store.update(record.recordId, (value) => claim.cancelled || value.state !== record.state || value.updatedAt !== record.updatedAt || value.attempts.length !== record.attempts.length ? value : {
-        ...value,
-        state: "resuming",
-        sentAt,
-        verificationDeadlineAt: claim.verificationDeadlineAt,
-        attempts: [...value.attempts, claim.attempt],
-        updatedAt: sentAt,
+      // Claim only the record the gates checked: still in that state, unwritten since, at the same attempt generation.
+      // A decision another handler stored stands; one seen but not stored yet is stored here instead of the claim.
+      const claimed = await store.update(record.recordId, (value) => {
+        if (value.state !== record.state || value.updatedAt !== record.updatedAt || attemptCount(value) !== attemptCount(record)) return value;
+        if (claim.cancelled) return { ...value, state: claim.cancelled.state, terminalReason: claim.cancelled.reason, updatedAt: new Date().toISOString() };
+        return {
+          ...value,
+          state: "resuming",
+          sentAt,
+          verificationDeadlineAt: claim.verificationDeadlineAt,
+          attempts: [...value.attempts, claim.attempt],
+          updatedAt: sentAt,
+        };
       });
       if (!claimed || !holdsClaim(claimed, claim)) {
         log(`send-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${claim.cancelled?.reason ?? "record-changed"}`);
         return;
       }
-      // A safety event that arrived while the claim was being written: nothing was sent, so undo the claim and keep
-      // that event's decision.
-      const cancelled = claim.cancelled;
+      // Re-read the agent right before the send: an event seen while the claim was written, or one the daemon has
+      // processed but not delivered yet, stops it. Nothing was sent, so the claim is undone either way.
+      let fresh: AgentSnapshot | null = null;
+      if (!claim.cancelled) {
+        try {
+          fresh = await fetchAgent(api, record.agentId);
+        } catch (error) {
+          await store.update(record.recordId, (value) => holdsClaim(value, claim) ? releaseClaim(value, record, claimed) : value);
+          throw error;
+        }
+      }
+      const cancelled = claim.cancelled ?? presendCancel(record, taken, fresh, currentConfig);
       if (cancelled) {
         await store.update(record.recordId, (value) => cancelClaim(value, record, claim, cancelled));
         log(`send-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${cancelled.reason}`);
         return;
       }
+      claim.sendStarted = true;
       try {
         await api.agents.ref(record.agentId).send(prompt, { messageId: stableMessageId });
         // Only the live claim moves on to verification. A permission request, an archive or a turn end stored while the
@@ -194,6 +216,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
       }
     } finally {
       if (inFlight.get(record.agentId) === claim) inFlight.delete(record.agentId);
+      markSettled();
     }
   }
 
@@ -270,11 +293,16 @@ export default function contribute(server: PluginServerContext, openClient = ope
   }
 
   const removeTurnStarted = server.on("agent.turn_started", (event) => {
+    // Synchronous, before any await. A turn before the send is invoked is another turn: the send must not go out, and
+    // the turn is never its attempt's.
+    const pending = inFlight.get(event.agent.id);
+    if (pending && !pending.sendStarted) {
+      pending.cancelled ??= { state: "superseded", reason: "turn-started-before-send" };
+      return;
+    }
     const turnId = event.turnId;
     if (!turnId) return;
-    // Synchronous, before any await: a send still in flight for this agent keeps the turn even if its rollback commits
-    // ahead of the store write below.
-    const pending = inFlight.get(event.agent.id);
+    // A send in flight for this agent keeps the turn even if its rollback commits ahead of the store write below.
     if (pending && !pending.turnId) {
       pending.turnId = turnId;
       pending.startedAt = new Date().toISOString();
@@ -287,10 +315,11 @@ export default function contribute(server: PluginServerContext, openClient = ope
         if (next?.resumeTurnId === turnId) log(`resume-turn-started agentId=${event.agent.id} turnId=${turnId}`);
         return;
       }
+      // Without a claim of its own the turn joins only a delivered send; a resuming record is a claim in flight here.
       const active = await store.activeForAgent(event.agent.id);
-      if (!active || !["resuming", "verifying"].includes(active.state) || active.resumeTurnId) return;
+      if (!active || active.state !== "verifying" || active.resumeTurnId) return;
       // Check again inside the update: a rolled-back claim must not pick up a turn identity.
-      const next = await store.update(active.recordId, (value) => ["resuming", "verifying"].includes(value.state) && !value.resumeTurnId
+      const next = await store.update(active.recordId, (value) => value.state === "verifying" && !value.resumeTurnId
         ? { ...value, resumeTurnId: turnId, resumeStartedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
         : value);
       if (next?.resumeTurnId !== turnId) return;
@@ -299,7 +328,13 @@ export default function contribute(server: PluginServerContext, openClient = ope
   });
 
   const removeTurnEnded = server.on("agent.turn_ended", (event, context) => {
+    // Synchronous, before any await: another turn ending before a send is invoked stops that send.
+    const pending = inFlight.get(event.agent.id);
+    const unsent = pending && !pending.sendStarted ? pending : null;
+    if (unsent) unsent.cancelled ??= { state: "superseded", reason: "turn-ended-before-send" };
     track((async () => {
+      // The cancelled claim stores its decision first, so this turn is handled as the agent's newest.
+      if (unsent) await unsent.settled;
       const currentConfig = await config();
       if (!currentConfig) return;
       const active = await store.activeForAgent(event.agent.id);
@@ -382,7 +417,8 @@ export default function contribute(server: PluginServerContext, openClient = ope
         log(`not-resumable agentId=${event.agent.id} outcome=${event.outcome.kind} reason=${event.outcome.kind === "failed" ? JSON.stringify(event.outcome.error) : "unrecognized-final"}`);
         return;
       }
-      if ((await store.read()).some((value) => value.agentId === record.agentId && value.sourceTurnId === record.sourceTurnId && value.persistenceSessionId === record.persistenceSessionId)) {
+      // A record for this turn, or the guard a pruned one left, means the event was handled already.
+      if (await store.hasTurn(record)) {
         log(`duplicate-turn agentId=${record.agentId} sourceTurnId=${record.sourceTurnId}`);
         return;
       }
