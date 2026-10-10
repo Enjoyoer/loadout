@@ -112,6 +112,9 @@ export class Sweeper {
   private running: Promise<SweepResult> | null = null;
   private readonly deps: SweeperDeps;
   private readonly backoffs = new Map<string, Backoff>();
+  /** Workspaces an armed sweep deferred at the cap, with the number of the sweep that first deferred them. */
+  private readonly waitingSince = new Map<string, number>();
+  private sweepCount = 0;
 
   constructor(deps: SweeperDeps) {
     this.deps = deps;
@@ -163,6 +166,7 @@ export class Sweeper {
   private async runSweep(config: ArchiverConfig, options: SweepOptions): Promise<SweepResult> {
     const dryRun = options.forceDryRun === true || config.armed !== true;
     const log = this.deps.log;
+    const sweepNumber = ++this.sweepCount;
     let lease: ApiLease;
     try {
       lease = await this.deps.acquireApi();
@@ -179,17 +183,27 @@ export class Sweeper {
         ? await this.scope(state.workspaces, options.triggerWorkspaceIds)
         : state.workspaces;
       if (!options.triggerWorkspaceIds) {
-        // A full sweep sees every workspace: forget back-offs of workspaces that are gone.
+        // A full sweep sees every workspace: forget back-offs and waits of workspaces that are gone.
         const listed = new Set(state.workspaces.map((workspace) => workspace.id));
         for (const workspaceId of this.backoffs.keys()) if (!listed.has(workspaceId)) this.backoffs.delete(workspaceId);
+        for (const workspaceId of this.waitingSince.keys()) if (!listed.has(workspaceId)) this.waitingSince.delete(workspaceId);
       }
+      // Fair order across sweeps: workspaces the cap deferred go first, longest-waiting first, then
+      // the rest in listing order. Candidates ahead of a deferred one cannot hold the slots forever,
+      // even when their archive calls keep failing.
+      const waitRank = (workspace: WorkspaceView) => this.waitingSince.get(workspace.id) ?? Number.MAX_SAFE_INTEGER;
+      const ordered = [...inScope].sort((a, b) => waitRank(a) - waitRank(b));
       let nonCandidates = 0;
       // Archive attempts (would-archive in dry-run) left this sweep; the rest wait for the next sweep.
       // Backed-off workspaces do not take a slot, so later candidates get it.
       let remaining = config.maxArchivesPerSweep;
       const deferred = new Set<string>();
       const backedOff = new Set<string>();
-      for (const workspace of inScope) {
+      for (const workspace of ordered) {
+        // Dry-run attempts nothing, so only an armed sweep moves the queue; a workspace stays
+        // queued, keeping its place, only while the cap keeps deferring it.
+        const waitingSince = this.waitingSince.get(workspace.id);
+        if (!dryRun) this.waitingSince.delete(workspace.id);
         const agents = state.agentsByWorkspace.get(workspace.id) ?? [];
         const decision = await evaluateWorkspace(workspace, agents, config, this.deps);
         decisions.push(decision);
@@ -212,6 +226,7 @@ export class Sweeper {
         }
         if (remaining <= 0) {
           deferred.add(workspace.id);
+          if (!dryRun) this.waitingSince.set(workspace.id, waitingSince ?? sweepNumber);
           log(formatDecision({ ...decision, reason: `${decision.reason}; maxArchivesPerSweep=${config.maxArchivesPerSweep} reached` }, "deferred"));
           continue;
         }
