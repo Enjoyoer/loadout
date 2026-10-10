@@ -232,13 +232,24 @@ class LocalMergeTest(unittest.TestCase):
         self.assertEqual(after, "[model_providers.example_router\n")
 
     def test_an_inline_table_in_a_managed_table_is_refused_without_writing(self):
-        text = '[model_providers.example_router]\nbase_url = "https://old.example.test"\nheaders = { "X-Example" = "x" }\n'
-        result, after = self.merge(text, sections={"model_providers.example_router": {
-            "base_url": "https://router.example.test/v1"}})
-        self.assertEqual(result["error"], "refused, nothing written: config.toml line 3 has an inline table in a managed "
-                                          "table; unsupported TOML, edit by hand")
+        managed = {"features": {"fast_mode": True},
+                   "model_providers.example_router": {"base_url": "https://router.example.test/v1", "wire_api": "responses"}}
+        text = '[features]\nfast_mode = { enabled = true }\n'
+        result, after = self.merge(text, sections=managed)
+        self.assertEqual(result["error"], "refused, nothing written: config.toml line 2 has an inline table at a managed "
+                                          "key; unsupported TOML, edit by hand")
         self.assertEqual(after, text)
         self.assertEqual(list(self.codex.glob("config.toml.*")), [])
+        # An unmanaged inline table in a managed table, and a deeper table under a managed section, are left alone.
+        text = ('[features]\nmulti_agent_v2 = { enabled = true, max_concurrent_threads_per_session = 8 }\n\n'
+                '[model_providers.example_router]\nbase_url = "https://old.example.test"\n\n'
+                '[model_providers.example_router.http_headers]\nX-Example-Key = "example"\n')
+        result, after = self.merge(text, sections=managed)
+        self.assertIsNone(result["error"], result)
+        self.assertEqual(after, '[features]\nmulti_agent_v2 = { enabled = true, max_concurrent_threads_per_session = 8 }\n'
+                                'fast_mode = true\n\n[model_providers.example_router]\n'
+                                'base_url = "https://router.example.test/v1"\nwire_api = "responses"\n\n'
+                                '[model_providers.example_router.http_headers]\nX-Example-Key = "example"\n')
 
     def test_a_change_between_the_read_and_the_rename_is_merged_not_overwritten(self):
         hook = self.codex.parent / "edit_once.py"

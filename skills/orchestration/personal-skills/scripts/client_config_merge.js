@@ -141,31 +141,36 @@ function tomlCheck(text) {
 const isPrefix = (a, b) => a.length <= b.length && a.every((k, i) => b[i] === k);
 const managedTables = sections => Object.keys(sections).map(name => name.split("."));
 
-// Refused before anything changes: a construct the line merge does not fully model, where it could touch a managed
-// key. In the root table when top-level keys are managed, and in each managed section: dotted keys, inline tables, and
-// values spanning lines; a dotted managed key, written by an earlier run, is the merge's own. Anywhere: an array table,
-// or a key or inline table, that defines part of a managed section.
+// Refused before anything changes: a construct that could define, shadow or duplicate a managed key path (a top-level
+// key, or a managed section plus one of its keys), which the line merge does not model. An array table at or over a
+// managed section; a table header at, inside or over a managed key path below its section; a key outside a managed
+// section that defines part of it; and any other key line at, inside or over a managed key path, unless it is that
+// key in its own table with a one-line value and no inline table (a dotted one written by an earlier run included).
+// Other keys and deeper tables in a managed section, inline tables and values spanning lines included, are left alone.
 function tomlUnsupported(kinds, top, sections) {
-  const managed = managedTables(sections), rootManaged = Object.keys(top).length > 0;
-  const own = (table, keys) => Object.keys(table.length ? sections[table.join(".")] || {} : top)
-    .some(k => samePath(keys, k));
-  const related = keys => managed.some(s => isPrefix(s, keys) || isPrefix(keys, s));
+  const managed = managedTables(sections);
+  const paths = [...Object.keys(top).map(k => ({ table: [], key: k.split(".") })),
+    ...Object.entries(sections).flatMap(([name, keys]) => Object.keys(keys).map(k => ({ table: name.split("."), key: k.split(".") })))];
+  const related = (a, b) => isPrefix(a, b) || isPrefix(b, a), same = (a, b) => a.length === b.length && isPrefix(a, b);
   const refuse = (n, what) => new Error(`refused, nothing written: config.toml line ${n + 1} has ${what}${BY_HAND}`);
   let table = [];
   kinds.forEach((line, n) => {
     if (line.kind === "header") {
       table = line.keys;
-      if (line.array && related(line.keys)) throw refuse(n, "an array table at a managed section");
+      if (line.array && managed.some(s => isPrefix(line.keys, s))) throw refuse(n, "an array table at a managed section");
+      if (paths.some(p => line.keys.length > p.table.length && related(line.keys, [...p.table, ...p.key])))
+        throw refuse(n, "a table header at a managed key");
       return;
     }
     if (line.kind !== "key") return;
-    const inSection = table.length > 0 && managed.some(s => isPrefix(s, table) && isPrefix(table, s));
-    if (inSection || (!table.length && rootManaged)) {
-      if (line.keys.length > 1 && !own(table, line.keys)) throw refuse(n, "a dotted key in a managed table");
-      if (line.inline) throw refuse(n, "an inline table in a managed table");
-      if (kinds[n + 1] && kinds[n + 1].kind === "more") throw refuse(n, "a value spanning lines in a managed table");
+    const full = [...table, ...line.keys], spans = kinds[n + 1] && kinds[n + 1].kind === "more";
+    if (managed.some(s => !isPrefix(s, table) && related(full, s))) throw refuse(n, "a key that defines part of a managed section");
+    for (const p of paths) {
+      if (!related(full, [...p.table, ...p.key])) continue;
+      if (same(table, p.table) && same(line.keys, p.key) && !line.inline && !spans) continue;
+      throw refuse(n, line.inline ? "an inline table at a managed key" : spans ? "a value spanning lines at a managed key"
+        : line.keys.length > 1 ? "a dotted key at a managed key" : "a key that defines part of a managed key");
     }
-    if (!inSection && related([...table, ...line.keys])) throw refuse(n, "a key that defines part of a managed section");
   });
 }
 
