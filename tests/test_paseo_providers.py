@@ -435,6 +435,28 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("reload warning (config unchanged, not a failure)", out)
 
+    def test_a_clear_by_an_older_operation_leaves_newer_debt_in_place(self):
+        doc = fleet.validate(HOSTS)
+        catalog = paseo_providers.load_config(self.fleet / "paseo-providers.json", doc)
+        program = fleet.pack(paseo_providers.MERGE_JS.read_bytes())
+        lines = []
+        with patch.dict(os.environ, self.env):
+            runner = paseo_providers.Runner(doc["hosts"][1], "laptop", self.fleet)
+            write = runner.write
+
+            def write_while_a_newer_run_takes_over(*args):
+                output = write(*args)
+                paseo_providers.update_owed("desktop", lambda current: "20261010-000001+newer")
+                return output
+
+            runner.write = write_while_a_newer_run_takes_over
+            status = paseo_providers.sync_host(runner, catalog, program, "20261010-000000", False, lines.append)
+            owed = paseo_providers.owed_reloads()
+        self.assertEqual(status, "updated", lines)
+        self.assertIn("desktop (ssh): reload ok", lines)
+        # This run's reload succeeded, but the debt the newer run recorded is not this run's to clear.
+        self.assertEqual(owed, {"desktop": "20261010-000001+newer"})
+
     def test_relay_cleanup_failure_is_reported(self):
         (self.root / "fail-archive").touch()
         code, out = self.run_sync("--host", "tablet")
