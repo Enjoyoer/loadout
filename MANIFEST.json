@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "da58eb01f79668da3cdd9a365f8cc1d727d05b87",
+  "source_commit": "ef290b03dc4fbc3c6fc72ce03df3ccf20d1b39d7",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -135,8 +135,8 @@
       "path": "skills/operations-integrations/wizard/SKILL.md",
       "category": "operations-integrations",
       "skill": "wizard",
-      "bytes": 4123,
-      "sha256": "bdf31d48211ea559878f95a4f344aeabf8d85897488ba564382bab0b000daac1"
+      "bytes": 6360,
+      "sha256": "31d857a7de0e267ed964412fe4bb0af90b12d7363396621992b8a571c9ddeb72"
     },
     {
       "path": "skills/operations-integrations/wizard/agents/openai.yaml",
@@ -149,8 +149,8 @@
       "path": "skills/operations-integrations/wizard/template.sh",
       "category": "operations-integrations",
       "skill": "wizard",
-      "bytes": 8567,
-      "sha256": "33cbe9dfb1d0e9185b60248a52aabed14bc64785a00cac695e302e739dd6c153"
+      "bytes": 17202,
+      "sha256": "295fe45a45f5ae39cbc4595759c4bf332dcd1c92bb2b7bd0d50c414e8e53c852"
     },
     {
       "path": "skills/orchestration/claude-cloud/SKILL.md",
