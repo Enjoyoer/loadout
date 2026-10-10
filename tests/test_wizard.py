@@ -121,11 +121,12 @@ class WizardTest(unittest.TestCase):
         writers = []
         for key in ("KEY_A", "KEY_B"):
             script = self.wizard(f'ask {key} "Value:"\nwrite_env {key} "${key}"', f"{key}.sh")
-            writer = subprocess.Popen(["bash", str(script)], cwd=self.project, stdin=subprocess.PIPE,
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
-            writer.stdin.write(f"\n{key.lower()}\n")
-            writer.stdin.close()
-            writers.append(writer)
+            answers = self.base / f"{key}.in"
+            answers.write_text(f"\n{key.lower()}\n")
+            with answers.open() as stdin:
+                writers.append(subprocess.Popen(["bash", str(script)], cwd=self.project, stdin=stdin,
+                                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                                env=self.env))
         time.sleep(1)
         lock.rmdir()
         for writer in writers:
