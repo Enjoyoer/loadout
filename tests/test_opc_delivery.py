@@ -649,6 +649,46 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(requested[0], "blocked")
         self.assertIn("current exact-head non-author CHANGES_REQUESTED review blocks delivery", requested[1])
 
+    def test_lock_of_writer_paused_in_acquisition_is_not_reclaimed(self):
+        # Writer A pauses for over ten seconds at the first moment its lock exists, between an exclusive create and the
+        # holder bytes where the lock is still written that way; writer B then tries a second cloud launch.
+        cloud = json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())
+        task, lane = json.dumps(self.task), "{ branch: 'opc/example', repo: 'example/app' }"
+        other = (f"import {{ beginCloudLaunch }} from {cloud};"
+                 f"try {{ beginCloudLaunch({task}, {lane}); console.log('launched'); }} catch (error) {{ console.log(error.message); }}")
+        done = run("node", "--input-type=module", "-e", f"""
+            import fs from 'node:fs';
+            import {{ spawnSync }} from 'node:child_process';
+            import {{ syncBuiltinESMExports }} from 'node:module';
+            const lock = {task} + '.lock';
+            let other = null;
+            const pause = () => {{
+              if (other !== null || !fs.existsSync(lock)) return;
+              const old = new Date(Date.now() - 11000);
+              fs.utimesSync(lock, old, old);
+              other = spawnSync(process.execPath, ['--input-type=module', '-e', {json.dumps(other)}], {{ encoding: 'utf8' }}).stdout.trim();
+            }};
+            const {{ writeFileSync, linkSync }} = fs;
+            fs.writeFileSync = (path, data, options) => {{
+              if (options?.flag !== 'wx') return writeFileSync(path, data, options);
+              const fd = fs.openSync(path, 'wx', options.mode);
+              try {{ pause(); fs.writeSync(fd, data); }} finally {{ fs.closeSync(fd); }}
+            }};
+            fs.linkSync = (from, to) => {{ linkSync(from, to); pause(); }};
+            syncBuiltinESMExports();
+            const {{ beginCloudLaunch }} = await import({cloud});
+            let mine;
+            try {{ mine = beginCloudLaunch({task}, {lane}).status; }} catch (error) {{ mine = error.message; }}
+            console.log(JSON.stringify({{ other, mine }}));
+        """)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        result = json.loads(done.stdout)
+        self.assertIn("task lock busy", result["other"])
+        self.assertEqual(result["mine"], "launching")
+        cloud_record = json.loads(Path(self.task).read_text())["cloud"]
+        self.assertEqual((cloud_record["status"], cloud_record["attempt"]), ("launching", 1))
+        self.assertEqual(sorted(p.name for p in Path(self.task).parent.iterdir()), ["task.json"])
+
     def test_empty_lock_is_stale_only_after_ten_seconds(self):
         lock = Path(self.task + ".lock")
         update = f"""
