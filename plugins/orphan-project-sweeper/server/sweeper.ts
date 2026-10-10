@@ -85,15 +85,18 @@ async function findMissingContainer(target: string, host: SweeperHost): Promise<
   const dirs = [parent];
   if (host.platform === "win32") dirs.unshift(paths.parse(target).root);
   const absent = (dir: string, error: string): ContainerProblem => ({ reason: "parent-missing", detail: `dir=${quote(dir)} ${error} (volume or parent absent)` });
+  // On Windows only ENOENT shows the folder is gone. A denied or failed stat, or a container that is now something other
+  // than a directory, says nothing about the volume.
+  const unverifiable = (dir: string, error: string): ContainerProblem => ({ reason: "mount-unverifiable", detail: `dir=${quote(dir)} ${error}` });
   for (const dir of dirs) {
+    let isDirectory: boolean;
     try {
-      if (!(await host.stat(dir)).isDirectory()) return absent(dir, "stat=not-a-directory");
+      isDirectory = (await host.stat(dir)).isDirectory();
     } catch (error) {
       const code = errorCode(error);
-      // On Windows only ENOENT shows the folder is gone; a denied or failed stat says nothing about the volume.
-      if (host.platform === "win32" && code !== "ENOENT") return { reason: "mount-unverifiable", detail: `dir=${quote(dir)} stat=${code}` };
-      return absent(dir, `stat=${code}`);
+      return host.platform === "win32" && code !== "ENOENT" ? unverifiable(dir, `stat=${code}`) : absent(dir, `stat=${code}`);
     }
+    if (!isDirectory) return host.platform === "win32" ? unverifiable(dir, "stat=not-a-directory") : absent(dir, "stat=not-a-directory");
   }
   try {
     if ((await host.readdir(parent)).length === 0) return absent(parent, "empty-directory");

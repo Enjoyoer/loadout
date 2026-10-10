@@ -24,7 +24,8 @@ A project is orphaned only when all of these hold at evaluation time:
    volume mount point (a folder whose device id differs from its parent's), or an ancestor `lstat`
    cannot read for a reason other than `ENOENT` keeps the project as `mount-unverifiable`. So does
    a `stat` of the parent or drive root that fails with `EPERM`, `EACCES` or any error other than
-   `ENOENT`; a missing or empty parent stays `parent-missing`. A missing folder under plain folders
+   `ENOENT`, or that finds something other than a directory; a missing or empty parent stays
+   `parent-missing`. A missing folder under plain folders
    on a present drive is still a candidate.
 
 It defaults to dry-run until `armed` is exactly `true`. It removes Paseo bookkeeping,
