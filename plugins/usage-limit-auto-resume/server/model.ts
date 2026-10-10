@@ -338,6 +338,67 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
   };
 }
 
+/** A turn start seen while a send was in flight, noted before the store records it. */
+export type TurnObservation = { turnId: string | null; startedAt: string | null };
+
+/** One send in flight: what its claim writes, whether its rollback has replaced the claim, and any turn seen meanwhile. */
+export type InFlightClaim = TurnObservation & {
+  recordId: string;
+  attempt: ResumeAttempt;
+  sentAt: string;
+  verificationDeadlineAt: string;
+  released: boolean;
+};
+
+// Applies a turn start seen for an in-flight claim to the claim's record. While the record still carries the claim,
+// the turn is attached. Once the claim's rollback is stored (released, record parked again), the message may have
+// reached the daemon after all: the claim's attempt, send time and deadline come back with the turn, and the record
+// turns uncertain. Every other state, including a terminal one another handler wrote, is kept.
+export function applyClaimTurn(current: ResumeRecord, claim: InFlightClaim, now = Date.now()): ResumeRecord {
+  if (!claim.turnId) return current;
+  const updatedAt = new Date(now).toISOString();
+  if ((current.state === "resuming" || current.state === "verifying") && !current.resumeTurnId) {
+    return { ...current, resumeTurnId: claim.turnId, resumeStartedAt: claim.startedAt, updatedAt };
+  }
+  if (current.state !== "parked" || !claim.released) return current;
+  const kept = current.attempts.some((attempt) => attempt.messageId === claim.attempt.messageId && attempt.at === claim.attempt.at);
+  return {
+    ...current,
+    state: "uncertain",
+    sentAt: claim.sentAt,
+    verificationDeadlineAt: claim.verificationDeadlineAt,
+    attempts: kept ? current.attempts : [...current.attempts, claim.attempt],
+    resumeTurnId: claim.turnId,
+    resumeStartedAt: claim.startedAt,
+    terminalReason: "turn-started-during-failed-send",
+    updatedAt,
+  };
+}
+
+// Undoes a send claim after the transport refused the message. It starts from the current stored value and resets only
+// the fields the claim set, so a concurrent writer's changes survive. A turn that started after the claim, whether the
+// store already holds it or only the in-flight observation does, means the message may have reached the daemon after
+// all, so the record turns uncertain with that turn kept instead of being re-armed for a second send.
+export function releaseClaim(current: ResumeRecord, before: ResumeRecord, claimed: ResumeRecord, observed: TurnObservation | null = null, now = Date.now()): ResumeRecord {
+  if (current.state !== "resuming") return current;
+  const updatedAt = new Date(now).toISOString();
+  const storedTurn = current.resumeTurnId && current.resumeTurnId !== before.resumeTurnId ? current.resumeTurnId : null;
+  const turnId = storedTurn ?? observed?.turnId ?? null;
+  if (turnId) {
+    const resumeStartedAt = storedTurn ? current.resumeStartedAt : observed?.startedAt ?? null;
+    return { ...current, state: "uncertain", resumeTurnId: turnId, resumeStartedAt, terminalReason: "turn-started-during-failed-send", updatedAt };
+  }
+  const claimAttempt = claimed.attempts.at(-1);
+  return {
+    ...current,
+    state: before.state,
+    sentAt: current.sentAt === claimed.sentAt ? before.sentAt : current.sentAt,
+    verificationDeadlineAt: current.verificationDeadlineAt === claimed.verificationDeadlineAt ? before.verificationDeadlineAt : current.verificationDeadlineAt,
+    attempts: current.attempts.filter((attempt) => !(attempt.messageId === claimAttempt?.messageId && attempt.at === claimAttempt.at)),
+    updatedAt,
+  };
+}
+
 export function shouldResume(record: ResumeRecord, agent: AgentSnapshot, config: ResumeConfig, now = Date.now()): { ok: true } | { ok: false; reason: string } {
   if (record.state !== "parked" && record.state !== "detected") return { ok: false, reason: `state=${record.state}` };
   // Failed-turn records always resume; only the backoff (capped at its last step) limits them.
