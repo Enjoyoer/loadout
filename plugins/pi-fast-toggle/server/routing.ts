@@ -39,14 +39,27 @@ async function fetchCatalog(root: string, route: Awaited<ReturnType<typeof runti
   if (!Array.isArray(value.models)) throw Error("Router catalog malformed");
   return value.models as Array<{ id?: string; slug?: string; service_tiers?: Array<{ id: string }> }>;
 }
-// The update goes only to the daemon this plugin runs in, the one the shared resolver finds
-// (PASEO_HOST, then the daemon's paseo.pid), at the address it listens on. Anything else fails before any request.
+// The listen address the daemon itself recorded in paseo.pid under this plugin's PASEO_HOME.
+// PASEO_HOST and the default address are not that record, so they never qualify.
+function daemonRecordHost(env: NodeJS.ProcessEnv): string | null {
+  try {
+    const target = resolveDaemonTarget({ ...env, PASEO_HOST: undefined });
+    return target.source === "paseo.pid" ? new URL(target.url).host : null;
+  } catch {
+    return null;
+  }
+}
+
+// The update goes only to the daemon this plugin runs in, at the address its own record
+// gives. Without that record, or at any other address, it fails before any request.
 function daemonMcpEndpoint(url: string, env: NodeJS.ProcessEnv): URL {
   const endpoint = new URL(url);
   if (endpoint.protocol !== "http:") throw Error("Pi MCP must use http");
   if (!["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname)) throw Error("Pi MCP must use loopback");
   if (endpoint.hostname === "localhost") endpoint.hostname = "127.0.0.1";
-  if (endpoint.host !== new URL(resolveDaemonTarget(env).url).host) throw Error("Pi MCP is not this plugin's daemon");
+  const daemon = daemonRecordHost(env);
+  if (!daemon) throw Error("This plugin's daemon has no readable listen address in its PASEO_HOME paseo.pid; tier not written");
+  if (endpoint.host !== daemon) throw Error("Pi MCP is not this plugin's daemon");
   return endpoint;
 }
 export async function writeTier(url: string, agentId: string, fast: boolean, env: NodeJS.ProcessEnv = process.env) {
