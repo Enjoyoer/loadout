@@ -19,14 +19,37 @@ else
   BOLD=""; DIM=""; RESET=""; BLUE=""; GREEN=""; YELLOW=""; RED=""
 fi
 
-# Author sets this at the top of the stages section.
+# Author sets these at the top of the stages section. The wizard writes only
+# to the project and repository bound here, never to ones it would infer from
+# where it was started.
 TOTAL_STAGES=0
+PROJECT_ROOT="" # the project's absolute, canonical path (`pwd -P` in its root)
+ENV_FILE=""     # absolute path of its env file; defaults to $PROJECT_ROOT/.env
+GITHUB_REPO=""  # OWNER/NAME that set_secret and set_var write to
 
 _STAGE_INDEX=0
-ENV_FILE="${ENV_FILE:-.env}"
+_BOUND=0
 WRITTEN_ENV=()    # KEYs written to ENV_FILE this run
 WRITTEN_SECRET=() # secret NAMEs set this run
 SKIPPED=()        # things we couldn't do (e.g. gh missing)
+KEPT=()           # KEYs whose ENV_FILE line was kept as is (see ask)
+
+# On exit, Ctrl-C, or TERM, remove the env-file lock and temp file this run
+# holds, never another run's, and turn echo back on if a hidden read was cut
+# short (bash 3.2 leaves it off). Only an uncatchable kill (SIGKILL, power
+# loss) skips this: then, with no wizard running, remove ENV_FILE.lock and any
+# leftover ENV_FILE.XXXXXX beside ENV_FILE by hand.
+_HELD_LOCK=""
+_HELD_TMP=""
+_HIDDEN_READ=0
+_cleanup() {
+  if [[ -n "$_HELD_TMP" ]]; then rm -f -- "$_HELD_TMP"; fi
+  if [[ -n "$_HELD_LOCK" ]]; then rmdir -- "$_HELD_LOCK" 2>/dev/null || true; fi
+  if (( _HIDDEN_READ )) && [[ -t 0 ]]; then stty echo 2>/dev/null || true; fi
+}
+trap _cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # _clear wipes the terminal so only the current step is on screen. No-op when
 # output isn't a terminal, so piped logs stay readable.
@@ -35,11 +58,38 @@ _clear() {
   if command -v tput >/dev/null 2>&1; then tput clear; else printf '\033[2J\033[3J\033[H'; fi
 }
 
-# banner "Title" shows the opening frame: what this wizard does.
+# _die "msg" stops the wizard before it writes anything else.
+_die() { printf '  %s✗ %s%s\n' "$RED" "$1" "$RESET" >&2; exit 1; }
+
+# _bind checks, once, that the wizard is about to touch the project it was
+# generated for: PROJECT_ROOT is an existing absolute, canonical directory,
+# the wizard runs from inside it, ENV_FILE lives under it, and GITHUB_REPO,
+# when set, is [HOST/]OWNER/NAME. Anything else stops the wizard before any
+# write.
+_bind() {
+  (( _BOUND )) && return 0
+  local here dir repo='^([A-Za-z0-9.-]+/)?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+  [[ "$PROJECT_ROOT" == /* && -d "$PROJECT_ROOT" && "$(cd -P -- "$PROJECT_ROOT" && pwd -P)" == "$PROJECT_ROOT" ]] \
+    || _die "PROJECT_ROOT must be the project's absolute, canonical path (got '$PROJECT_ROOT')"
+  here=$(pwd -P) || here=""
+  [[ "$here" == "$PROJECT_ROOT" || "$here" == "$PROJECT_ROOT"/* ]] \
+    || _die "this wizard sets up $PROJECT_ROOT: cd there and run it again"
+  ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env}"
+  dir=$(cd -P -- "$(dirname -- "$ENV_FILE")" 2>/dev/null && pwd -P) || dir=""
+  [[ "$ENV_FILE" == /* && ( "$dir" == "$PROJECT_ROOT" || "$dir" == "$PROJECT_ROOT"/* ) ]] \
+    || _die "ENV_FILE must be an absolute path in an existing directory under $PROJECT_ROOT (got '$ENV_FILE')"
+  _env_file_present || true
+  [[ -z "$GITHUB_REPO" || "$GITHUB_REPO" =~ $repo ]] \
+    || _die "GITHUB_REPO must be [HOST/]OWNER/NAME (got '$GITHUB_REPO')"
+  _BOUND=1
+}
+
+# banner "Title" shows the opening frame: what this wizard does, and where.
 banner() {
+  _bind
   _clear
   printf '\n%s%s  %s%s\n' "$BOLD" "$BLUE" "$1" "$RESET"
-  printf '%s  %s stages%s\n\n' "$DIM" "$TOTAL_STAGES" "$RESET"
+  printf '%s  %s stages · %s%s%s\n\n' "$DIM" "$TOTAL_STAGES" "$PROJECT_ROOT" "${GITHUB_REPO:+ · GitHub $GITHUB_REPO}" "$RESET"
   printf '%s  You drive the browser; this wizard tells you exactly what to do and\n' "$DIM"
   printf '  captures the values you copy back. Stop any time with Ctrl-C and re-run\n'
   printf '  later, since it remembers values already saved.%s\n' "$RESET"
@@ -88,81 +138,205 @@ confirm() {
   [[ "$reply" =~ ^[Yy] ]]
 }
 
-# _existing KEY: current value of KEY in ENV_FILE, if any.
+# .env lines are written for dotenv-style loaders (dotenv, dotenv-expand,
+# python-dotenv, `set -a; . ./.env`): a plain value bare, anything else in
+# single quotes. Those loaders read ' \ $ and control characters differently
+# even inside quotes, so a value holding one is refused, not stored.
+_ENV_PLAIN='^[A-Za-z0-9_./:@%+=,-]*$'
+_env_quotable() { [[ "$1" != *[\'\\\$[:cntrl:]]* ]]; }
+
+# _env_line KEY VALUE prints KEY's .env line, or fails when VALUE has no form
+# that every one of those loaders reads back unchanged.
+_env_line() {
+  if [[ "$2" =~ $_ENV_PLAIN ]]; then printf '%s=%s' "$1" "$2"
+  elif _env_quotable "$2"; then printf "%s='%s'" "$1" "$2"
+  else return 1; fi
+}
+
+# _env_file_present succeeds for a regular ENV_FILE and fails when stat
+# reports "No such file or directory" for it. stat never follows a symlink
+# here, and its own error is read rather than a bash test that returns false
+# on any lookup error: a symlink, any other kind of file, or any other stat
+# failure stops the wizard before ENV_FILE is read or replaced.
+_STAT_TYPE=() # stat's file-type option: -c %F (GNU, BusyBox) or -f %HT (BSD, macOS)
+_env_file_present() {
+  local out
+  if (( ! ${#_STAT_TYPE[@]} )); then
+    if [[ "$(LC_ALL=C stat -c %F / 2>/dev/null)" == directory ]]; then _STAT_TYPE=(-c %F)
+    elif [[ "$(LC_ALL=C stat -f %HT / 2>/dev/null)" == Directory ]]; then _STAT_TYPE=(-f %HT)
+    else _die "couldn't find a stat command that reports file types"
+    fi
+  fi
+  if out=$(LC_ALL=C stat "${_STAT_TYPE[@]}" -- "$ENV_FILE" 2>&1); then
+    case "$out" in
+      "regular file"|"regular empty file"|"Regular File") return 0 ;;
+      "symbolic link"|"Symbolic Link") _die "$ENV_FILE is a symlink; the wizard reads and writes only a regular file there" ;;
+      *) _die "$ENV_FILE is not a regular file" ;;
+    esac
+  fi
+  [[ "$out" == *": No such file or directory" ]] && return 1
+  _die "couldn't check $ENV_FILE (${out##*: }); it is unchanged"
+}
+
+# _existing KEY sets _CUR_STATE to "missing" (no env file, or no line for
+# KEY), "value" (a line write_env can read back; the value is in _CUR), or
+# "other" (a line in another form, such as KEY="..." or export KEY=...).
+# Stops the wizard if the env file can't be read.
 _existing() {
-  [[ -f "$ENV_FILE" ]] || return 1
-  local line; line=$(grep -E "^${1}=" "$ENV_FILE" | tail -n1) || return 1
-  printf '%s' "${line#*=}"
+  local line value inner status=0
+  _CUR=""; _CUR_STATE=missing
+  _env_file_present || return 0
+  line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${1}[[:space:]]*=" "$ENV_FILE" | tail -n1) || status=$?
+  (( status <= 1 )) || _die "couldn't read $ENV_FILE"
+  (( status == 0 )) || return 0
+  _CUR_STATE=other
+  [[ "$line" == "$1="* ]] || return 0
+  value="${line#*=}"; inner="${value#\'}"; inner="${inner%\'}"
+  if [[ "$value" =~ $_ENV_PLAIN ]]; then _CUR=$value; _CUR_STATE=value
+  elif [[ "$value" == "'$inner'" ]] && _env_quotable "$inner"; then _CUR=$inner; _CUR_STATE=value
+  fi
+}
+
+# _prompt "Prompt" shows the prompt and what Enter does for the line found by
+# _existing.
+_prompt() {
+  case "$_CUR_STATE" in
+    value) printf '  %s%s%s %s[Enter keeps current]%s ' "$BOLD" "$1" "$RESET" "$DIM" "$RESET" ;;
+    other) printf '  %s%s%s %s[Enter keeps the line in %s as is]%s ' "$BOLD" "$1" "$RESET" "$DIM" "$ENV_FILE" "$RESET" ;;
+    *)     printf '  %s%s%s ' "$BOLD" "$1" "$RESET" ;;
+  esac
+}
+
+# _take KEY INPUT sets $KEY to INPUT. Blank INPUT (or EOF) keeps a current
+# value; for a line in another form it keeps the line untouched instead: $KEY
+# is left empty and KEY is recorded in KEPT, so write_env, set_secret, and
+# set_var write and send nothing for it. Only a typed value replaces it.
+_take() {
+  local key="$1" input="$2"
+  if [[ -z "$input" && "$_CUR_STATE" == value ]]; then input=$_CUR
+  elif [[ -z "$input" && "$_CUR_STATE" == other ]]; then
+    KEPT+=("$key")
+    note "kept $key as it is in $ENV_FILE; nothing is written or sent for it"
+  fi
+  printf -v "$key" '%s' "$input"
+}
+
+# _kept NAME: NAME's env-file line was kept as is this run.
+_kept() {
+  local k
+  for k in ${KEPT[@]+"${KEPT[@]}"}; do [[ "$k" == "$1" ]] && return 0; done
+  return 1
 }
 
 # ask KEY "Prompt" reads a value into $KEY. Offers the existing .env value as
 # a default on re-runs (Enter keeps it). Visible input (non-secret).
 ask() {
-  local key="$1" prompt="$2" current input
-  current=$(_existing "$key" || true)
-  if [[ -n "$current" ]]; then
-    printf '  %s%s%s %s[Enter keeps current]%s ' "$BOLD" "$prompt" "$RESET" "$DIM" "$RESET"
-  else
-    printf '  %s%s%s ' "$BOLD" "$prompt" "$RESET"
-  fi
+  local input
+  _bind
+  _existing "$1"
+  _prompt "$2"
   read -r input || true
-  [[ -z "$input" && -n "$current" ]] && input="$current"
-  printf -v "$key" '%s' "$input"
+  _take "$1" "$input"
 }
 
 # ask_secret KEY "Prompt" is like ask, but input is hidden.
 ask_secret() {
-  local key="$1" prompt="$2" current input
-  current=$(_existing "$key" || true)
-  if [[ -n "$current" ]]; then
-    printf '  %s%s%s %s[Enter keeps current]%s ' "$BOLD" "$prompt" "$RESET" "$DIM" "$RESET"
-  else
-    printf '  %s%s%s ' "$BOLD" "$prompt" "$RESET"
-  fi
+  local input
+  _bind
+  _existing "$1"
+  _prompt "$2"
+  _HIDDEN_READ=1
   read -rs input || true
+  _HIDDEN_READ=0
   printf '\n'
-  [[ -z "$input" && -n "$current" ]] && input="$current"
-  printf -v "$key" '%s' "$input"
+  _take "$1" "$input"
+}
+
+# _upsert_env KEY LINE writes ENV_FILE's other lines plus LINE to a temp file
+# beside it, then renames that over ENV_FILE. Fails, leaving ENV_FILE as it
+# was, if any step does, including a read of the existing file; the EXIT trap
+# then removes the temp file.
+_upsert_env() {
+  local key="$1" line="$2" present=0 status=0
+  _env_file_present && present=1
+  _HELD_TMP=$(mktemp "$ENV_FILE.XXXXXX") || return 1
+  if (( present )); then
+    grep -vE "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$ENV_FILE" > "$_HELD_TMP" || status=$?
+    (( status <= 1 )) || return 1 # 1 is "no other lines"
+  fi
+  { printf '%s\n' "$line" >> "$_HELD_TMP" && mv -f -- "$_HELD_TMP" "$ENV_FILE"; } || return 1
+  _HELD_TMP=""
 }
 
 # write_env KEY VALUE upserts KEY=VALUE into ENV_FILE (creates it; replaces
-# any existing line). Idempotent.
+# any existing line). Idempotent. A lock directory beside ENV_FILE keeps two
+# runs from dropping each other's keys; the wizard stops, writing nothing, if
+# the value can't be stored as is, the lock stays held, or the file can't be
+# read or replaced. A KEY whose line ask kept as is is left alone.
 write_env() {
-  local key="$1" value="$2" tmp
-  touch "$ENV_FILE"
-  tmp=$(mktemp)
-  grep -vE "^${key}=" "$ENV_FILE" > "$tmp" || true
-  printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  mv "$tmp" "$ENV_FILE"
+  local key="$1" value="$2" line lock tries=0
+  _bind
+  _kept "$key" && return 0
+  line=$(_env_line "$key" "$value") \
+    || _die "the value for $key has a ' \\ \$ or control character, which .env loaders read differently; nothing was written, so store it by hand"
+  lock="$ENV_FILE.lock"
+  until mkdir -- "$lock" 2>/dev/null; do
+    [[ -d "$lock" ]] || _die "couldn't write beside $ENV_FILE; it is unchanged"
+    (( ++tries < 30 )) || _die "$ENV_FILE is in use by another run; it is unchanged (if none is running, remove $lock)"
+    sleep 0.1
+  done
+  _HELD_LOCK=$lock
+  _upsert_env "$key" "$line" || _die "couldn't update $ENV_FILE; it is unchanged"
+  if rmdir -- "$lock" 2>/dev/null; then _HELD_LOCK=""
+  else warn "couldn't remove $lock yet; the wizard tries again when it exits"
+  fi
   WRITTEN_ENV+=("$key")
   printf '  %s✓ wrote%s %s → %s\n' "$GREEN" "$RESET" "$key" "$ENV_FILE"
 }
 
-# set_secret NAME VALUE sets a GitHub Actions repo secret via gh. Falls back
-# to a warning (and records it) if gh is unavailable or unauthenticated.
+# set_secret NAME VALUE sets a GitHub Actions secret on GITHUB_REPO via gh.
+# Falls back to a warning (and records it) if gh is unavailable or
+# unauthenticated. Sends nothing for a NAME kept as is or an empty VALUE.
 set_secret() {
   local name="$1" value="$2"
+  _bind
+  [[ -n "$GITHUB_REPO" ]] || _die "set_secret $name: no GITHUB_REPO is bound"
+  _kept "$name" && return 0
+  if [[ -z "$value" ]]; then
+    SKIPPED+=("GitHub secret $name (no value was entered; set it manually: gh secret set $name --repo $GITHUB_REPO)")
+    warn "skipped GitHub secret $name: no value was entered"
+    return 0
+  fi
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    if printf '%s' "$value" | gh secret set "$name" >/dev/null 2>&1; then
+    if printf '%s' "$value" | gh secret set "$name" --repo "$GITHUB_REPO" >/dev/null 2>&1; then
       WRITTEN_SECRET+=("$name")
-      printf '  %s✓ set%s GitHub secret %s\n' "$GREEN" "$RESET" "$name"
+      printf '  %s✓ set%s GitHub secret %s on %s\n' "$GREEN" "$RESET" "$name" "$GITHUB_REPO"
       return
     fi
   fi
-  SKIPPED+=("GitHub secret $name (set it manually: gh secret set $name)")
+  SKIPPED+=("GitHub secret $name (set it manually: gh secret set $name --repo $GITHUB_REPO)")
   warn "skipped GitHub secret $name: gh not ready; set it later"
 }
 
-# set_var NAME VALUE sets a GitHub Actions repo variable (non-secret).
+# set_var NAME VALUE sets a GitHub Actions variable (non-secret) on
+# GITHUB_REPO. Sends nothing for a NAME kept as is or an empty VALUE.
 set_var() {
   local name="$1" value="$2"
+  _bind
+  [[ -n "$GITHUB_REPO" ]] || _die "set_var $name: no GITHUB_REPO is bound"
+  _kept "$name" && return 0
+  if [[ -z "$value" ]]; then
+    SKIPPED+=("GitHub variable $name on $GITHUB_REPO (no value was entered)")
+    warn "skipped GitHub variable $name: no value was entered"
+    return 0
+  fi
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    if gh variable set "$name" --body "$value" >/dev/null 2>&1; then
-      printf '  %s✓ set%s GitHub variable %s\n' "$GREEN" "$RESET" "$name"
+    if gh variable set "$name" --repo "$GITHUB_REPO" --body "$value" >/dev/null 2>&1; then
+      printf '  %s✓ set%s GitHub variable %s on %s\n' "$GREEN" "$RESET" "$name" "$GITHUB_REPO"
       return
     fi
   fi
-  SKIPPED+=("GitHub variable $name")
+  SKIPPED+=("GitHub variable $name on $GITHUB_REPO")
   warn "skipped GitHub variable $name, gh not ready; set it later"
 }
 
@@ -172,6 +346,7 @@ finish() {
   printf '\n%s%s  ✓ Setup complete%s\n' "$BOLD" "$GREEN" "$RESET"
   (( ${#WRITTEN_ENV[@]} ))    && note "wrote ${#WRITTEN_ENV[@]} value(s) to $ENV_FILE: ${WRITTEN_ENV[*]}"
   (( ${#WRITTEN_SECRET[@]} )) && note "set ${#WRITTEN_SECRET[@]} GitHub secret(s): ${WRITTEN_SECRET[*]}"
+  (( ${#KEPT[@]} ))           && note "kept as is in $ENV_FILE, nothing sent: ${KEPT[*]}"
   if (( ${#SKIPPED[@]} )); then
     printf '\n'; warn "still to do by hand:"
     for s in "${SKIPPED[@]}"; do note "  - $s"; done
@@ -185,6 +360,9 @@ finish() {
 # ──────────────────────────────────────────────────────────────────────────
 
 TOTAL_STAGES=1
+PROJECT_ROOT="/path/to/project" # `pwd -P` in the project root
+ENV_FILE="$PROJECT_ROOT/.env"
+GITHUB_REPO="OWNER/NAME"        # confirmed with the user; "" if nothing goes to GitHub
 
 banner "Stripe setup"
 
