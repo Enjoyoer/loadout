@@ -17,6 +17,8 @@ def run(*args, cwd=None, env=None):
 
 
 CATALOG = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptionIds": ["medium", "high", "xhigh"]}]
+# A start time in the fixed format task-state.mjs records, which no live process has.
+OLD_START = "1970-01-01T00:00:00.0000000Z" if sys.platform == "win32" else "Thu Jan 1 00:00:00 1970"
 
 
 class OpcDeliveryTest(unittest.TestCase):
@@ -56,7 +58,7 @@ class OpcDeliveryTest(unittest.TestCase):
 
     def test_reused_live_pid_does_not_keep_tests_running(self):
         task = json.loads(Path(self.task).read_text())
-        task['tests'] = {'status': 'running', 'pid': os.getpid(), 'started_at': '2020-01-01T00:00:00.000Z'}
+        task['tests'] = {'status': 'running', 'pid': os.getpid(), 'pid_start': OLD_START, 'started_at': '2020-01-01T00:00:00.000Z'}
         Path(self.task).write_text(json.dumps(task))
         done = run('node', str(SCRIPTS / 'delivery.mjs'), 'reconcile', self.task)
         self.assertEqual(json.loads(done.stdout)['reason'], 'interrupted', done.stderr)
@@ -113,21 +115,79 @@ class OpcDeliveryTest(unittest.TestCase):
         listed = run('node', str(SCRIPTS / 'cloud-lane.mjs'), 'reconcile', self.task)
         self.assertEqual(json.loads(listed.stdout)['status'], 'uncertain', listed.stderr)
 
+    def test_uncertain_cloud_launch_reconciles_to_found_session(self):
+        done = run('node', '--input-type=module', '-e', f'''
+            import {{ beginCloudLaunch, recordCloudLaunchFailure }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
+            beginCloudLaunch({json.dumps(self.task)}, {{branch:'opc/example',repo:'example/app'}});
+            recordCloudLaunchFailure({json.dumps(self.task)}, 'capture interrupted');
+        ''')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        settled = run('node', str(SCRIPTS / 'cloud-lane.mjs'), 'reconcile', self.task,
+                      '--session', 'session_found', '--url', 'https://example.invalid/session')
+        self.assertEqual(settled.returncode, 0, settled.stderr)
+        cloud = json.loads(Path(self.task).read_text())['cloud']
+        self.assertEqual((cloud['status'], cloud['session_id'], cloud['reason']), ('running', 'session_found', None))
+        listed = run('node', str(SCRIPTS / 'cloud-lane.mjs'), 'reconcile', self.task)
+        self.assertEqual(json.loads(listed.stdout)['status'], 'running', listed.stderr)
+
+    def test_uncertain_cloud_launch_reconciles_to_no_session_and_one_relaunch(self):
+        done = run('node', '--input-type=module', '-e', f'''
+            import {{ beginCloudLaunch, recordCloudLaunch, recordCloudLaunchFailure, reconcileCloudLaunch }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
+            const task = {json.dumps(self.task)}, lane = {{branch:'opc/example',repo:'example/app'}};
+            const refused = (call, text) => {{
+              try {{ call(); }} catch (error) {{ if (error.message.includes(text)) return; throw error; }}
+              throw Error('allowed: ' + text);
+            }};
+            beginCloudLaunch(task, lane);
+            recordCloudLaunchFailure(task, 'capture interrupted');
+            if (reconcileCloudLaunch(task, {{noSession:true, reason:'no session with the marker'}}).status !== 'no_session') throw Error('not settled');
+            const relaunch = beginCloudLaunch(task, lane);
+            if (relaunch.status !== 'launching' || relaunch.attempt !== 2) throw Error('relaunch not recorded');
+            refused(() => beginCloudLaunch(task, lane), 'already recorded');
+            recordCloudLaunchFailure(task, 'capture interrupted again');
+            reconcileCloudLaunch(task, {{noSession:true, reason:'still no session'}});
+            refused(() => beginCloudLaunch(task, lane), 'relaunched once');
+            console.log('one relaunch');
+        ''')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn('one relaunch', done.stdout)
+
     def test_live_lock_replacing_stale_lock_before_reclaim_survives(self):
         dead = subprocess.Popen([sys.executable, "-c", ""])
         dead.wait()
         lock = Path(self.task + ".lock")
         lock.write_text(str(dead.pid))
         done = run("node", "--input-type=module", "-e", f"""
-            import {{ unlinkSync, writeFileSync }} from 'node:fs';
-            import {{ updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
-            const beforeReclaim = lock => {{ unlinkSync(lock); writeFileSync(lock, String({os.getpid()}), {{ flag: 'wx' }}); }};
+            import {{ readFileSync, unlinkSync, writeFileSync }} from 'node:fs';
+            import {{ processStartTime, updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            const holder = `{os.getpid()}\\n${{processStartTime({os.getpid()})}}`;
+            const beforeReclaim = lock => {{ unlinkSync(lock); writeFileSync(lock, holder, {{ flag: 'wx' }}); }};
             try {{ updateTask({json.dumps(self.task)}, () => {{}}, {{ beforeReclaim }}); }}
             catch (error) {{ console.log(error.message); }}
+            console.log(readFileSync({json.dumps(self.task + ".lock")}, 'utf8') === holder ? 'kept' : 'replaced');
         """)
         self.assertIn("task lock contention", done.stdout, done.stderr)
-        self.assertEqual(lock.read_text(), str(os.getpid()))
+        self.assertIn("kept", done.stdout)
+        self.assertEqual(lock.read_text().splitlines()[0], str(os.getpid()))
         self.assertEqual(sorted(p.name for p in lock.parent.iterdir() if ".lock" in p.name), [lock.name])
+
+    def test_live_lock_holder_with_unreadable_start_keeps_lock(self):
+        lock = Path(self.task + ".lock")
+        update = f"""
+            import {{ updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            try {{ updateTask({json.dumps(self.task)}, () => {{}}); console.log('updated'); }}
+            catch (error) {{ console.log(error.message); }}
+        """
+        # An empty PATH hides ps (powershell.exe on Windows), so no start time can be read.
+        empty = Path(self.task).parent / "empty-path"
+        empty.mkdir()
+        node = shutil.which("node")
+        for path, expected in ((str(empty), "task lock busy"), (os.environ.get("PATH", ""), "updated")):
+            with self.subTest(readable=expected == "updated"):
+                lock.write_text(f"{os.getpid()}\n{OLD_START}")
+                done = run(node, "--input-type=module", "-e", update, env={**os.environ, "PATH": path})
+                self.assertIn(expected, done.stdout, done.stderr)
+                self.assertEqual(lock.exists(), expected != "updated")
 
     def test_recorded_route_reads_and_updates_after_class_table_change(self):
         root = Path(self.task).parent.parent
@@ -170,14 +230,15 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(cloud_route["model"], "claude-opus-5-5[1m]")
         # A taken fallback lane makes the route write fail, which must leave cloud.fallback unwritten too.
         done = run("node", "--input-type=module", "-e", f"""
-            import {{ recordCloudLaunch }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
+            import {{ beginCloudLaunch, recordCloudLaunch }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
             import {{ recordWorkerRoute }} from {json.dumps((SCRIPTS / 'route.mjs').as_uri())};
             import {{ updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
             const path = {json.dumps(self.task)};
             recordWorkerRoute(path, {{ lane: 'taken-fallback', reason: 'owner-named, never adjusted',
               route: {{ role: 'worker', source: 'owner-explicit', model: 'fleet/claude-opus-5-5', effort: 'high', fastMode: false }} }});
+            beginCloudLaunch(path, {{ branch: 'opc/fix-auth', repo: 'example/app', launchedAt: '2026-01-01T00:00:00.000Z' }});
             recordCloudLaunch(path, {{ sessionId: 'session_example', url: 'https://example.invalid/session', branch: 'opc/fix-auth',
-              repo: 'example/app', launchedAt: '2026-01-01T00:00:00.000Z' }});
+              repo: 'example/app' }});
             updateTask(path, task => {{ task.cloud.status = 'dead'; task.cloud.reason = 'session page shows failure'; }});
         """)
         self.assertEqual(done.returncode, 0, done.stderr)

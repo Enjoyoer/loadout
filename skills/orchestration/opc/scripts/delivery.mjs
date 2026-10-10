@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { assertRepository, git, gitEnvironment, readTask, sameProcess, updateTask } from './task-state.mjs';
+import { assertRepository, git, gitEnvironment, ownStartTime, processIdentity, processStartTime, readTask, updateTask } from './task-state.mjs';
 import { requireReviewDelivery } from './web-reviewer.mjs';
 
 // Receipts are convenient bookkeeping, not a security boundary against trusted Workers.
@@ -29,21 +29,26 @@ function idle(task) {
   if(task.status === 'cancelled' || task.tests?.status === 'running') throw Error('task is cancelled or busy');
   if(task.merge?.status === 'pending') throw Error('merge uncertain; reconcile live GitHub state before further work');
 }
-// Only the recorded process clears 'running'; once it is gone the run was interrupted. Every entry point that judges
-// whether the task is busy (test, verify, merge, planner launch, reconcile) runs this first.
+// The test command runs as its own process group (POSIX) or tree root (Windows). Windows has no process groups here:
+// taskkill /T follows parent ids down from a live root, so a descendant orphaned after its parent exited is not found
+// and keeps running.
 function stopGroup(pid, signal = 'SIGKILL') {
   if (!Number.isSafeInteger(pid) || pid < 1) return;
   try {
-    if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 5000 });
+    if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 5000, windowsHide: true });
     else process.kill(-pid, signal);
   } catch (error) { if (error.code !== 'ESRCH' && error.status !== 128) throw error; }
 }
+// Only the recorded process clears 'running'; once it is gone, or its pid names a process with another start time, the
+// run was interrupted. A live pid whose start time cannot be read still counts as the runner. Every entry point that
+// judges whether the task is busy (test, verify, merge, planner launch, reconcile) runs this first.
 export function recoverTests(taskPath) {
-  const stale=t=>t.tests?.status==='running'&&!sameProcess(t.tests.pid,t.tests.started_at);
+  const stale=t=>t.tests?.status==='running'&&processIdentity(t.tests.pid,t.tests.pid_start)==='other';
   if(!stale(readTask(taskPath)))return null;
   return updateTask(taskPath,t=>{
     if(stale(t)) {
-      if(t.tests.child_pid && sameProcess(t.tests.child_pid,t.tests.child_started_at)) stopGroup(t.tests.child_pid);
+      // Kill only a test command whose start time still matches exactly; an unknown one may be a reused pid.
+      if(processIdentity(t.tests.child_pid,t.tests.child_start)==='same') stopGroup(t.tests.child_pid);
       t.tests={...t.tests,status:'failed',reason:'interrupted'};
     }
   }).tests;
@@ -53,7 +58,8 @@ export async function runTests(taskPath, {argv}) {
   recoverTests(taskPath);
   const task=readTask(taskPath); idle(task);
   const source=sourceIdentity(task);
-  updateTask(taskPath,t=>{idle(t);t.tests={...source,argv,status:'running',pid:process.pid,started_at:new Date().toISOString()};});
+  const pidStart=ownStartTime();
+  updateTask(taskPath,t=>{idle(t);t.tests={...source,argv,status:'running',pid:process.pid,pid_start:pidStart,started_at:new Date().toISOString()};});
   let code,child,signal=null;
   const stop=name=>{signal??=name;if(child?.pid)stopGroup(child.pid,name);};
   for(const name of ['SIGINT','SIGTERM'])process.on(name,stop);
@@ -61,7 +67,8 @@ export async function runTests(taskPath, {argv}) {
     code=await new Promise((resolve,reject)=>{
       child=spawn(argv[0],argv.slice(1),{cwd:task.repository.working_directory,env:gitEnvironment(),stdio:'inherit',detached:true});
       child.once('error',reject); child.once('close',code=>resolve(code));
-      child.once('spawn',()=>{try { updateTask(taskPath,t=>{t.tests.child_pid=child.pid;t.tests.child_started_at=new Date().toISOString();}); } catch(error) { stopGroup(child.pid); reject(error); }});
+      // The child's own start time, read right after spawn, is what recovery later compares exactly.
+      child.once('spawn',()=>{try { const start=processStartTime(child.pid); updateTask(taskPath,t=>{t.tests.child_pid=child.pid;t.tests.child_start=start;}); } catch(error) { stopGroup(child.pid); reject(error); }});
     });
   } catch(error) {
     updateTask(taskPath,t=>{t.tests.status='failed';});
