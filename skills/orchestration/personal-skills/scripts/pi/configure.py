@@ -150,9 +150,15 @@ def secure_windows_user(root):
                    capture_output=True, text=True, check=True)
 
 
-def configure(spec, root, dry_run=False):
+def runtime_contents(spec, root):
+    """The exact bytes configure writes, by runtime-relative path."""
     contents = {name: (json.dumps(value, indent=2) + "\n").encode() for name, value in build(spec, root).items()}
     contents.update({name: (Path(__file__).parent / name).read_bytes() for name in FILES})
+    return contents
+
+
+def configure(spec, root, dry_run=False):
+    contents = runtime_contents(spec, root)
     for name in contents: safe_target(root, root / name)
     changed = [name for name, data in contents.items() if not (root / name).exists() or (root / name).read_bytes() != data]
     # Back up all affected files before the first write. Caller provides a new root for install.

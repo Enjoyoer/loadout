@@ -2,10 +2,10 @@
 
 Default action is plan. Apply/rollback are for an explicitly approved host only.
 """
-import argparse, base64, hashlib, json, os, re, shutil, subprocess, sys
+import argparse, base64, hashlib, json, os, re, secrets, shutil, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
-from configure import configure, safe_target
+from configure import configure, runtime_contents, safe_target
 from credential import expand
 
 
@@ -13,6 +13,8 @@ def sha(data): return hashlib.sha256(data).hexdigest()
 
 
 PASEO_RANGE = ((0, 10, 3), (0, 12, 0))  # >=0.10.3 <0.12.0, release versions only
+# The runtime files apply writes and rollback restores, relative to the runtime root. Rollback touches no other path.
+RUNTIME = ('runtime.json','credential.py','launch.mjs','mcp_bridge.py','fleet-routing.mjs','agent/models.json','agent/settings.json','agent/mcp.json')
 
 
 def supported_paseo(version):
@@ -40,20 +42,76 @@ def version_gate(home):
     return status
 
 
+def new_file(path, data):
+    """Create path owner-only and exclusively, never over an existing file."""
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o600), 'wb') as handle:
+        handle.write(data)
+
+
+def replace(path, data):
+    """Replace path atomically with owner-only data, through a temp file no other run uses."""
+    temp = path.with_name(path.name + '.loadout-' + secrets.token_hex(4))
+    new_file(temp, data); temp.replace(path)
+
+
+def merged(before, root, pi):
+    """The daemon config revision `before` with the Pi provider and daemon MCP applied."""
+    cfg = json.loads(before)
+    providers = cfg.setdefault('agents', {}).setdefault('providers', {})
+    providers['pi'] = {**providers.get('pi', {}), **pi,
+        'command':[shutil.which('node') or 'node', str(root / 'launch.mjs')]}
+    daemon = cfg.setdefault('daemon', {})
+    daemon['mcp'] = {**daemon.get('mcp', {}), 'enabled':True, 'injectIntoAgents':True}
+    return (json.dumps(cfg, indent=2)+'\n').encode()
+
+
+def back_up(config, data):
+    """An owner-only copy of the config revision about to be replaced, under a name no earlier backup has."""
+    backup = config.with_name(config.name + '.before-pi-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+    new_file(backup, data)
+    if backup.read_bytes() != data: raise ValueError('backup readback failed')
+    return backup
+
+
+def runtime_restores(record):
+    """The (path, prior bytes or None) rollback writes back, once every runtime file is checked.
+
+    Each RUNTIME file must be a regular file (or absent) with no symlink or junction up to the root, holding what
+    apply found there or what it wrote. Anything else is an edit made since apply, so rollback refuses, including
+    for a file it would delete, before changing anything.
+    """
+    root = Path(record['root'])
+    before, applied = record['runtime_before'], record.get('runtime_applied')
+    if set(before) != set(RUNTIME) or not isinstance(applied, dict) or set(applied) != set(RUNTIME):
+        raise ValueError('state has no per-file runtime hashes; check the runtime files and restore them by hand')
+    restores = []
+    for name in RUNTIME:
+        target = root / name
+        safe_target(root, target)
+        if target.exists() and not target.is_file(): raise ValueError('runtime ' + name + ' is not a regular file')
+        prior = None if before[name] is None else base64.b64decode(before[name])
+        current, wanted = (sha(target.read_bytes()) if target.exists() else None), (None if prior is None else sha(prior))
+        if current not in {wanted, applied[name]}:
+            raise ValueError('runtime ' + name + ' changed since apply; preserve it and reconcile by hand')
+        if current != wanted: restores.append((target, prior))
+    return restores
+
+
 def restore(record, home, activate):
     path = Path(record['config'])
     if sha(path.read_bytes()) not in {record['after_sha256'], record['before_sha256']}:
         raise ValueError('daemon config changed since apply; preserve it and reconcile the backup')
     backup = Path(record['backup'])
     if sha(backup.read_bytes()) != record['before_sha256']: raise ValueError('rollback backup changed')
+    # The runtime is checked whole, then restored and verified, before the daemon config changes or reloads.
+    restores = runtime_restores(record)
+    for target, prior in restores:
+        if prior is None: target.unlink()
+        else: replace(target, prior)
+    for target, prior in restores:
+        if (target.read_bytes() if target.exists() else None) != prior: raise ValueError('runtime readback failed: ' + str(target))
     temp = path.with_name(path.name + '.pi-rollback-next')
     shutil.copy2(backup, temp); temp.replace(path)
-    root = Path(record['root'])
-    for name, previous in record['runtime_before'].items():
-        target = root / name
-        if previous is None: target.unlink(missing_ok=True)
-        else:
-            target.write_bytes(base64.b64decode(previous)); target.chmod(0o600)
     if activate: subprocess.run([paseo_command(),'reload'], env=daemon_env(home), check=True)
     if sha(path.read_bytes()) != record['before_sha256']: raise ValueError('rollback readback failed')
     print(json.dumps({'rollback':'verified', 'runtime_install_retained':True, 'config':str(path)}))
@@ -74,37 +132,32 @@ def main():
     if 'agentProfiles' in proposal: raise ValueError('Pi deployment does not manage agent profiles')
     root = expand(proposal['root']); spec = proposal['runtime']
     config = (home or Path(status['home'])) / 'config.json'
-    before = config.read_bytes(); cfg = json.loads(before)
+    before = config.read_bytes()
     pi = proposal['provider']
     if proposal['catalog_model_id'] not in {row['id'] for row in pi.get('models', [])}:
         raise ValueError('proposal must use the catalog model ID verbatim')
-    providers = cfg.setdefault('agents', {}).setdefault('providers', {})
-    providers['pi'] = {**providers.get('pi', {}), **pi,
-        'command':[shutil.which('node') or 'node', str(root / 'launch.mjs')]}
-    daemon = cfg.setdefault('daemon', {})
-    daemon['mcp'] = {**daemon.get('mcp', {}), 'enabled':True, 'injectIntoAgents':True}
-    after = (json.dumps(cfg, indent=2)+'\n').encode()
+    after = merged(before, root, pi)
     plan = configure(spec, root, dry_run=True)
     if args.action == 'plan':
         print(json.dumps({'daemonVersion':status['daemonVersion'], 'config_changed':before != after,
             'pi':plan, 'app_preferences':'apply separately in each UI client origin; see app-defaults.mjs'})); return
     if state.exists(): raise ValueError('state already exists; use a new state path')
-    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-    backup = config.with_name(config.name + '.before-pi-' + stamp)
-    shutil.copy2(config, backup)
-    if backup.read_bytes() != before: raise ValueError('backup readback failed')
-    names = ['runtime.json','credential.py','launch.mjs','mcp_bridge.py','fleet-routing.mjs','agent/models.json','agent/settings.json','agent/mcp.json']
+    backup = back_up(config, before)
+    contents = runtime_contents(spec, root)
+    if set(contents) != set(RUNTIME): raise ValueError('runtime files differ from the rollback record')
     runtime_before = {}
-    for name in names:
+    for name in RUNTIME:
         target = root / name
         safe_target(root, target)
         runtime_before[name] = base64.b64encode(target.read_bytes()).decode() if target.exists() else None
+    # Each file's prior bytes and the hash apply writes, so rollback can tell apply's writes, an interrupted apply
+    # included, from later edits.
     record = {'config':str(config), 'backup':str(backup), 'before_sha256':sha(before),
-        'after_sha256':sha(after), 'root':str(root), 'runtime_before':runtime_before}
+        'after_sha256':sha(after), 'root':str(root), 'runtime_before':runtime_before,
+        'runtime_applied':{name: sha(contents[name]) for name in RUNTIME}}
     state.parent.mkdir(parents=True, exist_ok=True)
     # Owner-only from creation: the record holds base64 copies of the prior runtime files.
-    with os.fdopen(os.open(state, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o600), 'w') as handle:
-        handle.write(json.dumps(record,indent=2)+'\n')
+    new_file(state, (json.dumps(record,indent=2)+'\n').encode())
     app = root / 'app'; pkg = app / 'node_modules/@earendil-works/pi-coding-agent/package.json'
     if not pkg.exists():
         app.mkdir(parents=True, exist_ok=True)
@@ -112,7 +165,22 @@ def main():
                         '--ignore-scripts','--save-exact','@earendil-works/pi-coding-agent@1.0.0'],check=True)
     if json.loads(pkg.read_text()).get('version') != '1.0.0': raise ValueError('official Pi version differs')
     configure(spec, root)
-    temp = config.with_name(config.name + '.pi-next'); temp.write_bytes(after); temp.chmod(0o600); temp.replace(config)
+    # Another controller may have written the config during the install and configure: merge onto that revision
+    # instead, back it up and record it, so its change survives and rollback restores it. Replace only while the
+    # config still holds the revision merged.
+    temp = config.with_name(config.name + '.pi-next')
+    for _ in range(3):
+        current = config.read_bytes()
+        if current != before:
+            before, after = current, merged(current, root, pi)
+            record.update(backup=str(back_up(config, before)), before_sha256=sha(before), after_sha256=sha(after))
+            replace(state, (json.dumps(record,indent=2)+'\n').encode())
+        temp.write_bytes(after); temp.chmod(0o600)
+        if config.read_bytes() == before:
+            temp.replace(config); break
+    else:
+        temp.unlink(missing_ok=True)
+        raise ValueError('daemon config kept changing during apply; it was not replaced')
     if config.read_bytes() != after: raise ValueError('config readback failed')
     if args.activate: subprocess.run([paseo_command(),'reload'], env=daemon_env(home),check=True)
     print(json.dumps({'apply':'verified','state':str(state),'rollback':'use rollback --state with this same file',

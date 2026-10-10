@@ -618,6 +618,39 @@ vm.runInNewContext(appDefaultsScript('route/example','high',true),{localStorage}
             self.assertEqual((home/'config.json').read_bytes(),original)
             self.assertFalse((root/'agent/settings.json').exists())
 
+    def test_deploy_rollback_refuses_runtime_edits_before_changing_anything(self):
+        sys.path.insert(0,str(PI))
+        import deploy
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);home=base/'daemon';home.mkdir();root=base/'pi'
+            (home/'config.json').write_bytes(b'{"agents":{"providers":{}}}\n')
+            pkg=root/'app/node_modules/@earendil-works/pi-coding-agent/package.json'
+            pkg.parent.mkdir(parents=True);pkg.write_text('{"version":"1.0.0"}')
+            settings=root/'agent/settings.json';settings.parent.mkdir();settings.write_text('{"owner":"before apply"}')
+            runtime={'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'ROUTE_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'},'models':[{'id':'example','name':'Astra'}],'settings':{'defaultProvider':'fleet','defaultModel':'example','defaultThinkingLevel':'high'}}
+            spec=base/'proposal.json';spec.write_text(json.dumps({'root':str(root),'runtime':runtime,'provider':{'models':[{'id':'fleet/example','label':'Astra'}]},'catalog_model_id':'fleet/example'}))
+            state=base/'state.json'
+            status={'daemonVersion':'0.10.3','connectedDaemon':'reachable','home':str(home)}
+            with patch.object(deploy,'version_gate',return_value=status),patch.object(sys,'argv',['deploy','apply','--spec',str(spec),'--state',str(state)]):deploy.main()
+            record=json.loads(state.read_text());applied=(home/'config.json').read_bytes();written=settings.read_bytes()
+            # The owner edits a runtime file apply wrote, leaving the daemon config alone.
+            settings.write_text('{"owner":"edited after apply"}')
+            with self.assertRaisesRegex(ValueError,'runtime agent/settings.json changed since apply'):deploy.restore(record,home,False)
+            self.assertEqual(settings.read_text(),'{"owner":"edited after apply"}')
+            self.assertEqual((home/'config.json').read_bytes(),applied)
+            self.assertTrue((root/'runtime.json').exists())
+            if os.name!='nt':  # creating a symlink needs privileges on Windows
+                outside=base/'outside.json';outside.write_bytes(written)
+                settings.unlink();settings.symlink_to(outside)
+                with self.assertRaisesRegex(ValueError,'symlink'):deploy.restore(record,home,False)
+                self.assertEqual(outside.read_bytes(),written)
+                settings.unlink()
+            settings.write_bytes(written)
+            deploy.restore(record,home,False)
+            self.assertEqual(settings.read_text(),'{"owner":"before apply"}')
+            self.assertFalse((root/'runtime.json').exists())
+            self.assertEqual((home/'config.json').read_bytes(),b'{"agents":{"providers":{}}}\n')
+
     def test_app_default_carries_saved_or_catalog_route_and_refuses_unsupported(self):
         script=r"""
 import assert from 'node:assert/strict';
