@@ -5,8 +5,8 @@ Order: $LOADOUT_FLEET, then the per-user config directory
 (${XDG_CONFIG_HOME:-~/.config}/loadout/fleet, or %APPDATA%\\loadout\\fleet on
 Windows), then the legacy fleet/local/ beside the installed SKILL.md.
 
-`push` carries the source host's fleet directory to every other ssh host, so the
-source host is the only place the fleet is edited.
+`push` carries the source host's published fleet files (PUBLISHED) to every other
+ssh host, so the source host is the only place the fleet is edited.
 """
 
 from __future__ import annotations
@@ -29,7 +29,11 @@ PUSH_JS = Path(__file__).resolve().parent / "fleet_push_remote.js"
 # Helpers the remote programs share; run_node ships it ahead of each program.
 COMMON_JS = Path(__file__).resolve().parent / "remote_common.js"
 SYNC_RECORD = ".loadout-sync.json"
-SKIP_NAMES = {SYNC_RECORD, ".DS_Store"}
+# All the fleet push copies to the other ssh hosts: the fleet description and its shared settings. A token file,
+# a pairing offer, a backup, the skills/ overlay, or any other file in the fleet directory stays on the source host;
+# a token reaches only the hosts that name its env through the client-config step, and an offer is read only where
+# the sync runs. A file an earlier push copied and this list leaves out is removed while the host's copy is unedited.
+PUBLISHED = ("hosts.json", "paseo-providers.json", "client-config.json", "global/AGENTS.md")
 # A remote program and its payload travel together on stdin as one base64 envelope, so the
 # command line holds only this fixed boot and the envelope's sha256: short enough for cmd.exe
 # whatever the program's size, and free of shell quoting. The boot runs nothing unless the
@@ -278,15 +282,11 @@ def parse_result(output: str) -> Optional[dict]:
 
 
 def fleet_files(directory: Path) -> dict:
-    """Every regular file in the fleet directory except the skills/ overlay, by POSIX relative path."""
+    """The PUBLISHED files the fleet directory holds, by POSIX relative path; every other file stays here."""
     files = {}
-    for path in sorted(directory.rglob("*")):
-        rel = path.relative_to(directory).as_posix()
-        if path.name in SKIP_NAMES or path.name.endswith(".loadout-tmp"):
-            continue
-        if rel == "skills" or rel.startswith("skills/"):
-            continue  # the private skill overlay installs through the skills step, not the fleet copy
-        if path.is_symlink():
+    for rel in PUBLISHED:
+        path = directory / rel
+        if any(part.is_symlink() for part in (path, *path.parents[:rel.count("/")])):
             raise FleetError(f"symlink in the source fleet directory: {rel}")
         if path.is_file():
             data = path.read_bytes()

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -94,6 +95,25 @@ class FleetPushTest(unittest.TestCase):
         self.assertIn("desktop: fleet updated (-1)", out)
         self.assertEqual(self.snapshot(self.target("desktop")), self.snapshot(self.source))
         self.assertNotIn("devbox", out)
+
+    def test_tokens_offers_and_other_files_stay_on_the_source_host(self):
+        # A token file client-config.json names, the pairing offer hosts.json names, and a backup, all in the fleet.
+        (self.source / "token").write_text("not-a-real-token\n")
+        (self.source / "client-config.json").write_text(json.dumps({"token_file": str(self.source / "token")}))
+        (self.source / "tablet.offer").write_text("offer:tablet\n")
+        (self.source / "hosts.json.bak").write_text("{}")
+        # desktop still holds the offer from a push that copied every file.
+        old = self.target("desktop")
+        old.mkdir(parents=True)
+        (old / "tablet.offer").write_text("offer:tablet\n")
+        (old / fleet.SYNC_RECORD).write_text(json.dumps({"version": 1, "files": {
+            "tablet.offer": hashlib.sha256(b"offer:tablet\n").hexdigest()}}))
+        code, out = self.push()
+        self.assertEqual(code, 0, out)
+        self.assertIn("desktop: fleet updated (+3 -1)", out)
+        for host in ("desktop", "devbox"):
+            self.assertEqual(set(self.snapshot(self.target(host))), {"hosts.json", "client-config.json", "global/AGENTS.md"})
+        self.assertNotIn(b"not-a-real-token", b"".join(self.snapshot(self.target("devbox")).values()))
 
     def test_hand_edit_on_host_is_a_conflict_and_nothing_is_written(self):
         self.push()

@@ -24,7 +24,7 @@ example/                     public, made up
 2. `${XDG_CONFIG_HOME:-~/.config}/loadout/fleet/`. On Windows, `%APPDATA%\loadout\fleet\`.
 3. `fleet/local/` beside the installed `SKILL.md`, the older location. It is ignored by Git and absent from the manifest.
 
-Edit the fleet only on the source host. `python3 scripts/fleet.py push [--dry-run] [--host <name>]` copies it to `~/.config/loadout/fleet/` (`%APPDATA%\loadout\fleet\` on Windows) on every other `ssh` host, and every sync run does this first. Each copy carries a `.loadout-sync.json` record of the hashes last synced. A host's copy is replaced only while it still matches that record. A hand-edited, added, or unrecorded differing file is a conflict, and nothing is written on that host until you resolve it, usually by deleting the host's copy. `paseo-relay` hosts get no copy. Hosts need `node`.
+Edit the fleet only on the source host. `python3 scripts/fleet.py push [--dry-run] [--host <name>]` copies its published files, `hosts.json`, `paseo-providers.json`, `client-config.json`, and `global/AGENTS.md`, to `~/.config/loadout/fleet/` (`%APPDATA%\loadout\fleet\` on Windows) on every other `ssh` host, and every sync run does this first. Every other file in the fleet directory, such as a token file, a pairing offer, a backup, or notes, stays on the source host; a file an earlier push copied and the push no longer publishes is removed from a host whose copy is unedited. Each copy carries a `.loadout-sync.json` record of the hashes last synced. A host's copy is replaced only while it still matches that record. A hand-edited, added, or unrecorded differing file is a conflict, and nothing is written on that host until you resolve it, usually by deleting the host's copy. `paseo-relay` hosts get no copy. Hosts need `node`.
 
 With none of these, the fleet is the current host only. To move an existing `fleet/local/`, copy it to the config directory, check `fleet.py resolve` reports `config`, then remove the old copy.
 
@@ -53,7 +53,7 @@ Put skills that must stay private (personal, account-bound, or holding credentia
   - `transport`: optional, overrides the top-level value.
     - `ssh`: files and commands travel over SSH.
     - `paseo-relay`: the host is reached only through its Paseo daemon via a pairing offer. There is no file transport, so it cannot take `skills` or `plugins`, and it needs an explicit `sync`.
-  - `paseo_offer`: path to a file holding the host's Paseo pairing offer. Required for `paseo-relay`; optional for `ssh`, where it lets daemon commands go over the relay. Keep offers private.
+  - `paseo_offer`: path to a file holding the host's Paseo pairing offer. Required for `paseo-relay`; optional for `ssh`, where it lets daemon commands go over the relay. A relative path resolves inside the fleet directory. Keep offers private: the fleet push never copies an offer to other hosts.
   - `sync`: optional list of scopes from `skills`, `plugins`, `providers`, `client-config`. Default: `skills`, plus `plugins` when `paseo` is present. Each sync skips a host outside its scope and reports it as skipped, not failed. `providers` (Paseo provider pickers) and `client-config` (managed Codex and Claude Code settings) are opt-in. `paseo-relay` hosts can take only `providers`.
   - `exclude_skills`: optional skill names the skills sync leaves alone on this host, such as a package you keep a private version of.
   - `checkout`: path to a local Git checkout of this repository, or `null` (the default). A host without a checkout receives verified bytes from the source host and reverifies them.
@@ -114,7 +114,7 @@ OPC resolves fixed role labels from the target Pi catalog at spawn time; missing
 
 Optional. `python3 scripts/client_config.py [--dry-run] [--host <name>] [--update-claude]` reads it and updates hosts whose `sync` includes `client-config`. Each host gets the base settings, then its role's, then its own `hosts.<name>` overrides. It holds router URLs, so it stays in the private fleet directory.
 
-- `token_file`: optional path, on the source host, to a secret file. Its contents go to hosts whose settings name a `claude.token_env`, over SSH stdin only. The token is never passed as an argument, stored in this file, or printed.
+- `token_file`: optional path, on the source host, to a secret file. Its contents go to hosts whose settings name a `claude.token_env`, over SSH stdin only. A token file inside the fleet directory stays there: the fleet push never copies it. The token is never passed as an argument, stored in this file, or printed.
 - `codex`: managed keys for Codex `config.toml`.
   - `top`: top-level keys. Missing keys are inserted before the blank lines that precede the first section header.
   - `sections`: named sections such as `model_providers.<id>`, each a map of keys. A missing section is appended.
