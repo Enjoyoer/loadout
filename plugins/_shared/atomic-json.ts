@@ -51,15 +51,19 @@ async function syncDirectory(directory: string): Promise<string> {
   }
 }
 
-// Each directory this process has flushed up the tree, by path, with the identity it had then.
+// Each directory whose parents this process has all flushed, by path, with the identity it had then.
 const flushedTrees = new Map<string, string>();
+// What access() reports for a directory this process cannot write to.
+const NOT_WRITABLE = new Set(["EACCES", "EPERM", "EROFS"]);
 
 /**
  * Make a rename into filePath's directory survive a host crash on POSIX: flush that
  * directory. The first time this process writes there, or after the directory was
  * replaced, the directory itself may be new (callers create it just before writing), so
  * also flush each parent up to the first one this process cannot write to, which holds no
- * entry it could have created. Windows has no directory flush in Node; nothing is done.
+ * entry it could have created. Any other error checking or flushing a parent rejects, and
+ * the directory is remembered only once every parent it needed was flushed. Windows has no
+ * directory flush in Node; nothing is done.
  */
 async function flushDirectory(filePath: string): Promise<void> {
   if (process.platform === "win32") return;
@@ -71,7 +75,8 @@ async function flushDirectory(filePath: string): Promise<void> {
     current = path.dirname(current);
     try {
       await access(current, constants.W_OK);
-    } catch {
+    } catch (error) {
+      if (!NOT_WRITABLE.has((error as NodeJS.ErrnoException).code ?? "")) throw error;
       break;
     }
     await syncDirectory(current);

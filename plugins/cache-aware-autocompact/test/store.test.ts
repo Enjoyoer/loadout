@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import { StateStore, type StateEntry, type WriteJson } from "../server/store.ts";
 import { writeJsonAtomically } from "../server/vendor/atomic-json.ts";
 
@@ -64,6 +66,42 @@ describe("StateStore", () => {
       assert.equal(await readFile(filePath, "utf8"), text);
     }
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("rejects a write when checking or flushing a parent directory fails, and remembers nothing", { skip: process.platform === "win32" && "Windows has no directory flush" }, async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cache-aware-autocompact-"));
+    const realOpen = fs.promises.open;
+    const realAccess = fs.promises.access;
+    const eio = () => Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+    const failing = new Set<string>();
+    // Each state directory's parent fails: its flush, or the writability check before it.
+    mock.method(fs.promises, "open", async (...args: Parameters<typeof realOpen>) => {
+      const handle = await realOpen(...args);
+      if (args[1] === "r" && failing.has(`sync:${path.resolve(String(args[0]))}`)) handle.sync = async () => { throw eio(); };
+      return handle;
+    });
+    mock.method(fs.promises, "access", async (...args: Parameters<typeof realAccess>) => {
+      if (failing.has(`access:${path.resolve(String(args[0]))}`)) throw eio();
+      return realAccess(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      for (const kind of ["sync", "access"]) {
+        const parent = path.join(root, kind);
+        await mkdir(path.join(parent, "state"), { recursive: true });
+        const filePath = path.join(parent, "state", "state.json");
+        failing.add(`${kind}:${parent}`);
+        await assert.rejects(writeJsonAtomically(filePath, { n: 1 }), /EIO/, kind);
+        await assert.rejects(writeJsonAtomically(filePath, { n: 2 }), /EIO/, kind);
+        failing.clear();
+        await writeJsonAtomically(filePath, { n: 3 });
+        assert.deepEqual(JSON.parse(await readFile(filePath, "utf8")), { n: 3 });
+      }
+    } finally {
+      mock.restoreAll();
+      syncBuiltinESMExports();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("keeps accepting writes after one write fails", async () => {
