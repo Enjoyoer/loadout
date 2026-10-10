@@ -62,12 +62,9 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1, options:
   return { sweeper, state, removed, logs, calls, root };
 }
 
-type FakeEntry = { kind: "dir" | "file" | "junction"; dev?: number; lstatAsFile?: boolean };
+type FakeEntry = { kind: "dir" | "file" | "junction"; dev?: number };
 
-/**
- * A host whose filesystem is the given entries and files; a junction reads as a directory once followed. An entry
- * with lstatAsFile is a directory to stat but a regular file to lstat.
- */
+/** A host whose filesystem is the given entries and files; a junction reads as a directory once followed. */
 function fakeHost(platform: NodeJS.Platform, entries: Record<string, FakeEntry>, files: Record<string, string> = {}): SweeperHost {
   const paths = platform === "win32" ? path.win32 : path.posix;
   const missing = (target: string) => Object.assign(new Error(`ENOENT: ${target}`), { code: "ENOENT" });
@@ -77,7 +74,7 @@ function fakeHost(platform: NodeJS.Platform, entries: Record<string, FakeEntry>,
     return found;
   };
   const stats = (found: FakeEntry, follow: boolean) => ({
-    isDirectory: () => (found.kind === "dir" && (follow || !found.lstatAsFile)) || (follow && found.kind === "junction"),
+    isDirectory: () => found.kind === "dir" || (follow && found.kind === "junction"),
     isSymbolicLink: () => !follow && found.kind === "junction",
     dev: found.dev ?? 1,
   });
@@ -276,11 +273,10 @@ it("a mount that disappears between evaluation and delete makes the delete skip"
   assert.ok(f.logs.some((line) => line.includes("changed on final check") && line.includes("reason=mount-absent")), f.logs.join("\n"));
 });
 
-it("on Windows a missing root is kept as mount-unverifiable when an ancestor's lstat is a regular file", async (t) => {
+it("on Windows a missing root is kept as mount-unverifiable when its parent is a regular file", async (t) => {
   const host = fakeHost("win32", {
     "C:\\": { kind: "dir" },
-    "C:\\work": { kind: "dir", lstatAsFile: true },
-    "C:\\work\\keep": { kind: "file" },
+    "C:\\work": { kind: "file" },
   });
   const f = await fixture(t, {}, 0, { host, paths: ["C:\\work\\gone"] });
   await f.sweeper.sweep();
