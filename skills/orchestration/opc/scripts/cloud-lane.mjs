@@ -12,7 +12,7 @@ import { readTask, updateTask } from './task-state.mjs';
 // commands always pass this pair and take no model or effort from callers.
 export const CLOUD_ROUTE = Object.freeze({ model: 'claude-opus-5-5[1m]', effort: 'xhigh', fastMode: false });
 const cloudModelFlags = `--model '${CLOUD_ROUTE.model}' --effort ${CLOUD_ROUTE.effort}`;
-export const CLOUD_LIMITS = Object.freeze({ draftPrMinutes: 20, idleMinutes: 90, hardCapMinutes: 360, followUps: 1 });
+export const CLOUD_LIMITS = Object.freeze({ draftPrMinutes: 20, idleMinutes: 90, hardCapMinutes: 360, followUps: 1, relaunches: 1 });
 // What the session page shows when a stall is suspected; unknown (page unreadable) is treated like waiting.
 export const SESSION_PAGE_STATES = Object.freeze(['working', 'waiting', 'unknown', 'failed']);
 export const NO_CREDITS = 'no cloud credits on this account';
@@ -202,16 +202,59 @@ export function assessCloudProgress({ launchedAt, now, pr = null, lastPushAt = n
   return { state: 'running', reason: null };
 }
 
-// Record the launch before creating its heartbeat, so a PM that stops in between leaves a lane to reconcile.
-export function recordCloudLaunch(taskPath, { sessionId, url, branch, repo, launchedAt }) {
-  if (![sessionId, url, repo, launchedAt].every(text) || !branchPattern.test(branch ?? '')) {
-    throw Error('cloud session id, URL, branch, repo, and launch time required');
+// Persist intent before sending the session command. An interrupted command remains uncertain, never retry blindly.
+// The only launch after the first is one on a lane reconciled as no_session, with the same marker and repo.
+export function beginCloudLaunch(taskPath, { branch, repo, launchedAt = new Date().toISOString() }) {
+  if (!branchPattern.test(branch ?? '') || !repoPattern.test(repo ?? '') || !text(launchedAt)) throw Error('cloud lane marker, repo, and launch time required');
+  return updateTask(taskPath, task => {
+    const prior = task.cloud;
+    if (prior && prior.status !== 'no_session') throw Error('cloud lane already recorded; reconcile it, never launch a second session');
+    if (prior && (prior.branch !== branch || prior.repo !== repo)) throw Error('a relaunch keeps the recorded lane marker and repo');
+    const attempt = prior ? (prior.attempt ?? 1) + 1 : 1;
+    if (attempt > 1 + CLOUD_LIMITS.relaunches) throw Error('cloud lane already relaunched once with no session; report to the owner');
+    task.cloud = { status: 'launching', session_id: null, url: null, branch, repo, launched_at: launchedAt,
+      heartbeat_id: null, route: { ...CLOUD_ROUTE }, progress: null, reason: null, fallback: null,
+      suspect: null, active_at: null, follow_ups: 0, attempt };
+  }).cloud;
+}
+
+export function recordCloudLaunchFailure(taskPath, reason) {
+  if (!text(reason)) throw Error('launch uncertainty reason required');
+  return updateTask(taskPath, task => {
+    if (task.cloud?.status !== 'launching') throw Error('no launching cloud lane');
+    task.cloud.status = 'uncertain'; task.cloud.reason = reason;
+  }).cloud;
+}
+
+// Complete the intent beginCloudLaunch recorded, right after the capture; then create and bind the heartbeat.
+export function recordCloudLaunch(taskPath, { sessionId, url, branch, repo }) {
+  if (![sessionId, url, repo].every(text) || !branchPattern.test(branch ?? '')) {
+    throw Error('cloud session id, URL, branch, and repo required');
   }
   return updateTask(taskPath, task => {
-    if (task.cloud) throw Error('cloud lane already recorded; reconcile it, never launch a second session');
-    task.cloud = { status: 'running', session_id: sessionId, url, branch, repo, launched_at: launchedAt,
-      heartbeat_id: null, route: { ...CLOUD_ROUTE }, progress: null, reason: null, fallback: null,
-      suspect: null, active_at: null, follow_ups: 0 };
+    if (task.cloud?.status !== 'launching') throw Error('no launching cloud lane; call beginCloudLaunch before the session command');
+    if (task.cloud.branch !== branch || task.cloud.repo !== repo) throw Error('session does not match the launching lane marker and repo');
+    Object.assign(task.cloud, { status: 'running', session_id: sessionId, url });
+  }).cloud;
+}
+
+// Settle a launching or uncertain lane once the PM has checked for its session: a found session makes it running
+// (then create and bind the heartbeat); { noSession: true, reason } records that none exists, which permits one new
+// launch. One task update either way, so a lane is never left half settled.
+export function reconcileCloudLaunch(taskPath, outcome = {}) {
+  const { sessionId, url, branch, repo, noSession = false, reason } = outcome;
+  if (noSession === true) {
+    if (!text(reason) || /[\r\n]/.test(reason) || sessionId != null || url != null) {
+      throw Error('noSession takes a one-line reason and no session id or URL');
+    }
+  } else if (![sessionId, url, repo].every(text) || !branchPattern.test(branch ?? '')) {
+    throw Error('cloud session id, URL, branch, and repo required, or noSession with a reason');
+  }
+  return updateTask(taskPath, task => {
+    if (!['launching', 'uncertain'].includes(task.cloud?.status)) throw Error('no launching or uncertain cloud lane to reconcile');
+    if (noSession === true) { Object.assign(task.cloud, { status: 'no_session', reason }); return; }
+    if (task.cloud.branch !== branch || task.cloud.repo !== repo) throw Error('session does not match the recorded lane marker and repo');
+    Object.assign(task.cloud, { status: 'running', session_id: sessionId, url, reason: null });
   }).cloud;
 }
 
@@ -365,6 +408,35 @@ function runClaude(args, profileArg) {
 
 function main(argv) {
   const [state, ...rest] = argv;
+  // Without flags, list the lanes a resuming PM must settle; with flags, settle one task's lane.
+  if (state === 'reconcile') {
+    const usage = 'usage: cloud-lane.mjs reconcile <task.json> [task.json...] | reconcile <task.json> --session <id> --url <url>' +
+      ' | reconcile <task.json> --no-session --reason <text>';
+    const [path, ...flags] = rest;
+    if (!path || path.startsWith('--')) throw Error(usage);
+    if (!rest.some(arg => arg.startsWith('--'))) {
+      for (const task of rest) {
+        const cloud = readTask(task).cloud;
+        if (cloud && ['launching', 'uncertain', 'running'].includes(cloud.status) && !cloud.heartbeat_id)
+          console.log(JSON.stringify({ task, status: cloud.status, branch: cloud.branch, session_id: cloud.session_id, url: cloud.url }));
+      }
+      return;
+    }
+    const named = {};
+    for (let i = 0; i < flags.length; i++) {
+      if (flags[i] === '--no-session') named.noSession = true;
+      else if (['--session', '--url', '--reason'].includes(flags[i]) && flags[i + 1] && !flags[i + 1].startsWith('--')) named[flags[i].slice(2)] = flags[++i];
+      else throw Error(usage);
+    }
+    if (!named.noSession && named.reason) throw Error(usage);
+    // The session form settles the lane the task records, so its marker and repo come from the record.
+    const cloud = readTask(path).cloud;
+    if (!cloud) throw Error('no cloud lane recorded in this task; nothing to reconcile');
+    console.log(JSON.stringify(reconcileCloudLaunch(path, named.noSession
+      ? { noSession: true, reason: named.reason, sessionId: named.session, url: named.url }
+      : { sessionId: named.session, url: named.url, branch: cloud?.branch, repo: cloud?.repo })));
+    return;
+  }
   const flag = name => { const i = rest.indexOf(name); return i === -1 ? null : rest[i + 1]; };
   if (state === 'launch') {
     if (!plainPath(rest[0])) throw Error('usage: cloud-lane.mjs launch <brief file> --profile <dir>|none');
@@ -402,7 +474,8 @@ function main(argv) {
   }
   if (!['on', 'off', 'all'].includes(state)) {
     throw Error('usage: cloud-lane.mjs on|off|all|status | allow|disallow <owner/repo|owner/*> [--fleet host,...] | profile <dir>|none' +
-      ' | launch <brief file> --profile <dir>|none | follow-up <session id> <message file> --profile <dir>|none');
+      ' | launch <brief file> --profile <dir>|none | follow-up <session id> <message file> --profile <dir>|none' +
+      ' | reconcile <task.json>... [--session <id> --url <url> | --no-session --reason <text>]');
   }
   setCloudToggle(state, { authStatus: state === 'off' ? null : readAuthStatus() });
   console.log(`local: ${state}`);

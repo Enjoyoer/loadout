@@ -38,6 +38,35 @@ export function processAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
 }
 
+// A process's start time as an exact token in one fixed format, compared as text and never parsed: ps lstart under
+// LC_ALL=C and TZ=UTC on POSIX, the creation time as UTC round-trip text on Windows. null when it cannot be read.
+const START_FORMAT = process.platform === 'win32' ? /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}Z$/
+  : /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d\d:\d\d:\d\d \d{4}$/;
+export function processStartTime(pid) {
+  if (!processAlive(pid)) return null;
+  try {
+    const options = { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true };
+    const output = process.platform === 'win32'
+      ? execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CreationDate.ToUniversalTime().ToString('o')`], options)
+      : execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { ...options, env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } });
+    const start = output.trim().replace(/\s+/g, ' ');
+    return START_FORMAT.test(start) ? start : null;
+  } catch { return null; }
+}
+
+let ownStart;
+export const ownStartTime = () => (ownStart === undefined ? (ownStart = processStartTime(process.pid)) : ownStart);
+
+// Whether pid is still the process recorded with start: 'same'; 'gone' when no process has that pid; 'reused' when
+// the pid names a process with a different start; 'unknown' when it is alive but either start time is missing or
+// unreadable.
+export function processIdentity(pid, start) {
+  if (!processAlive(pid)) return 'gone';
+  const now = typeof start === 'string' && START_FORMAT.test(start) ? processStartTime(pid) : null;
+  return now === null ? 'unknown' : now === start ? 'same' : 'reused';
+}
+
 export function within(child, parent) {
   const path = relative(parent, child);
   return !path || (path !== '..' && !path.startsWith('../') && !path.startsWith('..\\') && !isAbsolute(path));
@@ -146,19 +175,27 @@ function validateReviewer(reviewer, task) {
   }
 }
 
-// One cloud lane per task; the heartbeat, not the PM, moves it out of running.
+// One cloud lane per task; the heartbeat, not the PM, moves it out of running. CLOUD_MOVES lists each status's allowed
+// next statuses. no_session (a launch reconciled as never started) permits a new launch, which replaces the record.
+const CLOUD_MOVES = Object.freeze({
+  launching: ['launching', 'uncertain', 'running', 'no_session'], uncertain: ['uncertain', 'running', 'no_session'],
+  running: ['running', 'ready', 'dead'], ready: ['ready'], dead: ['dead'], no_session: ['no_session', 'launching'],
+});
 function validateCloud(cloud) {
   if (cloud == null) return;
   const text = value => typeof value === 'string' && value.trim().length > 0;
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-  if (!object(cloud) || !['running', 'ready', 'dead'].includes(cloud.status) ||
-      !['session_id', 'url', 'branch', 'repo', 'launched_at'].every(key => text(cloud[key])) ||
+  if (!object(cloud) || !Object.hasOwn(CLOUD_MOVES, cloud.status) ||
+      !['branch', 'repo', 'launched_at'].every(key => text(cloud[key])) ||
+      (['running', 'ready', 'dead'].includes(cloud.status) && !['session_id', 'url'].every(key => text(cloud[key]))) ||
+      (['launching', 'uncertain', 'no_session'].includes(cloud.status) && (cloud.session_id !== null || cloud.url !== null)) ||
+      (cloud.attempt != null && (!Number.isSafeInteger(cloud.attempt) || cloud.attempt < 1)) ||
       (cloud.heartbeat_id !== null && !text(cloud.heartbeat_id)) ||
       !/^opc\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(cloud.branch) ||
       !object(cloud.route) || cloud.route.model !== 'claude-opus-5-5[1m]' || cloud.route.effort !== 'xhigh') {
     throw Error('invalid cloud lane record');
   }
-  if ((cloud.status === 'running') !== (cloud.reason == null)) throw Error('cloud lane reason must accompany a terminal state');
+  if ((['running', 'launching'].includes(cloud.status)) !== (cloud.reason == null)) throw Error('cloud lane reason must accompany an uncertain or terminal state');
   if (cloud.fallback != null && (cloud.status !== 'dead' || !object(cloud.fallback) ||
       cloud.fallback.authorized_by !== 'cloud-toggle')) {
     throw Error('cloud fallback requires a dead cloud lane and the cloud toggle');
@@ -270,12 +307,15 @@ export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'H
   return { taskPath, task };
 }
 
-// A lock file's owner, and whether it is stale: its pid is dead, or it is empty and over 10 s old (its writer
-// crashed between open and write). A younger empty lock is still being written. null when the file is gone.
+// A lock file holds its writer's pid, then on a second line that process's start time when it could be read.
+// lockOwner returns the owner pid and whether the lock is stale: its pid is dead or now names a process with another
+// start time, or it is empty and over 10 s old (its writer crashed between open and write). A younger empty lock is
+// still being written, and a live pid whose start time is missing or unreadable keeps its lock. null when gone.
 function lockOwner(path) {
   try {
-    const owner = readFileSync(path, 'utf8').trim(), age = Date.now() - statSync(path).mtimeMs;
-    return { owner, age, stale: /^\d+$/.test(owner) ? !processAlive(Number(owner)) : owner === '' && age > 10000 };
+    const [owner = '', start = null] = readFileSync(path, 'utf8').trim().split(/\r?\n/).map(line => line.trim());
+    const age = Date.now() - statSync(path).mtimeMs;
+    return { owner, age, stale: /^\d+$/.test(owner) ? ['gone', 'reused'].includes(processIdentity(Number(owner), start)) : owner === '' && age > 10000 };
   } catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
 }
 
@@ -287,10 +327,11 @@ function releaseOwn(path) {
 export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
   canonicalPath(taskPath);
   const lock = `${taskPath}.lock`, reclaim = `${lock}.reclaim`;
+  const holder = [process.pid, ownStartTime()].filter(value => value !== null).join('\n');
   const deadline = Date.now() + 2000;
   while (true) {
     try {
-      writeFileSync(lock, String(process.pid), { flag: 'wx', mode: 0o600 });
+      writeFileSync(lock, holder, { flag: 'wx', mode: 0o600 });
       break;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
@@ -331,11 +372,18 @@ export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
     if (result?.then) throw Error('task mutation must be synchronous');
     if (identity(old) !== identity(task)) throw Error('immutable task identity changed');
     if (old.cloud) {
+      if (!CLOUD_MOVES[old.cloud.status].includes(task.cloud?.status)) {
+        throw Error(`cloud lane cannot move from ${old.cloud.status} to ${task.cloud?.status ?? 'no record'}`);
+      }
+      // The one launch a no_session lane permits keeps its marker, repo, and route under a new launch time.
+      const relaunch = old.cloud.status === 'no_session' && task.cloud.status === 'launching';
       for (const key of ['session_id', 'url', 'branch', 'repo', 'launched_at', 'heartbeat_id', 'route']) {
         if (key === 'heartbeat_id' && old.cloud.heartbeat_id === null) continue; // bound once, after the launch record
-        if (JSON.stringify(old.cloud[key]) !== JSON.stringify(task.cloud?.[key])) throw Error(`immutable cloud ${key} changed`);
+        if (['session_id', 'url'].includes(key) && ['launching', 'uncertain'].includes(old.cloud.status) && old.cloud[key] === null) continue;
+        if (key === 'launched_at' && relaunch) continue;
+        if (JSON.stringify(old.cloud[key]) !== JSON.stringify(task.cloud[key])) throw Error(`immutable cloud ${key} changed`);
       }
-      if (old.cloud.status !== 'running' && task.cloud.status !== old.cloud.status) throw Error('terminal cloud lane cannot change state');
+      if ((task.cloud.attempt ?? 1) !== (old.cloud.attempt ?? 1) + (relaunch ? 1 : 0)) throw Error('cloud launch attempt changed');
       if (old.cloud.fallback && JSON.stringify(old.cloud.fallback) !== JSON.stringify(task.cloud.fallback)) {
         throw Error('immutable cloud fallback changed');
       }
