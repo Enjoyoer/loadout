@@ -20,6 +20,13 @@ export default function contribute(server: PluginServerContext, openClient = ope
   let stateErrorLogged = false;
   // One entry per agent with a send in flight; see processRecord.
   const inFlight = new Map<string, InFlightClaim>();
+  // Sweeps and hook handlers still running, so idle() can wait for them after cleanup. None of them rejects.
+  const tasks = new Set<Promise<unknown>>();
+  const track = (task: Promise<unknown>) => {
+    tasks.add(task);
+    const settle = () => { tasks.delete(task); };
+    void task.then(settle, settle);
+  };
 
   // An unreadable state file fails closed until the owner fixes or moves it; say so once, not on every poll or event.
   function failed(action: string, error: unknown) {
@@ -229,7 +236,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
       pending.startedAt = new Date().toISOString();
     }
     const claim = pending?.turnId === turnId ? pending : null;
-    void (async () => {
+    track((async () => {
       if (claim) {
         // Claim-aware: attach the turn while the claim stands, or bring the claim back if its rollback already landed.
         const next = await store.update(claim.recordId, (value) => applyClaimTurn(value, claim));
@@ -244,11 +251,11 @@ export default function contribute(server: PluginServerContext, openClient = ope
         : value);
       if (next?.resumeTurnId !== turnId) return;
       log(`resume-turn-started agentId=${event.agent.id} turnId=${turnId}`);
-    })().catch((error) => failed("turn-started-handler-failed", error));
+    })().catch((error) => failed("turn-started-handler-failed", error)));
   });
 
   const removeTurnEnded = server.on("agent.turn_ended", (event, context) => {
-    void (async () => {
+    track((async () => {
       const currentConfig = await config();
       if (!currentConfig) return;
       const active = await store.activeForAgent(event.agent.id);
@@ -342,37 +349,37 @@ export default function contribute(server: PluginServerContext, openClient = ope
       await store.upsert(record);
       log(`detected kind=${record.kind ?? "usage"} agentId=${record.agentId} recordId=${record.recordId} sourceTurnId=${record.sourceTurnId} notBefore=${record.notBefore}`);
       await sweep();
-    })().catch((error) => failed("turn-handler-failed", error));
+    })().catch((error) => failed("turn-handler-failed", error)));
   });
 
   const removeArchived = server.on("agent.archived", (event) => {
-    void (async () => {
+    track((async () => {
       const records = await store.read();
       for (const record of records.filter((value) => value.agentId === event.agent.id && !["done", "superseded", "exhausted", "uncertain"].includes(value.state))) {
         await store.update(record.recordId, (value) => ({ ...value, state: "superseded", terminalReason: "agent-archived", updatedAt: new Date().toISOString() }));
         log(`record-superseded agentId=${event.agent.id} recordId=${record.recordId} reason=agent-archived`);
       }
-    })().catch((error) => failed("archive-handler-failed", error));
+    })().catch((error) => failed("archive-handler-failed", error)));
   });
 
   const removePermission = server.on("agent.permission_requested", (event) => {
-    void (async () => {
+    track((async () => {
       const active = await store.activeForAgent(event.agent.id);
       if (active) {
         await store.update(active.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: "permission-requested", updatedAt: new Date().toISOString() }));
         log(`record-uncertain agentId=${event.agent.id} recordId=${active.recordId} reason=permission-requested`);
       }
-    })().catch((error) => failed("permission-handler-failed", error));
+    })().catch((error) => failed("permission-handler-failed", error)));
   });
 
   // Poll even when settings are invalid or unreadable at startup; every sweep reads them again.
   void config().catch(() => null).then((currentConfig) => {
-    timer = setInterval(() => void sweep(), (currentConfig ?? ConfigSchema.parse({})).pollIntervalSeconds * 1000);
+    timer = setInterval(() => track(sweep()), (currentConfig ?? ConfigSchema.parse({})).pollIntervalSeconds * 1000);
     timer.unref?.();
-    void sweep();
+    track(sweep());
   });
 
-  return () => {
+  const cleanup = () => {
     removeTurnStarted();
     removeTurnEnded();
     removeArchived();
@@ -380,4 +387,11 @@ export default function contribute(server: PluginServerContext, openClient = ope
     if (timer) clearInterval(timer);
     void release();
   };
+  // Cleanup stops new sweeps and hooks but returns at once, as before. idle() resolves once the sweep and hook
+  // handlers already running have finished, and with them their state writes; tests call it before removing PASEO_HOME.
+  return Object.assign(cleanup, {
+    async idle() {
+      while (tasks.size > 0) await Promise.all(tasks);
+    },
+  });
 }
