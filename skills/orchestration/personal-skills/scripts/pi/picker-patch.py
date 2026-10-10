@@ -1,9 +1,22 @@
 """Hide native coding providers only in the client picker, preserving daemon routes."""
-import argparse, hashlib, json, re, shutil
+import argparse, hashlib, json, os, re, secrets, shutil
 from pathlib import Path
 PATCH_REVISION = 4
 
 def digest(data): return hashlib.sha256(data).hexdigest()
+
+def publish(target, data):
+    """Replace target atomically, keeping its mode: an interrupted write leaves the old bytes or the new, never a mix."""
+    temp=target.with_name(target.name+'.loadout-next-'+secrets.token_hex(4))
+    with open(temp,'xb') as handle:
+        handle.write(data);handle.flush();os.fsync(handle.fileno())
+    if target.exists():shutil.copymode(target,temp)
+    os.replace(temp,target)
+
+def patched(row):
+    """Digests a file may hold while patched from row's before bytes: this generation's, or an earlier one's that a
+    write cut off between the new state and the file itself left in place."""
+    return {row['after'],*row.get('superseded',[])}
 
 def patch_text(text):
     patterns = [
@@ -33,9 +46,11 @@ def run(root, action, preferences_script=None, preferences_sha256=None):
         info=json.loads(state.read_text())
         for row in info['files']:
             p=root/row['path'];b=root/row['backup']
-            if digest(p.read_bytes()) not in {row['before'],row['after']}: raise ValueError('Client updated; do not restore an obsolete bundle')
+            if digest(p.read_bytes()) not in {row['before'],*patched(row)}: raise ValueError('Client updated; do not restore an obsolete bundle')
             if digest(b.read_bytes())!=row['before']: raise ValueError('Backup digest differs')
-        for row in info['files']:shutil.copy2(root/row['backup'],root/row['path'])
+        for row in info['files']:
+            publish(root/row['path'],(root/row['backup']).read_bytes())
+            if digest((root/row['path']).read_bytes())!=row['before']:raise ValueError('Readback differs')
         state.unlink();return {'rollback':'verified'}
     candidates=[]
     for p in root.rglob('index-*.js'):
@@ -52,7 +67,7 @@ def run(root, action, preferences_script=None, preferences_sha256=None):
         raise ValueError('Preferences script sha256 '+digest(preferences_script.encode())+' differs from the pinned one; review the script, then pass --preferences-sha256 to accept it')
     if state.exists():
         row=next((r for r in info['files'] if root/r['path']==p),None)
-        if row and digest(data)==row['after']:
+        if row and digest(data) in patched(row):
             intact=all(digest((root/r['path']).read_bytes())==r['after'] for r in info['files'])
             if intact and info.get('patch_revision') == PATCH_REVISION and (preferences_script is None or info.get('preferences_script') == preferences_script):
                 return {'picker':'verified','changed':False,'bundle':str(p), 'preferences': bool(info.get('preferences_script'))}
@@ -71,7 +86,7 @@ def run(root, action, preferences_script=None, preferences_sha256=None):
         previous=entry.read_bytes()
         if state.exists():
             record=next((r for r in info['files'] if r['path']=='index.html'),None)
-            if record and digest(previous)==record['after']:
+            if record and digest(previous) in patched(record):
                 previous=(root/record['backup']).read_bytes()
                 if digest(previous)!=record['before']:raise ValueError('Entry backup digest differs')
         relative=re.escape(p.relative_to(root).as_posix())
@@ -82,15 +97,22 @@ def run(root, action, preferences_script=None, preferences_sha256=None):
     records=[]
     for target,before,updated in changes:
         backup=target.with_name(target.name+'.loadout-before-'+digest(before)[:12])
-        if backup.exists() and digest(backup.read_bytes())!=digest(before):raise ValueError('Backup digest differs')
-        backup.write_bytes(before)
-        records.append({'path':str(target.relative_to(root)),'backup':str(backup.relative_to(root)),
-            'before':digest(before),'after':digest(updated)})
+        if backup.exists():
+            if digest(backup.read_bytes())!=digest(before):raise ValueError('Backup digest differs')
+        else:publish(backup,before)
+        record={'path':str(target.relative_to(root)),'backup':str(backup.relative_to(root)),
+            'before':digest(before),'after':digest(updated)}
+        # Until this generation's write lands, the file may still hold an earlier generation's patch of the same bytes.
+        old=next((r for r in info.get('files',[]) if r['path']==record['path'] and r['before']==record['before']),None)
+        if old:record['superseded']=sorted(patched(old)-{record['after']})
+        records.append(record)
     info={'patch_revision':PATCH_REVISION,'preferences_script':preferences_script,
         'preferences_sha256':digest(preferences_script.encode()) if preferences_script else None,'files':records}
-    state.write_text(json.dumps(info,indent=2)+'\n')
+    # Backups, then the state, then each file, each replaced atomically: the old state stays until the new one is on
+    # disk, and whatever point a write is cut off at, every file holds bytes the state accounts for.
+    publish(state,(json.dumps(info,indent=2)+'\n').encode())
     for target,before,updated in changes:
-        target.write_bytes(updated)
+        publish(target,updated)
         if digest(target.read_bytes())!=digest(updated):raise ValueError('Readback differs')
     return {'picker':'verified','changed':True,'bundle':str(p),'rollback':'picker-patch.py ROOT rollback'}
 
