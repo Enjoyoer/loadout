@@ -179,15 +179,20 @@ class FleetPushTest(unittest.TestCase):
 
     def test_run_cut_off_part_way_recognizes_its_own_writes(self):
         self.assertEqual(self.run_local()["status"], "updated")
-        (self.source / "global/AGENTS.md").write_text("# Global B\n")
-        (self.source / "hosts.json").write_text(json.dumps(HOSTS))
-        # The process dies after writing global/AGENTS.md and before writing hosts.json.
-        hook = self.root / "die-before-hosts.js"
-        hook.write_text('const fs = require("fs"), rename = fs.renameSync;\n'
-                        'fs.renameSync = (from, to) => { if (String(to).endsWith("hosts.json")) process.exit(7); return rename(from, to); };\n')
+        version_b = {"global/AGENTS.md": "# Global B\n", "hosts.json": json.dumps(HOSTS)}
+        version_c = {"global/AGENTS.md": "# Global C\n", "hosts.json": json.dumps(HOSTS, indent=1)}
+        for rel, text in version_b.items():
+            (self.source / rel).write_text(text)
+        # The process dies after writing the first of the two files and before writing the second.
+        hook = self.root / "die-before-second-write.js"
+        hook.write_text('const fs = require("fs"), rename = fs.renameSync; let files = 0;\n'
+                        'fs.renameSync = (from, to) => {\n'
+                        '  if (!String(to).endsWith(".loadout-sync.json") && ++files === 2) process.exit(7); return rename(from, to); };\n')
         self.assertIsNone(self.run_local(hook))
-        self.assertEqual((self.target("desktop") / "global/AGENTS.md").read_text(), "# Global B\n")
-        (self.source / "global/AGENTS.md").write_text("# Global C\n")
+        written = [rel for rel, text in version_b.items() if (self.target("desktop") / rel).read_text() == text]
+        self.assertEqual(len(written), 1, written)
+        # The source moves on before the retry: the cut-off run's own write is neither the record's version nor the new one.
+        (self.source / written[0]).write_text(version_c[written[0]])
         got = self.run_local()
         self.assertEqual((got["status"], sorted(got["changed"]), got["conflicts"]),
                          ("updated", ["global/AGENTS.md", "hosts.json"], []))
