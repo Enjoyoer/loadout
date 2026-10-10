@@ -66,10 +66,10 @@ def main() -> int:
         step("3. Run again: everything is already current", env)
 
         edited = root / "hosts/desktop/.claude/skills/grilling/SKILL.md"
-        edited.write_text(edited.read_text() + "\nMy local tweak.\n")
+        edited.write_bytes(edited.read_bytes() + b"\nMy local tweak.\n")
         step("4. A hand edit on desktop is a conflict: nothing is written there", env)
 
-        edited.write_text(edited.read_text().replace("\nMy local tweak.\n", ""))
+        edited.write_bytes(edited.read_bytes().replace(b"\nMy local tweak.\n", b""))
         step("5. Undo the edit: the host syncs cleanly again", env)
         print(f"\nInstalled on desktop: {sorted(p.name for p in (root / 'hosts/desktop/.claude/skills').iterdir())}")
     return 0
