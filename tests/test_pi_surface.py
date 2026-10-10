@@ -651,6 +651,39 @@ vm.runInNewContext(appDefaultsScript('route/example','high',true),{localStorage}
             self.assertFalse((root/'runtime.json').exists())
             self.assertEqual((home/'config.json').read_bytes(),b'{"agents":{"providers":{}}}\n')
 
+    def test_deploy_refuses_a_symlink_at_the_config_temp_path(self):
+        sys.path.insert(0,str(PI))
+        import deploy
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);home=base/'daemon';home.mkdir();root=base/'pi'
+            original=b'{"agents":{"providers":{}}}\n';(home/'config.json').write_bytes(original)
+            pkg=root/'app/node_modules/@earendil-works/pi-coding-agent/package.json';pkg.parent.mkdir(parents=True);pkg.write_text('{"version":"1.0.0"}')
+            runtime={'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'ROUTE_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'},'models':[{'id':'example','name':'Astra'}],'settings':{'defaultProvider':'fleet','defaultModel':'example','defaultThinkingLevel':'high'}}
+            spec=base/'proposal.json';spec.write_text(json.dumps({'root':str(root),'runtime':runtime,'provider':{'models':[{'id':'fleet/example','label':'Astra'}]},'catalog_model_id':'fleet/example'}))
+            # Someone who could guess the temp name plants a link there; the staging must not write through it.
+            outside=base/'outside.json';outside.write_bytes(b'not the daemon config\n')
+            (home/('config.json.loadout-'+'0'*32)).symlink_to(outside)
+            status={'daemonVersion':'0.10.3','connectedDaemon':'reachable','home':str(home)}
+            with patch.object(deploy,'version_gate',return_value=status),patch.object(deploy.secrets,'token_hex',return_value='0'*32), \
+                    patch.object(sys,'argv',['deploy','apply','--spec',str(spec),'--state',str(base/'state.json')]):
+                with self.assertRaisesRegex(ValueError,'already exists; refusing to stage through it'):deploy.main()
+            self.assertEqual(outside.read_bytes(),b'not the daemon config\n')
+            self.assertEqual((home/'config.json').read_bytes(),original)
+
+    @unittest.skipUnless(os.name == 'nt', 'a junction is a Windows reparse point')
+    def test_runtime_refuses_a_junction_before_any_write(self):
+        sys.path.insert(0,str(PI))
+        from configure import configure
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'pi';root.mkdir();elsewhere=Path(tmp)/'elsewhere';elsewhere.mkdir()
+            subprocess.run(['cmd','/c','mklink','/J',str(root/'agent'),str(elsewhere)],check=True,capture_output=True)
+            spec={'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'EXISTING_KEY'},
+                  'models':[{'id':'example','name':'Astra'}],
+                  'settings':{'defaultProvider':'fleet','defaultModel':'example','defaultThinkingLevel':'high'}}
+            with self.assertRaisesRegex(ValueError,'junction'):configure(spec,root)
+            self.assertEqual(list(elsewhere.iterdir()),[])
+            self.assertFalse((root/'runtime.json').exists())
+
     def test_app_default_carries_saved_or_catalog_route_and_refuses_unsupported(self):
         script=r"""
 import assert from 'node:assert/strict';

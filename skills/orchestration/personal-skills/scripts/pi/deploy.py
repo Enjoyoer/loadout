@@ -2,10 +2,10 @@
 
 Default action is plan. Apply/rollback are for an explicitly approved host only.
 """
-import argparse, base64, hashlib, json, os, re, secrets, shutil, subprocess, sys
+import argparse, base64, hashlib, json, os, re, secrets, shutil, stat, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
-from configure import configure, runtime_contents, safe_target
+from configure import configure, link_like, runtime_contents, safe_target
 from credential import expand
 
 
@@ -48,10 +48,24 @@ def new_file(path, data):
         handle.write(data)
 
 
+def stage(path, data):
+    """data in an unpredictable, exclusively created owner-only temp beside path, so a file or link planted at a
+    guessable name is never written through."""
+    temp = path.with_name(path.name + '.loadout-' + secrets.token_hex(16))
+    try: new_file(temp, data)
+    except FileExistsError: raise ValueError(str(temp) + ' already exists; refusing to stage through it')
+    return temp
+
+
+def regular(path):
+    """Refuse a path that is a link, a reparse point, or anything but a regular file."""
+    if link_like(path) or not stat.S_ISREG(os.lstat(path).st_mode):
+        raise ValueError(str(path) + ' is not a regular file; refusing to replace it')
+
+
 def replace(path, data):
     """Replace path atomically with owner-only data, through a temp file no other run uses."""
-    temp = path.with_name(path.name + '.loadout-' + secrets.token_hex(4))
-    new_file(temp, data); temp.replace(path)
+    stage(path, data).replace(path)
 
 
 def merged(before, root, pi):
@@ -110,8 +124,13 @@ def restore(record, home, activate):
         else: replace(target, prior)
     for target, prior in restores:
         if (target.read_bytes() if target.exists() else None) != prior: raise ValueError('runtime readback failed: ' + str(target))
-    temp = path.with_name(path.name + '.pi-rollback-next')
-    shutil.copy2(backup, temp); temp.replace(path)
+    # Ownership again, right before the config changes: still apply's revision or the original one, the backup intact.
+    regular(path)
+    if sha(path.read_bytes()) not in {record['after_sha256'], record['before_sha256']}:
+        raise ValueError('daemon config changed during rollback; the runtime is restored, the config left as is')
+    data = backup.read_bytes()
+    if sha(data) != record['before_sha256']: raise ValueError('rollback backup changed')
+    stage(path, data).replace(path)
     if activate: subprocess.run([paseo_command(),'reload'], env=daemon_env(home), check=True)
     if sha(path.read_bytes()) != record['before_sha256']: raise ValueError('rollback readback failed')
     print(json.dumps({'rollback':'verified', 'runtime_install_retained':True, 'config':str(path)}))
@@ -168,20 +187,22 @@ def main():
     # Another controller may have written the config during the install and configure: merge onto that revision
     # instead, back it up and record it, so its change survives and rollback restores it. Replace only while the
     # config still holds the revision merged.
-    temp = config.with_name(config.name + '.pi-next')
     for _ in range(3):
+        regular(config)
         current = config.read_bytes()
         if current != before:
             before, after = current, merged(current, root, pi)
             record.update(backup=str(back_up(config, before)), before_sha256=sha(before), after_sha256=sha(after))
             replace(state, (json.dumps(record,indent=2)+'\n').encode())
-        temp.write_bytes(after); temp.chmod(0o600)
+        temp = stage(config, after)
         if config.read_bytes() == before:
-            temp.replace(config); break
+            regular(config); temp.replace(config); break
+        temp.unlink()
     else:
-        temp.unlink(missing_ok=True)
         raise ValueError('daemon config kept changing during apply; it was not replaced')
-    if config.read_bytes() != after: raise ValueError('config readback failed')
+    # The installed config is a regular file holding exactly the merged bytes.
+    regular(config)
+    if sha(config.read_bytes()) != sha(after): raise ValueError('config readback failed')
     if args.activate: subprocess.run([paseo_command(),'reload'], env=daemon_env(home),check=True)
     print(json.dumps({'apply':'verified','state':str(state),'rollback':'use rollback --state with this same file',
                       'ui_preferences':'not applied by daemon config; apply in each UI client'}))
