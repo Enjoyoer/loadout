@@ -278,42 +278,55 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn('one relaunch', done.stdout)
 
-    def test_live_lock_replacing_stale_lock_before_reclaim_survives(self):
+    def test_crashed_lock_blocks_both_writers_and_unlock_needs_its_holder_gone(self):
         dead = subprocess.Popen([sys.executable, "-c", ""])
         dead.wait()
-        lock = Path(self.task + ".lock")
-        lock.write_text(str(dead.pid))
-        done = run("node", "--input-type=module", "-e", f"""
-            import {{ readFileSync, unlinkSync, writeFileSync }} from 'node:fs';
-            import {{ processStartTime, updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
-            const holder = `{os.getpid()}\\n${{processStartTime({os.getpid()})}}`;
-            const beforeReclaim = lock => {{ unlinkSync(lock); writeFileSync(lock, holder, {{ flag: 'wx' }}); }};
-            try {{ updateTask({json.dumps(self.task)}, () => {{}}, {{ beforeReclaim }}); }}
-            catch (error) {{ console.log(error.message); }}
-            console.log(readFileSync({json.dumps(self.task + ".lock")}, 'utf8') === holder ? 'kept' : 'replaced');
-        """)
-        self.assertIn("task lock contention", done.stdout, done.stderr)
-        self.assertIn("kept", done.stdout)
-        self.assertEqual(lock.read_text().splitlines()[0], str(os.getpid()))
-        self.assertEqual(sorted(p.name for p in lock.parent.iterdir() if ".lock" in p.name), [lock.name])
-
-    def test_live_lock_holder_with_unreadable_start_keeps_lock(self):
-        lock = Path(self.task + ".lock")
+        lock, task = Path(self.task + ".lock"), Path(self.task)
+        crashed, before = f"{dead.pid}\n{OLD_START}\ncrashed-writer", task.read_bytes()
+        lock.write_text(crashed)
         update = f"""
             import {{ updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
-            try {{ updateTask({json.dumps(self.task)}, () => {{}}); console.log('updated'); }}
+            try {{ updateTask({json.dumps(self.task)}, task => {{ task.status = 'cancelled'; }}); console.log('updated'); }}
             catch (error) {{ console.log(error.message); }}
         """
-        # An empty PATH hides ps (powershell.exe on Windows), so no start time can be read.
+        # Nothing reclaims a lock implicitly: both writers wait out the crashed writer's lock and fail naming its holder.
+        writers = [subprocess.Popen(["node", "--input-type=module", "-e", update], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True) for _ in range(2)]
+        for writer in writers:
+            out, err = writer.communicate(timeout=60)
+            self.assertIn(f"task lock busy: held by pid {dead.pid} started {OLD_START} (gone)", out, err)
+            self.assertIn(f"unlock {self.task}", out)
+        self.assertEqual((lock.read_text(), task.read_bytes()), (crashed, before))
+        unlock = ("node", str(SCRIPTS / "task-state.mjs"), "unlock", self.task)
+        removed = run(*unlock)
+        self.assertEqual((removed.returncode, removed.stdout.strip()),
+                         (0, f"task lock removed: held by pid {dead.pid} started {OLD_START} (gone)"), removed.stderr)
+        self.assertFalse(lock.exists())
+        # A running holder, identified by its exact start time, is refused and keeps its lock.
+        lookup = f"import {{ processStartTime }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())}; console.log(processStartTime({os.getpid()}));"
+        live = f"{os.getpid()}\n{run('node', '--input-type=module', '-e', lookup).stdout.strip()}\nlive-writer"
+        lock.write_text(live)
+        kept = run(*unlock)
+        self.assertEqual(kept.returncode, 1)
+        self.assertIn(f"task lock kept: held by pid {os.getpid()}", kept.stderr)
+        self.assertIn("(running)", kept.stderr)
+        self.assertEqual((lock.read_text(), task.read_bytes()), (live, before))
+
+    def test_unlock_refuses_an_unknown_holder_and_removes_a_reused_pid(self):
+        lock = Path(self.task + ".lock")
+        unlock = (shutil.which("node"), str(SCRIPTS / "task-state.mjs"), "unlock", self.task)
+        # An empty PATH hides ps (powershell.exe on Windows), so a live holder's start time cannot be read.
         empty = Path(self.task).parent / "empty-path"
         empty.mkdir()
-        node = shutil.which("node")
-        for path, expected in ((str(empty), "task lock busy"), (os.environ.get("PATH", ""), "updated")):
-            with self.subTest(readable=expected == "updated"):
-                lock.write_text(f"{os.getpid()}\n{OLD_START}")
-                done = run(node, "--input-type=module", "-e", update, env={**os.environ, "PATH": path})
-                self.assertIn(expected, done.stdout, done.stderr)
-                self.assertEqual(lock.exists(), expected != "updated")
+        for content, path, code, text in ((f"{os.getpid()}\n{OLD_START}", str(empty), 1, "(unknown)"),
+                                          ("", os.environ.get("PATH", ""), 1, "(no recorded pid)"),
+                                          (f"{os.getpid()}\n{OLD_START}", os.environ.get("PATH", ""), 0, "(reused)")):
+            with self.subTest(text=text):
+                lock.write_text(content)
+                done = run(*unlock, env={**os.environ, "PATH": path})
+                self.assertEqual(done.returncode, code, done.stderr)
+                self.assertIn(text, done.stdout + done.stderr)
+                self.assertEqual(lock.exists(), code != 0)
 
     def test_recorded_route_reads_and_updates_after_class_table_change(self):
         root = Path(self.task).parent.parent
@@ -749,20 +762,6 @@ class OpcDeliveryTest(unittest.TestCase):
             prints.append(done.stdout.strip())
         self.assertNotEqual(prints[0], prints[1])
 
-    def test_empty_lock_is_stale_only_after_ten_seconds(self):
-        lock = Path(self.task + ".lock")
-        update = f"""
-            import {{ updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
-            try {{ updateTask({json.dumps(self.task)}, () => {{}}); console.log('updated'); }}
-            catch (error) {{ console.log(error.message); }}
-        """
-        for age, expected in ((11, "updated"), (2, "task lock busy")):
-            with self.subTest(age=age):
-                lock.write_text("")
-                os.utime(lock, (time.time() - age,) * 2)
-                done = run("node", "--input-type=module", "-e", update)
-                self.assertIn(expected, done.stdout, done.stderr)
-                self.assertEqual(lock.exists(), age == 2)
 
 
 if __name__ == "__main__":
