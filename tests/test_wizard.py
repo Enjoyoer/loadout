@@ -68,6 +68,26 @@ class WizardTest(unittest.TestCase):
         self.assertEqual((self.project / ".env").read_text(), "API_KEY=key-for-a\n")
         self.assertEqual(self.gh_log.read_text(), "secret set API_KEY --repo octo/project-a\nkey-for-a\n")
 
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads a write-only file")
+    def test_an_unreadable_env_file_is_left_unchanged(self):
+        env_file = self.project / ".env"
+        env_file.write_text("OTHER=keep\n")
+        env_file.chmod(0o200)
+        done = self.run_wizard(self.project, "\nnew-key\n", KEY_STAGE)
+        env_file.chmod(0o600)
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertEqual(env_file.read_text(), "OTHER=keep\n")
+        self.assertFalse(self.gh_log.exists())
+
+    def test_a_held_env_file_lock_refuses_the_write(self):
+        env_file = self.project / ".env"
+        env_file.write_text("OTHER=keep\n")
+        (self.project / ".env.lock").mkdir()
+        done = self.run_wizard(self.project, "\nnew-key\n", KEY_STAGE)
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertEqual(env_file.read_text(), "OTHER=keep\n")
+        self.assertFalse(self.gh_log.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

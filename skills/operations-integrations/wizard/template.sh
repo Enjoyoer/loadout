@@ -158,16 +158,39 @@ ask_secret() {
   printf -v "$key" '%s' "$input"
 }
 
+# _upsert_env KEY LINE writes ENV_FILE's other lines plus LINE to a temp file
+# beside it, then renames that over ENV_FILE. Fails, leaving ENV_FILE as it
+# was, if any step does, including a read of the existing file.
+_upsert_env() {
+  local key="$1" line="$2" tmp status=0
+  tmp=$(mktemp "$ENV_FILE.XXXXXX") || return 1
+  if [[ -e "$ENV_FILE" ]]; then
+    grep -vE "^${key}=" "$ENV_FILE" > "$tmp" || status=$?
+    (( status <= 1 )) || { rm -f "$tmp"; return 1; } # 1 is "no other lines"
+  fi
+  if ! { printf '%s\n' "$line" >> "$tmp" && mv -f "$tmp" "$ENV_FILE"; }; then
+    rm -f "$tmp"; return 1
+  fi
+}
+
 # write_env KEY VALUE upserts KEY=VALUE into ENV_FILE (creates it; replaces
-# any existing line). Idempotent.
+# any existing line). Idempotent. A lock directory beside ENV_FILE keeps two
+# runs from dropping each other's keys; the wizard stops, writing nothing, if
+# the lock stays held or the file can't be read or replaced.
 write_env() {
-  local key="$1" value="$2" tmp
+  local key="$1" value="$2" lock tries=0
   _bind
-  touch "$ENV_FILE"
-  tmp=$(mktemp)
-  grep -vE "^${key}=" "$ENV_FILE" > "$tmp" || true
-  printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  mv "$tmp" "$ENV_FILE"
+  lock="$ENV_FILE.lock"
+  until mkdir -- "$lock" 2>/dev/null; do
+    [[ -d "$lock" ]] || _die "couldn't write beside $ENV_FILE; it is unchanged"
+    (( ++tries < 30 )) || _die "$ENV_FILE is in use by another run; it is unchanged (if none is running, remove $lock)"
+    sleep 0.1
+  done
+  if ! _upsert_env "$key" "$key=$value"; then
+    rmdir -- "$lock" 2>/dev/null || true
+    _die "couldn't update $ENV_FILE; it is unchanged"
+  fi
+  rmdir -- "$lock" 2>/dev/null || true
   WRITTEN_ENV+=("$key")
   printf '  %s✓ wrote%s %s → %s\n' "$GREEN" "$RESET" "$key" "$ENV_FILE"
 }
