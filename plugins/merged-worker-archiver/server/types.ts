@@ -57,6 +57,8 @@ export interface FileSystem {
   exists(path: string): Promise<boolean>;
   /** True only for an existing real directory (not a symlink or junction) with no entries; anything else, or any error, is false. */
   isEmptyDirectory(path: string): Promise<boolean>;
+  /** Canonical absolute path (symlinks resolved), or null on any error. */
+  realpath(path: string): Promise<string | null>;
   readText(path: string): Promise<string | null>;
 }
 

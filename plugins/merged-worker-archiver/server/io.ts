@@ -81,6 +81,13 @@ export const nodeFileSystem: FileSystem = {
       return false;
     }
   },
+  async realpath(path) {
+    try {
+      return await realpath(path);
+    } catch {
+      return null;
+    }
+  },
   async readText(path) {
     try {
       return await readFile(path, "utf8");

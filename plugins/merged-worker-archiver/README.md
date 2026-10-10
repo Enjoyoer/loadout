@@ -50,7 +50,7 @@ Every decision is `skip` unless all of these pass. Reasons appear verbatim in th
 | `workspace-running` / `workspace-needs_input` / `workspace-failed` | Workspace status. |
 | `script-running(name)` | A workspace script or service is running. |
 | `grace-period(idle, remaining)` | Latest activity (workspace activity/status time, agent updated, last user message, attention time) is younger than `graceMinutes` (default 0, so this only applies when raised). |
-| `ambiguous(...)` | No activity timestamp, path not statable, empty reflog, PR merged without merge commit, PR head commit not local, a submodule path that is not UTF-8. |
+| `ambiguous(...)` | No activity timestamp, path not statable, empty reflog, PR merged without merge commit, PR head commit not local, a submodule path that is not UTF-8, a git top level (`rev-parse --show-toplevel`, only its line end removed) whose realpath is not the workspace directory's. |
 | `path-missing` | Directory gone; left to Paseo's own reconciliation. |
 | `detached-head` | No branch. |
 | `no-base(...)` | No Paseo worktree metadata, or none of the base refs exist locally. |

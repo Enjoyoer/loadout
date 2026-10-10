@@ -23,9 +23,9 @@ const decide = (wt: string) =>
   });
 
 /** A worktree on opc/feature whose own commit is merged into main. `stage(repo)` stages the repo's first commit. */
-async function mergedWorktree(dir: string, stage: (repo: string) => Promise<void>): Promise<string> {
+async function mergedWorktree(dir: string, stage: (repo: string) => Promise<void>, name = "wt"): Promise<string> {
   const repo = path.join(dir, "repo");
-  const wt = path.join(dir, "wt");
+  const wt = path.join(dir, name);
   await mkdir(repo);
   git(repo, "init", "-q", "-b", "main");
   await stage(repo);
@@ -42,7 +42,7 @@ async function mergedWorktree(dir: string, stage: (repo: string) => Promise<void
 }
 
 /** A merged worktree with an unpopulated submodule `sub` whose committed .gitmodules hides every change in it. */
-async function submoduleWorktree(dir: string): Promise<string> {
+async function submoduleWorktree(dir: string, name = "wt"): Promise<string> {
   const lib = path.join(dir, "lib");
   await mkdir(lib);
   git(lib, "init", "-q", "-b", "main");
@@ -53,7 +53,7 @@ async function submoduleWorktree(dir: string): Promise<string> {
     git(repo, "submodule", "add", "-q", lib, "sub");
     git(repo, "config", "-f", ".gitmodules", "submodule.sub.ignore", "all");
     git(repo, "add", ".");
-  });
+  }, name);
 }
 
 async function scratch(name: string): Promise<string> {
@@ -121,5 +121,25 @@ it("gitlinks named sub-\\xff and sub-\\xef\\xbf\\xbd are not archived: a path th
     const decision = await decide(wt);
     assert.equal(decision.action, "skip");
     assert.equal(decision.reason, "ambiguous(submodule path not UTF-8)");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// Windows does not keep a trailing space in a path.
+it("a worktree whose path ends in a space is judged by its own index, not the checkout named without it", { skip: process.platform === "win32" }, async () => {
+  const dir = await scratch("submodule-space-test");
+  try {
+    const wt = await submoduleWorktree(dir, "wt ");
+    // A checkout at the same path without the trailing space, whose index has no submodule.
+    const other = path.join(dir, "wt");
+    await mkdir(other);
+    git(other, "init", "-q", "-b", "main");
+    await writeFile(path.join(other, "other.txt"), "other\n");
+    git(other, "add", "other.txt");
+    git(other, "commit", "-qm", "other");
+    // The worktree's unpopulated submodule holds a file git does not see.
+    await writeFile(path.join(wt, "sub", "stray.txt"), "stray\n");
+    const decision = await decide(wt);
+    assert.equal(decision.action, "skip");
+    assert.equal(decision.reason, "submodule(sub)");
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

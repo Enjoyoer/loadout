@@ -176,8 +176,13 @@ export async function checkMerged(directory: string, deps: MergeCheckDeps): Prom
   // listed from the top level with no pathspec, so every entry is listed whatever directory the workspace names.
   const topResult = await runGit(deps, directory, ["rev-parse", "--show-toplevel"], "show-toplevel");
   if (topResult.failure) return { merged: false, branch, base: null, reason: topResult.failure };
-  const topLevel = topResult.result.stdout.trim();
-  if (!topLevel) return { merged: false, branch, base: null, reason: "ambiguous(worktree top level missing)" };
+  // Only git's own line end comes off: a path can end in a space, and a trimmed one names a different checkout.
+  const topOutput = topResult.result.stdout;
+  const topLevel = topOutput.endsWith("\n") ? topOutput.slice(0, -1) : topOutput;
+  const [realTop, realDirectory] = topLevel ? await Promise.all([deps.fs.realpath(topLevel), deps.fs.realpath(directory)]) : [null, null];
+  if (!realTop || realTop !== realDirectory) {
+    return { merged: false, branch, base: null, reason: "ambiguous(git top level is not the workspace directory)" };
+  }
   const indexResult = await runGit(deps, topLevel, ["ls-files", "--stage", "-z"], "ls-files");
   if (indexResult.failure) return { merged: false, branch, base: null, reason: indexResult.failure };
   const submodules = indexResult.result.stdoutBytes ? gitlinkPaths(indexResult.result.stdoutBytes) : null;

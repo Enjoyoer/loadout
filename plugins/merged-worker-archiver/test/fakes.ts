@@ -115,6 +115,9 @@ export function fakeFs(s: GitScenario, options: { directory?: boolean | null } =
     async isEmptyDirectory() {
       return false;
     },
+    async realpath(path) {
+      return path;
+    },
     async readText(path) {
       return path === `${GIT_DIR}/paseo/worktree.json` ? s.metadata : null;
     },
