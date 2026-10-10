@@ -19,15 +19,17 @@ Text-only staged-content scanners cannot read binaries, so a clean scan does not
 
 ## Publish
 
-Evidence lives on the orphan branch `pr-evidence`, never merged, so it stays out of the main history. Use one folder per PR, named by PR number or branch name. Work in a temporary worktree outside the delivery checkout:
+Evidence lives on the orphan branch `pr-evidence`, never merged, so it stays out of the main history. Use one folder per PR, named by PR number or branch name. Work in a temporary detached worktree outside the delivery checkout, so no local branch is moved:
 
 ```bash
-git fetch origin pr-evidence && git worktree add -B pr-evidence <tmp> origin/pr-evidence
-# first use only, when the branch does not exist yet:
+git fetch origin pr-evidence && git worktree add --detach <tmp> origin/pr-evidence
+# first use only, when origin has no pr-evidence branch yet (Git refuses if a local one exists):
 git worktree add --orphan -b pr-evidence <tmp>
 ```
 
-Copy the files to `<tmp>/<folder>/` (for example `before.png` and `after.png`), commit only that folder, `git push origin pr-evidence`, then remove the temporary worktree.
+A local `pr-evidence` branch can hold evidence that was never pushed. Never reset or delete it: if `git rev-list --count origin/pr-evidence..pr-evidence` is not 0, cherry-pick those commits into the worktree first so they are published too.
+
+Copy the files to `<tmp>/<folder>/` (for example `before.png` and `after.png`), commit only that folder, and `git push origin HEAD:pr-evidence`. A rejected push means newer remote evidence: fetch, `git rebase origin/pr-evidence` in the worktree, and push again. Remove the temporary worktree only after the push succeeds; to stop earlier, keep the commit on a branch first (`git branch pr-evidence-<folder>` in the worktree).
 
 Embed the files in the PR description with raw links:
 

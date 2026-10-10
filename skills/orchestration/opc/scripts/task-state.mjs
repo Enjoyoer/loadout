@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync, existsSync, fsyncSync, linkSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync,
+} from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { validateRecordedWorkerRoute } from './agent-routing.mjs';
 
 // Recorded routes and planner rounds are checked for shape only; the routing tables apply once, when they are recorded.
@@ -10,6 +13,8 @@ const efforts = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const identity = task => JSON.stringify([
   task.schema, task.id, task.owner, task.repository, task.contract_version, task.delivery, task.browser_review, task.ui ?? false,
 ]);
+
+const SCRIPT = fileURLToPath(import.meta.url);
 
 export function gitEnvironment() {
   return Object.fromEntries(Object.entries(process.env).filter(([key]) =>
@@ -307,63 +312,71 @@ export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'H
   return { taskPath, task };
 }
 
-// A lock file holds its writer's pid, then on a second line that process's start time when it could be read.
-// lockOwner returns the owner pid and whether the lock is stale: its pid is dead or now names a process with another
-// start time, or it is empty and over 10 s old (its writer crashed between open and write). A younger empty lock is
-// still being written, and a live pid whose start time is missing or unreadable keeps its lock. null when gone.
-function lockOwner(path) {
-  try {
-    const [owner = '', start = null] = readFileSync(path, 'utf8').trim().split(/\r?\n/).map(line => line.trim());
-    const age = Date.now() - statSync(path).mtimeMs;
-    return { owner, age, stale: /^\d+$/.test(owner) ? ['gone', 'reused'].includes(processIdentity(Number(owner), start)) : owner === '' && age > 10000 };
-  } catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
+// A lock file holds its writer's pid, that process's start time when it could be read (else an empty line), and a
+// token unique to the acquisition. It is published whole (publish below), so a live writer's lock is never empty.
+// Nothing removes another writer's lock implicitly: a writer that finds one waits, then fails naming its holder, and
+// only unlockTask removes a lock whose holder is confirmed gone.
+const lockLines = text => text.trim().split(/\r?\n/).map(line => line.trim());
+
+// The lock's text and its holder: pid, start time, and whether that process is the same one (processIdentity), or
+// 'no recorded pid'. null when there is no lock.
+function lockHolder(lock) {
+  let content;
+  try { content = readFileSync(lock, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
+  const [pid = '', start = ''] = lockLines(content);
+  return { content, pid, start, state: /^\d+$/.test(pid) ? processIdentity(Number(pid), start) : 'no recorded pid' };
+}
+const holderText = ({ pid, start, state }) =>
+  `pid ${pid || 'none'}${start ? ` started ${start}` : ''} (${state === 'same' ? 'running' : state})`;
+
+function lockToken(path) {
+  try { return lockLines(readFileSync(path, 'utf8'))[2] ?? null; } catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
 }
 
-function releaseOwn(path) {
-  if (lockOwner(path)?.owner === String(process.pid)) unlinkSync(path);
+// Creates path holding content, or fails with EEXIST when path exists, like an exclusive write; but the content is
+// written to a private file first and then hard-linked to path, so path never exists empty or partly written. The link
+// alone decides: a draft Windows briefly reports busy is left behind rather than failing a lock already taken.
+function publish(path, content) {
+  const draft = join(dirname(path), `.lock-${randomUUID()}.tmp`);
+  writeFileSync(draft, content, { flag: 'wx', mode: 0o600 });
+  try { linkSync(draft, path); } finally { try { unlinkSync(draft); } catch { /* inert leftover */ } }
 }
 
-// beforeReclaim is a test seam that runs after a stale lock is read and before it is reclaimed.
-export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
+function syncDirectory(path) {
+  const fd = openSync(path, 'r');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
+function releaseOwn(path, token) {
+  if (lockToken(path) === token) unlinkSync(path);
+}
+
+// Removes the lock a crashed writer left, only when its recorded pid is gone or now names a process with another start
+// time. A running or unknown holder, or a lock with no pid, is refused. Nothing calls this implicitly.
+export function unlockTask(taskPath) {
   canonicalPath(taskPath);
-  const lock = `${taskPath}.lock`, reclaim = `${lock}.reclaim`;
-  const holder = [process.pid, ownStartTime()].filter(value => value !== null).join('\n');
+  const lock = `${taskPath}.lock`, held = lockHolder(lock);
+  if (!held) return 'no task lock';
+  if (!['gone', 'reused'].includes(held.state)) throw Error(`task lock kept: held by ${holderText(held)}`);
+  // Writers never remove another's lock, so only a concurrent unlock could have changed it since it was read.
+  if (readFileSync(lock, 'utf8') !== held.content) throw Error('task lock changed while it was checked; nothing removed');
+  unlinkSync(lock);
+  return `task lock removed: held by ${holderText(held)}`;
+}
+
+export function updateTask(taskPath, mutator) {
+  canonicalPath(taskPath);
+  const lock = `${taskPath}.lock`, token = randomUUID();
+  const holder = `${process.pid}\n${ownStartTime() ?? ''}\n${token}`;
   const deadline = Date.now() + 2000;
   while (true) {
-    try {
-      writeFileSync(lock, holder, { flag: 'wx', mode: 0o600 });
-      break;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const seen = lockOwner(lock);
-      if (seen?.stale) {
-        beforeReclaim?.(lock);
-        // One reclaimer at a time. While we hold the reclaim marker no one else removes the task lock, its dead or
-        // crashed owner cannot release it, and an existing lock cannot be replaced (wx), so a lock that still reads
-        // stale here is the same file we judged and unlinking it removes no live holder's lock. A different owner
-        // means the lock changed hands since we read it: fail closed and touch nothing.
-        let marked = false;
-        try { writeFileSync(reclaim, String(process.pid), { flag: 'wx', mode: 0o600 }); marked = true; }
-        catch (markError) {
-          if (markError.code !== 'EEXIST') throw markError;
-          // A reclaim takes microseconds; a marker over 10 s old whose writer is gone is left by a crash.
-          const marker = lockOwner(reclaim);
-          if (marker && marker.age > 10000 && (marker.owner === '' || !processAlive(Number(marker.owner)))) {
-            try { unlinkSync(reclaim); } catch (unlinkError) { if (unlinkError.code !== 'ENOENT') throw unlinkError; }
-          }
-        }
-        if (marked) {
-          try {
-            const now = lockOwner(lock);
-            if (now && (!now.stale || now.owner !== seen.owner)) throw Error('task lock contention; another process took the lock during reclaim');
-            if (now) unlinkSync(lock);
-          } finally { releaseOwn(reclaim); }
-          continue;
-        }
-      }
-      if (Date.now() >= deadline) throw Error('task lock busy; do not remove ownership-uncertain lock');
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    try { publish(lock, holder); break; } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    if (Date.now() >= deadline) {
+      const held = lockHolder(lock);
+      if (held) throw Error(`task lock busy: held by ${holderText(held)}; if that writer is no longer running, ` +
+        `run node ${SCRIPT} unlock ${taskPath}`);
     }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
   let temporary;
   try {
@@ -397,12 +410,26 @@ export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
     }
     validate(task, taskPath);
     temporary = join(dirname(taskPath), `.task-${randomUUID()}.tmp`);
-    writeFileSync(temporary, JSON.stringify(task, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    const fd = openSync(temporary, 'wx', 0o600);
+    try { writeFileSync(fd, JSON.stringify(task, null, 2) + '\n'); fsyncSync(fd); } finally { closeSync(fd); }
+    if (lockToken(lock) !== token) throw Error('task lock lost; it no longer holds this writer\'s token');
     renameSync(temporary, taskPath);
+    // POSIX syncs the file and then the directory entry the rename wrote, so an update it returned, such as a cloud
+    // launch intent, survives an OS crash or power loss. Node cannot sync a directory on Windows: there an update gets
+    // a flushed file and an atomic rename only.
+    if (process.platform !== 'win32') syncDirectory(dirname(taskPath));
     return task;
   } finally {
     if (temporary && existsSync(temporary)) unlinkSync(temporary);
-    // Release only our own lock; a lock holding another pid belongs to someone else.
-    releaseOwn(lock);
+    // Release only our own lock; a lock holding another token belongs to someone else.
+    releaseOwn(lock, token);
   }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  try {
+    const [command, path, ...rest] = process.argv.slice(2);
+    if (command !== 'unlock' || !path || rest.length) throw Error('usage: task-state.mjs unlock <task.json>');
+    console.log(unlockTask(path));
+  } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

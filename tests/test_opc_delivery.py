@@ -3,6 +3,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -170,6 +171,81 @@ class OpcDeliveryTest(unittest.TestCase):
                     except ProcessLookupError:
                         pass
 
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX signals only')
+    def test_signal_cancellation_kills_a_test_command_that_ignores_it(self):
+        ready = Path(self.task).parent / 'ready'
+        command = ('import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGINT, signal.SIG_IGN); '
+                   'open(' + repr(str(ready)) + ',"w").close(); time.sleep(120)')
+        runner = subprocess.Popen(['node', '--input-type=module', '-e', f"""
+            import {{ runTests }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())};
+            const argv = {json.dumps([sys.executable, '-c', command])};
+            console.log(JSON.stringify(await runTests({json.dumps(self.task)}, {{ argv, graceMs: 300 }})));
+        """], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        child = None
+        try:
+            for _ in range(200):
+                child = (json.loads(Path(self.task).read_text())['tests'] or {}).get('child_pid')
+                if ready.exists() and child:
+                    break
+                time.sleep(.05)
+            self.assertTrue(ready.exists() and child)
+            runner.send_signal(signal.SIGTERM)
+            out, err = runner.communicate(timeout=20)
+            tests = json.loads(out.strip().splitlines()[-1])
+            self.assertEqual((tests['status'], tests['reason'], tests['signal'], tests['cleanup']),
+                             ('blocked', 'interrupted', 'SIGTERM', 'group signalled'), err)
+            self.assertEqual(json.loads(Path(self.task).read_text())['tests']['status'], 'blocked')
+        finally:
+            if runner.poll() is None:
+                runner.kill()
+            if child:
+                try:
+                    os.killpg(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX signals only')
+    def test_test_command_still_open_after_the_kill_settles_as_cleanup_incomplete(self):
+        ready, output = Path(self.task).parent / 'ready', Path(self.task).parent / 'runner.out'
+        command = ('import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+                   'open(' + repr(str(ready)) + ',"w").close(); time.sleep(120)')
+        # The controller's group kill is swallowed, as for a command that cannot exit (uninterruptible sleep).
+        script = f"""
+            import {{ runTests }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())};
+            const kill = process.kill.bind(process);
+            process.kill = (pid, signal) => pid < 0 && signal === 'SIGKILL' ? true : kill(pid, signal);
+            const argv = {json.dumps([sys.executable, '-c', command])};
+            console.log(JSON.stringify(await runTests({json.dumps(self.task)}, {{ argv, graceMs: 300 }})));
+        """
+        child = None
+        with output.open('w') as out:
+            # A file, not a pipe: the command that never exits keeps the runner's output open.
+            runner = subprocess.Popen(['node', '--input-type=module', '-e', script], stdout=out, stderr=subprocess.STDOUT)
+        try:
+            for _ in range(200):
+                tests = json.loads(Path(self.task).read_text())['tests'] or {}
+                child = tests.get('child_pid')
+                if ready.exists() and child:
+                    break
+                time.sleep(.05)
+            self.assertTrue(ready.exists() and child)
+            started = time.monotonic()
+            runner.send_signal(signal.SIGTERM)
+            runner.wait(timeout=20)
+            self.assertLess(time.monotonic() - started, 10)
+            settled = json.loads(output.read_text().strip().splitlines()[-1])
+            self.assertEqual((settled['status'], settled['reason'], settled['cleanup'], settled['child_pid'], settled['child_start']),
+                             ('blocked', 'interrupted', 'cleanup incomplete: did not exit', child, tests['child_start']))
+            self.assertEqual(json.loads(Path(self.task).read_text())['tests'], settled)
+        finally:
+            if runner.poll() is None:
+                runner.kill()
+            if child:
+                try:
+                    os.killpg(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
     def test_cloud_intent_precedes_command_and_failed_launch_refuses_retry(self):
         done = run('node', '--input-type=module', '-e', f'''
             import {{ beginCloudLaunch, recordCloudLaunch, recordCloudLaunchFailure }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
@@ -244,42 +320,55 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn('one relaunch', done.stdout)
 
-    def test_live_lock_replacing_stale_lock_before_reclaim_survives(self):
+    def test_crashed_lock_blocks_both_writers_and_unlock_needs_its_holder_gone(self):
         dead = subprocess.Popen([sys.executable, "-c", ""])
         dead.wait()
-        lock = Path(self.task + ".lock")
-        lock.write_text(str(dead.pid))
-        done = run("node", "--input-type=module", "-e", f"""
-            import {{ readFileSync, unlinkSync, writeFileSync }} from 'node:fs';
-            import {{ processStartTime, updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
-            const holder = `{os.getpid()}\\n${{processStartTime({os.getpid()})}}`;
-            const beforeReclaim = lock => {{ unlinkSync(lock); writeFileSync(lock, holder, {{ flag: 'wx' }}); }};
-            try {{ updateTask({json.dumps(self.task)}, () => {{}}, {{ beforeReclaim }}); }}
-            catch (error) {{ console.log(error.message); }}
-            console.log(readFileSync({json.dumps(self.task + ".lock")}, 'utf8') === holder ? 'kept' : 'replaced');
-        """)
-        self.assertIn("task lock contention", done.stdout, done.stderr)
-        self.assertIn("kept", done.stdout)
-        self.assertEqual(lock.read_text().splitlines()[0], str(os.getpid()))
-        self.assertEqual(sorted(p.name for p in lock.parent.iterdir() if ".lock" in p.name), [lock.name])
-
-    def test_live_lock_holder_with_unreadable_start_keeps_lock(self):
-        lock = Path(self.task + ".lock")
+        lock, task = Path(self.task + ".lock"), Path(self.task)
+        crashed, before = f"{dead.pid}\n{OLD_START}\ncrashed-writer", task.read_bytes()
+        lock.write_text(crashed)
         update = f"""
             import {{ updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
-            try {{ updateTask({json.dumps(self.task)}, () => {{}}); console.log('updated'); }}
+            try {{ updateTask({json.dumps(self.task)}, task => {{ task.status = 'cancelled'; }}); console.log('updated'); }}
             catch (error) {{ console.log(error.message); }}
         """
-        # An empty PATH hides ps (powershell.exe on Windows), so no start time can be read.
+        # Nothing reclaims a lock implicitly: both writers wait out the crashed writer's lock and fail naming its holder.
+        writers = [subprocess.Popen(["node", "--input-type=module", "-e", update], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True) for _ in range(2)]
+        for writer in writers:
+            out, err = writer.communicate(timeout=60)
+            self.assertIn(f"task lock busy: held by pid {dead.pid} started {OLD_START} (gone)", out, err)
+            self.assertIn(f"unlock {self.task}", out)
+        self.assertEqual((lock.read_text(), task.read_bytes()), (crashed, before))
+        unlock = ("node", str(SCRIPTS / "task-state.mjs"), "unlock", self.task)
+        removed = run(*unlock)
+        self.assertEqual((removed.returncode, removed.stdout.strip()),
+                         (0, f"task lock removed: held by pid {dead.pid} started {OLD_START} (gone)"), removed.stderr)
+        self.assertFalse(lock.exists())
+        # A running holder, identified by its exact start time, is refused and keeps its lock.
+        lookup = f"import {{ processStartTime }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())}; console.log(processStartTime({os.getpid()}));"
+        live = f"{os.getpid()}\n{run('node', '--input-type=module', '-e', lookup).stdout.strip()}\nlive-writer"
+        lock.write_text(live)
+        kept = run(*unlock)
+        self.assertEqual(kept.returncode, 1)
+        self.assertIn(f"task lock kept: held by pid {os.getpid()}", kept.stderr)
+        self.assertIn("(running)", kept.stderr)
+        self.assertEqual((lock.read_text(), task.read_bytes()), (live, before))
+
+    def test_unlock_refuses_an_unknown_holder_and_removes_a_reused_pid(self):
+        lock = Path(self.task + ".lock")
+        unlock = (shutil.which("node"), str(SCRIPTS / "task-state.mjs"), "unlock", self.task)
+        # An empty PATH hides ps (powershell.exe on Windows), so a live holder's start time cannot be read.
         empty = Path(self.task).parent / "empty-path"
         empty.mkdir()
-        node = shutil.which("node")
-        for path, expected in ((str(empty), "task lock busy"), (os.environ.get("PATH", ""), "updated")):
-            with self.subTest(readable=expected == "updated"):
-                lock.write_text(f"{os.getpid()}\n{OLD_START}")
-                done = run(node, "--input-type=module", "-e", update, env={**os.environ, "PATH": path})
-                self.assertIn(expected, done.stdout, done.stderr)
-                self.assertEqual(lock.exists(), expected != "updated")
+        for content, path, code, text in ((f"{os.getpid()}\n{OLD_START}", str(empty), 1, "(unknown)"),
+                                          ("", os.environ.get("PATH", ""), 1, "(no recorded pid)"),
+                                          (f"{os.getpid()}\n{OLD_START}", os.environ.get("PATH", ""), 0, "(reused)")):
+            with self.subTest(text=text):
+                lock.write_text(content)
+                done = run(*unlock, env={**os.environ, "PATH": path})
+                self.assertEqual(done.returncode, code, done.stderr)
+                self.assertIn(text, done.stdout + done.stderr)
+                self.assertEqual(lock.exists(), code != 0)
 
     def test_recorded_route_reads_and_updates_after_class_table_change(self):
         root = Path(self.task).parent.parent
@@ -613,20 +702,133 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(task["routes"]["fix-auth-fallback"]["route"], result["route"])
         self.assertEqual(task["routes"]["fix-auth"]["route"], cloud_route)
 
-    def test_empty_lock_is_stale_only_after_ten_seconds(self):
-        lock = Path(self.task + ".lock")
-        update = f"""
-            import {{ updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
-            try {{ updateTask({json.dumps(self.task)}, () => {{}}); console.log('updated'); }}
-            catch (error) {{ console.log(error.message); }}
+    def test_changes_request_from_another_reviewer_blocks_recorded_approval(self):
+        # Reviewer alice's approval is recorded and stays her newest review; bob then requests changes on the same head.
+        runs = Path(self.task).parent.parent / "review-run"
+        runs.mkdir()
+        created = run("node", "--input-type=module", "-e", f"""
+            import {{ createTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            console.log(createTask({{ workingDirectory: {json.dumps(str(self.repo))}, runDirectory: {json.dumps(str(runs))}, owner: 'test',
+              baseRef: 'main', delivery: 'pr', browserReview: true }}).taskPath);
+        """)
+        self.assertEqual(created.returncode, 0, created.stderr)
+        task_path = created.stdout.strip()
+        tested = run("node", str(SCRIPTS / "delivery.mjs"), "test", task_path, sys.executable, "-c", "")
+        self.assertEqual(tested.returncode, 0, tested.stderr)
+        head = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        task = json.loads(Path(task_path).read_text())
+        task["reviewer"] = {"rounds": [{
+            "id": "00000000-0000-4000-8000-000000000001", "pr": 7, "head": head, "role": "reviewer", "catalog_label": "Web Pro",
+            "catalog_model_id": "gpt-pro", "provider": "codex/gpt-pro", "status": "approved", "agent_id": "agent-review",
+            "review_id": 1, "reviewer_login": "alice", "review_url": "https://github.com/example/app/pull/7#pullrequestreview-1"}]}
+        Path(task_path).write_text(json.dumps(task))
+        done = run("node", "--input-type=module", "-e", f"""
+            import {{ verifyDelivery }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())};
+            const head = {json.dumps(head)}, side = {{ sha: head, ref: 'main', repo: {{ full_name: 'example/app' }} }};
+            const pr = {{ number: 7, head: side, base: side, user: {{ login: 'author' }}, state: 'open', merged: false, draft: false,
+              html_url: 'https://github.com/example/app/pull/7', merge_commit_sha: null }};
+            const approval = {{ id: 1, state: 'APPROVED', commit_id: head, user: {{ login: 'alice' }} }};
+            const changes = {{ id: 2, state: 'CHANGES_REQUESTED', commit_id: head, user: {{ login: 'bob' }} }};
+            const verify = reviews => verifyDelivery({json.dumps(task_path)}, {{ pr: 7, query: args => args[1].endsWith('/reviews?per_page=100') ? reviews : pr }});
+            console.log(JSON.stringify([verify([approval]), verify([approval, changes])].map(({{ status, blockers }}) => [status, blockers])));
+        """)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        approved, requested = json.loads(done.stdout)
+        self.assertEqual(approved, ["verified", []])
+        self.assertEqual(requested[0], "blocked")
+        self.assertIn("current exact-head non-author CHANGES_REQUESTED review blocks delivery", requested[1])
+
+    def test_lock_of_writer_paused_in_acquisition_is_not_reclaimed(self):
+        # Writer A pauses for over ten seconds at the first moment its lock exists, between an exclusive create and the
+        # holder bytes where the lock is still written that way; writer B then tries a second cloud launch.
+        cloud = json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())
+        task, lane = json.dumps(self.task), "{ branch: 'opc/example', repo: 'example/app' }"
+        other = (f"import {{ beginCloudLaunch }} from {cloud};"
+                 f"try {{ beginCloudLaunch({task}, {lane}); console.log('launched'); }} catch (error) {{ console.log(error.message); }}")
+        done = run("node", "--input-type=module", "-e", f"""
+            import fs from 'node:fs';
+            import {{ spawnSync }} from 'node:child_process';
+            import {{ syncBuiltinESMExports }} from 'node:module';
+            const lock = {task} + '.lock';
+            let other = null;
+            const pause = () => {{
+              if (other !== null || !fs.existsSync(lock)) return;
+              const old = new Date(Date.now() - 11000);
+              fs.utimesSync(lock, old, old);
+              other = spawnSync(process.execPath, ['--input-type=module', '-e', {json.dumps(other)}], {{ encoding: 'utf8' }}).stdout.trim();
+            }};
+            const {{ writeFileSync, linkSync }} = fs;
+            fs.writeFileSync = (path, data, options) => {{
+              if (options?.flag !== 'wx') return writeFileSync(path, data, options);
+              const fd = fs.openSync(path, 'wx', options.mode);
+              try {{ pause(); fs.writeSync(fd, data); }} finally {{ fs.closeSync(fd); }}
+            }};
+            fs.linkSync = (from, to) => {{ linkSync(from, to); pause(); }};
+            syncBuiltinESMExports();
+            const {{ beginCloudLaunch }} = await import({cloud});
+            let mine;
+            try {{ mine = beginCloudLaunch({task}, {lane}).status; }} catch (error) {{ mine = error.message; }}
+            console.log(JSON.stringify({{ other, mine }}));
+        """)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        result = json.loads(done.stdout)
+        self.assertIn("task lock busy", result["other"])
+        self.assertEqual(result["mine"], "launching")
+        cloud_record = json.loads(Path(self.task).read_text())["cloud"]
+        self.assertEqual((cloud_record["status"], cloud_record["attempt"]), ("launching", 1))
+        self.assertEqual(sorted(p.name for p in Path(self.task).parent.iterdir()), ["task.json"])
+
+    def test_source_fingerprint_covers_submodule_working_tree_bytes(self):
+        # The superproject sees a dirty submodule as one gitlink and one "-dirty" diff line, whatever its dirty bytes.
+        def git(cwd, *args):
+            subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+                           check=True, capture_output=True)
+        sub = self.repo / "sub"
+        sub.mkdir()
+        git(sub, "init", "-q")
+        (sub / "file.txt").write_text("committed\n")
+        git(sub, "add", "file.txt")
+        git(sub, "commit", "-q", "-m", "sub")
+        git(self.repo, "add", "sub")
+        git(self.repo, "commit", "-q", "-m", "gitlink")
+        fingerprint = f"""
+            import {{ sourceIdentity }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())};
+            import {{ readTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            console.log(sourceIdentity(readTask({json.dumps(self.task)})).fingerprint);
         """
-        for age, expected in ((11, "updated"), (2, "task lock busy")):
-            with self.subTest(age=age):
-                lock.write_text("")
-                os.utime(lock, (time.time() - age,) * 2)
-                done = run("node", "--input-type=module", "-e", update)
-                self.assertIn(expected, done.stdout, done.stderr)
-                self.assertEqual(lock.exists(), age == 2)
+        prints = []
+        for content in ("dirty A\n", "dirty B\n"):
+            (sub / "file.txt").write_text(content)
+            done = run("node", "--input-type=module", "-e", fingerprint)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            prints.append(done.stdout.strip())
+        self.assertNotEqual(prints[0], prints[1])
+
+
+    def test_symlinked_gitlink_fails_the_receipt(self):
+        def git(cwd, *args):
+            subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+                           check=True, capture_output=True)
+        sub = self.repo / "sub"
+        sub.mkdir()
+        git(sub, "init", "-q")
+        (sub / "file.txt").write_text("committed\n")
+        git(sub, "add", "file.txt")
+        git(sub, "commit", "-q", "-m", "sub")
+        git(self.repo, "add", "sub")
+        git(self.repo, "commit", "-q", "-m", "gitlink")
+        # The gitlink's working tree moves outside the repository and a symlink takes its place.
+        moved = Path(self.task).parent / "sub-elsewhere"
+        sub.rename(moved)
+        try:
+            sub.symlink_to(moved, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks unavailable")
+        done = run("node", str(SCRIPTS / "delivery.mjs"), "test", self.task, sys.executable, "-c", "")
+        self.assertNotEqual(done.returncode, 0)
+        tests = json.loads(done.stdout.strip().splitlines()[-1])
+        self.assertEqual((tests["status"], tests["reason"]),
+                         ("failed", "submodule sub is not a checked-out directory with its own .git; its bytes cannot be fingerprinted"))
 
 
 if __name__ == "__main__":

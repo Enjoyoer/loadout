@@ -41,7 +41,15 @@ claude --teleport [session_id] --model 'claude-opus-5-5[1m]' --effort xhigh  # p
   - forbid edits to the project's memory files (`STATUS.html`, `LESSONS.md`).
 - `--remote` is a deprecated alias for `--cloud`; do not use it.
 - Teleport is one-way: a local terminal session cannot be pushed to the cloud.
-- Record the session ID, URL, marker, and expected PR in the project's `STATUS.html`.
+- Record every launch as in [Launch record](#launch-record): the intent before the command, the result after it.
+
+## Launch record
+
+An accepted session keeps working and billing whether or not the launcher captured its ID, so a launch whose outcome is unknown is reconciled, never repeated.
+
+- Under OPC, use its cloud lane instead of this recipe: `beginCloudLaunch` records the intent before the command, `recordCloudLaunchFailure` marks a failed or ambiguous capture `uncertain`, and `reconcileCloudLaunch` settles it.
+- Otherwise, before sending the command, add a line to the project's `STATUS.html`: `launching`, the marker, the repository, and the time. After the capture, replace it with the session ID, URL, marker, and expected PR. If the command or capture fails, the output is ambiguous, or the capture is lost, mark the line `uncertain`.
+- A `launching` or `uncertain` line, including one found on resumption, needs reconciling: look for a PR titled `[<marker>]` (see Results) and for the session at claude.ai/code, and record a found session as above. Only once no session exists for certain, mark the line `no session`; one new launch with the same marker may then follow these steps. Never launch for a marker whose line is `launching`, `uncertain`, or a recorded session.
 
 ## Results
 
@@ -59,8 +67,9 @@ Known failures: a brief that names its own branch makes the session's push fail,
 Use a PTY, since the Bash tool is non-interactive:
 
 1. Write the brief to a file, for example `/tmp/brief.txt`.
-2. `create_terminal` in the repository.
-3. `send_terminal_keys` with `claude --cloud "$(cat /tmp/brief.txt)" --model 'claude-opus-5-5[1m]' --effort xhigh` (with the cloud profile prefix when one is set) followed by a newline.
-4. `capture_terminal` to read the session ID and URL.
+2. Record the launch intent ([Launch record](#launch-record)).
+3. `create_terminal` in the repository.
+4. `send_terminal_keys` with `claude --cloud "$(cat /tmp/brief.txt)" --model 'claude-opus-5-5[1m]' --effort xhigh` (with the cloud profile prefix when one is set) followed by a newline.
+5. `capture_terminal` to read the session ID and URL, and record them. If the capture fails or shows no session ID, mark the launch `uncertain` and reconcile it; never send the command again.
 
 The machine running the agent must satisfy the preflight login check.
