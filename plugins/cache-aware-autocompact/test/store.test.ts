@@ -55,6 +55,10 @@ describe("StateStore", () => {
       { version: 1, entries: [], turns: "a:t1" },
       { version: 1, entries: [], turns: [{ ...turn, endedAt: "not-a-date" }] },
       { version: 1, entries: [], turns: [{ ...turn, timeline: [{ type: "tool_call" }] }] },
+      { version: 1, entries: [], turns: [{ ...turn, timeline: [{ type: "tool_call", callId: "tool1", status: "paused", error: null }] }] },
+      { version: 1, entries: [], turns: [{ ...turn, timeline: [{ type: "tool_call", callId: "tool1", status: "completed", error: null }] }] },
+      { version: 1, entries: [], turns: [{ ...turn, timeline: [{ type: "tool_call", callId: "", status: "running", error: null }] }] },
+      { version: 1, entries: [], turns: [{ ...turn, timeline: [{ type: "assistant_message", text: "done" }] }] },
     ];
     for (const state of states) {
       const text = JSON.stringify(state);

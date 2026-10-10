@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { unsettledTool } from "./model.ts";
 import type { Checkpoint } from "./runtime.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
 
@@ -33,13 +34,17 @@ function isEntry(value: unknown): value is StateEntry {
     typeof entry.outcome === "string" && Object.hasOwn(OUTCOMES, entry.outcome) && typeof entry.reason === "string";
 }
 
-// A remembered turn keeps only its running tool calls; each needs its call id and status.
+// A remembered turn's timeline holds only running tool calls, each with its call id.
+function isRememberedTool(item: Record<string, unknown> | null): boolean {
+  return typeof item === "object" && item !== null && item.type === "tool_call" && item.status === "running" &&
+    typeof item.callId === "string" && item.callId !== "";
+}
+
 function isTurn(value: unknown): value is Checkpoint {
   if (typeof value !== "object" || value === null) return false;
   const turn = value as Record<string, unknown>;
   return typeof turn.agentId === "string" && isOptionalString(turn.turnId) && typeof turn.key === "string" &&
-    Array.isArray(turn.timeline) && turn.timeline.every((item: Record<string, unknown> | null) => typeof item === "object" && item !== null &&
-      typeof item.type === "string" && (item.type !== "tool_call" || (typeof item.callId === "string" && typeof item.status === "string"))) &&
+    Array.isArray(turn.timeline) && turn.timeline.every(isRememberedTool) &&
     isOptionalString(turn.lastUserMessageAt) && Number.isSafeInteger(turn.retryCount) && (turn.retryCount as number) >= 0 && isTime(turn.endedAt);
 }
 
@@ -115,9 +120,11 @@ export class StateStore {
   async rememberTurn(turn: Checkpoint, maxEntries: number): Promise<void> {
     await this.exclusive(async () => {
       const state = await this.readState();
-      // The evaluator only inspects running tools. Keep their guard state, not
-      // whole transcripts, alongside the already-derived checkpoint identity.
-      const durableTurn = { ...turn, timeline: turn.timeline.filter((item) => item.type === "tool_call" && item.status === "running") };
+      // The evaluator only inspects unsettled tools. Keep their guard state, not
+      // whole transcripts, alongside the already-derived checkpoint identity. A status
+      // it does not know is kept as running; a turn the reader would reject is not written.
+      const durableTurn = { ...turn, timeline: turn.timeline.filter(unsettledTool).map((item) => ({ ...item, status: "running" as const, error: null })) };
+      if (!isTurn(durableTurn)) throw new Error("Invalid turn");
       const turns = [...(state.turns ?? []).filter((candidate) => candidate.agentId !== turn.agentId), durableTurn].slice(-maxEntries);
       await this.write({ ...state, turns });
     });
