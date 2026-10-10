@@ -4,7 +4,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
 
@@ -15,26 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 import client_config  # noqa: E402
 import fleet  # noqa: E402
 
-FAKE_SSH = textwrap.dedent(r"""
-    #!/bin/sh
-    [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
-    while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
-    [ "$1" = "--" ] && shift
-    host="$1"; shift
-    echo "ssh $host $*" >> "$FAKE_ROOT/calls.log"
-    unset CODEX_HOME
-    HOME="$FAKE_ROOT/hosts/$host" exec sh -c "$*"
-    """).lstrip()
-
-# Version lives in $HOME/claude-version; `claude update` installs 2.10.0.
-FAKE_CLAUDE = textwrap.dedent(r"""
-    #!/bin/sh
-    [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
-    case "$1" in
-      --version) echo "$(cat "$HOME/claude-version") (Claude Code)" ;;
-      update) echo 2.10.0 > "$HOME/claude-version" ;;
-    esac
-    """).lstrip()
+from fake_commands import assert_fake, install_fake_claude, install_fake_ssh, with_fake_ssh
 
 HOSTS = {
     "schema_version": 2, "source_host": "laptop", "transport": "ssh",
@@ -65,7 +45,6 @@ CLAUDE_SETTINGS = {"theme": "light", "hooks": {"x": 1}, "env": {"LOCAL_ONLY": "1
 TOKEN = "tok-SECRET-123"
 
 
-@unittest.skipIf(os.name == "nt", "fake ssh and claude are POSIX shell scripts")
 class ClientConfigTest(unittest.TestCase):
     def setUp(self):
         if not shutil.which("node"):
@@ -79,11 +58,8 @@ class ClientConfigTest(unittest.TestCase):
         catalog["token_file"] = str(self.root / "token")
         (self.root / "token").write_text(TOKEN + "\n")
         (self.fleet / "client-config.json").write_text(json.dumps(catalog))
-        bin_dir = self.root / "bin"
-        bin_dir.mkdir()
-        for name, body in (("ssh", FAKE_SSH), ("claude", FAKE_CLAUDE)):
-            (bin_dir / name).write_text(body)
-            (bin_dir / name).chmod(0o755)
+        self.ssh = install_fake_ssh(self.root / "bin")
+        claude = install_fake_claude(self.root / "bin")
         for host in ("laptop", "desktop", "devbox"):
             home = self.root / "hosts" / host
             (home / ".codex").mkdir(parents=True)
@@ -91,11 +67,15 @@ class ClientConfigTest(unittest.TestCase):
             (home / ".codex/config.toml").write_bytes(CODEX_TOML.encode())
             (home / ".claude/settings.json").write_text(json.dumps(CLAUDE_SETTINGS))
             (home / "claude-version").write_text("2.9.5\n")
-        self.env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.root / "hosts/laptop"),
-                    "LOADOUT_FLEET": str(self.fleet), "FAKE_ROOT": str(self.root)}
-        for name in ("ssh", "claude"):
-            done = subprocess.run([name, "--fake-ok"], env=self.env, capture_output=True, text=True)
-            self.assertEqual(done.stdout.strip(), "fake", f"fake {name} is not the binary on PATH")
+        self.env = {"PATH": os.environ["PATH"], "HOME": str(self.root / "hosts/laptop"),
+                    "LOADOUT_FLEET": str(self.fleet), "FAKE_ROOT": str(self.root),
+                    "FAKE_SSH_LOG": str(self.root / "calls.log"), "LOADOUT_TEST_CLAUDE": json.dumps(claude)}
+        self.env.update({k: v for k, v in os.environ.items()
+                         if k.upper() in ("SYSTEMROOT", "TEMP", "TMP")})
+        self.env["USERPROFILE"] = self.env["HOME"]
+        self.env["APPDATA"] = str(self.root / "hosts/laptop/.config")
+        assert_fake(self.ssh, self.env)
+        assert_fake(claude, self.env)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -104,7 +84,7 @@ class ClientConfigTest(unittest.TestCase):
         return self.root / "hosts" / host
 
     def run_sync(self, *args):
-        done = subprocess.run([sys.executable, str(SCRIPTS / "client_config.py"), *args], env=self.env,
+        done = subprocess.run(with_fake_ssh(SCRIPTS / "client_config.py", self.ssh, *args), env=self.env,
                               capture_output=True, text=True, timeout=60)
         return done.returncode, done.stdout + done.stderr
 

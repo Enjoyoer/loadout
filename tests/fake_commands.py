@@ -32,6 +32,9 @@ def main():
         print("fake ssh: missing host", file=sys.stderr)
         return 2
     host, command = args[0], args[1:]
+    if os.environ.get("FAKE_SSH_LOG"):
+        with open(os.environ["FAKE_SSH_LOG"], "a") as log:
+            log.write(" ".join(["ssh", host, *command]) + "\n")
     root = Path(os.environ.get("FAKE_ROOT") or os.environ["DEMO_ROOT"])
     if (root / ("down-" + host)).exists():
         print(f"ssh: connect to host {host}: timed out", file=sys.stderr)
@@ -58,6 +61,23 @@ raise SystemExit(main())
 '''.lstrip()
 
 
+# Version lives in $HOME/claude-version; `update` installs 2.10.0.
+_FAKE_CLAUDE = r'''
+import os
+import sys
+from pathlib import Path
+
+version = Path(os.environ["HOME"]) / "claude-version"
+arg = sys.argv[1] if len(sys.argv) > 1 else ""
+if arg == "--fake-ok":
+    print("fake")
+elif arg == "--version":
+    print(version.read_text().strip() + " (Claude Code)")
+elif arg == "update":
+    version.write_text("2.10.0\n")
+'''.lstrip()
+
+
 # Runs a Loadout script's main() with fleet.SSH_COMMAND replaced by the fake, so ssh is never looked up.
 _WITH_FAKE_SSH = (
     "import json, sys; scripts, module, prefix = sys.argv[1:4]; sys.path.insert(0, scripts); import fleet; "
@@ -71,6 +91,15 @@ def install_fake_ssh(bin_dir: Path) -> tuple[str, str]:
     bin_dir.mkdir(parents=True, exist_ok=True)
     script = bin_dir / "fake_ssh.py"
     script.write_text(_FAKE_SSH)
+    return (sys.executable, str(script))
+
+
+def install_fake_claude(bin_dir: Path) -> tuple[str, str]:
+    """Write the Python fake claude and return the [interpreter, script] for LOADOUT_TEST_CLAUDE."""
+    bin_dir = bin_dir.resolve()
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    script = bin_dir / "fake_claude.py"
+    script.write_text(_FAKE_CLAUDE)
     return (sys.executable, str(script))
 
 
