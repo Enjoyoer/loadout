@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
-import shlex
-import shutil
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -60,42 +58,31 @@ raise SystemExit(main())
 '''.lstrip()
 
 
-def _write_launchers(bin_dir: Path, name: str, script: Path) -> None:
-    launcher = bin_dir / name
-    launcher.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(script))} \"$@\"\n")
-    launcher.chmod(0o755)
-    shim = bin_dir / f"{name}.cmd"
-    shim.write_text(f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n')
+# Runs a Loadout script's main() with fleet.SSH_COMMAND replaced by the fake, so ssh is never looked up.
+_WITH_FAKE_SSH = (
+    "import json, sys; scripts, module, prefix = sys.argv[1:4]; sys.path.insert(0, scripts); import fleet; "
+    "fleet.SSH_COMMAND = tuple(json.loads(prefix)); sys.argv = [module, *sys.argv[4:]]; "
+    "sys.exit(__import__(module).main())")
 
 
-def install_fake_ssh(bin_dir: Path) -> None:
-    """Install both launchers for the Python fake."""
+def install_fake_ssh(bin_dir: Path) -> tuple[str, str]:
+    """Write the Python fake and return the exact ssh command prefix that runs it."""
     bin_dir = bin_dir.resolve()
     bin_dir.mkdir(parents=True, exist_ok=True)
     script = bin_dir / "fake_ssh.py"
     script.write_text(_FAKE_SSH)
-    _write_launchers(bin_dir, "ssh", script)
+    return (sys.executable, str(script))
 
 
-def launcher_argv(name: str, env: dict[str, str], *args: str):
-    """Return an argv that invokes the exact PATH-resolved launcher."""
-    hit = shutil.which(name, path=env.get("PATH"))
-    if not hit:
-        raise AssertionError(f"missing fake {name} on PATH")
-    path = Path(hit)
-    if os.name == "nt" and path.suffix.lower() == ".cmd":
-        interpreter = env.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
-        command = subprocess.list2cmdline([str(path), *args])
-        return f'{subprocess.list2cmdline([interpreter])} /d /s /c "{command}"'
-    return [str(path), *args]
+def with_fake_ssh(script: Path, ssh_command: tuple[str, str], *args: str) -> list[str]:
+    """Return an argv that runs a Loadout script with the fake as fleet.SSH_COMMAND."""
+    return [sys.executable, "-c", _WITH_FAKE_SSH, str(script.parent), script.stem, json.dumps(list(ssh_command)), *args]
 
 
-def assert_fake(name: str, bin_dir: Path, env: dict[str, str]) -> None:
-    """Fail closed if PATH would select anything other than this fake."""
-    hit = shutil.which(name, path=env.get("PATH"))
-    if not hit or Path(hit).parent.resolve() != bin_dir.resolve():
-        raise AssertionError(f"PATH does not resolve fake {name} in {bin_dir}: {hit}")
-    done = subprocess.run(launcher_argv(name, env, "--fake-ok"), env=env,
-                          capture_output=True, text=True)
+def assert_fake(ssh_command: tuple[str, str], env: dict[str, str]) -> None:
+    """Fail closed unless the exact injected command is the working fake."""
+    if not Path(ssh_command[1]).is_file():
+        raise AssertionError(f"missing fake ssh: {ssh_command[1]}")
+    done = subprocess.run([*ssh_command, "--fake-ok"], env=env, capture_output=True, text=True)
     if done.returncode != 0 or done.stdout.strip() != "fake":
-        raise AssertionError(f"fake {name} failed probe: {done.returncode}: {done.stdout}{done.stderr}")
+        raise AssertionError(f"fake ssh failed probe: {done.returncode}: {done.stdout}{done.stderr}")

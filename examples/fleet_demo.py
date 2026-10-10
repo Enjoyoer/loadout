@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parent.parent
 SYNC = REPO / "skills/orchestration/personal-skills/scripts/sync.py"
 
 sys.path.insert(0, str(REPO / "tests"))
-from fake_commands import assert_fake, install_fake_ssh
+from fake_commands import assert_fake, install_fake_ssh, with_fake_ssh
 
 HOSTS = {
     "schema_version": 2,
@@ -34,9 +34,9 @@ HOSTS = {
 }
 
 
-def step(title: str, env: dict, *args: str) -> None:
+def step(title: str, env: dict, ssh: tuple, *args: str) -> None:
     print(f"\n=== {title}\n$ sync.py {' '.join(args)}", flush=True)
-    done = subprocess.run([sys.executable, str(SYNC), *args], env=env, capture_output=True, text=True)
+    done = subprocess.run(with_fake_ssh(SYNC, ssh, *args), env=env, capture_output=True, text=True)
     print((done.stdout + done.stderr).rstrip())
     print(f"(exit {done.returncode})")
 
@@ -50,27 +50,25 @@ def main() -> int:
         for host, clients in (("laptop", [".claude"]), ("desktop", [".claude", ".codex"])):
             for client in clients:
                 (root / "hosts" / host / client).mkdir(parents=True, exist_ok=True)
-        bin_dir = root / "bin"
-        install_fake_ssh(bin_dir)
-        env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-               "HOME": str(root / "hosts/laptop"), "DEMO_ROOT": str(root)}
+        ssh = install_fake_ssh(root / "bin")
+        env = {**os.environ, "HOME": str(root / "hosts/laptop"), "DEMO_ROOT": str(root)}
         env.pop("LOADOUT_FLEET", None)
         env.pop("XDG_CONFIG_HOME", None)
         env.pop("CODEX_HOME", None)
         env["USERPROFILE"] = env["HOME"]
         env["APPDATA"] = str(root / "hosts/laptop/.config")
-        assert_fake("ssh", bin_dir, env)
+        assert_fake(ssh, env)
 
-        step("1. Preview: nothing is written", env, "--dry-run")
-        step("2. Sync: copy the fleet to desktop, install verified skills on both hosts", env)
-        step("3. Run again: everything is already current", env)
+        step("1. Preview: nothing is written", env, ssh, "--dry-run")
+        step("2. Sync: copy the fleet to desktop, install verified skills on both hosts", env, ssh)
+        step("3. Run again: everything is already current", env, ssh)
 
         edited = root / "hosts/desktop/.claude/skills/grilling/SKILL.md"
         edited.write_bytes(edited.read_bytes() + b"\nMy local tweak.\n")
-        step("4. A hand edit on desktop is a conflict: nothing is written there", env)
+        step("4. A hand edit on desktop is a conflict: nothing is written there", env, ssh)
 
         edited.write_bytes(edited.read_bytes().replace(b"\nMy local tweak.\n", b""))
-        step("5. Undo the edit: the host syncs cleanly again", env)
+        step("5. Undo the edit: the host syncs cleanly again", env, ssh)
         print(f"\nInstalled on desktop: {sorted(p.name for p in (root / 'hosts/desktop/.claude/skills').iterdir())}")
     return 0
 

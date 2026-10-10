@@ -15,7 +15,7 @@ sys.path.insert(0, str(SCRIPTS))
 import fleet  # noqa: E402
 import skills_sync  # noqa: E402
 
-from fake_commands import assert_fake, install_fake_ssh
+from fake_commands import assert_fake, install_fake_ssh, with_fake_ssh
 
 
 def entry(data, prior=()):
@@ -185,24 +185,23 @@ class SkillsSyncTest(unittest.TestCase):
         (self.fleet / "global").mkdir(parents=True)
         (self.fleet / "hosts.json").write_text(json.dumps(HOSTS))
         (self.fleet / "global/AGENTS.md").write_text("# Global\n")
-        bin_dir = self.root / "bin"
-        install_fake_ssh(bin_dir)
+        self.ssh = install_fake_ssh(self.root / "bin")
         for host in ("laptop", "desktop"):
             (self.root / "hosts" / host / ".claude").mkdir(parents=True)
         (self.root / "hosts/desktop/.codex").mkdir()
-        self.env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.root / "hosts/laptop"),
+        self.env = {"PATH": os.environ["PATH"], "HOME": str(self.root / "hosts/laptop"),
                     "LOADOUT_FLEET": str(self.fleet), "FAKE_ROOT": str(self.root)}
         self.env.update({k: v for k, v in os.environ.items()
-                         if k.upper() in ("SYSTEMROOT", "COMSPEC", "PATHEXT", "TEMP", "TMP")})
+                         if k.upper() in ("SYSTEMROOT", "TEMP", "TMP")})
         self.env["USERPROFILE"] = self.env["HOME"]
         self.env["APPDATA"] = str(self.root / "hosts/laptop/.config")
-        assert_fake("ssh", bin_dir, self.env)
+        assert_fake(self.ssh, self.env)
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def run_sync(self, *args):
-        done = subprocess.run([sys.executable, str(SCRIPTS / "skills_sync.py"), "--skills", "handoff,grilling", *args],
+        done = subprocess.run(with_fake_ssh(SCRIPTS / "skills_sync.py", self.ssh, "--skills", "handoff,grilling", *args),
                               env=self.env, capture_output=True, text=True, timeout=120)
         return done.returncode, done.stdout + done.stderr
 
@@ -252,7 +251,7 @@ class SkillsSyncTest(unittest.TestCase):
         code, out = self.run_sync("--dry-run")
         self.assertEqual(code, 0, out)
         self.assertFalse((self.fleet / "skills/.loadout-overlay.json").exists(), "dry run records nothing")
-        done = subprocess.run([sys.executable, str(SCRIPTS / "skills_sync.py"), "--skills", "handoff,mine"],
+        done = subprocess.run(with_fake_ssh(SCRIPTS / "skills_sync.py", self.ssh, "--skills", "handoff,mine"),
                               env=self.env, capture_output=True, text=True, timeout=120)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("2 skills selected (1 from the private overlay)", done.stdout)
@@ -299,7 +298,7 @@ class SkillsSyncTest(unittest.TestCase):
         self.assertEqual(files["moved/SKILL.md"]["prior"], [sha(b"published")])
 
     def test_unknown_skill_and_host(self):
-        done = subprocess.run([sys.executable, str(SCRIPTS / "skills_sync.py"), "--skills", "nope"], env=self.env,
+        done = subprocess.run(with_fake_ssh(SCRIPTS / "skills_sync.py", self.ssh, "--skills", "nope"), env=self.env,
                               capture_output=True, text=True)
         self.assertEqual(done.returncode, 1)
         self.assertIn("unknown skills: ['nope']", done.stderr)

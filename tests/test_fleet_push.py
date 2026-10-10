@@ -12,7 +12,7 @@ SCRIPTS = REPO / "skills/orchestration/personal-skills/scripts"
 sys.path.insert(0, str(SCRIPTS))
 import fleet  # noqa: E402
 
-from fake_commands import assert_fake, install_fake_ssh
+from fake_commands import assert_fake, install_fake_ssh, with_fake_ssh
 
 HOSTS = {
     "schema_version": 2,
@@ -40,15 +40,14 @@ class FleetPushTest(unittest.TestCase):
         (self.source / "global/AGENTS.md").write_text("# Global\n")
         for host in ("desktop", "devbox", "tablet"):
             (self.root / "hosts" / host).mkdir(parents=True)
-        bin_dir = self.root / "bin"
-        install_fake_ssh(bin_dir)
-        self.env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.root / "hosts/laptop"),
+        self.ssh = install_fake_ssh(self.root / "bin")
+        self.env = {"PATH": os.environ["PATH"], "HOME": str(self.root / "hosts/laptop"),
                     "FAKE_ROOT": str(self.root)}
         self.env.update({k: v for k, v in os.environ.items()
-                         if k.upper() in ("SYSTEMROOT", "COMSPEC", "PATHEXT", "TEMP", "TMP")})
+                         if k.upper() in ("SYSTEMROOT", "TEMP", "TMP")})
         self.env["USERPROFILE"] = self.env["HOME"]
         self.env["APPDATA"] = str(self.root / "hosts/laptop/.config")
-        assert_fake("ssh", bin_dir, self.env)
+        assert_fake(self.ssh, self.env)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -57,7 +56,7 @@ class FleetPushTest(unittest.TestCase):
         return self.root / "hosts" / host / ".config/loadout/fleet"
 
     def push(self, *args):
-        done = subprocess.run([sys.executable, str(SCRIPTS / "fleet.py"), "push", *args], env=self.env,
+        done = subprocess.run(with_fake_ssh(SCRIPTS / "fleet.py", self.ssh, "push", *args), env=self.env,
                               capture_output=True, text=True, timeout=60)
         return done.returncode, done.stdout + done.stderr
 

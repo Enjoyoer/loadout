@@ -229,7 +229,7 @@ class Runner:
         return {**self.base_env(), "PASEO_HOST": self.offer_path.read_text(encoding="utf-8").strip()}
 
     def paseo(self, *args: str, timeout: int = 60) -> str:
-        done = subprocess.run(fleet.command_argv("paseo", *args), env=self.relay_env(), capture_output=True, text=True, timeout=timeout)
+        done = subprocess.run(["paseo", *args], env=self.relay_env(), capture_output=True, text=True, timeout=timeout)
         if done.returncode != 0:
             raise RuntimeError(f"paseo {args[0]} {args[1] if len(args) > 1 else ''}: {done.stderr.strip() or done.stdout.strip()}")
         return done.stdout
@@ -238,7 +238,7 @@ class Runner:
         if self.mode in {"local", "ssh"}:
             raw, boot = staged_payload(program, data)
             command = (["node", "-e", boot] if self.mode == "local" else
-                       fleet.command_argv("ssh", *fleet.SSH_OPTIONS, "--", self.name, f'node -e "{boot}"'))
+                       [*fleet.SSH_COMMAND, *fleet.SSH_OPTIONS, "--", self.name, f'node -e "{boot}"'])
             # Without the agent session's PASEO_HOME, the merge finds the host's own Paseo home.
             try:
                 done = subprocess.run(command, input=raw, capture_output=True, text=True, env=self.base_env(),
@@ -358,13 +358,13 @@ class Runner:
 
     def reload(self) -> str:
         if self.mode == "local":
-            command = fleet.command_argv("paseo", "reload")
+            command = ["paseo", "reload"]
             env = self.base_env()
         elif self.offer_path is not None:
-            command = fleet.command_argv("paseo", "reload")
+            command = ["paseo", "reload"]
             env = self.relay_env()
         else:
-            command = fleet.command_argv("ssh", "-n", *fleet.SSH_OPTIONS, "--", self.name, "paseo reload")
+            command = [*fleet.SSH_COMMAND, "-n", *fleet.SSH_OPTIONS, "--", self.name, "paseo reload"]
             env = self.base_env()
         try:
             done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=RELOAD_TIMEOUT_SECONDS)
