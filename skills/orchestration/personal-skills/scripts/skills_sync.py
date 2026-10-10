@@ -135,10 +135,11 @@ def listed(labels: list) -> str:
 
 def describe(result: dict) -> str:
     status = result["status"]
+    stopped = f"; retirement stopped: {result['retire_stopped']}" if result.get("retire_stopped") else ""
     if status == "failed":
-        return f"FAILED: {result['error']}"
+        return f"FAILED: {result['error']}{stopped}"
     if status == "conflict":
-        return f"conflict: local edits, nothing written: {listed(result['conflicts'])}"
+        return f"conflict: local edits, nothing written: {listed(result['conflicts'])}{stopped}"
     retired, kept = result.get("retired", []), result.get("kept", [])
     counts = [f"+{len(result['added'])}" if result["added"] else "", f"~{len(result['changed'])}" if result["changed"] else "",
               f"-{len(retired)}" if retired else ""]
@@ -148,7 +149,6 @@ def describe(result: dict) -> str:
     dry = status == "would update"
     unpublished = (f"; {'would retire' if dry else 'retired'} unpublished: {listed(retired)}" if retired else "") + (
         f"; unpublished with local edits, {'would keep' if dry else 'kept'} and stop managing: {listed(kept)}" if kept else "")
-    stopped = f"; retirement stopped: {result['retire_stopped']}" if result.get("retire_stopped") else ""
     return (f"{status}" + (f" ({counts})" if counts else "") + (f"; {clients}" if clients else "") + elevation + unpublished
             + stopped)
 
@@ -196,8 +196,11 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
                                     TIMEOUT_SECONDS)
     if result is None:
         result = {"status": "failed", "error": output}
-    if state["retire_stopped"] and only is None and result["status"] in ("same", "updated", "would update"):
-        result = {**result, "status": "blocked", "retire_stopped": state["retire_stopped"]}
+    if state["retire_stopped"] and only is None:
+        # Every host gets the reason, a failed or conflicted one too; one that would otherwise pass is blocked.
+        result = {**result, "retire_stopped": state["retire_stopped"]}
+        if result["status"] in ("same", "updated", "would update"):
+            result["status"] = "blocked"
     if (not state["dry_run"] and overlay and result["status"] in ("updated", "same")
             and "present" in result["clients"].values()):
         record_overlay(state["fleet_dir"], overlay)
