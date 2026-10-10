@@ -3,8 +3,7 @@
 // {codex: {top, sections, reportOnly}, claude: {settings, env, token_env, minVersion},
 //  token, stamp, dry_run, update_claude}. The token arrives only on stdin and is
 // never printed. Only managed keys are written; everything else stays host-local.
-// replaceFile comes from remote_common.js, which fleet.run_node ships ahead of this file.
-const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib");
+const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execSync, execFileSync } = require("child_process");
 // Test-only hook: LOADOUT_TEST_CLAUDE is a JSON [interpreter, fake script] run as argv, without a shell.
 // It is never set outside tests; unset, claude runs through the shell strings below unchanged.
@@ -13,6 +12,9 @@ function runTestClaude(arg, options) {
   const [interpreter, script] = JSON.parse(testClaude);
   return execFileSync(interpreter, [script, arg], options);
 }
+// Test-only hook: LOADOUT_TEST_BEFORE_RENAME is a JSON [interpreter, script] run as argv with the target file between
+// the temp write and the re-read, so a test can change the file in that window. It is never set outside tests.
+const testBeforeRename = process.env.LOADOUT_TEST_BEFORE_RENAME;
 const result = { codex: null, claude: null, claude_code: null, error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
@@ -35,13 +37,17 @@ function tomlValue(v) {
   throw new Error("unsupported TOML value for a managed key");
 }
 
+// Every refusal ends with this: the file is left for its owner to change by hand.
+const BY_HAND = "; unsupported TOML, edit by hand";
+
 // A conservative TOML structure scan, one record per line: blank, comment, a table header (its key path, and
-// whether it is an array table), a key line (its key path), or "more", a line inside a multiline string, array or
-// inline table. Only a header or key line starts a statement. Anything it cannot read safely is refused.
+// whether it is an array table), a key line (its key path, and whether its value holds an inline table), or "more",
+// a line inside a multiline string, array or inline table. Only a header or key line starts a statement. Anything it
+// cannot read safely is refused.
 function tomlScan(lines) {
-  const refuse = n => new Error(`refused, nothing written: config.toml line ${n + 1} is TOML the merge cannot read safely`);
+  const refuse = n => new Error(`refused, nothing written: config.toml line ${n + 1} is TOML the merge cannot read safely${BY_HAND}`);
   const out = [];
-  let ml = null, depth = 0;
+  let ml = null, depth = 0, cur = null;
   // A dotted key path from i, bare or quoted parts, whitespace around the dots; returns [keys, index after it].
   const keyPath = (line, i, n) => {
     for (const keys = []; ; i++) {
@@ -78,6 +84,7 @@ function tomlScan(lines) {
         if (j >= line.length) throw refuse(n);
         i = j + 1; continue;
       }
+      if (c === "{") cur.inline = true;
       if (c === "[" || c === "{") depth++;
       else if ((c === "]" || c === "}") && --depth < 0) throw refuse(n);
       i++;
@@ -95,7 +102,7 @@ function tomlScan(lines) {
     } else {
       const [keys, i] = keyPath(t, 0, n);
       if (t[i] !== "=") throw refuse(n);
-      out.push({ kind: "key", keys });
+      out.push(cur = { kind: "key", keys, inline: false });
       value(t, i + 1, n);
     }
   });
@@ -115,12 +122,12 @@ function tomlCheck(text) {
       nested = line.array || arrays.some(a => a.every((k, i) => line.keys[i] === k));
       if (line.array) arrays.push(line.keys);
       else if (!nested && (tables.has(id(line.keys)) || taken.has(id(line.keys))))
-        throw new Error(`refused, nothing written: the merged config.toml would define [${line.keys.join(".")}] twice`);
+        throw new Error(`refused, nothing written: the merged config.toml would define [${line.keys.join(".")}] twice${BY_HAND}`);
       else if (!nested) tables.add(id(line.keys));
       table = line.keys; seen = new Set();
     } else if (line.kind === "key") {
       if (seen.has(id(line.keys)))
-        throw new Error(`refused, nothing written: the merged config.toml would set ${[...table, ...line.keys].join(".")} twice`);
+        throw new Error(`refused, nothing written: the merged config.toml would set ${[...table, ...line.keys].join(".")} twice${BY_HAND}`);
       seen.add(id(line.keys));
       // A key line defines its value and, for a dotted key, the tables leading to it.
       const full = [...table, ...line.keys];
@@ -128,7 +135,56 @@ function tomlCheck(text) {
     }
   }
   for (const key of tables) if (taken.has(key) || arrays.some(a => id(a) === key))
-    throw new Error(`refused, nothing written: the merged config.toml would define [${JSON.parse(key).join(".")}] twice`);
+    throw new Error(`refused, nothing written: the merged config.toml would define [${JSON.parse(key).join(".")}] twice${BY_HAND}`);
+}
+
+const isPrefix = (a, b) => a.length <= b.length && a.every((k, i) => b[i] === k);
+const managedTables = sections => Object.keys(sections).map(name => name.split("."));
+
+// Refused before anything changes: a construct the line merge does not fully model, where it could touch a managed
+// key. In the root table when top-level keys are managed, and in each managed section: dotted keys, inline tables, and
+// values spanning lines. Anywhere: an array table, or a key or inline table, that defines part of a managed section.
+function tomlUnsupported(kinds, top, sections) {
+  const managed = managedTables(sections), rootManaged = Object.keys(top).length > 0;
+  const related = keys => managed.some(s => isPrefix(s, keys) || isPrefix(keys, s));
+  const refuse = (n, what) => new Error(`refused, nothing written: config.toml line ${n + 1} has ${what}${BY_HAND}`);
+  let table = [];
+  kinds.forEach((line, n) => {
+    if (line.kind === "header") {
+      table = line.keys;
+      if (line.array && related(line.keys)) throw refuse(n, "an array table at a managed section");
+      return;
+    }
+    if (line.kind !== "key") return;
+    const inSection = table.length > 0 && managed.some(s => isPrefix(s, table) && isPrefix(table, s));
+    if (inSection || (!table.length && rootManaged)) {
+      if (line.keys.length > 1) throw refuse(n, "a dotted key in a managed table");
+      if (line.inline) throw refuse(n, "an inline table in a managed table");
+      if (kinds[n + 1] && kinds[n + 1].kind === "more") throw refuse(n, "a value spanning lines in a managed table");
+    }
+    if (!inSection && related([...table, ...line.keys])) throw refuse(n, "a key that defines part of a managed section");
+  });
+}
+
+// After the merge: every managed key is set exactly once, in its own table, to its managed value.
+function managedCheck(lines, top, sections) {
+  const at = new Map();
+  let table = [];
+  tomlScan(lines).forEach((line, n) => {
+    if (line.kind === "header") table = line.array ? null : line.keys;
+    else if (line.kind === "key" && table) {
+      const id = JSON.stringify([...table, ...line.keys]);
+      at.set(id, [...(at.get(id) || []), { table, n }]);
+    }
+  });
+  const wanted = [...Object.entries(top).map(([k, v]) => [[], k, v]),
+    ...Object.entries(sections).flatMap(([name, keys]) => Object.entries(keys).map(([k, v]) => [name.split("."), k, v]))];
+  for (const [table, k, v] of wanted) {
+    const hits = at.get(JSON.stringify([...table, ...k.split(".")])) || [];
+    if (hits.length !== 1 || JSON.stringify(hits[0].table) !== JSON.stringify(table) || lines[hits[0].n].trim() !== `${k} = ${tomlValue(v)}`)
+      throw new Error(`refused, nothing written: the merged config.toml would set ${[...table, k].join(".")} more than once or `
+                      + `outside [${table.join(".")}]${BY_HAND}`);
+  }
 }
 
 // Line-based merge on the scan: keeps CRLF, comments, other keys and other sections.
@@ -136,6 +192,7 @@ function mergeToml(text, top, sections) {
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
   const lines = text.length ? text.split(/\r?\n/) : [];
   const changes = [];
+  tomlUnsupported(tomlScan(lines), top, sections);
   // Set a key at line i, replacing its whole value (with any continuation lines), or insert it at `at`, above
   // the blank lines that precede the next header but not above floor.
   const put = (kinds, i, at, floor, want, label) => {
@@ -172,26 +229,42 @@ function mergeToml(text, top, sections) {
   }
   const merged = lines.join(eol);
   tomlCheck(merged);
+  managedCheck(lines, top, sections);
   return { text: merged, changes };
 }
 
-// Replace file only while it still holds the bytes the merge read, after backing up exactly those bytes under a
-// name no other run uses. A change anyone made in between is never overwritten: the next run merges onto it.
-function write(p, file, bytes, before, after) {
-  if (p.dry_run || before === after) return null;
-  let backup = null;
-  if (bytes !== null) {
-    backup = `${file}.bak-loadout-${p.stamp}-${require("crypto").randomBytes(4).toString("hex")}`;
-    fs.writeFileSync(backup, bytes, { mode: 0o600, flag: "wx" });
-    if (!fs.readFileSync(backup).equals(bytes)) throw new Error("backup did not verify: " + backup);
-  }
-  const now = fs.existsSync(file) ? fs.readFileSync(file) : null;
-  if (now === null ? bytes !== null : bytes === null || !now.equals(bytes)) {
+// An optimistic update. Read the file and merge; back up exactly the bytes read, under a name no other run uses;
+// write the result to an exclusive temp file and fsync it; then read the file again and rename the temp over it at
+// once if it still holds those bytes. If it changed, the temp and that backup go, and the whole read and merge runs
+// once more before the host fails. This narrows the window for a concurrent edit to the moment between that re-read
+// and the rename, but cannot close it: the daemon and editors take no lock. merge(bytes) returns its report with
+// `after`, the new text, or null when nothing changes.
+function update(p, file, merge) {
+  for (let attempt = 1; ; attempt++) {
+    const bytes = fs.existsSync(file) ? fs.readFileSync(file) : null;
+    const r = merge(bytes);
+    if (p.dry_run || r.after === null) return { ...r, after: undefined, backup: null };
+    const tag = crypto.randomBytes(8).toString("hex");
+    const backup = bytes === null ? null : `${file}.bak-loadout-${p.stamp}-${tag.slice(0, 8)}`;
+    if (backup) {
+      fs.writeFileSync(backup, bytes, { mode: 0o600, flag: "wx" });
+      if (!fs.readFileSync(backup).equals(bytes)) throw new Error("backup did not verify: " + backup);
+    }
+    const tmp = `${file}.loadout-tmp-${tag}`, fd = fs.openSync(tmp, "wx", 0o600);
+    let st;
+    try { fs.writeFileSync(fd, r.after); fs.fsyncSync(fd); st = fs.fstatSync(fd); } finally { fs.closeSync(fd); }
+    if (testBeforeRename) { const [interpreter, script] = JSON.parse(testBeforeRename); execFileSync(interpreter, [script, file]); }
+    const now = fs.existsSync(file) ? fs.readFileSync(file) : null;
+    const mine = fs.lstatSync(tmp);
+    if (mine.ino !== st.ino || mine.dev !== st.dev) throw new Error("temp file is not ours: " + tmp);
+    if (now === null ? bytes === null : bytes !== null && now.equals(bytes)) {
+      fs.renameSync(tmp, file);
+      return { ...r, after: undefined, backup: backup && path.basename(backup) };
+    }
+    fs.rmSync(tmp, { force: true });
     if (backup) fs.rmSync(backup, { force: true });
-    throw new Error(path.basename(file) + " changed during the merge, so it was left as is; the next run merges onto it");
+    if (attempt === 2) throw new Error(path.basename(file) + " changed during the merge twice, so it was left as is; run the sync again");
   }
-  replaceFile(fs, file, after, 0o600);
-  return backup && path.basename(backup);
 }
 
 // sort -V style: compare the numeric runs left to right.
@@ -218,9 +291,9 @@ try {
 
   const codexFile = path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "config.toml");
   if (!fs.existsSync(codexFile)) result.codex = { status: "absent" };
-  else {
-    const bytes = fs.readFileSync(codexFile), before = bytes.toString("utf8");
-    const r = mergeToml(before, p.codex.top, p.codex.sections);
+  else result.codex = update(p, codexFile, bytes => {
+    if (bytes === null) throw new Error("config.toml disappeared during the merge, so nothing was written");
+    const before = bytes.toString("utf8"), r = mergeToml(before, p.codex.top, p.codex.sections);
     const report = {}, lines = before.split(/\r?\n/), kinds = tomlScan(lines);
     let first = kinds.findIndex(l => l.kind === "header");
     if (first < 0) first = lines.length;
@@ -228,14 +301,14 @@ try {
       const i = kinds.findIndex((l, n) => n < first && l.kind === "key" && samePath(l.keys, k));
       report[k] = i >= 0 ? lines[i].split("=").slice(1).join("=").trim() : "unset";
     }
-    result.codex = { status: r.changes.length ? "changed" : "unchanged", changes: r.changes,
-                     backup: write(p, codexFile, bytes, before, r.text), report };
-  }
+    return { status: r.changes.length ? "changed" : "unchanged", changes: r.changes, report,
+             after: r.text === before ? null : r.text };
+  });
 
   const claudeFile = path.join(os.homedir(), ".claude", "settings.json");
   if (!fs.existsSync(path.dirname(claudeFile))) result.claude = { status: "absent" };
-  else {
-    const bytes = fs.existsSync(claudeFile) ? fs.readFileSync(claudeFile) : null, before = bytes && bytes.toString("utf8");
+  else result.claude = update(p, claudeFile, bytes => {
+    const before = bytes && bytes.toString("utf8");
     const cfg = before ? JSON.parse(before) : {};
     const changes = [];
     for (const [k, v] of Object.entries(p.claude.settings)) {
@@ -250,10 +323,9 @@ try {
     for (const [k, v] of Object.entries(env)) {
       if (cfg.env[k] !== v) { cfg.env[k] = v; changes.push("env." + k); }
     }
-    const after = changes.length ? JSON.stringify(cfg, null, 2) + "\n" : before;
-    result.claude = { status: changes.length ? "changed" : "unchanged", changes,
-                      backup: write(p, claudeFile, bytes, before, after) };
-  }
+    return { status: changes.length ? "changed" : "unchanged", changes,
+             after: changes.length ? JSON.stringify(cfg, null, 2) + "\n" : null };
+  });
 
   if (p.claude.minVersion && result.claude.status !== "absent") {
     const have = claudeVersion();

@@ -213,22 +213,47 @@ class LocalMergeTest(unittest.TestCase):
     def test_headers_with_comments_array_tables_and_multiline_strings_keep_their_scope(self):
         text = "\n".join(["# host settings", 'model = "m"', "", "[[skills.config]]", 'path = "/x"', "enabled = true", "",
                           "[model_providers.example_router] # host-local comment", 'base_url = "https://old.example.test"',
-                          'instructions = """', "[model_providers.example_router]", "enabled = false", '"""', ""])
+                          "", "[notes]", 'instructions = """', "[model_providers.example_router]", "enabled = false", '"""', ""])
         result, after = self.merge(text, {"enabled": True},
                                    {"model_providers.example_router": {"base_url": "https://router.example.test/v1"}})
         self.assertIsNone(result["error"], result)
         lines = text.split("\n")
         self.assertEqual(after.split("\n"), [*lines[:2], "enabled = true", *lines[2:8],
                                               'base_url = "https://router.example.test/v1"', *lines[9:]])
-        # A dotted key already defines the section, so appending its header would make the file invalid.
+        # A dotted key already defines part of the section, so the merge cannot place its keys safely.
         dotted = 'model_providers.example_router.base_url = "https://old.example.test"\n'
         result, after = self.merge(dotted, sections={"model_providers.example_router": {"wire_api": "responses"}})
-        self.assertEqual(result["error"], "refused, nothing written: the merged config.toml would define "
-                                          "[model_providers.example_router] twice")
+        self.assertEqual(result["error"], "refused, nothing written: config.toml line 1 has a key that defines part of a "
+                                          "managed section; unsupported TOML, edit by hand")
         self.assertEqual(after, dotted)
         result, after = self.merge("[model_providers.example_router\n", {"model": "m"})
-        self.assertEqual(result["error"], "refused, nothing written: config.toml line 1 is TOML the merge cannot read safely")
+        self.assertEqual(result["error"], "refused, nothing written: config.toml line 1 is TOML the merge cannot read "
+                                          "safely; unsupported TOML, edit by hand")
         self.assertEqual(after, "[model_providers.example_router\n")
+
+    def test_an_inline_table_in_a_managed_table_is_refused_without_writing(self):
+        text = '[model_providers.example_router]\nbase_url = "https://old.example.test"\nheaders = { "X-Example" = "x" }\n'
+        result, after = self.merge(text, sections={"model_providers.example_router": {
+            "base_url": "https://router.example.test/v1"}})
+        self.assertEqual(result["error"], "refused, nothing written: config.toml line 3 has an inline table in a managed "
+                                          "table; unsupported TOML, edit by hand")
+        self.assertEqual(after, text)
+        self.assertEqual(list(self.codex.glob("config.toml.*")), [])
+
+    def test_a_change_between_the_read_and_the_rename_is_merged_not_overwritten(self):
+        hook = self.codex.parent / "edit_once.py"
+        hook.write_text("import pathlib, sys\n"
+                        "target = pathlib.Path(sys.argv[1]); marker = target.with_name('edited')\n"
+                        "if not marker.exists():\n"
+                        "    marker.touch(); target.write_bytes(target.read_bytes() + b'other = \"kept\"\\n')\n")
+        with mock.patch.dict(os.environ, {"LOADOUT_TEST_BEFORE_RENAME": json.dumps([sys.executable, str(hook)])}):
+            result, after = self.merge('model = "first"\n', {"model": "second"})
+        self.assertIsNone(result["error"], result)
+        self.assertEqual(after, 'model = "second"\nother = "kept"\n')
+        # The backup is the revision the write replaced, the other edit included; the first attempt's is gone.
+        self.assertEqual([p.read_bytes() for p in self.codex.glob("config.toml.bak-loadout-*")],
+                         [b'model = "first"\nother = "kept"\n'])
+        self.assertEqual(list(self.codex.glob("config.toml.loadout-tmp-*")), [])
 
 
 class VersionAndCatalogTest(unittest.TestCase):
