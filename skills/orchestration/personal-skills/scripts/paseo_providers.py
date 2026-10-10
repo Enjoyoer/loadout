@@ -398,7 +398,11 @@ class Runner:
                 self.cleanup_warning = str(error)
 
     def run_in_terminal(self, terminal: str, program: str, data: str) -> str:
-        self.wait_for_prompt(terminal)
+        # Input sent before the shell is up is lost, so nothing at all is sent until a prompt shows; the caller then
+        # cleans up the workspace and this host's write fails.
+        if not self.wait_for_prompt(terminal):
+            raise RuntimeError(f"relay terminal showed no shell prompt within {int(RELAY_READY_SECONDS)}s "
+                               "(readiness timeout); nothing was sent")
         # Keep the payload out of shell history. This is its own command because zsh with
         # SHARE_HISTORY saves a line as it is read, before a same-line unset runs.
         self.terminal_command(terminal, "unset HISTFILE", require_success=True)

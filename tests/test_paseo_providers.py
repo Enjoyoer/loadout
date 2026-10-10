@@ -292,7 +292,9 @@ class ProviderSyncTest(unittest.TestCase):
         (self.root / "quiet-captures").write_text("999")
         code, out = self.run_sync("--host", "tablet")
         self.assertEqual(code, 1, out)
-        self.assertIn("relay terminal did not finish within 3s; last output: (terminal output empty)", out)
+        self.assertIn("tablet (paseo-relay): write FAILED: relay terminal showed no shell prompt within 2s (readiness "
+                      "timeout); nothing was sent", out)
+        self.assertNotIn("send-keys", self.calls())
         self.assertEqual((self.root / "workspaces").read_text(), "")
 
     def test_relay_timeout_explains_and_cleans_up(self):
