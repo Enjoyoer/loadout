@@ -689,6 +689,32 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual((cloud_record["status"], cloud_record["attempt"]), ("launching", 1))
         self.assertEqual(sorted(p.name for p in Path(self.task).parent.iterdir()), ["task.json"])
 
+    def test_source_fingerprint_covers_submodule_working_tree_bytes(self):
+        # The superproject sees a dirty submodule as one gitlink and one "-dirty" diff line, whatever its dirty bytes.
+        def git(cwd, *args):
+            subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+                           check=True, capture_output=True)
+        sub = self.repo / "sub"
+        sub.mkdir()
+        git(sub, "init", "-q")
+        (sub / "file.txt").write_text("committed\n")
+        git(sub, "add", "file.txt")
+        git(sub, "commit", "-q", "-m", "sub")
+        git(self.repo, "add", "sub")
+        git(self.repo, "commit", "-q", "-m", "gitlink")
+        fingerprint = f"""
+            import {{ sourceIdentity }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())};
+            import {{ readTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            console.log(sourceIdentity(readTask({json.dumps(self.task)})).fingerprint);
+        """
+        prints = []
+        for content in ("dirty A\n", "dirty B\n"):
+            (sub / "file.txt").write_text(content)
+            done = run("node", "--input-type=module", "-e", fingerprint)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            prints.append(done.stdout.strip())
+        self.assertNotEqual(prints[0], prints[1])
+
     def test_empty_lock_is_stale_only_after_ten_seconds(self):
         lock = Path(self.task + ".lock")
         update = f"""

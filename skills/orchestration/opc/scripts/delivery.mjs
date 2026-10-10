@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertRepository, git, gitEnvironment, ownStartTime, processIdentity, processStartTime, readTask, updateTask } from './task-state.mjs';
@@ -9,20 +9,30 @@ import { requireReviewDelivery } from './web-reviewer.mjs';
 // Receipts are convenient bookkeeping, not a security boundary against trusted Workers.
 export function sourceIdentity(task) {
   assertRepository(task);
-  const cwd = task.repository.working_directory;
+  const cwd = task.repository.working_directory, head = git(cwd, 'rev-parse', 'HEAD');
+  const hash = createHash('sha256');
+  hashWorktree(hash, cwd, head);
+  return {head, fingerprint:hash.digest('hex')};
+}
+// A repository lists a submodule, or an untracked nested repository, as one directory entry and its dirty state as one
+// "-dirty" line, so an initialized one is hashed the same way in turn: its head, its diff, and its working-tree bytes.
+function hashWorktree(hash, cwd, head) {
   const paths = execFileSync('git', ['-C', cwd, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], {env:gitEnvironment()})
     .toString().split('\0').filter(Boolean);
-  const hash = createHash('sha256');
-  hash.update(git(cwd, 'diff', '--binary', 'HEAD'));
+  hash.update(head ? git(cwd, 'diff', '--binary', head) : '<no head>');
   for (const path of [...new Set(paths)].sort()) {
     hash.update(path + '\0');
     try {
       const file = join(cwd, path), stat = lstatSync(file);
       hash.update(String(stat.mode) + '\0');
-      hash.update(stat.isSymbolicLink() ? readlinkSync(file) : stat.isFile() ? readFileSync(file) : '<directory>');
+      if (stat.isDirectory() && existsSync(join(file, '.git'))) {
+        let nested = null;
+        try { nested = git(file, 'rev-parse', '--verify', '-q', 'HEAD'); } catch { /* a repository with no commit yet */ }
+        hash.update(`<repository ${nested}>\0`);
+        hashWorktree(hash, file, nested);
+      } else hash.update(stat.isSymbolicLink() ? readlinkSync(file) : stat.isFile() ? readFileSync(file) : '<directory>');
     } catch (error) { if(error.code !== 'ENOENT') throw error; hash.update('<deleted>'); }
   }
-  return {head:git(cwd, 'rev-parse', 'HEAD'), fingerprint:hash.digest('hex')};
 }
 const same = (a,b) => a?.head === b.head && a?.fingerprint === b.fingerprint;
 function idle(task) {
