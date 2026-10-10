@@ -19,11 +19,16 @@ else
   BOLD=""; DIM=""; RESET=""; BLUE=""; GREEN=""; YELLOW=""; RED=""
 fi
 
-# Author sets this at the top of the stages section.
+# Author sets these at the top of the stages section. The wizard writes only
+# to the project and repository bound here, never to ones it would infer from
+# where it was started.
 TOTAL_STAGES=0
+PROJECT_ROOT="" # the project's absolute, canonical path (`pwd -P` in its root)
+ENV_FILE=""     # absolute path of its env file; defaults to $PROJECT_ROOT/.env
+GITHUB_REPO=""  # OWNER/NAME that set_secret and set_var write to
 
 _STAGE_INDEX=0
-ENV_FILE="${ENV_FILE:-.env}"
+_BOUND=0
 WRITTEN_ENV=()    # KEYs written to ENV_FILE this run
 WRITTEN_SECRET=() # secret NAMEs set this run
 SKIPPED=()        # things we couldn't do (e.g. gh missing)
@@ -35,11 +40,37 @@ _clear() {
   if command -v tput >/dev/null 2>&1; then tput clear; else printf '\033[2J\033[3J\033[H'; fi
 }
 
-# banner "Title" shows the opening frame: what this wizard does.
+# _die "msg" stops the wizard before it writes anything else.
+_die() { printf '  %s✗ %s%s\n' "$RED" "$1" "$RESET" >&2; exit 1; }
+
+# _bind checks, once, that the wizard is about to touch the project it was
+# generated for: PROJECT_ROOT is an existing absolute, canonical directory,
+# the wizard runs from inside it, ENV_FILE lives under it, and GITHUB_REPO,
+# when set, is [HOST/]OWNER/NAME. Anything else stops the wizard before any
+# write.
+_bind() {
+  (( _BOUND )) && return 0
+  local here dir repo='^([A-Za-z0-9.-]+/)?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+  [[ "$PROJECT_ROOT" == /* && -d "$PROJECT_ROOT" && "$(cd -P -- "$PROJECT_ROOT" && pwd -P)" == "$PROJECT_ROOT" ]] \
+    || _die "PROJECT_ROOT must be the project's absolute, canonical path (got '$PROJECT_ROOT')"
+  here=$(pwd -P)
+  [[ "$here" == "$PROJECT_ROOT" || "$here" == "$PROJECT_ROOT"/* ]] \
+    || _die "this wizard sets up $PROJECT_ROOT: cd there and run it again"
+  ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env}"
+  dir=$(cd -P -- "$(dirname -- "$ENV_FILE")" 2>/dev/null && pwd -P) || dir=""
+  [[ "$ENV_FILE" == /* && ( "$dir" == "$PROJECT_ROOT" || "$dir" == "$PROJECT_ROOT"/* ) ]] \
+    || _die "ENV_FILE must be an absolute path in an existing directory under $PROJECT_ROOT (got '$ENV_FILE')"
+  [[ -z "$GITHUB_REPO" || "$GITHUB_REPO" =~ $repo ]] \
+    || _die "GITHUB_REPO must be [HOST/]OWNER/NAME (got '$GITHUB_REPO')"
+  _BOUND=1
+}
+
+# banner "Title" shows the opening frame: what this wizard does, and where.
 banner() {
+  _bind
   _clear
   printf '\n%s%s  %s%s\n' "$BOLD" "$BLUE" "$1" "$RESET"
-  printf '%s  %s stages%s\n\n' "$DIM" "$TOTAL_STAGES" "$RESET"
+  printf '%s  %s stages · %s%s%s\n\n' "$DIM" "$TOTAL_STAGES" "$PROJECT_ROOT" "${GITHUB_REPO:+ · GitHub $GITHUB_REPO}" "$RESET"
   printf '%s  You drive the browser; this wizard tells you exactly what to do and\n' "$DIM"
   printf '  captures the values you copy back. Stop any time with Ctrl-C and re-run\n'
   printf '  later, since it remembers values already saved.%s\n' "$RESET"
@@ -99,6 +130,7 @@ _existing() {
 # a default on re-runs (Enter keeps it). Visible input (non-secret).
 ask() {
   local key="$1" prompt="$2" current input
+  _bind
   current=$(_existing "$key" || true)
   if [[ -n "$current" ]]; then
     printf '  %s%s%s %s[Enter keeps current]%s ' "$BOLD" "$prompt" "$RESET" "$DIM" "$RESET"
@@ -113,6 +145,7 @@ ask() {
 # ask_secret KEY "Prompt" is like ask, but input is hidden.
 ask_secret() {
   local key="$1" prompt="$2" current input
+  _bind
   current=$(_existing "$key" || true)
   if [[ -n "$current" ]]; then
     printf '  %s%s%s %s[Enter keeps current]%s ' "$BOLD" "$prompt" "$RESET" "$DIM" "$RESET"
@@ -129,6 +162,7 @@ ask_secret() {
 # any existing line). Idempotent.
 write_env() {
   local key="$1" value="$2" tmp
+  _bind
   touch "$ENV_FILE"
   tmp=$(mktemp)
   grep -vE "^${key}=" "$ENV_FILE" > "$tmp" || true
@@ -138,31 +172,37 @@ write_env() {
   printf '  %s✓ wrote%s %s → %s\n' "$GREEN" "$RESET" "$key" "$ENV_FILE"
 }
 
-# set_secret NAME VALUE sets a GitHub Actions repo secret via gh. Falls back
-# to a warning (and records it) if gh is unavailable or unauthenticated.
+# set_secret NAME VALUE sets a GitHub Actions secret on GITHUB_REPO via gh.
+# Falls back to a warning (and records it) if gh is unavailable or
+# unauthenticated.
 set_secret() {
   local name="$1" value="$2"
+  _bind
+  [[ -n "$GITHUB_REPO" ]] || _die "set_secret $name: no GITHUB_REPO is bound"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    if printf '%s' "$value" | gh secret set "$name" >/dev/null 2>&1; then
+    if printf '%s' "$value" | gh secret set "$name" --repo "$GITHUB_REPO" >/dev/null 2>&1; then
       WRITTEN_SECRET+=("$name")
-      printf '  %s✓ set%s GitHub secret %s\n' "$GREEN" "$RESET" "$name"
+      printf '  %s✓ set%s GitHub secret %s on %s\n' "$GREEN" "$RESET" "$name" "$GITHUB_REPO"
       return
     fi
   fi
-  SKIPPED+=("GitHub secret $name (set it manually: gh secret set $name)")
+  SKIPPED+=("GitHub secret $name (set it manually: gh secret set $name --repo $GITHUB_REPO)")
   warn "skipped GitHub secret $name: gh not ready; set it later"
 }
 
-# set_var NAME VALUE sets a GitHub Actions repo variable (non-secret).
+# set_var NAME VALUE sets a GitHub Actions variable (non-secret) on
+# GITHUB_REPO.
 set_var() {
   local name="$1" value="$2"
+  _bind
+  [[ -n "$GITHUB_REPO" ]] || _die "set_var $name: no GITHUB_REPO is bound"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    if gh variable set "$name" --body "$value" >/dev/null 2>&1; then
-      printf '  %s✓ set%s GitHub variable %s\n' "$GREEN" "$RESET" "$name"
+    if gh variable set "$name" --repo "$GITHUB_REPO" --body "$value" >/dev/null 2>&1; then
+      printf '  %s✓ set%s GitHub variable %s on %s\n' "$GREEN" "$RESET" "$name" "$GITHUB_REPO"
       return
     fi
   fi
-  SKIPPED+=("GitHub variable $name")
+  SKIPPED+=("GitHub variable $name on $GITHUB_REPO")
   warn "skipped GitHub variable $name, gh not ready; set it later"
 }
 
@@ -185,6 +225,9 @@ finish() {
 # ──────────────────────────────────────────────────────────────────────────
 
 TOTAL_STAGES=1
+PROJECT_ROOT="/path/to/project" # `pwd -P` in the project root
+ENV_FILE="$PROJECT_ROOT/.env"
+GITHUB_REPO="OWNER/NAME"        # confirmed with the user; "" if nothing goes to GitHub
 
 banner "Stripe setup"
 
