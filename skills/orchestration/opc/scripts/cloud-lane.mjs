@@ -204,7 +204,8 @@ export function assessCloudProgress({ launchedAt, now, pr = null, lastPushAt = n
   return { state: 'running', reason: null };
 }
 
-// Persist intent before sending the session command. An interrupted command remains uncertain, never retry blindly.
+// Persist intent before sending the session command; updateTask returns only once the intent is flushed to disk, so it
+// survives an OS crash or power loss. An interrupted command remains uncertain, never retry blindly.
 // The only launch after the first is one on a lane reconciled as no_session, with the same marker and repo.
 export function beginCloudLaunch(taskPath, { branch, repo, launchedAt = new Date().toISOString() }) {
   if (!branchPattern.test(branch ?? '') || !repoPattern.test(repo ?? '') || !text(launchedAt)) throw Error('cloud lane marker, repo, and launch time required');

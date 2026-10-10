@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, linkSync, lstatSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync, existsSync, fsyncSync, linkSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync,
+} from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { validateRecordedWorkerRoute } from './agent-routing.mjs';
 
@@ -333,6 +335,12 @@ function publish(path, content) {
   try { linkSync(draft, path); } finally { unlinkSync(draft); }
 }
 
+// Flushes a file's bytes, or a directory's entries, to disk. Windows flushes only a handle opened for writing.
+function flush(path) {
+  const fd = openSync(path, process.platform === 'win32' ? 'r+' : 'r');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
 function releaseOwn(path, token) {
   if (lockToken(path) === token) unlinkSync(path);
 }
@@ -411,9 +419,14 @@ export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
     }
     validate(task, taskPath);
     temporary = join(dirname(taskPath), `.task-${randomUUID()}.tmp`);
-    writeFileSync(temporary, JSON.stringify(task, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    const fd = openSync(temporary, 'wx', 0o600);
+    try { writeFileSync(fd, JSON.stringify(task, null, 2) + '\n'); fsyncSync(fd); } finally { closeSync(fd); }
     if (lockToken(lock) !== token) throw Error('task lock lost; another process reclaimed it');
     renameSync(temporary, taskPath);
+    // An update is on disk before it is returned, so an intent that authorizes an external action (a cloud launch)
+    // survives an OS crash or power loss. POSIX flushes the directory entry the rename wrote; Node cannot open a
+    // directory on Windows, so there the renamed file is flushed again and the rename rests on the NTFS journal.
+    flush(process.platform === 'win32' ? taskPath : dirname(taskPath));
     return task;
   } finally {
     if (temporary && existsSync(temporary)) unlinkSync(temporary);
