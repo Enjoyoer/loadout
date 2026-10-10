@@ -435,27 +435,88 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("reload warning (config unchanged, not a failure)", out)
 
-    def test_a_clear_by_an_older_operation_leaves_newer_debt_in_place(self):
+    def in_process(self):
+        """The step's inputs for an in-process run against the fakes, and an environment keeping its record here."""
         doc = fleet.validate(HOSTS)
-        catalog = paseo_providers.load_config(self.fleet / "paseo-providers.json", doc)
-        program = fleet.pack(paseo_providers.MERGE_JS.read_bytes())
+        return (doc, paseo_providers.load_config(self.fleet / "paseo-providers.json", doc),
+                fleet.pack(paseo_providers.MERGE_JS.read_bytes()),
+                patch.dict(os.environ, {**self.env, "XDG_CONFIG_HOME": str(self.root / "hosts/laptop/.config")}))
+
+    def test_a_clear_by_an_older_operation_leaves_newer_debt_in_place(self):
+        doc, catalog, program, env = self.in_process()
         lines = []
-        with patch.dict(os.environ, self.env):
+        with env:
             runner = paseo_providers.Runner(doc["hosts"][1], "laptop", self.fleet)
             write = runner.write
 
-            def write_while_a_newer_run_takes_over(*args):
+            def write_while_a_newer_run_starts(*args):
                 output = write(*args)
-                paseo_providers.update_owed("desktop", lambda current: "20261010-000001+newer")
+                paseo_providers.update_owed("desktop", lambda debts: debts.update(
+                    {"newer": {"since": "20261010-000001", "running": time.time()}}))
                 return output
 
-            runner.write = write_while_a_newer_run_takes_over
+            runner.write = write_while_a_newer_run_starts
             status = paseo_providers.sync_host(runner, catalog, program, "20261010-000000", False, lines.append)
             owed = paseo_providers.owed_reloads()
         self.assertEqual(status, "updated", lines)
         self.assertIn("desktop (ssh): reload ok", lines)
-        # This run's reload succeeded, but the debt the newer run recorded is not this run's to clear.
-        self.assertEqual(owed, {"desktop": "20261010-000001+newer"})
+        # This run's reload succeeded, but the newer run's debt is not this run's to clear.
+        self.assertEqual(list(owed["desktop"]), ["newer"])
+
+    def test_older_operation_failing_after_a_newer_one_cleared_still_owes_a_reload(self):
+        doc, catalog, program, env = self.in_process()
+        lines = []
+        with env:
+            older, newer = (paseo_providers.Runner(doc["hosts"][1], "laptop", self.fleet) for _ in range(2))
+
+            def newer_completes_then_this_write_fails(*args):
+                # While this write runs, a newer operation writes, reloads, and clears its own debt.
+                self.assertEqual(paseo_providers.sync_host(newer, catalog, program, "20261010-000001", False,
+                                                           lines.append), "updated")
+                raise RuntimeError("connection lost")
+
+            older.write = newer_completes_then_this_write_fails
+            status = paseo_providers.sync_host(older, catalog, program, "20261010-000000", False, lines.append)
+            owed = paseo_providers.owed_reloads()
+        self.assertEqual(status, "FAILED", lines)
+        self.assertIn("desktop (ssh): reload (owed since 20261010-000000) ok", lines)
+        self.assertIn("desktop (ssh): write FAILED: connection lost", lines)
+        self.assertEqual([debt["since"] for debt in owed["desktop"].values()], ["20261010-000000"])
+        # The next run pays it: its reload starts after the failed operation ended.
+        code, out = self.run_sync("--host", "desktop")
+        self.assertEqual(code, 0, out)
+        self.assertIn("desktop (ssh): reload (owed since 20261010-000000) ok", out)
+        self.assertEqual(json.loads((self.root / "hosts/laptop/.config/loadout/provider-reloads.json").read_text()), {})
+
+    def test_a_record_lock_timeout_after_a_write_fails_that_host_and_the_next_host_syncs(self):
+        doc, _, _, env = self.in_process()
+        hosts = {host["name"]: host for host in doc["hosts"]}
+        lines = []
+        with env:
+            lock = paseo_providers.reloads_path().with_name(paseo_providers.RELOADS_LOCK)
+            write = paseo_providers.Runner.write
+
+            def write_then_another_sync_takes_the_lock(runner, *args):
+                output = write(runner, *args)
+                if runner.name == "desktop":
+                    lock.write_text("another sync\n")
+                return output
+
+            def emit(line):  # the other sync lets go once this host has failed
+                lines.append(line)
+                if line.startswith("desktop (ssh): FAILED"):
+                    lock.unlink()
+
+            with patch.object(paseo_providers.Runner, "write", write_then_another_sync_takes_the_lock), \
+                    patch.object(paseo_providers, "RELOADS_LOCK_SECONDS", 0.3):
+                statuses = paseo_providers.run(doc, self.fleet, [hosts["desktop"], hosts["laptop"]], False, emit)
+            owed = paseo_providers.owed_reloads()
+        self.assertEqual(statuses, {"desktop": "FAILED", "laptop": "updated"}, lines)
+        failure = next(line for line in lines if line.startswith("desktop (ssh): FAILED"))
+        self.assertIn("FAILED on the reload record: the reload record stayed locked for 0.3s", failure)
+        self.assertIn("; the write changed the config and the reload succeeded, so a reload may still be owed", failure)
+        self.assertIn("laptop (local): reload ok", lines)
+        self.assertEqual(list(owed), ["desktop"])
 
     def test_relay_cleanup_failure_is_reported(self):
         (self.root / "fail-archive").touch()

@@ -55,62 +55,81 @@ RELOADS_FILE = "provider-reloads.json"
 # Every read-modify-write of the record holds this lock file, waiting at most this long for another sync.
 RELOADS_LOCK = RELOADS_FILE + ".lock"
 RELOADS_LOCK_SECONDS = 15
+# A debt still marked running this long after its operation started was left by a killed run.
+RELOADS_STALE_SECONDS = 24 * 3600
+
+
+class ReloadRecordError(fleet.FleetError):
+    """The owed-reload record could not be read, locked, or written."""
 
 
 def reloads_path() -> Path:
-    """The source host's record of reloads owed, by host name, to the run stamp of the write."""
+    """The source host's record of reloads owed: by host name, every operation that may owe one."""
     windows = os.name == "nt"
     fleet_dir = fleet.config_fleet_dir(os.environ, windows) or Path.home() / "AppData" / "Roaming" / "loadout" / "fleet"
     return fleet_dir.parent / RELOADS_FILE
 
 
 def owed_reloads() -> dict:
+    """{host: {operation id: {"since": run stamp, "running": start time, kept while the operation runs}}}."""
     path = reloads_path()
     try:
-        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    except ValueError as error:
-        raise fleet.FleetError(f"unreadable reload record {path}: {error}") from error
+        owed = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError) as error:
+        raise ReloadRecordError(f"unreadable reload record {path}: {error}") from error
+    # A record from before operation ids held one finished run stamp per host.
+    return {host: {debts: {"since": debts}} if isinstance(debts, str) else debts for host, debts in owed.items()}
 
 
-def owed_since(debt: Optional[str]) -> Optional[str]:
-    """The run stamp a debt is owed since. A debt is "<stamp>+<operation>"; older records hold the stamp alone."""
-    return debt.partition("+")[0] if debt else None
+def owed_since(debts: dict) -> Optional[str]:
+    """The earliest run stamp among a host's debts; None when it owes nothing."""
+    return min((debt["since"] for debt in debts.values()), default=None)
 
 
-def update_owed(host: str, change: Callable[[Optional[str]], Optional[str]]) -> tuple:
-    """Set host's debt to change(current), None clearing it, as one read-modify-write under the lock file.
+def finished(debt: dict) -> bool:
+    """Whether a debt's operation has ended, so a reload that starts now comes after its write."""
+    return "running" not in debt or time.time() - debt["running"] > RELOADS_STALE_SECONDS
 
-    Returns (current, new). The record is written whole through a temp file. Another sync holding the
-    lock is waited for at most RELOADS_LOCK_SECONDS, then this fails naming the lock file.
+
+def update_owed(host: str, change: Callable[[dict], object]) -> dict:
+    """Apply change to host's debts in place, as one read-modify-write under the lock file; returns them as they were.
+
+    The record is written whole through a temp file. Another sync holding the lock is waited for at most
+    RELOADS_LOCK_SECONDS. Any failure, that timeout included, is a ReloadRecordError.
     """
     path = reloads_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     lock = path.with_name(RELOADS_LOCK)
     deadline = time.monotonic() + RELOADS_LOCK_SECONDS
-    while True:
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            break
-        except (FileExistsError, PermissionError) as error:  # Windows refuses a lock file being deleted this way
-            if time.monotonic() >= deadline:
-                raise fleet.FleetError(f"the reload record stayed locked for {RELOADS_LOCK_SECONDS}s ({error.strerror}): "
-                                       f"{lock}; if no other sync is running, delete that file") from error
-            time.sleep(0.05)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                break
+            except (FileExistsError, PermissionError) as error:  # Windows refuses a lock file being deleted this way
+                if time.monotonic() >= deadline:
+                    raise ReloadRecordError(f"the reload record stayed locked for {RELOADS_LOCK_SECONDS}s "
+                                            f"({error.strerror}): {lock}; if no other sync is running, delete that file"
+                                            ) from error
+                time.sleep(0.05)
+    except OSError as error:
+        raise ReloadRecordError(f"cannot lock the reload record: {error}") from error
     try:
         with os.fdopen(fd, "w") as handle:
             handle.write(f"{os.getpid()}\n")  # the holder, for a lock left behind
         owed = owed_reloads()
-        current = owed.get(host)
-        new = change(current)
-        if new != current:
-            if new is None:
+        debts = owed.setdefault(host, {})
+        before = json.loads(json.dumps(debts))
+        change(debts)
+        if debts != before:
+            if not debts:
                 owed.pop(host)
-            else:
-                owed[host] = new
             tmp = path.with_name(f"{path.name}.{os.getpid()}-{secrets.token_hex(4)}.tmp")
             tmp.write_text(json.dumps(owed, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             os.replace(tmp, path)
-        return current, new
+        return before
+    except OSError as error:
+        raise ReloadRecordError(f"cannot write the reload record {path}: {error}") from error
     finally:
         os.unlink(lock)
 
@@ -412,65 +431,94 @@ class Runner:
 
 def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: bool,
               emit: Callable[[str], None]) -> str:
-    """Returns "same", "updated", "would update", or "FAILED"."""
+    """Returns "same", "updated", "would update", or "FAILED".
+
+    Each operation records its own id among the host's debts and removes only that id, plus the debts of
+    operations that ended before its reload began. Every record change is its own short transaction, never
+    held across the write or the reload, and a record error at any of them fails this host only.
+    """
     name = f"{runner.name} ({runner.mode})"
-    token = secrets.token_hex(4)
+    op = secrets.token_hex(16)
+    mine = None  # this operation's debt, while the record holds one for it
+    write, reload = "did not run", "did not run"
+
+    def finish() -> None:
+        # Keep this operation's debt, marked ended, so a later run's reload pays it.
+        if mine:
+            update_owed(runner.name, lambda debts: debts.get(mine, {}).pop("running", None))
+
     try:
         if dry_run:
-            owed, op = owed_reloads().get(runner.name), None
+            owed = owed_since(owed_reloads().get(runner.name, {}))
         else:
-            # Owed from before the write: it can land even when its result never comes back. The debt becomes this
-            # operation's own, keeping the stamp an earlier one was owed since, so only this operation clears it.
-            owed, op = update_owed(runner.name, lambda current: f"{owed_since(current) or stamp}+{token}")
-    except fleet.FleetError as error:
-        emit(f"{name}: FAILED, nothing written: {error}")
+            # Owed from before the write: it can land even when its result never comes back.
+            owed = owed_since(update_owed(runner.name,
+                                          lambda debts: debts.update({op: {"since": stamp, "running": time.time()}})))
+            mine = op
+        try:
+            output = runner.write(program, pack(json.dumps(payload(config, runner.name, stamp, dry_run)).encode()))
+            result = parse_result(output)
+        except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
+            write = "failed, though it may have landed"
+            emit(f"{name}: write FAILED: {error}")
+            finish()
+            return "FAILED"
+        write = ("may have landed (no result)" if result is None
+                 else "changed the config" if result["wrote"] else "left the config unchanged")
+        if mine and result is not None and not result["wrote"]:
+            update_owed(runner.name, lambda debts: debts.pop(mine, None))
+            mine = None  # nothing was written, so this operation owes no reload
+        if result is None:
+            emit(f"{name}: write FAILED: no result from the merge program: {output.strip()[-300:]}")
+        elif result["error"]:
+            emit(f"{name}: write FAILED: {result['error']}")
+        else:
+            state = "CHANGED" if result["changed"] else "unchanged"
+            if dry_run and result["changed"]:
+                state = "would change (dry run)"
+            backup = f"; backup {result['backup']}" if result["backup"] else ""
+            emit(f"{name}: write {state}; labels {'verified' if result['verified'] else 'MISMATCH'}; "
+                 f"preserved [{', '.join(result['preserved'])}]{backup}")
+        if runner.cleanup_warning:
+            emit(f"{name}: cleanup warning: {runner.cleanup_warning}; the next run archives it")
+        if result is None or result["error"] or not result["verified"]:
+            finish()
+            return "FAILED"
+        retry = f" (owed since {owed})" if owed else ""
+        if dry_run:
+            emit(f"{name}: reload{retry} skipped (dry run)" + ("; the real run retries it" if owed else ""))
+            return "would update" if result["changed"] or owed else "same"
+        # Operations that ended before this reload starts have their writes covered by it.
+        paid = [key for key, debt in owed_reloads().get(runner.name, {}).items() if key != mine and finished(debt)]
+        try:
+            reload = "failed"
+            emit(f"{name}: reload{retry} {runner.reload()}")
+            reload = "succeeded"
+        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+            finish()
+            if not result["changed"] and not owed:
+                # Nothing was written and no earlier write waits on a reload, so the daemon's config is current.
+                emit(f"{name}: reload warning (config unchanged, not a failure): {error}")
+                return "same"
+            emit(f"{name}: reload{retry} FAILED: {error}; the next run retries it")
+            return "FAILED"
+        if mine or paid:
+            update_owed(runner.name, lambda debts: [debts.pop(key, None) for key in (mine, *paid) if key])
+        return "updated" if result["changed"] or owed else "same"
+    except (KeyboardInterrupt, SystemExit):
+        # Interrupted (SIGTERM and SIGHUP arrive as SystemExit): keep the debt, marked ended, for the next run.
+        try:
+            finish()
+        except ReloadRecordError:
+            pass
+        raise
+    except ReloadRecordError as error:
+        if write == "did not run":
+            emit(f"{name}: FAILED, nothing written: {error}")
+        else:
+            emit(f"{name}: FAILED on the reload record: {error}; the write {write} and the reload {reload}, "
+                 "so a reload may still be owed to this host")
         return "FAILED"
-
-    def failed() -> str:
-        if op:  # a concurrent run may have cleared its own debt before this write landed: owe one again
-            update_owed(runner.name, lambda current: current or op)
-        return "FAILED"
-
-    try:
-        output = runner.write(program, pack(json.dumps(payload(config, runner.name, stamp, dry_run)).encode()))
-        result = parse_result(output)
-    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
-        emit(f"{name}: write FAILED: {error}")
-        return failed()
-    if op and not owed and result is not None and not result["wrote"]:
-        update_owed(runner.name, lambda current: None if current == op else current)
-        op = None  # nothing was written, so this operation owes no reload
-    if result is None:
-        emit(f"{name}: write FAILED: no result from the merge program: {output.strip()[-300:]}")
-    elif result["error"]:
-        emit(f"{name}: write FAILED: {result['error']}")
-    else:
-        state = "CHANGED" if result["changed"] else "unchanged"
-        if dry_run and result["changed"]:
-            state = "would change (dry run)"
-        backup = f"; backup {result['backup']}" if result["backup"] else ""
-        emit(f"{name}: write {state}; labels {'verified' if result['verified'] else 'MISMATCH'}; "
-             f"preserved [{', '.join(result['preserved'])}]{backup}")
-    if runner.cleanup_warning:
-        emit(f"{name}: cleanup warning: {runner.cleanup_warning}; the next run archives it")
-    if result is None or result["error"] or not result["verified"]:
-        return failed()
-    retry = f" (owed since {owed_since(owed)})" if owed else ""
-    if dry_run:
-        emit(f"{name}: reload{retry} skipped (dry run)" + ("; the real run retries it" if owed else ""))
-        return "would update" if result["changed"] or owed else "same"
-    try:
-        emit(f"{name}: reload{retry} {runner.reload()}")
-    except (RuntimeError, OSError, subprocess.SubprocessError) as error:
-        if not result["changed"] and not owed:
-            # Nothing was written and no earlier write waits on a reload, so the daemon's config is current.
-            emit(f"{name}: reload warning (config unchanged, not a failure): {error}")
-            return "same"
-        emit(f"{name}: reload{retry} FAILED: {error}; the next run retries it")
-        return failed()
-    if op:
-        update_owed(runner.name, lambda current: None if current == op else current)
-    return "updated" if result["changed"] or owed else "same"
 
 
 def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool) -> dict:
