@@ -31,26 +31,35 @@ function idle(task) {
 }
 // The test command runs as its own process group (POSIX) or tree root (Windows). Windows has no process groups here:
 // taskkill /T follows parent ids down from a live root, so a descendant orphaned after its parent exited is not found
-// and keeps running.
+// and keeps running. Returns whether anything was left to signal.
 function stopGroup(pid, signal = 'SIGKILL') {
-  if (!Number.isSafeInteger(pid) || pid < 1) return;
+  if (!Number.isSafeInteger(pid) || pid < 1) return false;
   try {
     if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 5000, windowsHide: true });
     else process.kill(-pid, signal);
-  } catch (error) { if (error.code !== 'ESRCH' && error.status !== 128) throw error; }
+    return true;
+  } catch (error) { if (error.code !== 'ESRCH' && error.status !== 128) throw error; return false; }
+}
+// What recovery did about the interrupted run's test command. A POSIX process group id cannot be reused while the group
+// has members, so a gone leader's group is still signalled (ESRCH: nothing left). A pid that now names another process,
+// or one whose start time cannot be read, is never signalled, and the record says the cleanup is incomplete.
+function cleanupTests(tests) {
+  if (!tests.child_pid) return 'unknown: no test command pid recorded';
+  const identity = processIdentity(tests.child_pid, tests.child_start);
+  if (identity === 'same' || (identity === 'gone' && process.platform !== 'win32')) {
+    return stopGroup(tests.child_pid) ? 'group signalled' : 'nothing left to signal';
+  }
+  return identity === 'reused' ? 'incomplete: PID reused' : identity === 'unknown' ? 'incomplete: start time unreadable'
+    : 'incomplete: root exited, and Windows cannot find its descendants';
 }
 // Only the recorded process clears 'running'; once it is gone, or its pid names a process with another start time, the
 // run was interrupted. A live pid whose start time cannot be read still counts as the runner. Every entry point that
 // judges whether the task is busy (test, verify, merge, planner launch, reconcile) runs this first.
 export function recoverTests(taskPath) {
-  const stale=t=>t.tests?.status==='running'&&processIdentity(t.tests.pid,t.tests.pid_start)==='other';
+  const stale=t=>t.tests?.status==='running'&&['gone','reused'].includes(processIdentity(t.tests.pid,t.tests.pid_start));
   if(!stale(readTask(taskPath)))return null;
   return updateTask(taskPath,t=>{
-    if(stale(t)) {
-      // Kill only a test command whose start time still matches exactly; an unknown one may be a reused pid.
-      if(processIdentity(t.tests.child_pid,t.tests.child_start)==='same') stopGroup(t.tests.child_pid);
-      t.tests={...t.tests,status:'failed',reason:'interrupted'};
-    }
+    if(stale(t)) t.tests={...t.tests,status:'failed',reason:'interrupted',cleanup:cleanupTests(t.tests)};
   }).tests;
 }
 export async function runTests(taskPath, {argv}) {

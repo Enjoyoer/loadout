@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -57,17 +58,68 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(json.loads(rerun.stdout.strip().splitlines()[-1])["status"], "passed")
 
     def test_reused_live_pid_does_not_keep_tests_running(self):
-        task = json.loads(Path(self.task).read_text())
-        task['tests'] = {'status': 'running', 'pid': os.getpid(), 'pid_start': OLD_START, 'started_at': '2020-01-01T00:00:00.000Z'}
-        Path(self.task).write_text(json.dumps(task))
-        done = run('node', str(SCRIPTS / 'delivery.mjs'), 'reconcile', self.task)
-        self.assertEqual(json.loads(done.stdout)['reason'], 'interrupted', done.stderr)
+        lookup = f"import {{ processStartTime }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())}; console.log(processStartTime({os.getpid()}));"
+        if sys.platform != 'win32':
+            # The lookup runs ps under LC_ALL=C and TZ=UTC whatever the caller's locale and zone: a fake ps records both.
+            fake = Path(self.task).parent / 'fake-bin'
+            fake.mkdir()
+            seen = fake / 'seen'
+            (fake / 'ps').write_text(f'#!/bin/sh\nprintf "%s|%s|%s" "$LC_ALL" "$TZ" "$*" > {shlex.quote(str(seen))}\n'
+                                     'echo "Thu Jan  1 00:00:00 1970"\n')
+            (fake / 'ps').chmod(0o755)
+            env = {**os.environ, 'PATH': f'{fake}{os.pathsep}{os.environ.get("PATH", "")}', 'LC_ALL': 'de_DE.UTF-8', 'TZ': 'Asia/Tokyo'}
+            looked = run('node', '--input-type=module', '-e', lookup, env=env)
+            self.assertEqual(looked.stdout.strip(), 'Thu Jan 1 00:00:00 1970', looked.stderr)
+            self.assertEqual(seen.read_text(), f'C|UTC|-p {os.getpid()} -o lstart=')
+        real = run('node', '--input-type=module', '-e', lookup)
+        token = real.stdout.strip()
+        if sys.platform == 'win32':
+            # The UTC round-trip form, matching the creation time Windows reports for this process.
+            import ctypes
+            from ctypes import wintypes
+            from datetime import datetime, timedelta, timezone
+            self.assertRegex(token, r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}Z$', real.stderr)
+            kernel32 = ctypes.WinDLL('kernel32')
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+            times = [wintypes.FILETIME() for _ in range(4)]
+            self.assertTrue(kernel32.GetProcessTimes(kernel32.GetCurrentProcess(), *map(ctypes.byref, times)))
+            ticks = times[0].dwHighDateTime << 32 | times[0].dwLowDateTime
+            created = datetime(1601, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=ticks // 10)
+            recorded = datetime.strptime(token[:26], '%Y-%m-%dT%H:%M:%S.%f').replace(tzinfo=timezone.utc)
+            self.assertLess(abs((recorded - created).total_seconds()), 1)
+        else:
+            self.assertRegex(token, r'^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d\d:\d\d:\d\d \d{4}$', real.stderr)
+        # The exact token is this process; one second off is another process with the same pid.
+        second = re.search(r'\d\d:\d\d:(\d\d)', token)
+        value = int(second.group(1))
+        off = token[:second.start(1)] + f'{value + 1 if value < 59 else value - 1:02d}' + token[second.end(1):]
+        recover = f"import {{ recoverTests }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())}; console.log(JSON.stringify(recoverTests({json.dumps(self.task)})));"
+        for start, expected in ((token, None), (off, ('interrupted', 'incomplete: PID reused'))):
+            with self.subTest(start=start):
+                task = json.loads(Path(self.task).read_text())
+                task['tests'] = {'status': 'running', 'pid': os.getpid(), 'pid_start': start, 'started_at': '2020-01-01T00:00:00.000Z',
+                                 'child_pid': os.getpid(), 'child_start': start}
+                Path(self.task).write_text(json.dumps(task))
+                done = run('node', '--input-type=module', '-e', recover)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                tests = json.loads(done.stdout)
+                self.assertEqual(tests and (tests['reason'], tests['cleanup']), expected)
 
     @unittest.skipIf(sys.platform == 'win32', 'POSIX process groups only')
     def test_recovery_kills_test_grandchild_group(self):
-        pidfile = Path(self.task).parent / 'grandchild.pid'
-        command = ('import subprocess,time; p=subprocess.Popen([' + repr(sys.executable) +
-                   ',"-c","import time; time.sleep(120)"]); open(' + repr(str(pidfile)) +
+        def terminated(pid):
+            # Each member sleeps 120 s, so only the recovery signal can end it within this bounded wait.
+            for _ in range(60):
+                state = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], capture_output=True, text=True)
+                if not state.stdout.strip() or state.stdout.lstrip().startswith('Z'):
+                    return True
+                time.sleep(.05)
+            return False
+
+        sleeper = '[' + repr(sys.executable) + ',"-c","import time; time.sleep(120)"]'
+        pidfile, orphanfile = Path(self.task).parent / 'grandchild.pid', Path(self.task).parent / 'orphan.pid'
+        command = ('import subprocess,time; p=subprocess.Popen(' + sleeper + '); open(' + repr(str(pidfile)) +
                    ',"w").write(str(p.pid)); time.sleep(120)')
         runner = subprocess.Popen(['node', str(SCRIPTS / 'delivery.mjs'), 'test', self.task,
                                    sys.executable, '-c', command], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -81,28 +133,44 @@ class OpcDeliveryTest(unittest.TestCase):
             runner.kill()
             runner.wait(timeout=5)
             done = run('node', str(SCRIPTS / 'delivery.mjs'), 'reconcile', self.task)
-            self.assertEqual(json.loads(done.stdout)['reason'], 'interrupted', done.stderr)
-            for _ in range(30):
-                state = subprocess.run(['ps', '-p', str(grandchild), '-o', 'stat='], capture_output=True, text=True)
-                if not state.stdout.strip() or state.stdout.lstrip().startswith('Z'):
-                    break
-                time.sleep(.05)
-            else:
-                self.fail('grandchild still running after recovery')
+            self.assertEqual((json.loads(done.stdout)['reason'], json.loads(done.stdout)['cleanup']),
+                             ('interrupted', 'group signalled'), done.stderr)
+            self.assertTrue(terminated(grandchild), 'grandchild still running after recovery')
+
+            # A leader that exited and was reaped leaves no process with its pid, but its group id cannot be reused while
+            # a member lives, so recovery still signals the group.
+            leader = subprocess.Popen([sys.executable, '-c', 'import subprocess; p=subprocess.Popen(' + sleeper + '); open(' +
+                                       repr(str(orphanfile)) + ',"w").write(str(p.pid))'], start_new_session=True)
+            leader.wait(timeout=10)
+            orphan = int(orphanfile.read_text())
+            self.assertEqual(os.getpgid(orphan), leader.pid)
+            dead = subprocess.Popen([sys.executable, '-c', ''])
+            dead.wait()
+            task = json.loads(Path(self.task).read_text())
+            task['tests'] = {'status': 'running', 'pid': dead.pid, 'child_pid': leader.pid, 'child_start': OLD_START}
+            Path(self.task).write_text(json.dumps(task))
+            done = run('node', str(SCRIPTS / 'delivery.mjs'), 'reconcile', self.task)
+            self.assertEqual((json.loads(done.stdout)['reason'], json.loads(done.stdout)['cleanup']),
+                             ('interrupted', 'group signalled'), done.stderr)
+            self.assertTrue(terminated(orphan), 'orphaned group member still running after recovery')
         finally:
             if runner.poll() is None:
                 runner.kill()
-            if pidfile.exists():
-                try:
-                    os.kill(int(pidfile.read_text()), 9)
-                except ProcessLookupError:
-                    pass
+            for path in (pidfile, orphanfile):
+                if path.exists():
+                    try:
+                        os.kill(int(path.read_text()), 9)
+                    except ProcessLookupError:
+                        pass
 
     def test_cloud_intent_precedes_command_and_failed_launch_refuses_retry(self):
         done = run('node', '--input-type=module', '-e', f'''
-            import {{ beginCloudLaunch, recordCloudLaunchFailure }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
+            import {{ beginCloudLaunch, recordCloudLaunch, recordCloudLaunchFailure }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
             import {{ readTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
             const task = {json.dumps(self.task)}, lane = {{branch:'opc/example',repo:'example/app'}};
+            try {{ recordCloudLaunch(task, {{...lane, sessionId:'session_early', url:'https://example.invalid/session'}}); throw Error('launch recorded without intent'); }}
+            catch (error) {{ if (!error.message.includes('call beginCloudLaunch before')) throw error; }}
+            if (readTask(task).cloud !== null) throw Error('cloud record written without intent');
             beginCloudLaunch(task,lane);
             if (readTask(task).cloud.status !== 'launching') throw Error('intent missing before command');
             recordCloudLaunchFailure(task,'capture interrupted');
@@ -129,6 +197,23 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual((cloud['status'], cloud['session_id'], cloud['reason']), ('running', 'session_found', None))
         listed = run('node', str(SCRIPTS / 'cloud-lane.mjs'), 'reconcile', self.task)
         self.assertEqual(json.loads(listed.stdout)['status'], 'running', listed.stderr)
+        # A settled session refuses a second launch and a contradictory no_session, and the record stays byte for byte.
+        settled_bytes = Path(self.task).read_bytes()
+        refused = run('node', '--input-type=module', '-e', f'''
+            import {{ beginCloudLaunch, reconcileCloudLaunch }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
+            const task = {json.dumps(self.task)};
+            for (const [call, text] of [[() => beginCloudLaunch(task, {{branch:'opc/example',repo:'example/app'}}), 'already recorded'],
+                [() => reconcileCloudLaunch(task, {{noSession:true, reason:'no session found'}}), 'no launching or uncertain']]) {{
+              try {{ call(); }} catch (error) {{ if (error.message.includes(text)) continue; throw error; }}
+              throw Error('allowed: ' + text);
+            }}
+            console.log('refused');
+        ''')
+        self.assertEqual((refused.returncode, refused.stdout.strip()), (0, 'refused'), refused.stderr)
+        contradiction = run('node', str(SCRIPTS / 'cloud-lane.mjs'), 'reconcile', self.task, '--no-session', '--reason', 'no session found')
+        self.assertNotEqual(contradiction.returncode, 0)
+        self.assertIn('no launching or uncertain', contradiction.stderr)
+        self.assertEqual(Path(self.task).read_bytes(), settled_bytes)
 
     def test_uncertain_cloud_launch_reconciles_to_no_session_and_one_relaunch(self):
         done = run('node', '--input-type=module', '-e', f'''

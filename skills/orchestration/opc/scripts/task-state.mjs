@@ -58,12 +58,13 @@ export function processStartTime(pid) {
 let ownStart;
 export const ownStartTime = () => (ownStart === undefined ? (ownStart = processStartTime(process.pid)) : ownStart);
 
-// Whether pid is still the process recorded with start: 'same'; 'other' when it is gone or the pid now names a
-// process with a different start; 'unknown' when it is alive but either start time is missing or unreadable.
+// Whether pid is still the process recorded with start: 'same'; 'gone' when no process has that pid; 'reused' when
+// the pid names a process with a different start; 'unknown' when it is alive but either start time is missing or
+// unreadable.
 export function processIdentity(pid, start) {
-  if (!processAlive(pid)) return 'other';
+  if (!processAlive(pid)) return 'gone';
   const now = typeof start === 'string' && START_FORMAT.test(start) ? processStartTime(pid) : null;
-  return now === null ? 'unknown' : now === start ? 'same' : 'other';
+  return now === null ? 'unknown' : now === start ? 'same' : 'reused';
 }
 
 export function within(child, parent) {
@@ -314,7 +315,7 @@ function lockOwner(path) {
   try {
     const [owner = '', start = null] = readFileSync(path, 'utf8').trim().split(/\r?\n/).map(line => line.trim());
     const age = Date.now() - statSync(path).mtimeMs;
-    return { owner, age, stale: /^\d+$/.test(owner) ? processIdentity(Number(owner), start) === 'other' : owner === '' && age > 10000 };
+    return { owner, age, stale: /^\d+$/.test(owner) ? ['gone', 'reused'].includes(processIdentity(Number(owner), start)) : owner === '' && age > 10000 };
   } catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
 }
 
