@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { defaultConfig } from "../server/config.ts";
-import { guardDecision, providerDelayMinutes, safeBoundary, strictnessTier, type AgentSnapshot } from "../server/model.ts";
+import { cacheExpired, guardDecision, providerDelayMinutes, safeBoundary, strictnessTier, type AgentSnapshot } from "../server/model.ts";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 
 const config = defaultConfig();
@@ -45,6 +45,12 @@ describe("Pi cache families", () => {
       assert.equal(providerDelayMinutes("pi", config, model), null);
       assert.deepEqual(guardDecision(agent({ provider: "pi", model: model ?? null }), timeline, config, agent().lastUserMessageAt!), { ok: false, reason: "unsupported-pi-model" });
     }
+  });
+});
+
+describe("cache expiry", () => {
+  it("treats an unreadable end time as expired", () => {
+    assert.equal(cacheExpired("claude", "model", "not-a-date", Date.parse("2026-09-26T00:00:00.000Z")), true);
   });
 });
 

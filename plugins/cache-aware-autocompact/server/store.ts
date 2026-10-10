@@ -18,6 +18,31 @@ export type StateEntry = {
 type State = { version: 1; entries: StateEntry[]; turns?: Checkpoint[] };
 export type WriteJson = typeof writeJsonAtomically;
 
+const OUTCOMES: Record<StateEntry["outcome"], true> = {
+  "compact-requested": true, "would-compact": true, compacted: true, "compaction-failed": true,
+  "compaction-unconfirmed": true, skip: true, "send-failed": true,
+};
+const isTime = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value));
+const isOptionalString = (value: unknown) => value == null || typeof value === "string";
+
+function isEntry(value: unknown): value is StateEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const entry = value as Record<string, unknown>;
+  return typeof entry.key === "string" && typeof entry.agentId === "string" && isOptionalString(entry.turnId) &&
+    isOptionalString(entry.lastUserMessageAt) && isTime(entry.createdAt) && (entry.attemptedAt === undefined || isTime(entry.attemptedAt)) &&
+    typeof entry.outcome === "string" && Object.hasOwn(OUTCOMES, entry.outcome) && typeof entry.reason === "string";
+}
+
+// A remembered turn keeps only its running tool calls; each needs its call id and status.
+function isTurn(value: unknown): value is Checkpoint {
+  if (typeof value !== "object" || value === null) return false;
+  const turn = value as Record<string, unknown>;
+  return typeof turn.agentId === "string" && isOptionalString(turn.turnId) && typeof turn.key === "string" &&
+    Array.isArray(turn.timeline) && turn.timeline.every((item: Record<string, unknown> | null) => typeof item === "object" && item !== null &&
+      typeof item.type === "string" && (item.type !== "tool_call" || (typeof item.callId === "string" && typeof item.status === "string"))) &&
+    isOptionalString(turn.lastUserMessageAt) && Number.isSafeInteger(turn.retryCount) && (turn.retryCount as number) >= 0 && isTime(turn.endedAt);
+}
+
 // The same home the daemon endpoint resolver uses, so state lives with the daemon it serves.
 export function paseoHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.PASEO_HOME?.trim() || path.join(homedir(), ".paseo");
@@ -55,7 +80,8 @@ export class StateStore {
   private async readState(): Promise<State> {
     try {
       const state = JSON.parse(await readFile(this.filePath, "utf8")) as State;
-      if (state.version !== 1 || !Array.isArray(state.entries)) throw new Error("Invalid state");
+      if (state.version !== 1 || !Array.isArray(state.entries) || !state.entries.every(isEntry) ||
+        (state.turns !== undefined && (!Array.isArray(state.turns) || !state.turns.every(isTurn)))) throw new Error("Invalid state");
       return state;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, entries: [] };

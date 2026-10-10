@@ -607,6 +607,20 @@ describe("restart recovery", () => {
     assert.deepEqual(f.sends, []);
   }));
 
+  it("compacts on a retry once fresh history shows the running tool settled", async () => fixture(async (f) => {
+    const a = agent(); const page = history(a);
+    const tool = { type: "tool_call", callId: "tool1", name: "tool", detail: { type: "plain_text", text: "work" }, status: "running", error: null } as const;
+    page.entries[0]!.item = tool;
+    f.setAgents([a]); f.histories.set(a.id, page);
+    f.start(f.store); await f.recovered(); f.timers.fire();
+    await until(() => f.logs.some((line) => line.action === "retry-scheduled"));
+    assert.deepEqual(f.sends, []);
+    page.entries[0]!.item = { ...tool, status: "completed" };
+    f.timers.fire();
+    await until(() => f.logs.some((line) => line.action === "compacted"));
+    assert.deepEqual(f.sends, ["/compact"]);
+  }));
+
   it("keeps teardown pending until the state write of the store it owns settles", async () => fixture(async (f) => {
     const home = process.env.PASEO_HOME;
     process.env.PASEO_HOME = path.dirname(f.file);

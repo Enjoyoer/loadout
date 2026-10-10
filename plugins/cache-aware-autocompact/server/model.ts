@@ -23,7 +23,9 @@ export function cacheFamily(provider: string, model?: string | null): "claude" |
 export function cacheExpired(provider: string, model: string | null | undefined, endedAt: string, now: number): boolean {
   const family = cacheFamily(provider, model);
   const ttlMs = family === "claude" ? 60 * 60_000 : family === "codex" ? 30 * 60_000 : null;
-  return ttlMs !== null && now - Date.parse(endedAt) >= ttlMs;
+  const ended = Date.parse(endedAt);
+  // An unreadable end time counts as expired, never as warm.
+  return ttlMs !== null && (!Number.isFinite(ended) || now - ended >= ttlMs);
 }
 
 /** Cache expiry as a terminal skip. With extendIdleCompaction, a cold Claude-family agent still compacts once. */
@@ -54,6 +56,17 @@ export function safeBoundary(
     return { ok: false, reason: "running-tool" };
   }
   return { ok: true, reason: tier === "recall" ? "safe-boundary-recall" : "safe-boundary" };
+}
+
+/**
+ * The turn's timeline with each running tool call replaced by the same call from fresh
+ * history, so a tool that has settled since the turn ended no longer blocks. A call that
+ * fresh history does not include keeps its recorded status.
+ */
+export function withFreshToolState(timeline: readonly AgentTimelineItem[], fresh: readonly AgentTimelineItem[]): AgentTimelineItem[] {
+  const latest = new Map<string, AgentTimelineItem>();
+  for (const item of fresh) if (item.type === "tool_call") latest.set(item.callId, item);
+  return timeline.map((item) => item.type === "tool_call" && item.status === "running" ? latest.get(item.callId) ?? item : item);
 }
 
 export function guardDecision(

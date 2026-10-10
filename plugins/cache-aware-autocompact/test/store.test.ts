@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -40,6 +40,30 @@ describe("StateStore", () => {
     await store.append({ key: "a:t3", agentId: "a", turnId: "t3", lastUserMessageAt: null, createdAt: "4", outcome: "skip", reason: "q" }, 2);
     const entries = await store.read();
     assert.deepEqual(entries.map((entry) => entry.key), ["a:t2", "a:t3"]);
+  });
+
+  it("rejects malformed records instead of acting on them, and leaves the file alone", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "cache-aware-autocompact-"));
+    const filePath = path.join(dir, "state.json");
+    const turn = { agentId: "a", turnId: "t1", key: "a:t1", timeline: [], lastUserMessageAt: null, retryCount: 0, endedAt: "2026-09-26T08:00:00.000Z" };
+    const states = [
+      { version: 1, entries: [null] },
+      { version: 1, entries: [{ ...entry("a:t1"), outcome: "deleted" }] },
+      { version: 1, entries: [{ ...entry("a:t1"), createdAt: "not-a-date" }] },
+      { version: 1, entries: [], turns: "a:t1" },
+      { version: 1, entries: [], turns: [{ ...turn, endedAt: "not-a-date" }] },
+      { version: 1, entries: [], turns: [{ ...turn, timeline: [{ type: "tool_call" }] }] },
+    ];
+    for (const state of states) {
+      const text = JSON.stringify(state);
+      await writeFile(filePath, text);
+      const store = new StateStore(filePath);
+      await assert.rejects(store.read(), /Invalid state/);
+      await assert.rejects(store.latestTurn("a"), /Invalid state/);
+      await assert.rejects(store.append(entry("a:t2"), 10), /Invalid state/);
+      assert.equal(await readFile(filePath, "utf8"), text);
+    }
+    await rm(dir, { recursive: true, force: true });
   });
 
   it("keeps accepting writes after one write fails", async () => {

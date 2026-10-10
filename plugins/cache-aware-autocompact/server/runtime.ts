@@ -2,7 +2,7 @@ import type { PaseoApi, PaseoClient } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { AutoCompactConfig } from "./config.ts";
-import { cacheExpired, cacheExpiredSkip, checkpointKey, guardDecision, providerDelayMinutes, strictnessTier } from "./model.ts";
+import { cacheExpired, cacheExpiredSkip, checkpointKey, guardDecision, providerDelayMinutes, strictnessTier, withFreshToolState } from "./model.ts";
 import { StateStore, type StateEntry, type WriteJson } from "./store.ts";
 import { AgentTimers, realTimers, type TimerApi } from "./timer.ts";
 import { MetricsLog } from "./metrics.ts";
@@ -172,7 +172,9 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         return;
       }
       const tier = strictnessTier(agent.lastUsage?.contextWindowUsedTokens, config);
-      const decision = guardDecision(agent, checkpoint.timeline, config, checkpoint.lastUserMessageAt);
+      // A retry re-reads the turn's tools: one recorded as running may have settled since.
+      const timeline = withFreshToolState(checkpoint.timeline, baseline.entries.map((entry) => entry.item));
+      const decision = guardDecision(agent, timeline, config, checkpoint.lastUserMessageAt);
       if (!decision.ok) {
         const retryable = nextRetryCount(decision.reason, checkpoint.retryCount) !== null;
         await record(checkpoint, "skip", decision.reason, config, !retryable);
@@ -200,7 +202,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         if (stopped || generation !== (generations.get(checkpoint.agentId) ?? 0)) return;
         const sendDecision = beforeSend && (cacheExpiredSkip(beforeSend.provider, beforeSend.model, checkpoint.endedAt, now(), config)
           ? { ok: false, reason: "cache-expired" }
-          : guardDecision(beforeSend, checkpoint.timeline, config, checkpoint.lastUserMessageAt));
+          : guardDecision(beforeSend, timeline, config, checkpoint.lastUserMessageAt));
         if (!sendDecision || !sendDecision.ok) {
           const reason = sendDecision ? sendDecision.reason : "agent-unavailable";
           await record(checkpoint, "skip", reason, config);
