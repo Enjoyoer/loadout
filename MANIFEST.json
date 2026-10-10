@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "8b39377ee8c6bc7e2ff3c501ad1a9d15c656c99b",
+  "source_commit": "96fe37a2eec1f19c2720735ab37f07de7278a27f",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -1504,8 +1504,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 22837,
-      "sha256": "52205d6e4f85b0fe2e003c0e2dbbd24d7acbe0c27f48451a1d17a29674996686"
+      "bytes": 23233,
+      "sha256": "8b4faa937367a95a247aa05b133c8ffedf044c6b631d08acbe87f7c82e415a8d"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
@@ -1570,8 +1570,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/test/index.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 18553,
-      "sha256": "7ebb3ab914f6abf1b92ec25da158460775c9ec7a7d62d6ef7e9a0c87e13eadff"
+      "bytes": 19182,
+      "sha256": "611a40f2e15ad05e5ca0de7d17a853c0a54502c113c696327bf876e69e9ddcf7"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/model.test.ts",
