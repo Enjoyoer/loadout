@@ -102,7 +102,7 @@ class OpcDeliveryTest(unittest.TestCase):
         value = int(second.group(1))
         off = token[:second.start(1)] + f'{value + 1 if value < 59 else value - 1:02d}' + token[second.end(1):]
         recover = f"import {{ recoverTests }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())}; console.log(JSON.stringify(recoverTests({json.dumps(self.task)})));"
-        for start, expected in ((token, None), (off, ('interrupted', 'incomplete: PID reused'))):
+        for start, expected in ((token, None), (off, ('interrupted', 'cleanup incomplete: PID reused'))):
             with self.subTest(start=start):
                 task = json.loads(Path(self.task).read_text())
                 task['tests'] = {'status': 'running', 'pid': os.getpid(), 'pid_start': start, 'started_at': '2020-01-01T00:00:00.000Z',

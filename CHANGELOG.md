@@ -8,6 +8,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - `frontend-design` is now Anthropic's official frontend-design skill, copied unmodified from the official Claude Code plugin; the skill name is unchanged.
 - `merged-worker-archiver` caps archives per sweep again (`maxArchivesPerSweep`, default 5; the rest are deferred to the next sweep) and treats git-ignored files in a worktree as dirty, so an ignored `.env`, local notes, or `node_modules` now block archival.
 - `cache-aware-autocompact`, `merged-worker-archiver`, `orphan-project-sweeper`, and `usage-limit-auto-resume` now share one fail-closed daemon endpoint resolver. Its canonical source is `plugins/_shared/daemon-target.ts`, each plugin vendors a byte-identical copy, and CI fails when a copy drifts. Endpoint resolution is unchanged.
+- OPC test recovery records the cleanup of a test command whose pid another process now holds as `cleanup incomplete: PID reused` (was `incomplete: PID reused`).
 
 ### Fixed
 - `usage-limit-auto-resume` rolls back a send refused with `Transport not connected` from the stored record, undoing only what the claim set. A turn that started during the send, even one the turn-start handler has not stored yet or one that arrives while the rollback is being written, turns the record `uncertain` with its turn ID, deadline and attempt kept, instead of re-arming a duplicate send.
