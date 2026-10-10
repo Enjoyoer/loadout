@@ -1,9 +1,18 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ResumeRecord } from "./model.ts";
+import { isActive, type ResumeRecord } from "./model.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
 
 type State = { version: 2; records: ResumeRecord[] };
+
+// Terminal records only answer duplicate turn events and keep recent evidence, so the oldest beyond this bound go.
+export const MAX_TERMINAL_RECORDS = 200;
+
+function retain(records: ResumeRecord[]): ResumeRecord[] {
+  const terminal = records.filter((record) => !isActive(record)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  const dropped = new Set(terminal.slice(0, Math.max(0, terminal.length - MAX_TERMINAL_RECORDS)));
+  return records.filter((record) => !dropped.has(record));
+}
 
 /** The state file exists but cannot be read or parsed. Callers fail closed and leave the file alone. */
 export class StateUnreadableError extends Error {}
@@ -62,7 +71,7 @@ export class ResumeStore {
       const index = records.findIndex((candidate) => candidate.recordId === record.recordId);
       if (index < 0) records.push(record);
       else records[index] = record;
-      await this.persist(records);
+      await this.persist(retain(records));
     });
   }
 

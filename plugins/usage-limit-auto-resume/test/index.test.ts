@@ -399,3 +399,67 @@ it("keeps the turn from a claim when it starts while the rollback write is still
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
 });
+
+it("sends nothing when a permission request's decision lands between the send gates and the resume claim", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-claim-"));
+  const plugins = pluginTracker();
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  const originalLog = console.log;
+  const logs: string[] = [];
+  console.log = (line: string) => { logs.push(line); };
+  try {
+    const config = ConfigSchema.parse({ armed: true });
+    const record: ResumeRecord = { ...buildRecord(agent, "out of credits", undefined, config, Date.now() - 6 * 3600_000, "turn-1")!, state: "parked" };
+    const store = new ResumeStore();
+    await store.upsert(record);
+    const handlers = new Map<string, (event: unknown) => void>();
+    let sends = 0;
+    // The gates have passed and the claim is the sweep's first store write. Deliver the permission request first and
+    // let its handler store its decision before the claim's write runs.
+    let holdClaim = true;
+    let permissionStored: Promise<void> | null = null;
+    const update = ResumeStore.prototype.update;
+    mock.method(ResumeStore.prototype, "update", function (this: ResumeStore, ...args: Parameters<ResumeStore["update"]>) {
+      if (!holdClaim) return update.apply(this, args);
+      holdClaim = false;
+      handlers.get("agent.permission_requested")!({ agent: { id: agent.id } });
+      permissionStored = (async () => {
+        for (let attempt = 0; attempt < 200 && (await store.read())[0]?.state !== "uncertain"; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+      })();
+      return permissionStored.then(() => update.apply(this, args));
+    });
+    const open = async () => ({
+      getConnectionState: () => ({ status: "connected" }),
+      close: async () => undefined,
+      agents: { ref: () => ({
+        refresh: async () => ({ agent }),
+        send: async () => { sends += 1; },
+      }) },
+    } as unknown as PaseoClient);
+    const server = {
+      registerSettings: () => ({ read: async () => ({ status: "ready", revision: "r1", values: config }) }),
+      on: (name: string, handler: (event: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
+    } as unknown as PluginServerContext;
+    const cleanup = plugins.start(server, open);
+    await until(() => logs.some((line) => line.includes("send-skipped") || line.includes("resume-sent")));
+    assert.ok(permissionStored, "the claim's write was held behind the permission request");
+    await permissionStored;
+    (cleanup as () => void)();
+    assert.equal(sends, 0);
+    const [stored] = await store.read();
+    assert.equal(stored?.state, "uncertain");
+    assert.equal(stored?.terminalReason, "permission-requested");
+    assert.deepEqual(stored?.attempts, []);
+  } finally {
+    try {
+      await plugins.dispose(home);
+    } finally {
+      mock.restoreAll();
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  }
+});

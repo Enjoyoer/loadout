@@ -3,6 +3,11 @@ import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 
 export type ResumeState = "detected" | "parked" | "resuming" | "verifying" | "done" | "exhausted" | "opted-out" | "superseded" | "uncertain";
 
+/** A record in one of these states can still send or is verifying a send; every other state is terminal. */
+export function isActive(record: { state: ResumeState }): boolean {
+  return record.state === "detected" || record.state === "parked" || record.state === "resuming" || record.state === "verifying";
+}
+
 export type ResumeAttempt = {
   at: string;
   messageId: string;
@@ -37,6 +42,8 @@ export type ResumeRecord = {
   notBefore: string;
   resetAt: string | null;
   attempts: ResumeAttempt[];
+  // Older attempts trimmed from `attempts`; they still count toward the next attempt's message ID.
+  attemptsDropped?: number;
   state: ResumeState;
   sentAt: string | null;
   resumeTurnId: string | null;
@@ -320,11 +327,21 @@ export function transientRejectionState(reason: string): ResumeState {
   return reason === "newer-user-message" ? "superseded" : reason === "max-attempts" ? "exhausted" : "uncertain";
 }
 
+// Failed-turn records retry without a cap, so only their newest attempts are kept in full.
+export const MAX_KEPT_ATTEMPTS = 20;
+
+export function attemptCount(record: ResumeRecord): number {
+  return (record.attemptsDropped ?? 0) + record.attempts.length;
+}
+
 export function afterTransientFailure(record: ResumeRecord, assistant: string, userText: string, userMessageId: string, lastUserMessageAt: string, config: ResumeConfig, now = Date.now()): ResumeRecord {
   const exhausted = !record.failedOutcome && record.attempts.length >= (config.transientMaxAttempts ?? 3);
   const updatedAt = new Date(now).toISOString();
+  const attempts = record.attempts.slice(-MAX_KEPT_ATTEMPTS);
+  const dropped = record.attempts.length - attempts.length;
   return {
     ...record,
+    ...(dropped > 0 ? { attempts, attemptsDropped: (record.attemptsDropped ?? 0) + dropped } : {}),
     state: exhausted ? "exhausted" : "parked",
     terminalReason: exhausted ? "max-attempts" : null,
     failedAssistantText: assistant,
@@ -332,7 +349,7 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
     expectedUserText: userText,
     expectedUserMessageId: userMessageId,
     lastUserMessageAt,
-    notBefore: new Date(now + transientDelaySeconds(config, record.attempts.length) * 1000).toISOString(),
+    notBefore: new Date(now + transientDelaySeconds(config, attemptCount(record)) * 1000).toISOString(),
     resumeTurnId: null, resumeStartedAt: null, resumeFinishedAt: null,
     sentAt: null, verificationDeadlineAt: null, updatedAt,
   };
@@ -341,14 +358,26 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
 /** A turn start seen while a send was in flight, noted before the store records it. */
 export type TurnObservation = { turnId: string | null; startedAt: string | null };
 
-/** One send in flight: what its claim writes, whether its rollback has replaced the claim, and any turn seen meanwhile. */
+/** The decision of a safety event (a permission request, an archive) that reached an agent with a send in flight. */
+export type ClaimCancel = { state: ResumeState; reason: string };
+
+/**
+ * One send in flight: what its claim writes, whether its rollback has replaced the claim, any turn seen meanwhile, and
+ * a safety event seen before the send started.
+ */
 export type InFlightClaim = TurnObservation & {
   recordId: string;
   attempt: ResumeAttempt;
   sentAt: string;
   verificationDeadlineAt: string;
   released: boolean;
+  cancelled: ClaimCancel | null;
 };
+
+/** The record still carries this claim: resuming, with the claim's own attempt. */
+export function holdsClaim(current: ResumeRecord, claim: InFlightClaim): boolean {
+  return current.state === "resuming" && current.attempts.some((attempt) => attempt.messageId === claim.attempt.messageId && attempt.at === claim.attempt.at);
+}
 
 // Applies a turn start seen for an in-flight claim to the claim's record. While the record still carries the claim,
 // the turn is attached. Once the claim's rollback is stored (released, record parked again), the message may have
@@ -436,5 +465,16 @@ export function continuationPrompt(record: ResumeRecord): string {
 }
 
 export function messageId(record: ResumeRecord): string {
-  return `${record.recordId}:attempt:${record.attempts.length + 1}`;
+  return `${record.recordId}:attempt:${attemptCount(record) + 1}`;
+}
+
+/** The exact text a send for this record carries. */
+export function resumePrompt(record: ResumeRecord): string {
+  return record.kind === "transient" ? record.retryPrompt! : continuationPrompt(record);
+}
+
+// True when the newest user row is the record's latest automatic message: its stable ID and the exact text it sent.
+export function isOwnLatestMessage(record: ResumeRecord, user: Extract<AgentTimelineItem, { type: "user_message" }> | null): boolean {
+  const sent = record.attempts.at(-1);
+  return !!sent && !!user && (user.messageId ?? user.clientMessageId) === sent.messageId && user.text === resumePrompt(record);
 }
