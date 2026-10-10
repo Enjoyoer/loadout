@@ -3,9 +3,10 @@
 
 Reads <fleet>/paseo-providers.json, merges its pinned provider fields into each
 host's ~/.paseo/config.json (every other provider and host-local field is kept,
-and the file is backed up in place), then reloads the daemon. Write and reload
-are reported separately. A write that may have changed the config leaves a
-reload owed to that host, recorded on the source host until a reload succeeds,
+a change another writer made during the merge is merged again rather than
+overwritten, and the revision replaced is backed up in place), then reloads the
+daemon. Write and reload are reported separately. A write that may have changed
+the config or a Pi runtime file leaves a reload owed to that host, recorded on the source host until a reload succeeds,
 so the next run retries it and a failed retry is a failure. A reload failure
 after an unchanged write with nothing owed is only a warning.
 """
@@ -610,11 +611,18 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
         return "FAILED"
 
 
+def merge_program() -> str:
+    """The merge program packed without its whole-line comments and indentation, so a relay still sends a typical
+    payload inline (RELAY_INLINE_LIMIT). The program holds no multiline string or template literal to change."""
+    lines = MERGE_JS.read_text(encoding="utf-8").splitlines()
+    return pack("\n".join(line.strip() for line in lines if not line.lstrip().startswith("//")).encode())
+
+
 def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool) -> dict:
     """Load the provider config and the merge program once per sync."""
     return {"fleet_doc": fleet_doc, "fleet_dir": fleet_dir, "dry_run": dry_run,
             "config": load_config(fleet_dir / "paseo-providers.json", fleet_doc),
-            "program": pack(MERGE_JS.read_bytes()), "stamp": datetime.now().strftime("%Y%m%d-%H%M%S")}
+            "program": merge_program(), "stamp": datetime.now().strftime("%Y%m%d-%H%M%S")}
 
 
 def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
