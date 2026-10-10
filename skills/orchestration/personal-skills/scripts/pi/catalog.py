@@ -41,6 +41,14 @@ def derive(providers, pi):
                 if default:raise ValueError('source catalog has multiple default models')
                 default=(source,row)
     if not rows:raise ValueError('empty Pi source catalog')
+    # Optional Pi-only context windows by canonical label, for a backend whose effective cap is below the
+    # catalog default. Pi's context meter and compaction trigger read contextWindow; the API entries below copy it.
+    windows=pi.get('contextWindows',{})
+    if not isinstance(windows,dict) or not set(windows)<=labels or \
+            not all(type(n) is int and n>0 for n in windows.values()):
+        raise ValueError('contextWindows must map Pi catalog labels to positive integers')
+    for model in models:
+        if model['name'] in windows:model['contextWindow']=windows[model['name']]
     # Direct providers add picker rows from their single model list, after the fleet rows.
     for name,provider in direct_providers(runtime).items():
         for model in provider['models']:
