@@ -35,9 +35,14 @@ try {
     const runtimeRoot = expand(p.pi.root);
     if (!p.dry_run) {
       const env={...process.env};for(const key of ['PASEO_HOME','PASEO_HOST','PASEO_AGENT_ID','PASEO_AGENT_CWD']) delete env[key];
+      // Test-only hook: LOADOUT_TEST_PASEO is a JSON [interpreter, fake script] run as argv, without a shell.
+      // It is never set outside tests; unset, paseo runs through the two branches below unchanged.
+      const testPaseo=process.env.LOADOUT_TEST_PASEO&&JSON.parse(process.env.LOADOUT_TEST_PASEO);
       // Windows ships the CLI as an npm .cmd shim, which only runs through a shell. The command is a
       // constant; one string avoids Node's DEP0190 warning for args with shell:true.
-      const status=process.platform==='win32'
+      const status=testPaseo
+        ? spawnSync(testPaseo[0],[testPaseo[1],'daemon','status','--json'],{env,encoding:'utf8'})
+        : process.platform==='win32'
         ? spawnSync('paseo daemon status --json',{env,encoding:'utf8',shell:true})
         : spawnSync('paseo',['daemon','status','--json'],{env,encoding:'utf8'});
       const daemon=status.status===0 ? JSON.parse(status.stdout) : {};

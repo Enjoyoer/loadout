@@ -379,7 +379,6 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         done=subprocess.run(['node','--input-type=module','-e',script,(opc/'agent-routing.mjs').as_uri(),(opc/'paseo-worker.mjs').as_uri()],capture_output=True,text=True)
         self.assertEqual(done.returncode,0,done.stderr)
 
-    @unittest.skipIf(os.name == "nt", "fake paseo is a POSIX shell script")
     def test_shared_catalog_generates_models_and_picker_in_one_sync(self):
         import gzip,base64,os
         sys.path.insert(0,str(PI));sys.path.insert(0,str(PI.parent))
@@ -389,12 +388,13 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         with tempfile.TemporaryDirectory() as tmp:
             base=Path(tmp);root=base/'pi';config=base/'config.json';config.write_text('{"agents":{"providers":{"codex":{"enabled":true}}},"daemon":{"agentProfiles":[{"id":"native","provider":"codex"}]}}')
             package=root/'app/node_modules/@earendil-works/pi-coding-agent/package.json';package.parent.mkdir(parents=True);package.write_text('{"version":"1.0.0"}')
-            bin_dir=base/"bin";bin_dir.mkdir();paseo=bin_dir/"paseo";paseo.write_text("#!/bin/sh\necho '{\"daemonVersion\":\"0.10.3\",\"connectedDaemon\":\"reachable\"}'\n");paseo.chmod(0o755)
+            # The merge runs this fake through its LOADOUT_TEST_PASEO hook, as argv: never a paseo on PATH.
+            paseo=base/"fake_paseo.py";paseo.write_text("print('{\"daemonVersion\":\"0.10.3\",\"connectedDaemon\":\"reachable\"}')\n")
             pi={'root':str(root),'runtime':{'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'EXISTING_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'}}}
             cfg={'providers':source,'pi':pi}
             data=paseo_providers.payload(cfg,'example', 'test',False);data['config_path']=str(config)
             packed=base64.b64encode(gzip.compress(json.dumps(data).encode())).decode()
-            env={**os.environ,'PATH':str(bin_dir)+os.pathsep+os.environ['PATH']}
+            env={**os.environ,'LOADOUT_TEST_PASEO':json.dumps([sys.executable,str(paseo)])}
             result=subprocess.run(['node',str(PI.parent/'paseo_providers_merge.js'),packed],env=env,capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             picker=json.loads(config.read_text())['agents']['providers']['pi']['models'];models=json.loads((root/'agent/models.json').read_text())['providers']['fleet']['models']
