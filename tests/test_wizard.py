@@ -1,5 +1,6 @@
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -51,9 +52,23 @@ class WizardTest(unittest.TestCase):
         ]) + "\n")
         return script
 
-    def run_wizard(self, cwd, answers, stages):
-        return subprocess.run(["bash", str(self.wizard(stages))], cwd=cwd, input=answers, env=self.env,
+    def run_wizard(self, cwd, answers, stages, env=None):
+        return subprocess.run(["bash", str(self.wizard(stages))], cwd=cwd, input=answers, env=env or self.env,
                               capture_output=True, text=True, timeout=60)
+
+    def stub(self, name, before):
+        # A PATH stub that runs `before`, then the real command.
+        stubs = self.base / "stubs"
+        stubs.mkdir(exist_ok=True)
+        (stubs / name).write_text(f'#!/bin/sh\n{before}\nexec {shlex.quote(shutil.which(name))} "$@"\n')
+        (stubs / name).chmod(0o755)
+        return {**self.env, "PATH": f"{stubs}{os.pathsep}{self.env['PATH']}"}
+
+    def wait_for(self, path):
+        deadline = time.monotonic() + 30
+        while not path.exists():
+            self.assertLess(time.monotonic(), deadline, f"{path.name} never appeared")
+            time.sleep(0.02)
 
     def test_writes_only_the_project_and_repository_it_was_generated_for(self):
         # Run from another project, it once wrote that project's .env and its same-named GitHub secret.
@@ -116,19 +131,29 @@ class WizardTest(unittest.TestCase):
     def test_two_overlapping_writers_keep_both_keys(self):
         env_file = self.project / ".env"
         env_file.write_text("OTHER=keep\n")
-        lock = self.project / ".env.lock"
-        lock.mkdir()  # both writers queue on it, then write one after the other
+        ready, waiting, go = (self.base / name for name in ("ready", "waiting", "go"))
+        # The first writer makes its temp file only while it holds the lock: there it says so and waits for go.
+        # The second writer sleeps only while it waits for that lock: there it says so.
+        self.stub("mktemp", f'if [ -n "$HOLD" ]; then : > {shlex.quote(str(ready))}; i=0; '
+                            f'while [ ! -e {shlex.quote(str(go))} ] && [ $i -lt 600 ]; do '
+                            f'{shlex.quote(shutil.which("sleep"))} 0.05; i=$((i+1)); done; fi')
+        env = self.stub("sleep", f'[ -n "$HOLD" ] || : > {shlex.quote(str(waiting))}')
         writers = []
-        for key in ("KEY_A", "KEY_B"):
+
+        def start(key, extra):
             script = self.wizard(f'ask {key} "Value:"\nwrite_env {key} "${key}"', f"{key}.sh")
             answers = self.base / f"{key}.in"
             answers.write_text(f"\n{key.lower()}\n")
             with answers.open() as stdin:
                 writers.append(subprocess.Popen(["bash", str(script)], cwd=self.project, stdin=stdin,
                                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                                env=self.env))
-        time.sleep(1)
-        lock.rmdir()
+                                                env={**env, **extra}))
+
+        start("KEY_A", {"HOLD": "1"})
+        self.wait_for(ready)
+        start("KEY_B", {})
+        self.wait_for(waiting)
+        go.touch()
         for writer in writers:
             out, err = writer.communicate(timeout=60)
             self.assertEqual(writer.returncode, 0, out + err)
@@ -160,6 +185,18 @@ class WizardTest(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0, done.stdout)
         self.assertEqual(os.readlink(self.project / ".env"), str(hidden / ".env"))
         self.assertEqual((hidden / ".env").read_text(), "OTHER=keep\n")
+        self.assertEqual(sorted(p.name for p in self.project.iterdir()), [".env"])
+        self.assertFalse(self.gh_log.exists())
+
+    def test_a_stat_failure_other_than_enoent_stops_the_wizard(self):
+        env_file = self.project / ".env"
+        env_file.write_text("API_KEY=old\nOTHER=keep\n")
+        env = self.stub("stat", 'for arg; do last=$arg; done\n'
+                                'case "$last" in */.env) echo "stat: cannot statx \'$last\': Permission denied" >&2; exit 1;; esac')
+        done = self.run_wizard(self.project, "\nnew-key\n", KEY_STAGE, env)
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertIn("Permission denied", done.stderr)
+        self.assertEqual(env_file.read_text(), "API_KEY=old\nOTHER=keep\n")
         self.assertEqual(sorted(p.name for p in self.project.iterdir()), [".env"])
         self.assertFalse(self.gh_log.exists())
 

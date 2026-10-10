@@ -153,19 +153,29 @@ _env_line() {
   else return 1; fi
 }
 
-# _env_file_present succeeds for a regular ENV_FILE and fails when ENV_FILE
-# confirmedly doesn't exist (its directory can be searched and holds no such
-# name). A symlink, any other kind of file, or an absence it can't confirm
-# stops the wizard before ENV_FILE is read or replaced.
+# _env_file_present succeeds for a regular ENV_FILE and fails when stat
+# reports "No such file or directory" for it. stat never follows a symlink
+# here, and its own error is read rather than a bash test that returns false
+# on any lookup error: a symlink, any other kind of file, or any other stat
+# failure stops the wizard before ENV_FILE is read or replaced.
+_STAT_TYPE=() # stat's file-type option: -c %F (GNU, BusyBox) or -f %HT (BSD, macOS)
 _env_file_present() {
-  local dir
-  if [[ -L "$ENV_FILE" ]]; then _die "$ENV_FILE is a symlink; the wizard reads and writes only a regular file there"
-  elif [[ -f "$ENV_FILE" ]]; then return 0
-  elif [[ -e "$ENV_FILE" ]]; then _die "$ENV_FILE is not a regular file"
+  local out
+  if (( ! ${#_STAT_TYPE[@]} )); then
+    if [[ "$(LC_ALL=C stat -c %F / 2>/dev/null)" == directory ]]; then _STAT_TYPE=(-c %F)
+    elif [[ "$(LC_ALL=C stat -f %HT / 2>/dev/null)" == Directory ]]; then _STAT_TYPE=(-f %HT)
+    else _die "couldn't find a stat command that reports file types"
+    fi
   fi
-  dir=$(dirname -- "$ENV_FILE")
-  [[ -d "$dir" && -x "$dir" ]] || _die "couldn't check $ENV_FILE"
-  return 1
+  if out=$(LC_ALL=C stat "${_STAT_TYPE[@]}" -- "$ENV_FILE" 2>&1); then
+    case "$out" in
+      "regular file"|"regular empty file"|"Regular File") return 0 ;;
+      "symbolic link"|"Symbolic Link") _die "$ENV_FILE is a symlink; the wizard reads and writes only a regular file there" ;;
+      *) _die "$ENV_FILE is not a regular file" ;;
+    esac
+  fi
+  [[ "$out" == *": No such file or directory" ]] && return 1
+  _die "couldn't check $ENV_FILE (${out##*: }); it is unchanged"
 }
 
 # _existing KEY sets _CUR_STATE to "missing" (no env file, or no line for
@@ -277,8 +287,9 @@ write_env() {
   done
   _HELD_LOCK=$lock
   _upsert_env "$key" "$line" || _die "couldn't update $ENV_FILE; it is unchanged"
-  _HELD_LOCK=""
-  rmdir -- "$lock" 2>/dev/null || true
+  if rmdir -- "$lock" 2>/dev/null; then _HELD_LOCK=""
+  else warn "couldn't remove $lock yet; the wizard tries again when it exits"
+  fi
   WRITTEN_ENV+=("$key")
   printf '  %s✓ wrote%s %s → %s\n' "$GREEN" "$RESET" "$key" "$ENV_FILE"
 }
