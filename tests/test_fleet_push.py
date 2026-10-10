@@ -144,7 +144,8 @@ class FleetPushTest(unittest.TestCase):
         payload = {"dry_run": False, "target": str(self.target("desktop")), "files": fleet.fleet_files(self.source)}
         raw, digest = fleet.envelope(fleet.PUSH_JS, payload)
         node = ["node", "-r", str(preload)] if preload else ["node"]
-        done = subprocess.run([*node, "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True)
+        env = {**os.environ, "HOME": str(self.root / "hosts/desktop"), "USERPROFILE": str(self.root / "hosts/desktop")}
+        done = subprocess.run([*node, "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True, env=env)
         return fleet.parse_result(done.stdout)
 
     def test_run_cut_off_part_way_recognizes_its_own_writes(self):

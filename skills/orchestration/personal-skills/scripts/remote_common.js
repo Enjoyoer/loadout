@@ -32,13 +32,15 @@ function baseFor(path, home, root) {
 const portable = rel => rel.split("/").every(x =>
   x && x !== "." && x !== ".." && !/[\\:\x00-\x1f]|[. ]$|^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(x));
 
-// Throws unless every path is portable and no two differ only in case or Unicode normalization, which
-// would be one file on a macOS or Windows host.
+// One key for names a case-insensitive (macOS or Windows) host treats as the same file.
+const foldPath = rel => rel.normalize("NFC").toUpperCase().toLowerCase();
+
+// Throws unless every path is portable and no two name one file on a case-insensitive host.
 function checkPaths(rels) {
   const seen = new Map();
   for (const rel of rels) {
     if (!portable(rel)) throw new Error("invalid path from source: " + rel);
-    const key = rel.normalize("NFC").toLowerCase();
+    const key = foldPath(rel);
     if (seen.has(key)) throw new Error(`paths from source name one file on a case-insensitive host: ${seen.get(key)}, ${rel}`);
     seen.set(key, rel);
   }
@@ -94,4 +96,4 @@ function removeFile(fs, file, accepted) {
   throw new Error("changed since preflight, not removed: " + file + (back ? "" : "; kept at " + held));
 }
 
-if (typeof module === "object") module.exports = { checkAncestors, baseFor, portable, checkPaths, loadoutDir, checkUnchanged, replaceFile, removeFile };
+if (typeof module === "object") module.exports = { checkAncestors, baseFor, portable, foldPath, checkPaths, loadoutDir, checkUnchanged, replaceFile, removeFile };

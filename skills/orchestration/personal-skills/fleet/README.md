@@ -35,7 +35,7 @@ Put skills that must stay private (personal, account-bound, or holding credentia
 - A name that is also a published skill stops the run; rename one of them.
 - Every overlay file hash a host has accepted is recorded in `skills/.loadout-overlay.json`, so a newer version replaces an older installed one while a hand edit on a host stays a conflict. A skill that moved here from the public repository also replaces its last published copy.
 - A skill removed from the overlay is retired from hosts like an unpublished package (see `Local-edit protection` in `SKILL.md`), so keep the overlay complete on the source host and check `--dry-run` first. Set `skills_overlay: true` in `hosts.json` when the fleet keeps an overlay: then a missing `skills/`, or one that is not a directory, stops all retirement on every host, each reported as `blocked`. To retire every overlay skill, leave an empty `skills/` directory.
-- Hosts install overlay files owner-only: on macOS and Linux as `0600` files in `0700` directories the sync creates, and a replaced file keeps stricter permissions it already had. On Windows they inherit the user profile's ACL (the user, SYSTEM and Administrators by default).
+- Hosts install overlay files owner-only: on macOS and Linux as `0600` files in `0700` directories the sync creates, and a replaced file keeps stricter permissions it already had; overlay files and directories an earlier sync installed lose group and other access. On Windows they inherit the user profile's ACL (the user, SYSTEM and Administrators by default).
 - `__pycache__`, `.pyc`, and `.DS_Store` are skipped; symlinks are errors.
 - The fleet push does not copy `skills/` to other hosts; skill bytes travel only through the skills step.
 

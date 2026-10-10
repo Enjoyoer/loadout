@@ -7,7 +7,8 @@
 // (global instructions). Anything else is a conflict and nothing is written.
 // The record also accepts a skill file's last synced version, and a version a cut-off run
 // recorded as pending before writing it. Each write checks its file again right before it.
-// A private file (from the fleet's overlay) is written 0600 in 0700 directories it creates.
+// A private file (from the fleet's overlay) is written 0600 in 0700 directories it creates, and
+// one installed before that loses group and other access.
 // global.claude may be "managed-settings:claudeMd": the claudeMd string field of
 // Claude Code's managed-settings.json, preflighted by value; only that field changes.
 // keep (null: retire nothing) names skills never retired. The record's skills section lists each
@@ -141,12 +142,17 @@ function writeManaged(w) {
       fs.writeFileSync(tmp, bytes, { mode: 0o600 });
       if (backup) sudo("cp", "-p", file, backup); else sudo("mkdir", "-p", path.dirname(file));
       sudo("cp", tmp, staged);
-      if (st) sudo("chown", `${st.uid}:${st.gid}`, staged);
-      sudo("chmod", mode.toString(8), staged);
-      const own = fs.lstatSync(staged);
-      if (!own.isFile() || own.uid !== (st ? st.uid : 0)) throw new Error("staged file is not ours: " + staged);
-      check();
-      sudo("mv", "-f", staged, file);
+      try {
+        if (st) sudo("chown", `${st.uid}:${st.gid}`, staged);
+        sudo("chmod", mode.toString(8), staged);
+        const own = fs.lstatSync(staged);
+        if (!own.isFile() || own.uid !== (st ? st.uid : 0)) throw new Error("staged file is not ours: " + staged);
+        check();
+        sudo("mv", "-f", staged, file);
+      } catch (e) {
+        try { sudo("rm", "-f", staged); } catch { /* the error on its way out says more */ }
+        throw e;
+      }
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   }
   const now = JSON.parse(fs.readFileSync(file, "utf8")), after = fs.statSync(file);
@@ -256,8 +262,9 @@ try {
       for (const [rel, f] of Object.entries(p.files))
         consider(path.join(root, ...rel.split("/")), root, f.sha256, [...f.prior, ...accepted(path.join(root, ...rel.split("/")), root, rel)],
           client + ":" + rel, data[rel], false, f.private);
+      // A skill renamed only in case is the kept skill itself on a macOS or Windows host, so it stays.
       for (const skill of p.keep ? new Set(Object.keys(owned[root] || {}).map(r => r.split("/")[0])) : [])
-        if (!p.keep.includes(skill)) retire(root, skill, client + ":" + skill);
+        if (!p.keep.some(k => foldPath(k) === foldPath(skill))) retire(root, skill, client + ":" + skill);
     }
     if (p.global && p.global.targets[client]) {
       const g = Buffer.from(p.global.data, "base64");
@@ -282,7 +289,11 @@ try {
   // recognizes its own writes next time instead of reporting them as local edits.
   for (const w of writes) pending[w.key] = [...new Set([...(pending[w.key] || []), sha(w.data)])];
   if (writes.length) { record.pending = pending; save(); }
+  const written = new Set();
   for (const w of writes) {
+    // Two clients can share one global target: the first write installs it for both.
+    if (written.has(w.key)) continue;
+    written.add(w.key);
     if (w.managed) { writeManaged(w); records[w.key] = sha(w.data); continue; }
     // Right before the replace: the directories down to the file, and the file still as preflight found it.
     const check = () => { checkAncestors(fs, path, w.root, w.file, baseFor(path, home, w.root)); checkUnchanged(fs, w.file, w.have); };
@@ -295,6 +306,19 @@ try {
     if (sha(fs.readFileSync(w.file)) !== sha(w.data)) throw new Error("verification failed after write: " + w.label);
     if (w.global) records[w.key] = sha(w.data);
   }
+  // A private file a sync installed before private files were owner-only, and its directories below the
+  // skills root, lose group and other access. Opened without following a link, so only that entry changes.
+  const tighten = file => {
+    let fd;
+    try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); } catch (e) { if (e.code === "ENOENT") return; throw e; }
+    try { const mode = fs.fstatSync(fd).mode; if (mode & 0o077) fs.fchmodSync(fd, mode & 0o700); } finally { fs.closeSync(fd); }
+  };
+  if (process.platform !== "win32")
+    for (const root of roots) for (const [rel, f] of Object.entries(p.files)) if (f.private) {
+      const parts = rel.split("/");
+      checkAncestors(fs, path, root, path.join(root, ...parts), baseFor(path, home, root));
+      for (let i = 1; i <= parts.length; i++) tighten(path.join(root, ...parts.slice(0, i)));
+    }
   for (const d of drops) {
     // Verify again right before removal: ancestors, tree, file types, and recorded hashes. A skill that
     // changed since preflight, or cannot be verified, is kept and reported as kept.
