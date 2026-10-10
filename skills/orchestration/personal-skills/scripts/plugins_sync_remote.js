@@ -128,15 +128,18 @@ try {
   const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toString());
   const data = {};
   for (const id of Object.keys(p.plugins)) if (!/^[a-z0-9-]+$/.test(id)) throw new Error("invalid plugin id from source: " + id);
-  for (const [id, plugin] of Object.entries(p.plugins))
+  // Portable paths, so a file stays inside its own plugin directory on every host.
+  for (const [id, plugin] of Object.entries(p.plugins)) {
+    checkPaths(Object.keys(plugin.files));
     for (const rel of [...Object.keys(plugin.files), ...Object.keys(plugin.removed || {})]) {
-      if (rel.split("/").some(x => !x || x === "." || x === "..")) throw new Error("invalid path from source: " + rel);
+      if (!portable(rel)) throw new Error("invalid path from source: " + rel);
       const f = plugin.files[rel];
       if (!f) continue;
       const buf = Buffer.from(f.data, "base64");
       if (sha(buf) !== f.sha256) throw new Error("hash mismatch in transfer: " + id + "/" + rel);
       data[id + "/" + rel] = buf;
     }
+  }
 
   // Plugins managed elsewhere: report whether the installed source matches.
   if (p.plugin_root === null) {
@@ -156,7 +159,7 @@ try {
   // The record keeps, per staged directory, the source digest last checked and its result, the
   // digest the daemon last confirmed running (activated), and a reload owed by an activation that
   // has not been confirmed yet.
-  const root = expand(p.plugin_root);
+  const root = expand(p.plugin_root), base = baseFor(path, home, root);
   const writes = [], removes = [], plan = {};
   const record = fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, "utf8")) : {};
   let saved = JSON.stringify(record, null, 2);
@@ -183,21 +186,21 @@ try {
     plan[id] = { digest, recheck, rerun: !!rec && !!recheck, owed };
     for (const [rel, f] of Object.entries(plugin.files)) {
       const file = path.join(dir, ...rel.split("/"));
-      checkAncestors(fs, path, root, file);
-      if (!fs.existsSync(file)) { writes.push({ id, file, buf: data[id + "/" + rel] }); info.staged = "changed"; continue; }
+      checkAncestors(fs, path, dir, file, base);
+      if (!fs.existsSync(file)) { writes.push({ dir, file, have: null, buf: data[id + "/" + rel] }); info.staged = "changed"; continue; }
       const st = fs.lstatSync(file);
       const have = st.isFile() && !st.isSymbolicLink() ? sha(fs.readFileSync(file)) : null;
       if (have === f.sha256) continue;
-      if (have && f.prior.includes(have)) { writes.push({ id, file, buf: data[id + "/" + rel] }); info.staged = "changed"; }
+      if (have && f.prior.includes(have)) { writes.push({ dir, file, have: [have], buf: data[id + "/" + rel] }); info.staged = "changed"; }
       else result.conflicts.push(id + "/" + rel);
     }
     // A file no longer published is deleted only while it matches a published version; an edit is a conflict.
     for (const [rel, hashes] of Object.entries(plugin.removed || {})) {
       const file = path.join(dir, ...rel.split("/"));
-      checkAncestors(fs, path, dir, file);
+      checkAncestors(fs, path, dir, file, base);
       if (SKIP.has(rel.split("/")[0]) || !fs.existsSync(file)) continue;
       const st = fs.lstatSync(file);
-      if (st.isFile() && hashes.includes(sha(fs.readFileSync(file)))) { removes.push(file); (info.removed = info.removed || []).push(rel); info.staged = "changed"; }
+      if (st.isFile() && hashes.includes(sha(fs.readFileSync(file)))) { removes.push({ dir, file, hashes }); (info.removed = info.removed || []).push(rel); info.staged = "changed"; }
       else result.conflicts.push(id + "/" + rel);
     }
   }
@@ -252,12 +255,20 @@ try {
     done(0);
   }
 
+  // The daemon checks above take time, and a preflight is not a lock: each write and removal checks its
+  // directories and its file again right before it. A removal moves the file aside and verifies it first,
+  // so an edit made since preflight is kept.
   for (const w of writes) {
+    const check = () => { checkAncestors(fs, path, w.dir, w.file, base); checkUnchanged(fs, w.file, w.have); };
+    check();
     fs.mkdirSync(path.dirname(w.file), { recursive: true });
-    replaceFile(fs, w.file, w.buf);
+    replaceFile(fs, w.file, w.buf, 0o666, null, check);
     if (sha(fs.readFileSync(w.file)) !== sha(w.buf)) throw new Error("verification failed after write: " + w.file);
   }
-  for (const file of removes) fs.unlinkSync(file);
+  for (const r of removes) {
+    checkAncestors(fs, path, r.dir, r.file, base);
+    removeFile(fs, r.file, r.hashes);
+  }
 
   let failed = false;
   // 2. Check: npm ci (no dependency install scripts) and the package's check (or typecheck) script,
