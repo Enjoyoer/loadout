@@ -367,6 +367,31 @@ class ProviderSyncTest(unittest.TestCase):
         with patch.dict(os.environ, self.env):
             self.assertEqual(fleet.run_node("laptop", True, probe, {})[0], {"host": None, "home": None})
 
+    def test_a_hosts_paseo_home_is_applied_and_an_inherited_one_ignored(self):
+        # The session's PASEO_HOME (agent-home) never counts; laptop's hosts.json entry names its home instead.
+        home = self.root / "hosts/laptop/work-paseo"
+        hosts = json.loads((self.fleet / "hosts.json").read_text())
+        hosts["hosts"][0]["paseo_home"] = str(home)
+        (self.fleet / "hosts.json").write_text(json.dumps(hosts))
+        home.mkdir()
+        (home / "config.json").write_text(json.dumps(EXISTING))
+        code, out = self.run_sync("--host", "laptop")
+        self.assertEqual(code, 0, out)
+        self.assertIn("laptop (local): reload ok", out)
+        self.assertNotEqual(json.loads((home / "config.json").read_text()), EXISTING)
+        self.assertEqual(self.config("laptop"), EXISTING)
+        self.assertFalse((self.root / "agent-home").exists())
+        # A host program, such as the plugin step's, gets the same home, ~ expanded on that host, locally and over ssh.
+        probe = self.root / "probe.js"
+        probe.write_text('process.stdout.write("\\n@@LOADOUT-RESULT " + JSON.stringify({home: process.env.PASEO_HOME '
+                         '|| null}) + " @@END\\n");\n')
+        with patch.dict(os.environ, self.env):
+            for host, local in (("laptop", True), ("desktop", False)):
+                result, output = fleet.run_node(host, local, probe, {}, 60, "~/work-paseo")
+                self.assertEqual(os.path.normpath(result["home"]),
+                                 os.path.normpath(self.root / "hosts" / host / "work-paseo"), output)
+            self.assertEqual(fleet.run_node("laptop", True, probe, {})[0], {"home": None})
+
     def test_reload_failure_is_reported_apart_from_the_write(self):
         (self.root / "fail-reload-tablet").touch()
         code, out = self.run_sync("--host", "tablet")

@@ -1,6 +1,6 @@
 // Merge pinned Paseo provider fields into this host's Paseo config.
 // Shipped gzip+base64 by paseo_providers.py; argv[2] is the gzip+base64 JSON payload:
-// {host, providers, env, required_env, stamp, dry_run, config_path}.
+// {host, providers, env, required_env, stamp, dry_run, config_path, paseo_home}.
 // It ships without whole-line comments and indentation (merge_program), so it holds no multiline string.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toString());
@@ -17,7 +17,9 @@ function labelsMatch(providers) {
   });
 }
 try {
-  const cfgPath = p.config_path || path.join(process.env.PASEO_HOME || path.join(os.homedir(), ".paseo"), "config.json");
+  // The host's paseo_home from hosts.json, ~ expanded here, or the default home; never an inherited PASEO_HOME.
+  const home = p.paseo_home ? p.paseo_home.replace(/^~(?=[/\\]|$)/, os.homedir()) : path.join(os.homedir(), ".paseo");
+  const cfgPath = p.config_path || path.join(home, "config.json");
   const read = () => fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, "utf8") : "{}";
   const expand = value => value.replace(/^~(?=[/\\]|$)/, os.homedir())
     .replace(/%([^%]+)%/g, (_, key) => {
@@ -55,6 +57,7 @@ try {
     const runtimeRoot = expand(p.pi.root);
     if (!p.dry_run) {
       const env={...process.env};for(const key of ['PASEO_HOME','PASEO_HOST','PASEO_AGENT_ID','PASEO_AGENT_CWD']) delete env[key];
+      if(p.paseo_home) env.PASEO_HOME=home;
       // Windows ships the CLI as an npm .cmd shim, which only runs through a shell. The command is a
       // constant; one string avoids Node's DEP0190 warning for args with shell:true.
       const status=process.platform==='win32'

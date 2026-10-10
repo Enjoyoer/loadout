@@ -100,8 +100,9 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
                "stage": paseo.get("stage", []) if paseo.get("plugin_root") is not None else [],
                "install": paseo.get("install", []) if paseo.get("plugin_root") is not None else [],
                "plugins": plugin_payload(pub, ids)}
+    # Config reads, settings backups, installs, reloads and `plugin ls` all address the host's paseo_home, if set.
     result, output = fleet.run_node(name, name == state["fleet_doc"]["source_host"], REMOTE_JS, payload,
-                                    TIMEOUT_SECONDS)
+                                    TIMEOUT_SECONDS, host.get("paseo_home"))
     if result is None:
         result = {"status": "failed", "error": output}
     lines = describe(result, state["dry_run"])

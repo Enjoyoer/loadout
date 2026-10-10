@@ -66,12 +66,15 @@ DAEMON_VARS = ("PASEO_HOST", "PASEO_HOME", "PASEO_AGENT_ID", "PASEO_AGENT_CWD")
 HOST_NAME = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 CLIENTS = {"codex", "claude", "opencode", "pi"}
 TOP_KEYS = {"schema_version", "source_host", "transport", "notes", "hosts", "global", "skills_overlay"}
-HOST_KEYS = {"name", "os", "checkout", "clients", "paseo", "transport", "sync", "paseo_offer", "exclude_skills"}
+HOST_KEYS = {"name", "os", "checkout", "clients", "paseo", "transport", "sync", "paseo_offer", "paseo_home",
+             "exclude_skills"}
 PASEO_KEYS = {"plugin_root", "stage", "install"}
 # global.claude may name the claudeMd field of Claude Code's managed settings instead of a file.
 MANAGED_CLAUDE_MD = "managed-settings:claudeMd"
 # Every other global target is a path: ~, /, $VAR or ${VAR}, %VAR%, or a drive like C:\.
 GLOBAL_PATH = re.compile(r"(~([\\/]|$)|/|\$\{?[A-Za-z_]|%[A-Za-z_][A-Za-z0-9_]*%|[A-Za-z]:[\\/])")
+# A host's paseo_home is absolute on that host or starts with ~, which the host expands itself.
+PASEO_HOME_PATH = re.compile(r"(~([\\/]|$)|/|[A-Za-z]:[\\/])")
 
 
 class FleetSource(NamedTuple):
@@ -199,6 +202,8 @@ def validate(data: Any) -> dict:
                 raise FleetError(f"{where}: a paseo-relay host needs paseo_offer, the path to its pairing offer")
         if "paseo_offer" in host and not isinstance(host["paseo_offer"], str):
             raise FleetError(f"{where}.paseo_offer must be a string path")
+        if "paseo_home" in host and not (isinstance(host["paseo_home"], str) and PASEO_HOME_PATH.match(host["paseo_home"])):
+            raise FleetError(f"{where}.paseo_home must be a path starting with ~, /, or a drive like C:\\")
         if "skills" in sync:
             _strings(host.get("clients"), f"{where}.clients", CLIENTS)
         elif "clients" in host:
@@ -259,17 +264,27 @@ def pack(data: bytes) -> str:
     return base64.b64encode(gzip.compress(data)).decode()
 
 
-def bundle(program: Path) -> bytes:
-    """The program with remote_common.js ahead of it: one script, so a host needs no shared file."""
-    return COMMON_JS.read_bytes() + b"\n" + program.read_bytes()
+def daemon_prelude(paseo_home: Optional[str] = None) -> bytes:
+    """The start of every bundled program: it clears the inherited DAEMON_VARS, then sets PASEO_HOME to the host's
+    paseo_home, ~ expanded there, when the fleet gives one. The program and every command it runs then address that
+    home, or the default one, and its daemon."""
+    home = json.dumps(paseo_home)
+    return (f"for (const k of {json.dumps(list(DAEMON_VARS))}) delete process.env[k];\n"
+            f"if ({home}) process.env.PASEO_HOME = {home}.replace(/^~(?=[\\\\/]|$)/, require(\"os\").homedir());\n").encode()
 
 
-def envelope(program: Path, payload: dict) -> tuple:
+def bundle(program: Path, paseo_home: Optional[str] = None) -> bytes:
+    """The program with the daemon prelude and remote_common.js ahead of it: one script, so a host needs no shared
+    file."""
+    return daemon_prelude(paseo_home) + COMMON_JS.read_bytes() + b"\n" + program.read_bytes()
+
+
+def envelope(program: Path, payload: dict, paseo_home: Optional[str] = None) -> tuple:
     """The stdin envelope for BOOT, carrying the bundled program and the payload, and its sha256 for argv.
 
     A random nonce rides along, so the digest on the command line reveals nothing about a secret in the payload.
     """
-    parts = [pack(bundle(program)), pack(json.dumps(payload).encode()), secrets.token_hex(16)]
+    parts = [pack(bundle(program, paseo_home)), pack(json.dumps(payload).encode()), secrets.token_hex(16)]
     raw = base64.b64encode(json.dumps(parts).encode()).decode()
     return raw, hashlib.sha256(raw.encode()).hexdigest()
 
@@ -301,23 +316,29 @@ def push_targets(fleet: dict) -> tuple:
             [host for host in others if host["transport"] != "ssh"])
 
 
-def daemon_env() -> dict:
-    """This environment without DAEMON_VARS: what a program on the source host runs with."""
-    return {k: v for k, v in os.environ.items() if k not in DAEMON_VARS}
+def daemon_env(paseo_home: Optional[str] = None) -> dict:
+    """What a command on the source host runs with: this environment without DAEMON_VARS, then PASEO_HOME set to the
+    host's paseo_home, ~ expanded, when the fleet gives one."""
+    env = {k: v for k, v in os.environ.items() if k not in DAEMON_VARS}
+    if paseo_home:
+        env["PASEO_HOME"] = os.path.expanduser(paseo_home)
+    return env
 
 
-def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Optional[float] = None) -> tuple:
+def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Optional[float] = None,
+             paseo_home: Optional[str] = None) -> tuple:
     """Run a Loadout node program, bundled with remote_common.js, on a host with a JSON payload.
 
     Program and payload travel on stdin in one envelope; argv carries only BOOT and the envelope's
-    digest. Returns (result dict or None, raw output). Secrets travel only on stdin.
+    digest. Returns (result dict or None, raw output). Secrets travel only on stdin. The program addresses the
+    host's paseo_home, or the default Paseo home, never an inherited one (daemon_prelude).
     """
-    raw, digest = envelope(program, payload)
+    raw, digest = envelope(program, payload, paseo_home)
     env = None
     if local:
         command = ["node", "-e", BOOT, "--", digest]
         # Inside an agent session, keep daemon commands off the agent's own identity and the daemon it targets.
-        env = daemon_env()
+        env = daemon_env(paseo_home)
     else:
         command = [*SSH_COMMAND, *SSH_OPTIONS, "--", name, f'node -e "{BOOT}" -- {digest}']
     try:
