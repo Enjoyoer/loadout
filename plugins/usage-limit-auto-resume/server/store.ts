@@ -23,6 +23,8 @@ const isTime = (value: unknown) => typeof value === "string" && Number.isFinite(
 const isOneOf = (value: unknown, allowed: object) => typeof value === "string" && Object.hasOwn(allowed, value);
 const optional = (value: unknown, check: (value: unknown) => boolean) => value === undefined || check(value);
 const nullable = (value: unknown, check: (value: unknown) => boolean) => value == null || check(value);
+// attemptsDropped, when present, counts attempts trimmed from the list; absent means none.
+const isCount = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
 
 function isAttempt(value: unknown): value is ResumeAttempt {
   if (typeof value !== "object" || value === null) return false;
@@ -43,7 +45,7 @@ function isRecord(value: unknown): value is ResumeRecord {
     isString(record.cwd) && isId(record.persistenceSessionId) && nullable(record.nativeHandle, isString) && isString(record.configFingerprint) &&
     isTime(record.detectedAt) && nullable(record.lastUserMessageAt, isString) && isString(record.failureSignature) &&
     isTime(record.notBefore) && nullable(record.resetAt, isTime) &&
-    Array.isArray(record.attempts) && record.attempts.every(isAttempt) && isOneOf(record.state, STATES) &&
+    Array.isArray(record.attempts) && record.attempts.every(isAttempt) && optional(record.attemptsDropped, isCount) && isOneOf(record.state, STATES) &&
     nullable(record.sentAt, isTime) && nullable(record.resumeTurnId, isString) && nullable(record.resumeStartedAt, isTime) &&
     nullable(record.resumeFinishedAt, isTime) && nullable(record.verificationDeadlineAt, isTime) &&
     isTime(record.createdAt) && isTime(record.updatedAt) && nullable(record.terminalReason, isString);
