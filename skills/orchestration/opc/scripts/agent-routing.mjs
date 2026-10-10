@@ -1,6 +1,8 @@
+import { isDeepStrictEqual } from 'node:util';
 import { describePace, paceLevel, POOL_NAMES, poolPace, ROUTING_DEFAULTS, validPace } from './quota-pace.mjs';
 
-const efforts = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+const effortOrder = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const efforts = new Set(effortOrder);
 const model = /^(?=.{1,128}$)[A-Za-z0-9][A-Za-z0-9._/-]{0,127}(?:\[[A-Za-z0-9][A-Za-z0-9._-]{0,31}\])?$/;
 
 export const MAX_CHATGPT_BROWSER_TABS = 5;
@@ -43,11 +45,70 @@ export const OWNER_RULE_ROUTES = Object.freeze({
 });
 // UI work never uses GPT models or the ChatGPT web lane (owner rule).
 export const GPT_WEB_LABELS = Object.freeze(['Sol', 'Luna', 'Astra', 'Web Pro', 'Web Extra']);
+const GPT_WEB_MODEL = /(?:^|\/)(?:gpt-|chatgpt-web\/)/i;
 export function isGptOrWebRoute(route, catalog = null) {
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   const label = route?.label ?? (route?.source === 'task-default' ? WORKER_DEFAULT_ROUTES[route.kind]?.label
     : rows?.find(row => row.id === route?.model || row.id?.slice(row.id.indexOf('/') + 1) === route?.model)?.label);
-  return GPT_WEB_LABELS.includes(label) || /(?:^|\/)(?:gpt-|chatgpt-web\/)/i.test(route?.model ?? '');
+  return GPT_WEB_LABELS.includes(label) || GPT_WEB_MODEL.test(route?.model ?? '');
+}
+
+// A class whose label is a Claude model never runs a GPT or web model, whatever a route claims.
+const claudeClassOnGptModel = (rule, route) => !GPT_WEB_LABELS.includes(rule.label) && GPT_WEB_MODEL.test(route.model);
+// A catalog row serves a model named by its full id or by its id without the provider prefix.
+const namesRow = (row, model) => row.id === model || row.id?.slice(row.id.indexOf('/') + 1) === model;
+
+// A model id names a catalog label as one of its tokens, as fleet/claude-opus-5-5 and claude-opus-5-5[1m] name Opus.
+const namesLabel = (model, label) => new RegExp(`(?:^|[/._-])${label.toLowerCase()}(?:$|[/._[-])`, 'i').test(model ?? '');
+// A GPT or web model by its name or, with a catalog, by its row's label; never by a class table.
+const isGptOrWebModel = (model, rows) => GPT_WEB_MODEL.test(model ?? '') ||
+  GPT_WEB_LABELS.includes(rows?.find(row => namesRow(row, model))?.label);
+
+// A UI lane records and launches only the ui route: Opus xhigh, Fast off, never a GPT or web model (owner rule). With a
+// catalog the model must be its Opus row; without one (a brief, a record) the model id must name Opus.
+export function isUiRoute(route, catalog = null) {
+  const rule = OWNER_RULE_ROUTES.ui, rows = Array.isArray(catalog) ? catalog : catalog?.pi;
+  return route?.effort === rule.effort && route.fastMode === rule.fastMode && !isGptOrWebModel(route.model, rows) &&
+    (rows ? namesRow(resolveCatalogLabel(rows, rule.label), route.model) : namesLabel(route.model, rule.label));
+}
+
+// The owner's hard rules for a lane class bind every route, whatever its source says: ui is exactly the ui route, these
+// classes never run a GPT or web model, and no route runs below its class minimum. Inside them an owner-named route keeps
+// its model and effort.
+const CLAUDE_ONLY_CLASSES = Object.freeze(['code', 'code-bounded', 'test-fix', 'automation']);
+function laneProblem(route, taskClass, rows) {
+  if (route.source === 'task-default' && route.kind !== taskClass) return `it is a ${route.kind} route`;
+  if (taskClass === 'ui') return isUiRoute(route, rows) ? null : 'a ui lane runs only Opus xhigh, Fast off';
+  const rule = WORKER_DEFAULT_ROUTES[taskClass];
+  if (CLAUDE_ONLY_CLASSES.includes(taskClass) && isGptOrWebModel(route.model, rows)) {
+    return `${route.model} is a GPT or web model and the ${taskClass} class runs ${rule.label}`;
+  }
+  return effortOrder.indexOf(route.effort) < effortOrder.indexOf(rule.effort)
+    ? `effort ${route.effort} is below the ${taskClass} minimum ${rule.effort}` : null;
+}
+const knownClass = taskClass => Object.hasOwn(WORKER_DEFAULT_ROUTES, taskClass ?? '') || Object.hasOwn(OWNER_RULE_ROUTES, taskClass ?? '');
+// A task default runs its class's own model: with a catalog exactly the class's row, without one a model id that names
+// the class's label (the name rule of the UI check), failing closed.
+function defaultIdentityProblem(route, rows) {
+  const rule = WORKER_DEFAULT_ROUTES[route.kind];
+  if (rows) return resolveCatalogLabel(rows, rule.label).id === route.model ? null : `${route.model} is not the ${route.kind} class's ${rule.label} model`;
+  return namesLabel(route.model, rule.label) ? null : `${route.model} does not name the ${route.kind} class's ${rule.label} model`;
+}
+
+// A fresh lane's route checked against its intended class (recording, and a launch with no recorded route).
+export function validateLaneClass(route, taskClass, catalog = null) {
+  if (!knownClass(taskClass)) throw workerRouteUnresolved();
+  const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
+  const problem = laneProblem(route, taskClass, rows) ?? (route.source === 'task-default' ? defaultIdentityProblem(route, rows) : null);
+  if (problem) throw Error(`${taskClass} lane refuses this Worker route: ${problem}`);
+}
+
+// One route per lane: once a lane has a recorded route, the request, brief, and recording paths take only that route.
+// Returns the lane's record entry, or null for a fresh lane.
+export function recordedLaneEntry(task, lane, route) {
+  const entry = task?.routes && Object.hasOwn(task.routes, lane ?? '') ? task.routes[lane] : null;
+  if (entry && !isDeepStrictEqual(entry.route, route)) throw Error(`lane ${lane} already has a recorded route; repairs and resumes reuse it`);
+  return entry;
 }
 
 const classLevel = (rule, pace) => (rule.range ? paceLevel(rule.effort, pace?.step ?? 0, rule.range) : rule.effort);
@@ -117,7 +178,67 @@ function validateWorkerRoute(route) {
   if (route.source === 'task-default' && (!rule || route.fastMode !== rule.fastMode ||
       (rule.range ? route.pace?.pool !== LABEL_POOLS[rule.label] : route.pace !== null) ||
       route.effort !== classLevel(rule, route.pace))) {
-    throw Error('recorded owner or task-default route required for worker');
+    throw Error('recorded owner or task-default route required for worker; a recorded lane rebuilds only with its ' +
+      'destination task, lane, and class');
+  }
+  return valid;
+}
+
+// Before 7.30 the code classes ran up to xhigh, so a lane of theirs recorded then rebuilds at that level. Other classes
+// rebuild up to their range ceiling or fixed level.
+const RECORDED_CEILINGS = Object.freeze({ code: 'xhigh', 'code-bounded': 'xhigh', 'test-fix': 'xhigh', automation: 'xhigh' });
+
+// A recorded route rebuilds (repair, restart) only inside the owner's hard rules for the lane's class, whatever its source.
+// A task default must also still be today's class: the class's catalog label (never a GPT or web model for a Claude
+// class), the class's Fast, and, as the one allowance for levels a class-table change left behind, any effort from the
+// class minimum up to its ceiling, which the Pi catalog must still serve.
+function validateRebuild(route, taskClass, rows) {
+  const valid = validateRecordedWorkerRoute(route);
+  const rule = WORKER_DEFAULT_ROUTES[taskClass];
+  const ceiling = rule && (RECORDED_CEILINGS[taskClass] ?? rule.range?.[1] ?? rule.effort);
+  const problem = laneProblem(route, taskClass, rows) ?? (route.source !== 'task-default' ? null
+    : route.fastMode !== rule.fastMode ? `Fast ${route.fastMode ? 'on' : 'off'} does not match the ${taskClass} class`
+      : effortOrder.indexOf(route.effort) > effortOrder.indexOf(ceiling) ? `effort ${route.effort} is above the ${taskClass} ceiling ${ceiling}`
+        : claudeClassOnGptModel(rule, route) ? `${route.model} is a GPT or web model and the ${taskClass} class runs ${rule.label}`
+          : null);
+  if (problem) throw Error(`recorded ${taskClass} Worker route cannot rebuild: ${problem}`);
+  if (route.source !== 'task-default') return valid;
+  if (!rows) {
+    const unnamed = defaultIdentityProblem(route, null);
+    if (unnamed) throw Error(`recorded ${taskClass} Worker route cannot rebuild: ${unnamed}`);
+    return valid;
+  }
+  const candidates = rows.filter(row => namesRow(row, route.model));
+  if (!candidates.some(row => row.thinkingOptions?.some(option => option.id === route.effort))) {
+    throw Error(`recorded ${route.kind} Worker route is no longer served: the Pi catalog ` +
+      `${candidates.length ? `serves ${route.model} but not at ${route.effort} thinking` : `has no ${route.model}`}; ` +
+      'this lane cannot relaunch on its recorded route, so resolve a route for a new lane');
+  }
+  if (resolveCatalogLabel(rows, rule.label).id !== route.model) {
+    throw Error(`recorded ${route.kind} Worker route cannot rebuild: ${route.model} is not the ${route.kind} class's ${rule.label} model`);
+  }
+  return valid;
+}
+
+// The Worker route a brief or request is built from, bound to its destination task (as readTask returns it), lane, and
+// intended class when given. Task records are bookkeeping, not routing authority, so the class comes from the caller: a
+// UI task's lanes are ui, and any other bound lane names its taskClass. A lane with a recorded route takes only that route
+// and rebuilds under validateRebuild; a fresh lane is checked as new and against its class.
+function validateLaunchedWorkerRoute(route, { task = null, lane = null, taskClass = null, catalog = null } = {}) {
+  if (task != null && (typeof task !== 'object' || Array.isArray(task))) throw Error('destination task must be a task record');
+  if (taskClass != null && !knownClass(taskClass)) throw workerRouteUnresolved();
+  if (task?.ui === true && taskClass != null && taskClass !== 'ui') throw Error('UI task: its lanes take the ui class (owner rule)');
+  if (task != null && task.ui !== true && taskClass == null) throw Error('a Worker bound to a task record needs its lane class (taskClass)');
+  const rows = Array.isArray(catalog) ? catalog : catalog?.pi, laneClass = task?.ui === true ? 'ui' : taskClass;
+  if (task?.ui === true && !isUiRoute(route, rows)) {
+    throw Error('UI task: only the ui route (Opus xhigh, Fast off) can launch (owner rule); use the ui class');
+  }
+  if (recordedLaneEntry(task, lane, route)) return validateRebuild(route, laneClass, rows);
+  const valid = validateWorkerRoute(route);
+  if (laneClass != null) validateLaneClass(route, laneClass, rows);
+  else if (route.source === 'task-default') {
+    const problem = defaultIdentityProblem(route, rows);
+    if (problem) throw Error(`task-default Worker route must match its Pi catalog label (${problem})`);
   }
   return valid;
 }
@@ -168,8 +289,16 @@ function validateFixedRoute(role, route) {
   return fixed;
 }
 
+// Recording a lane (route.mjs, cloud-lane.mjs) checks a Worker route as new. With no catalog at hand it also refuses a
+// GPT or web model for a Claude class, which a launch refuses by catalog label.
 export function validateRoleRoute(role, route) {
-  if (role === 'worker') return validateWorkerRoute(route);
+  if (role === 'worker') {
+    const valid = validateWorkerRoute(route);
+    if (route.source === 'task-default' && claudeClassOnGptModel(WORKER_DEFAULT_ROUTES[route.kind], route)) {
+      throw Error('recorded owner or task-default route required for worker; a Claude class never runs a GPT or web model');
+    }
+    return valid;
+  }
   if (!Object.hasOwn(FIXED_ROLE_ROUTES, role)) throw Error(`unknown OPC role: ${role}`);
   return validateFixedRoute(role, route);
 }
@@ -196,12 +325,16 @@ export function resolveAgentRoute(role, { explicitRoute = null, taskKind = null,
 const WORKER_TESTING_RULE = 'Testing rule: do not write new unit, integration, or end-to-end tests, and do not use test-driven development, unless the PM specifies the test cases. ' +
   'Verify against the acceptance checks, run the existing suites and keep them green, and keep existing tests unless the PM asks to remove them.';
 
-export function buildDelegatedBrief({ role, route, brief, reason = null }) {
+// For a Worker, task, lane, and taskClass bind the brief to its destination (see validateLaunchedWorkerRoute); catalog,
+// the Pi catalog rows, checks a task default's model by its row instead of by name.
+export function buildDelegatedBrief({ role, route, brief, reason = null, task = null, lane = null, taskClass = null,
+  catalog = null }) {
   if (typeof role !== 'string' || !role || typeof brief !== 'string' || !brief.trim()) {
     throw Error('delegated role and nonempty brief required');
   }
   if (reason != null && (typeof reason !== 'string' || !reason.trim() || /[\r\n]/.test(reason))) throw Error('route reason must be one line');
-  const resolved = route == null ? resolveAgentRoute(role) : validateRoleRoute(role, route);
+  const resolved = route == null ? resolveAgentRoute(role)
+    : role === 'worker' ? validateLaunchedWorkerRoute(route, { task, lane, taskClass, catalog }) : validateRoleRoute(role, route);
   const line = role === 'worker' ? `${routeText(resolved)}; route: ${reason ?? routeReason(resolved)}` : routeText(resolved);
   return `Fixed route for this ${role} lane: ${line}. This route is not a suggestion. You cannot delegate, launch another agent, choose another route, or substitute a model or effort. If this route fails, stop this lane and report the failure to the PM.\n\n${role === 'worker' ? `${WORKER_TESTING_RULE}\n\n` : ''}${brief}`;
 }
@@ -266,21 +399,30 @@ export function resolveAgentSurface(role, options = {}, catalog, surface = 'pi')
     : materializeFixedRoute(role, catalog, surface);
 }
 
+// A Worker bound to a task record is validated in full (binding, class, rebuild rules, UI rule, minimum) before any
+// explicit provider, which must then be exactly the provider its validated route maps to, with that route's settings.
 export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'worker', route, catalog, surface = 'pi',
-  nativeAuthorization = null } = {}) {
-  if (provider) {
-    if (role === 'worker' && !String(provider).startsWith('pi/')) {
-      requireNativeAuthorization(String(provider), nativeAuthorization, `explicit provider ${provider}`);
-    }
-    return { provider, agentSettings };
+  nativeAuthorization = null, task = null, lane = null, taskClass = null } = {}) {
+  const bound = role === 'worker' && task != null;
+  if (provider && !String(provider).startsWith('pi/') && role === 'worker') {
+    requireNativeAuthorization(String(provider), nativeAuthorization, `explicit provider ${provider}`);
   }
-  const selected = validateRoleRoute(role, route);
-  const mapped = role === 'worker'
-    ? mapRouteToPi(selected, Array.isArray(catalog) ? catalog : catalog?.pi, { surface, nativeAuthorization })
+  if (provider && !bound) return { provider, agentSettings };
+  const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
+  const selected = role === 'worker' ? validateLaunchedWorkerRoute(route, { task, lane, taskClass, catalog: rows })
+    : validateRoleRoute(role, route);
+  const mapped = role === 'worker' ? mapRouteToPi(selected, rows, { surface, nativeAuthorization })
     : materializeFixedRoute(role, catalog, surface);
-  if (Object.keys(agentSettings).length) throw Error('materialize settings from the selected rule or pass an explicit provider');
-  return { provider: mapped.provider, agentSettings: {
+  const settings = {
     ...(mapped.effort ? { thinkingOptionId: mapped.effort } : {}),
     ...(mapped.provider.startsWith('codex/') ? { features: { fast_mode: mapped.fastMode } } : {}),
-  } };
+  };
+  if (provider) {
+    if (provider !== mapped.provider || (Object.keys(agentSettings).length && !isDeepStrictEqual(agentSettings, settings))) {
+      throw Error(`explicit provider ${provider} is not what this lane's validated route maps to (${mapped.provider})`);
+    }
+    return { provider, agentSettings: settings };
+  }
+  if (Object.keys(agentSettings).length) throw Error('materialize settings from the selected rule or pass an explicit provider');
+  return { provider: mapped.provider, agentSettings: settings };
 }

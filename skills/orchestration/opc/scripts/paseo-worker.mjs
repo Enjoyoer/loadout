@@ -91,13 +91,17 @@ export function buildManagedWorkspaceRequest({ taskId, lane, sourcePath, baseBra
   });
 }
 
+// task is the destination task record (readTask) whose id is taskId, and taskClass the lane's intended class; with them
+// a recorded lane takes only its recorded route and every route meets the class's owner rules (agent-routing.mjs
+// validateLaunchedWorkerRoute).
 export function buildManagedWorkerRequest({ taskId, lane, title, provider, initialPrompt,
   agentSettings = {}, workerLabels = {}, workspace, capabilities, role = 'worker', route, surface = 'pi',
-  nativeAuthorization = null }) {
+  nativeAuthorization = null, task = null, taskClass = null }) {
   const names = managedWorkerNames({ taskId, lane });
   const agentTitle = required(title, 'Worker title');
+  if (task != null && task.id !== taskId) throw Error('Worker task id must be the bound task record id');
   const mappedRoute = resolveWorkerSurface({ provider, agentSettings, role, route, surface, nativeAuthorization,
-    catalog: capabilities?.models });
+    catalog: capabilities?.models, task, lane, taskClass });
   const agentProvider = mappedRoute.provider;
   const requestedSettings = settings(mappedRoute.agentSettings);
   if (!workspace?.workspaceId || typeof workspace.workspaceId !== 'string' ||
