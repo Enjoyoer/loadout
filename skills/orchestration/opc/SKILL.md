@@ -2,12 +2,25 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.38"
+  version: "7.39"
 ---
 
 # OPC
 
 Freshness: each turn you act on OPC, first read this file's `version:` line. Only if it changed since last read, reread it and the references you will use.
+
+## Checklist
+
+Mandatory on every OPC request, in order. Read a step's reference before that step acts; the sections below give each step's rules.
+
+- [ ] 1 Scope: record outcome, checkout, base, permitted changes, and acceptance checks. Read [execution mechanics](references/imp-execution.md) before launching any lane.
+- [ ] 3 Worker: resolve and record each Worker's [route](references/routing.md) unless the owner named one. UI work is always Opus `xhigh`.
+- [ ] 4 Yield: launch through Paseo `create_agent` or `send_agent_prompt` with `notifyOnFinish: true`, then end the turn. No polling.
+- [ ] 5 Integrate: verify agent identity, branch, base ancestry, and the exact diff before integrating.
+- [ ] 6 Verify: check the required behavior and the final committed bytes; report checks not run as unverified.
+- [ ] 7 Merge: attach [PR evidence](references/pr-evidence.md) or "No visible change", merge, sync, then follow [workspace cleanup](references/worktree-lifecycle.md).
+
+Only when the branch applies: scouting, [exploration](references/exploration-swarm.md); planning, [planner](references/planner.md); browser review requested in the initial request, [review](references/web-reviewer.md); hosted Sites, [Sites](references/codex-sites.md); cancellation or uncertain execution, [recovery](references/recovery.md); package maintenance, [maintenance](references/maintenance.md).
 
 The invoked PM owns the request, topology, integration, verification, and publication. Delegate bounded implementation or investigation only; delegated agents cannot delegate or substitute routes. An OPC implementation request authorizes those lanes within scope. OPC ends with verified merge, required repository sync, and cleanup. A request ending earlier is ordinary scoped work; local commits and PRs are internal stages.
 
