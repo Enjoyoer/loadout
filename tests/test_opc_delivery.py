@@ -529,6 +529,23 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(described["request"]["labels"].get("opc.run"), "run-1", described["request"])
         self.assertNotIn("opc.service-tier", described["request"]["labels"])
 
+    def test_bound_lane_launches_an_authorized_native_claude_worker(self):
+        opus = {"role": "worker", "source": "owner-explicit", "model": "claude-opus-5-5[1m]", "effort": "xhigh", "fastMode": False}
+        native = ("{ nativeAuthorization: 'owner-explicit', capabilities: { enabled: true, status: 'available', "
+                  "modes: [{ id: 'bypassPermissions', isUnattended: true }], models }%s }")
+        claude = [{"id": "claude-opus-5-5[1m]", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
+        for provider, surface in (("claude/claude-opus-5-5[1m]", ""), (None, ", surface: 'claude'")):
+            with self.subTest(provider=provider):
+                built = self.launch(self.task, "claude-lane", json.dumps(opus), claude, task_class="code", provider=provider,
+                                    extra=native % surface)
+                self.assertEqual((built["request"].get("provider"), built["request"].get("settings")),
+                                 ("claude/claude-opus-5-5[1m]", {"thinkingOptionId": "xhigh", "modeId": "bypassPermissions"}),
+                                 built["request"])
+        # With no native surface named, a Claude route Pi does not serve is refused rather than rebuilt as a Codex request.
+        unserved = self.launch(self.task, "claude-lane", json.dumps(opus), CATALOG, task_class="code", extra=native % "")
+        self.assertEqual(unserved["request"], {"error": "claude-opus-5-5[1m] is a Claude model and never runs as a native Codex "
+                                                        "Worker; an authorized native Claude Code Worker takes the claude surface"})
+
     def test_task_default_code_route_with_non_opus_claude_model_is_refused_without_catalog(self):
         sonnet = {**PRE_730_CODE_ROUTE, "model": "fleet/claude-sonnet-5-5", "effort": "medium"}
         fresh = self.launch(self.task, "sonnet-lane", json.dumps(sonnet), None, record_lane="sonnet-lane", task_class="code")

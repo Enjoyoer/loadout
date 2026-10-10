@@ -363,14 +363,16 @@ export function selectTopology({ scale, independentQuestions = 0, findingsConver
   });
 }
 
-// Model and thinking rules above remain authoritative. Workers run on Pi; a native route
-// (explicit codex surface or a model/effort Pi does not serve) needs the owner's authorization.
+// Model and thinking rules above remain authoritative. Workers run on Pi; a native route (explicit codex or claude
+// surface, or a model/effort Pi does not serve) needs the owner's authorization. The claude surface takes only a model
+// its catalog (the target's catalog rows) serves at the route's thinking, and has no Fast setting.
+export const NATIVE_WORKER_SURFACES = Object.freeze(['codex', 'claude']);
 export function mapRouteToPi(route, catalog, { fallbackProvider = 'codex', surface = 'pi', nativeAuthorization = null } = {}) {
   if (!route || !isValidModelId(route.model)) throw Error('selected OPC route required');
   if (!Array.isArray(catalog)) throw Error('target Pi catalog required');
   const originalProvider = route.provider?.split('/')[0] ?? fallbackProvider;
   const original = { ...route, provider: route.provider ?? `${originalProvider}/${route.model}` };
-  if (surface !== 'pi' && surface !== 'codex') throw Error('surface must be pi or codex');
+  if (surface !== 'pi' && !NATIVE_WORKER_SURFACES.includes(surface)) throw Error('surface must be pi, codex, or claude');
   if (route.source === 'task-default' && (!Object.hasOwn(WORKER_DEFAULT_ROUTES, route.kind) ||
       resolveCatalogLabel(catalog, WORKER_DEFAULT_ROUTES[route.kind].label).id !== route.model)) {
     throw Error('task-default Worker route must match its Pi catalog label');
@@ -383,6 +385,14 @@ export function mapRouteToPi(route, catalog, { fallbackProvider = 'codex', surfa
     row.id?.slice(row.id.indexOf('/') + 1) === route.model);
   const supported = candidates.filter(row => route.effort == null ||
     row.thinkingOptions?.some(option => option.id === route.effort));
+  if (surface === 'claude') {
+    requireNativeAuthorization(`claude/${route.model}`, nativeAuthorization, 'native surface requested');
+    if (route.fastMode) throw Error('a native Claude Code Worker has no Fast setting; its route must have Fast off');
+    if (!supported.some(row => row.id === route.model)) {
+      throw Error(`Claude Code catalog does not serve ${route.model} at ${route.effort ?? 'model-fixed'} thinking`);
+    }
+    return { ...route, provider: `claude/${route.model}` };
+  }
   if (!supported.length) {
     requireNativeAuthorization(original.provider, nativeAuthorization,
       `Pi catalog does not serve ${route.model} at ${route.effort ?? 'model-fixed'} thinking`);
@@ -399,8 +409,12 @@ export function resolveAgentSurface(role, options = {}, catalog, surface = 'pi')
     : materializeFixedRoute(role, catalog, surface);
 }
 
+const CLAUDE_LABELS = Object.keys(LABEL_POOLS).filter(label => LABEL_POOLS[label] === 'claude');
+const isClaudeModel = model => /(?:^|\/)claude-/i.test(model ?? '') || CLAUDE_LABELS.some(label => namesLabel(model, label));
+
 // A Worker bound to a task record is validated in full (binding, class, rebuild rules, UI rule, minimum) before any
 // explicit provider, which must then be exactly the provider its validated route maps to, with that route's settings.
+// An explicit native provider (codex/ or claude/) selects that native surface for the mapping.
 export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'worker', route, catalog, surface = 'pi',
   nativeAuthorization = null, task = null, lane = null, taskClass = null } = {}) {
   const bound = role === 'worker' && task != null;
@@ -411,8 +425,14 @@ export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'wor
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   const selected = role === 'worker' ? validateLaunchedWorkerRoute(route, { task, lane, taskClass, catalog: rows })
     : validateRoleRoute(role, route);
-  const mapped = role === 'worker' ? mapRouteToPi(selected, rows, { surface, nativeAuthorization })
+  const native = String(provider ?? '').split('/')[0];
+  const target = surface === 'pi' && NATIVE_WORKER_SURFACES.includes(native) ? native : surface;
+  const mapped = role === 'worker' ? mapRouteToPi(selected, rows, { surface: target, nativeAuthorization })
     : materializeFixedRoute(role, catalog, surface);
+  if (role === 'worker' && mapped.provider.startsWith('codex/') && isClaudeModel(mapped.model)) {
+    throw Error(`${mapped.model} is a Claude model and never runs as a native Codex Worker; an authorized native Claude ` +
+      'Code Worker takes the claude surface');
+  }
   const settings = {
     ...(mapped.effort ? { thinkingOptionId: mapped.effort } : {}),
     ...(mapped.provider.startsWith('codex/') ? { features: { fast_mode: mapped.fastMode } } : {}),
