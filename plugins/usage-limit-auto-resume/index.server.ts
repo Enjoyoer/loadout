@@ -16,11 +16,15 @@ export default function contribute(server: PluginServerContext, openClient = ope
   const store = new ResumeStore();
   let timer: NodeJS.Timeout | null = null;
   let running = false;
+  // Set by cleanup. From then on nothing schedules or starts a sweep: not the startup chain, an interval tick, or a
+  // hook handler that is still finishing.
+  let stopped = false;
   let client: Awaited<ReturnType<typeof openDaemonClient>> | null = null;
   let stateErrorLogged = false;
   // One entry per agent with a send in flight; see processRecord.
   const inFlight = new Map<string, InFlightClaim>();
-  // Sweeps and hook handlers still running, so idle() can wait for them after cleanup. None of them rejects.
+  // The startup chain, sweeps and hook handlers still running, so idle() can wait for them after cleanup. None of
+  // them rejects.
   const tasks = new Set<Promise<unknown>>();
   const track = (task: Promise<unknown>) => {
     tasks.add(task);
@@ -197,7 +201,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
   }
 
   async function sweep() {
-    if (running) return;
+    if (running || stopped) return;
     running = true;
     try {
       const currentConfig = await config();
@@ -372,14 +376,17 @@ export default function contribute(server: PluginServerContext, openClient = ope
     })().catch((error) => failed("permission-handler-failed", error)));
   });
 
-  // Poll even when settings are invalid or unreadable at startup; every sweep reads them again.
-  void config().catch(() => null).then((currentConfig) => {
-    timer = setInterval(() => track(sweep()), (currentConfig ?? ConfigSchema.parse({})).pollIntervalSeconds * 1000);
+  // Poll even when settings are invalid or unreadable at startup; every sweep reads them again. A cleanup that runs
+  // before the first settings read resolves leaves no interval behind.
+  track(config().catch(() => null).then((currentConfig) => {
+    if (stopped) return;
+    timer = setInterval(() => { if (!stopped) track(sweep()); }, (currentConfig ?? ConfigSchema.parse({})).pollIntervalSeconds * 1000);
     timer.unref?.();
     track(sweep());
-  });
+  }));
 
   const cleanup = () => {
+    stopped = true;
     removeTurnStarted();
     removeTurnEnded();
     removeArchived();
@@ -387,8 +394,9 @@ export default function contribute(server: PluginServerContext, openClient = ope
     if (timer) clearInterval(timer);
     void release();
   };
-  // Cleanup stops new sweeps and hooks but returns at once, as before. idle() resolves once the sweep and hook
-  // handlers already running have finished, and with them their state writes; tests call it before removing PASEO_HOME.
+  // Cleanup stops new sweeps and hooks but returns at once, as before. idle() resolves once the startup chain, sweep
+  // and hook handlers already running have finished, and with them their state writes; tests call it before removing
+  // PASEO_HOME.
   return Object.assign(cleanup, {
     async idle() {
       while (tasks.size > 0) await Promise.all(tasks);
