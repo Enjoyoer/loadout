@@ -86,15 +86,19 @@ def set_owed(host: str, stamp: Optional[str]) -> None:
 
 
 def staged_payload(program: str, data: str) -> tuple[str, str]:
-    """ASCII envelope and a short, cmd.exe-safe stdin reader with integrity gate."""
+    """ASCII envelope and a short, cmd.exe-safe stdin reader with integrity gate.
+
+    The reader holds no '!', which cmd.exe strips when delayed expansion is on, so the gate is a
+    positive equality with the failure in its else branch.
+    """
     raw = base64.b64encode(json.dumps([program, data]).encode()).decode()
     digest = hashlib.sha256(raw.encode()).hexdigest()
     boot = ("const r=require('fs').readFileSync(0,'utf8');"
-            f"if(require('crypto').createHash('sha256').update(r).digest('hex')!=='{digest}')"
-            "throw Error('provider transfer digest mismatch');"
+            f"if(require('crypto').createHash('sha256').update(r).digest('hex')==='{digest}'){{"
             "const p=JSON.parse(Buffer.from(r,'base64').toString());"
             "process.argv[2]=p[1];"
-            "eval(require('zlib').gunzipSync(Buffer.from(p[0],'base64')).toString())")
+            "eval(require('zlib').gunzipSync(Buffer.from(p[0],'base64')).toString())"
+            "}else throw Error('provider transfer digest mismatch')")
     return raw, boot
 
 

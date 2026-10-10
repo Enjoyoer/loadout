@@ -33,13 +33,14 @@ SKIP_NAMES = {SYNC_RECORD, ".DS_Store"}
 # A remote program and its payload travel together on stdin as one base64 envelope, so the
 # command line holds only this fixed boot and the envelope's sha256: short enough for cmd.exe
 # whatever the program's size, and free of shell quoting. The boot runs nothing unless the
-# envelope matches the digest, then hands the program its payload in process.argv[2].
+# envelope matches the digest, then hands the program its payload in process.argv[2]. It holds
+# no '!', which cmd.exe strips when delayed expansion is on, so the test is a positive equality.
 BOOT = ("const loadoutRaw=require('fs').readFileSync(0,'utf8').trim();"
-        "if(require('crypto').createHash('sha256').update(loadoutRaw).digest('hex')!==process.argv[1])"
-        "{console.error('loadout transfer digest mismatch; nothing ran');process.exit(9)}"
+        "if(require('crypto').createHash('sha256').update(loadoutRaw).digest('hex')===process.argv[1]){"
         "const loadoutEnvelope=JSON.parse(Buffer.from(loadoutRaw,'base64').toString());"
         "process.argv[2]=loadoutEnvelope[1];"
-        "eval(require('zlib').gunzipSync(Buffer.from(loadoutEnvelope[0],'base64')).toString())")
+        "eval(require('zlib').gunzipSync(Buffer.from(loadoutEnvelope[0],'base64')).toString())"
+        "}else{console.error('loadout transfer digest mismatch; nothing ran');process.exit(9)}")
 # argv prefix for every ssh call; tests replace it with their fake (production always runs bare "ssh").
 SSH_COMMAND = ("ssh",)
 # Keepalives end a session whose host went to sleep or dropped off within about a minute.
