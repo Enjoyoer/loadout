@@ -143,9 +143,12 @@ const managedTables = sections => Object.keys(sections).map(name => name.split("
 
 // Refused before anything changes: a construct the line merge does not fully model, where it could touch a managed
 // key. In the root table when top-level keys are managed, and in each managed section: dotted keys, inline tables, and
-// values spanning lines. Anywhere: an array table, or a key or inline table, that defines part of a managed section.
+// values spanning lines; a dotted managed key, written by an earlier run, is the merge's own. Anywhere: an array table,
+// or a key or inline table, that defines part of a managed section.
 function tomlUnsupported(kinds, top, sections) {
   const managed = managedTables(sections), rootManaged = Object.keys(top).length > 0;
+  const own = (table, keys) => Object.keys(table.length ? sections[table.join(".")] || {} : top)
+    .some(k => samePath(keys, k));
   const related = keys => managed.some(s => isPrefix(s, keys) || isPrefix(keys, s));
   const refuse = (n, what) => new Error(`refused, nothing written: config.toml line ${n + 1} has ${what}${BY_HAND}`);
   let table = [];
@@ -158,7 +161,7 @@ function tomlUnsupported(kinds, top, sections) {
     if (line.kind !== "key") return;
     const inSection = table.length > 0 && managed.some(s => isPrefix(s, table) && isPrefix(table, s));
     if (inSection || (!table.length && rootManaged)) {
-      if (line.keys.length > 1) throw refuse(n, "a dotted key in a managed table");
+      if (line.keys.length > 1 && !own(table, line.keys)) throw refuse(n, "a dotted key in a managed table");
       if (line.inline) throw refuse(n, "an inline table in a managed table");
       if (kinds[n + 1] && kinds[n + 1].kind === "more") throw refuse(n, "a value spanning lines in a managed table");
     }
