@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "e749c18bc3b4cb46d09488cb738e1c518ce30fa1",
+  "source_commit": "fbcdab9c3a7777e305cb0c8a54afac1e599783e4",
   "skill_count": 22,
   "file_count": 129,
   "files": [
@@ -436,8 +436,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 31270,
-      "sha256": "f4ba2fa7774693ed8e2e11dcefc44ffe5958cb92d955b97cf16e98f4c942fbb5"
+      "bytes": 31794,
+      "sha256": "f538064988581af4c1633960eadead4de13677b148e8af4810f1743ffb0d0877"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/client-config.json",
@@ -555,8 +555,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/catalog.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 6925,
-      "sha256": "d2dd0f50fd067151f4579c56c9ea4336643d1245e77d5e4fbc668d3e67e9a905"
+      "bytes": 7525,
+      "sha256": "25872f7242332010a49ccb0fd040af267ca94933d40a23c298860a95444b1d62"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/configure.py",
