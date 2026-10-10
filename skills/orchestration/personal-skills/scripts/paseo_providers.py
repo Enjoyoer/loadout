@@ -6,9 +6,10 @@ host's ~/.paseo/config.json (every other provider and host-local field is kept,
 a change another writer made during the merge is merged again rather than
 overwritten, and the revision replaced is backed up in place), then reloads the
 daemon. Write and reload are reported separately. A write that may have changed
-the config or a Pi runtime file leaves a reload owed to that host, recorded on the source host until a reload succeeds,
-so the next run retries it and a failed retry is a failure. A reload failure
-after an unchanged write with nothing owed is only a warning.
+the config or a Pi runtime file leaves a reload owed to that host, recorded on
+the source host until a reload succeeds, so the next run retries it and a
+failed retry is a failure. A reload failure after an unchanged write with
+nothing owed is only a warning.
 """
 
 from __future__ import annotations
