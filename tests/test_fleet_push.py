@@ -115,6 +115,15 @@ class FleetPushTest(unittest.TestCase):
             self.assertEqual(set(self.snapshot(self.target(host))), {"hosts.json", "client-config.json", "global/AGENTS.md"})
         self.assertNotIn(b"not-a-real-token", b"".join(self.snapshot(self.target("devbox")).values()))
 
+    def test_a_token_source_inside_the_published_inventory_is_refused(self):
+        (self.source / "client-config.json").write_text(json.dumps({"token_file": str(self.source / "global/AGENTS.md")}))
+        code, out = self.push()
+        self.assertEqual(code, 1, out)
+        self.assertIn("invalid: refusing to publish global/AGENTS.md: it is client-config.json's token_file, which stays "
+                      "on the source host", out)
+        self.assertFalse(self.target("desktop").exists())
+        self.assertFalse(self.target("devbox").exists())
+
     def test_hand_edit_on_host_is_a_conflict_and_nothing_is_written(self):
         self.push()
         (self.target("desktop") / "hosts.json").write_text("{}")

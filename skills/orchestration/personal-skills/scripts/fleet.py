@@ -296,8 +296,37 @@ def parse_result(output: str) -> Optional[dict]:
     return json.loads(match.group(1).replace("\r", "").replace("\n", ""))
 
 
+def secret_sources(directory: Path) -> dict:
+    """The token file and pairing offers the fleet names, by description, resolved as the steps that read them do: an
+    offer against the fleet directory (paseo_providers), the token file against the working directory (client_config)."""
+    def document(name):
+        path = directory / name
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, ValueError) as error:
+            raise FleetError(f"cannot read {path}: {error}") from error
+        return data if isinstance(data, dict) else {}
+    sources = {}
+    for host in document("hosts.json").get("hosts", []):
+        if isinstance(host, dict) and isinstance(host.get("paseo_offer"), str):
+            sources[f"host {host.get('name')}'s pairing offer"] = directory / Path(host["paseo_offer"]).expanduser()
+    token = document("client-config.json").get("token_file")
+    if isinstance(token, str):
+        sources["client-config.json's token_file"] = Path(token).expanduser()
+    return sources
+
+
 def fleet_files(directory: Path) -> dict:
-    """The PUBLISHED files the fleet directory holds, by POSIX relative path; every other file stays here."""
+    """The PUBLISHED files the fleet directory holds, by POSIX relative path; every other file stays here.
+
+    Refused before any file is read: a token file or pairing offer that resolves to one of them, since the push
+    would then carry a secret to every other ssh host.
+    """
+    real = lambda path: os.path.normcase(os.path.realpath(path))
+    published = {real(directory / rel): rel for rel in PUBLISHED}
+    for what, source in secret_sources(directory).items():
+        if real(source) in published:
+            raise FleetError(f"refusing to publish {published[real(source)]}: it is {what}, which stays on the source host")
     files = {}
     for rel in PUBLISHED:
         path = directory / rel
