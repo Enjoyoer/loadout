@@ -87,6 +87,8 @@ export function fakeRunner(s: GitScenario, calls: Recorded[] = []): CommandRunne
         return s.branch ? ok(`${s.branch}\n`) : fail(1);
       case "status":
         return ok(s.status);
+      case "ls-files":
+        return ok();
       case "reflog":
         return ok(s.reflog.map((line) => `${line}\n`).join(""));
       case "merge-base": {
@@ -109,6 +111,9 @@ export function fakeFs(s: GitScenario, options: { directory?: boolean | null } =
     },
     async exists(path) {
       return s.markers.some((marker) => path === `${GIT_DIR}/${marker}`);
+    },
+    async isEmptyDirectory() {
+      return false;
     },
     async readText(path) {
       return path === `${GIT_DIR}/paseo/worktree.json` ? s.metadata : null;

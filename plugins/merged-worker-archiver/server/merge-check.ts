@@ -105,6 +105,16 @@ function dirtyReason(status: { changed: number; untracked: number; ignored: numb
   return parts.length > 0 ? `dirty(${parts.join(",")})` : null;
 }
 
+// Submodule (gitlink) paths in `git ls-files --stage -z` output: "<mode> <object> <stage>\t<path>\0" per entry.
+function gitlinkPaths(listing: string): string[] {
+  const paths = new Set<string>();
+  for (const entry of listing.split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab > 0 && entry.startsWith("160000 ")) paths.add(entry.slice(tab + 1));
+  }
+  return [...paths];
+}
+
 function hasBranchCommit(reflog: string): boolean {
   return reflog.split("\n").some((line) => /\b(?:commit|cherry-pick)\b/.test(line));
 }
@@ -141,6 +151,17 @@ export async function checkMerged(directory: string, deps: MergeCheckDeps): Prom
   if (statusResult.failure) return { merged: false, branch, base: null, reason: statusResult.failure };
   const dirty = dirtyReason(statusCounts(statusResult.result.stdout));
   if (dirty) return { merged: false, branch, base: null, reason: dirty };
+
+  // That status cannot vouch for submodules: submodule.<name>.ignore or diff.ignoreSubmodules hides their changes,
+  // their ignored files are never listed, and files in an unpopulated submodule directory are invisible to git.
+  // Archiving removes them with the worktree, so any submodule directory that is not empty blocks it.
+  const indexResult = await runGit(deps, directory, ["ls-files", "--stage", "-z", "--", ":/"], "ls-files");
+  if (indexResult.failure) return { merged: false, branch, base: null, reason: indexResult.failure };
+  for (const submodule of gitlinkPaths(indexResult.result.stdout)) {
+    if (!(await deps.fs.isEmptyDirectory(`${directory}/${submodule}`))) {
+      return { merged: false, branch, base: null, reason: `submodule(${submodule})` };
+    }
+  }
 
   const reflogResult = await runGit(deps, directory, ["reflog", "show", "--format=%H %gs"], "reflog");
   if (reflogResult.failure) return { merged: false, branch, base: null, reason: reflogResult.failure };

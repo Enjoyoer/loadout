@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, readFile, realpath, stat } from "node:fs/promises";
+import { access, readdir, readFile, realpath, stat } from "node:fs/promises";
 import type { CommandResult, CommandRunner, CommonDirResolver, FileSystem } from "./types.ts";
 
 const MAX_BUFFER = 4 * 1024 * 1024;
@@ -63,6 +63,13 @@ export const nodeFileSystem: FileSystem = {
         console.log(`[merged-worker-archiver] exists-error treated-as-present ${JSON.stringify({ path, code: code ?? String(error) })}`);
       }
       return true;
+    }
+  },
+  async isEmptyDirectory(path) {
+    try {
+      return (await readdir(path)).length === 0;
+    } catch {
+      return false;
     }
   },
   async readText(path) {

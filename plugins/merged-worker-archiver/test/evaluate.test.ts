@@ -50,7 +50,7 @@ describe("merged paths", () => {
 
   it("never fetches or mutates: only read-only git subcommands", async () => {
     const { calls } = await decide({ git: { gh: mergedPr() } });
-    const allowed = new Set(["rev-parse", "symbolic-ref", "status", "reflog", "merge-base", "rev-list"]);
+    const allowed = new Set(["rev-parse", "symbolic-ref", "status", "ls-files", "reflog", "merge-base", "rev-list"]);
     for (const call of calls.filter((c) => c.command === "git")) assert.ok(allowed.has(call.args[0]!), call.args.join(" "));
   });
 

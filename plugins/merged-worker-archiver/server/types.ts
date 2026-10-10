@@ -53,6 +53,8 @@ export type CommonDirResolver = (directory: string) => Promise<string | null>;
 export interface FileSystem {
   isDirectory(path: string): Promise<boolean | null>;
   exists(path: string): Promise<boolean>;
+  /** True only for an existing directory with no entries; anything else, or any error, is false. */
+  isEmptyDirectory(path: string): Promise<boolean>;
   readText(path: string): Promise<string | null>;
 }
 
