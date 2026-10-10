@@ -11,8 +11,8 @@ settings.
 
 ## What counts as merged
 
-Checked with read-only git in the worktree (`GIT_OPTIONAL_LOCKS=0`, no prompts, never
-`fetch`, never writes refs or the index):
+Checked with read-only git in the worktree (`GIT_OPTIONAL_LOCKS=0`, no prompts, inherited
+`GIT_*_PATHSPECS` modes removed, never `fetch`, never writes refs or the index):
 
 1. **Ancestry**: `HEAD` is an ancestor of one of the existing local base refs:
    the exact `baseRef` the worktree was cut from, `refs/heads/<baseRefName>`, or the base
@@ -50,14 +50,14 @@ Every decision is `skip` unless all of these pass. Reasons appear verbatim in th
 | `workspace-running` / `workspace-needs_input` / `workspace-failed` | Workspace status. |
 | `script-running(name)` | A workspace script or service is running. |
 | `grace-period(idle, remaining)` | Latest activity (workspace activity/status time, agent updated, last user message, attention time) is younger than `graceMinutes` (default 0, so this only applies when raised). |
-| `ambiguous(...)` | No activity timestamp, path not statable, empty reflog, PR merged without merge commit, PR head commit not local. |
+| `ambiguous(...)` | No activity timestamp, path not statable, empty reflog, PR merged without merge commit, PR head commit not local, a submodule path that is not UTF-8. |
 | `path-missing` | Directory gone; left to Paseo's own reconciliation. |
 | `detached-head` | No branch. |
 | `no-base(...)` | No Paseo worktree metadata, or none of the base refs exist locally. |
 | `branch-is-base` | The worktree is on its base branch. |
 | `operation-in-progress(x)` | Merge, cherry-pick, revert, rebase, or bisect in progress. |
 | `dirty(changed, untracked, ignored)` | Any staged, unstaged, or untracked change (`--untracked-files=all`), or any git-ignored file (`--ignored=matching`). A worktree whose only extra files are ignored reports `dirty(ignored=N)`, for example an ignored `.env` or local notes. `N` counts the paths git lists, and an ignored directory counts once. Ignored dependency or build output (`node_modules`, `dist`) also blocks archival. That is intended: the owner chose safety over automatic cleanup. Delete such output, or archive the workspace by hand. |
-| `submodule(path)` | A submodule directory (a gitlink in the index, `git ls-files --stage`) that is not empty. The superproject's status cannot vouch for it: `submodule.<name>.ignore` or `diff.ignoreSubmodules` hides its changes, its ignored files are never listed, and files in an unpopulated submodule directory are invisible to git. An unpopulated submodule (an empty directory) does not block. |
+| `submodule(path)` | A submodule directory (a gitlink in the index, `git ls-files --stage` from the worktree top level) that is not an empty, real directory. The superproject's status cannot vouch for it: `submodule.<name>.ignore` or `diff.ignoreSubmodules` hides its changes, its ignored files are never listed, and files in an unpopulated submodule directory are invisible to git. An unpopulated submodule (an empty directory) does not block; a symlink or junction in its place does. |
 | `no-branch-commits` | The branch reflog has no `commit`/`cherry-pick` entry. A branch with no own commits is trivially an ancestor of its base (also after a pure rebase onto a newer base); that is "no work yet", not "merged". |
 | `not-merged(...)` | Commits not contained in the base, no merged PR (`no PR`, `PR #n open`, `gh unavailable`, `no GitHub remote`, `gh disabled`). |
 | `unmerged-commits(...)` | Local commits after the merged PR head. |

@@ -105,12 +105,30 @@ function dirtyReason(status: { changed: number; untracked: number; ignored: numb
   return parts.length > 0 ? `dirty(${parts.join(",")})` : null;
 }
 
-// Submodule (gitlink) paths in `git ls-files --stage -z` output: "<mode> <object> <stage>\t<path>\0" per entry.
-function gitlinkPaths(listing: string): string[] {
+const GITLINK_ENTRY = Buffer.from("160000 ");
+// Strict UTF-8 that keeps a leading U+FEFF, so a decoded path names exactly the bytes git listed.
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/**
+ * Submodule (gitlink) paths in `git ls-files --stage -z` output: "<mode> <object> <stage>\t<path>\0" per entry.
+ * Paths are bytes: null when a gitlink path is not valid UTF-8 (lossy decoding could merge two of them into one
+ * name) or its entry is malformed.
+ */
+function gitlinkPaths(listing: Buffer): string[] | null {
   const paths = new Set<string>();
-  for (const entry of listing.split("\0")) {
-    const tab = entry.indexOf("\t");
-    if (tab > 0 && entry.startsWith("160000 ")) paths.add(entry.slice(tab + 1));
+  for (let start = 0; start < listing.length; ) {
+    const nul = listing.indexOf(0, start);
+    const end = nul < 0 ? listing.length : nul;
+    const entry = listing.subarray(start, end);
+    start = end + 1;
+    if (!entry.subarray(0, GITLINK_ENTRY.length).equals(GITLINK_ENTRY)) continue;
+    const tab = entry.indexOf(9);
+    if (tab < 0) return null;
+    try {
+      paths.add(STRICT_UTF8.decode(entry.subarray(tab + 1)));
+    } catch {
+      return null;
+    }
   }
   return [...paths];
 }
@@ -154,11 +172,18 @@ export async function checkMerged(directory: string, deps: MergeCheckDeps): Prom
 
   // That status cannot vouch for submodules: submodule.<name>.ignore or diff.ignoreSubmodules hides their changes,
   // their ignored files are never listed, and files in an unpopulated submodule directory are invisible to git.
-  // Archiving removes them with the worktree, so any submodule directory that is not empty blocks it.
-  const indexResult = await runGit(deps, directory, ["ls-files", "--stage", "-z", "--", ":/"], "ls-files");
+  // Archiving removes them with the worktree, so any submodule directory that is not empty blocks it. The index is
+  // listed from the top level with no pathspec, so every entry is listed whatever directory the workspace names.
+  const topResult = await runGit(deps, directory, ["rev-parse", "--show-toplevel"], "show-toplevel");
+  if (topResult.failure) return { merged: false, branch, base: null, reason: topResult.failure };
+  const topLevel = topResult.result.stdout.trim();
+  if (!topLevel) return { merged: false, branch, base: null, reason: "ambiguous(worktree top level missing)" };
+  const indexResult = await runGit(deps, topLevel, ["ls-files", "--stage", "-z"], "ls-files");
   if (indexResult.failure) return { merged: false, branch, base: null, reason: indexResult.failure };
-  for (const submodule of gitlinkPaths(indexResult.result.stdout)) {
-    if (!(await deps.fs.isEmptyDirectory(`${directory}/${submodule}`))) {
+  const submodules = indexResult.result.stdoutBytes ? gitlinkPaths(indexResult.result.stdoutBytes) : null;
+  if (!submodules) return { merged: false, branch, base: null, reason: "ambiguous(submodule path not UTF-8)" };
+  for (const submodule of submodules) {
+    if (!(await deps.fs.isEmptyDirectory(`${topLevel}/${submodule}`))) {
       return { merged: false, branch, base: null, reason: `submodule(${submodule})` };
     }
   }

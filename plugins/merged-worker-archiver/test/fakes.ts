@@ -88,7 +88,7 @@ export function fakeRunner(s: GitScenario, calls: Recorded[] = []): CommandRunne
       case "status":
         return ok(s.status);
       case "ls-files":
-        return ok();
+        return { ...ok(), stdoutBytes: Buffer.alloc(0) };
       case "reflog":
         return ok(s.reflog.map((line) => `${line}\n`).join(""));
       case "merge-base": {

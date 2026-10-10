@@ -34,6 +34,8 @@ export interface AgentView {
 export interface CommandResult {
   code: number | null;
   stdout: string;
+  /** Raw stdout. runCommand always sets it; git paths are bytes, and `stdout` decodes them lossily. */
+  stdoutBytes?: Buffer;
   stderr: string;
   timedOut: boolean;
   notFound: boolean;
@@ -53,7 +55,7 @@ export type CommonDirResolver = (directory: string) => Promise<string | null>;
 export interface FileSystem {
   isDirectory(path: string): Promise<boolean | null>;
   exists(path: string): Promise<boolean>;
-  /** True only for an existing directory with no entries; anything else, or any error, is false. */
+  /** True only for an existing real directory (not a symlink or junction) with no entries; anything else, or any error, is false. */
   isEmptyDirectory(path: string): Promise<boolean>;
   readText(path: string): Promise<string | null>;
 }
