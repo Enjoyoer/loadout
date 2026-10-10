@@ -5,6 +5,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 ## Unreleased
 
 ### Changed
+- personal-skills: an optional `pi.contextWindows` map sets Pi's context window per canonical label (API entries included), so Pi's context meter and compaction trigger match a backend's effective cap.
 - OPC cloud briefs tell the session its container can restart and lose unpushed work: push a first small commit and open the draft PR before other work, then push after each completed step; the launcher follow-up says the same after a restart with nothing pushed.
 - `frontend-design` is now Anthropic's official frontend-design skill, copied unmodified from the official Claude Code plugin; the skill name is unchanged.
 - `merged-worker-archiver` caps archives per sweep again (`maxArchivesPerSweep`, default 5; the rest are deferred to the next sweep) and treats git-ignored files in a worktree as dirty, so an ignored `.env`, local notes, or `node_modules` now block archival.
