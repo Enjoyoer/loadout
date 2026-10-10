@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, readFile, realpath, stat } from "node:fs/promises";
+import { access, lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import type { CommandResult, CommandRunner, CommonDirResolver, FileSystem } from "./types.ts";
 
 const MAX_BUFFER = 4 * 1024 * 1024;
@@ -15,25 +15,32 @@ const COMMAND_ENV: NodeJS.ProcessEnv = {
   GH_NO_UPDATE_NOTIFIER: "1",
   NO_COLOR: "1",
 };
+// An inherited pathspec mode changes what git lists: GIT_LITERAL_PATHSPECS=1 makes `:/` match nothing. Windows
+// matches environment names in any case.
+const PATHSPEC_MODES = new Set(["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"]);
+for (const name of Object.keys(COMMAND_ENV)) {
+  if (PATHSPEC_MODES.has(name.toUpperCase())) delete COMMAND_ENV[name];
+}
 
 export const runCommand: CommandRunner = (command, args, cwd, timeoutMs) =>
   new Promise<CommandResult>((resolve) => {
     execFile(
       command,
       [...args],
-      { cwd, timeout: timeoutMs, maxBuffer: MAX_BUFFER, env: COMMAND_ENV, killSignal: "SIGKILL" },
+      { cwd, timeout: timeoutMs, maxBuffer: MAX_BUFFER, env: COMMAND_ENV, killSignal: "SIGKILL", encoding: "buffer" },
       (error, stdout, stderr) => {
-        const out = String(stdout ?? "");
+        const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "");
+        const out = bytes.toString("utf8");
         const err = String(stderr ?? "");
         if (!error) {
-          resolve({ code: 0, stdout: out, stderr: err, timedOut: false, notFound: false });
+          resolve({ code: 0, stdout: out, stdoutBytes: bytes, stderr: err, timedOut: false, notFound: false });
           return;
         }
         const failure = error as NodeJS.ErrnoException & { killed?: boolean; code?: unknown };
         const notFound = failure.code === "ENOENT";
         const timedOut = Boolean(failure.killed) && !notFound;
         const code = typeof failure.code === "number" ? failure.code : null;
-        resolve({ code, stdout: out, stderr: err, timedOut, notFound });
+        resolve({ code, stdout: out, stdoutBytes: bytes, stderr: err, timedOut, notFound });
       },
     );
   });
@@ -63,6 +70,22 @@ export const nodeFileSystem: FileSystem = {
         console.log(`[merged-worker-archiver] exists-error treated-as-present ${JSON.stringify({ path, code: code ?? String(error) })}`);
       }
       return true;
+    }
+  },
+  async isEmptyDirectory(path) {
+    try {
+      // lstat: a symlink or junction is not a directory here, whatever it points to.
+      if (!(await lstat(path)).isDirectory()) return false;
+      return (await readdir(path)).length === 0;
+    } catch {
+      return false;
+    }
+  },
+  async realpath(path) {
+    try {
+      return await realpath(path);
+    } catch {
+      return null;
     }
   },
   async readText(path) {
