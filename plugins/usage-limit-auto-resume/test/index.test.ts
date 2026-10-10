@@ -463,3 +463,67 @@ it("sends nothing when a permission request's decision lands between the send ga
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
 });
+
+it("keeps verifying a long resumed turn whose only newer user message is the resume itself", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-verify-"));
+  const plugins = pluginTracker();
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  const originalLog = console.log;
+  const logs: string[] = [];
+  console.log = (line: string) => { logs.push(line); };
+  mock.timers.enable({ apis: ["setInterval"] });
+  try {
+    const config = ConfigSchema.parse({ armed: true, pollIntervalSeconds: 5 });
+    const record = buildRecord(agent, "out of credits", undefined, config, Date.now() - 6 * 3600_000, "turn-1")!;
+    const store = new ResumeStore();
+    await store.upsert(record);
+    const handlers = new Map<string, (event: unknown) => void>();
+    let settingsReads = 0;
+    let snapshot: AgentSnapshot = agent;
+    let latestUser: { type: "user_message"; text: string; messageId: string } | null = null;
+    const open = async () => ({
+      getConnectionState: () => ({ status: "connected" }),
+      close: async () => undefined,
+      agents: { ref: () => ({
+        refresh: async () => ({ agent: snapshot }),
+        send: async (text: string, options: { messageId: string }) => {
+          // The resume is a user message: the agent's latest user time moves on and the resumed turn keeps running.
+          latestUser = { type: "user_message", text, messageId: options.messageId };
+          snapshot = { ...agent, status: "running", activeTurn: { turnId: "turn-2" }, lastUserMessageAt: new Date().toISOString() };
+          handlers.get("agent.turn_started")!({ turnId: "turn-2", agent: { id: agent.id } });
+        },
+        timeline: { refetch: async () => ({ entries: latestUser ? [{ item: latestUser }] : [], error: null, gap: false, staleCursor: false, hasNewer: false }) },
+      }) },
+    } as unknown as PaseoClient);
+    const server = {
+      registerSettings: () => ({ read: async () => { settingsReads += 1; return { status: "ready", revision: "r1", values: config }; } }),
+      on: (name: string, handler: (event: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
+    } as unknown as PluginServerContext;
+    const cleanup = plugins.start(server, open);
+    await until(() => logs.some((line) => line.includes("resume-sent")));
+    await completeNextSweep(() => settingsReads, 5000);
+    let [stored] = await store.read();
+    assert.equal(stored?.state, "verifying");
+    assert.equal(stored?.resumeTurnId, "turn-2");
+    assert.equal(stored?.lastUserMessageAt, snapshot.lastUserMessageAt);
+    // A genuinely newer request still supersedes the record.
+    latestUser = { type: "user_message", text: "Stop and do something else.", messageId: "user-2" };
+    snapshot = { ...snapshot, lastUserMessageAt: new Date(Date.now() + 1000).toISOString() };
+    await completeNextSweep(() => settingsReads, 5000);
+    [stored] = await store.read();
+    assert.equal(stored?.state, "superseded");
+    assert.equal(stored?.terminalReason, "newer-user-message");
+    (cleanup as () => void)();
+  } finally {
+    try {
+      await plugins.dispose(home);
+    } finally {
+      mock.timers.reset();
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  }
+});

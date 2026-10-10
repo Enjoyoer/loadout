@@ -3,7 +3,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { PaseoApi } from "@getpaseo/client";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
 import { openDaemonClient } from "./server/daemon.ts";
-import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, releaseClaim, resumePrompt, shouldResume, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
+import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, releaseClaim, resumePrompt, shouldResume, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
@@ -72,7 +72,8 @@ export default function contribute(server: PluginServerContext, openClient = ope
     return result?.agent ? result.agent as AgentSnapshot : null;
   }
 
-  // An incomplete page proves nothing, so the record is treated as superseded as before.
+  // The newest user row of a complete timeline page is the record's own latest message. An incomplete page proves
+  // nothing.
   async function ownMessageIsLatest(api: PaseoApi, record: ResumeRecord): Promise<boolean> {
     const page = await api.agents.ref(record.agentId).timeline.refetch({ direction: "before", limit: 200 });
     if (page.error || page.gap || page.staleCursor || page.hasNewer) return false;
@@ -153,13 +154,11 @@ export default function contribute(server: PluginServerContext, openClient = ope
         log(`send-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${claim.cancelled?.reason ?? "record-changed"}`);
         return;
       }
-      // A safety event that arrived while the claim was being written: nothing was sent, so undo the claim and store
+      // A safety event that arrived while the claim was being written: nothing was sent, so undo the claim and keep
       // that event's decision.
       const cancelled = claim.cancelled;
       if (cancelled) {
-        await store.update(record.recordId, (value) => value.state === "resuming"
-          ? { ...releaseClaim(value, record, claimed), state: cancelled.state, terminalReason: cancelled.reason }
-          : value);
+        await store.update(record.recordId, (value) => cancelClaim(value, record, claim, cancelled));
         log(`send-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${cancelled.reason}`);
         return;
       }

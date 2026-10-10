@@ -374,9 +374,26 @@ export type InFlightClaim = TurnObservation & {
   cancelled: ClaimCancel | null;
 };
 
+const isClaimAttempt = (attempt: ResumeAttempt, claim: InFlightClaim) => attempt.messageId === claim.attempt.messageId && attempt.at === claim.attempt.at;
+
 /** The record still carries this claim: resuming, with the claim's own attempt. */
 export function holdsClaim(current: ResumeRecord, claim: InFlightClaim): boolean {
-  return current.state === "resuming" && current.attempts.some((attempt) => attempt.messageId === claim.attempt.messageId && attempt.at === claim.attempt.at);
+  return current.state === "resuming" && current.attempts.some((attempt) => isClaimAttempt(attempt, claim));
+}
+
+// Undoes a claim whose send never started because a safety event arrived first: the claim's attempt, send time and
+// deadline go. A record still resuming takes that event's decision; a state the event's handler or another writer
+// already stored is kept.
+export function cancelClaim(current: ResumeRecord, before: ResumeRecord, claim: InFlightClaim, cancel: ClaimCancel, now = Date.now()): ResumeRecord {
+  if (!current.attempts.some((attempt) => isClaimAttempt(attempt, claim))) return current;
+  return {
+    ...current,
+    ...(current.state === "resuming" ? { state: cancel.state, terminalReason: cancel.reason } : {}),
+    sentAt: current.sentAt === claim.sentAt ? before.sentAt : current.sentAt,
+    verificationDeadlineAt: current.verificationDeadlineAt === claim.verificationDeadlineAt ? before.verificationDeadlineAt : current.verificationDeadlineAt,
+    attempts: current.attempts.filter((attempt) => !isClaimAttempt(attempt, claim)),
+    updatedAt: new Date(now).toISOString(),
+  };
 }
 
 // Applies a turn start seen for an in-flight claim to the claim's record. While the record still carries the claim,

@@ -29,6 +29,12 @@ Resume records live in `<PASEO_HOME>/plugin-state/usage-limit-auto-resume/state.
 
 A send that fails with `Transport not connected` never reached the daemon, so the record stays parked and the next sweep retries on a fresh connection. That rollback starts from the stored record and undoes only what the send claim set (state, send time, deadline, and the new attempt). If a turn started on the agent after the claim, the message may have arrived after all, so the record becomes `uncertain` with its turn identity and deadline kept, and nothing is sent again. The turn start is noted in memory the moment the event arrives, before the plugin writes it to the state file. A turn that arrives while the rollback itself is being written restores the claim's attempt, send time and deadline with the turn ID, again as `uncertain`, before the sweep moves on; a terminal state another event wrote meanwhile is kept. Any other send error marks the record `uncertain`.
 
+A send claims its record only while the record is still in the state the send checks passed on, unchanged since, and at the same attempt. A permission request or archive that arrives first keeps its `uncertain` or `superseded` decision and nothing is sent. Such an event is noted on the pending send the moment it arrives, so one that lands while the claim is being written also stops the send. A send receipt moves only that live claim on to verification. A terminal state stored while the send was in flight is kept.
+
+The resume or retry is itself a user message, so the agent's latest user time moves past the record's. Verification accepts the newer time only when the newest user row in a complete timeline page carries the attempt's stable message ID and exact prompt, and then stores it. Any other newer message still supersedes the record, as does a page that is incomplete.
+
+The state file keeps every record that can still send or is verifying a send, and at most the 200 most recently updated terminal records. Each sweep reads the file once and reads it again only for records that can still act. A failed-turn record keeps its 20 newest attempts in full; older ones are counted, so message IDs and backoff continue from the full count.
+
 ```bash
 npm ci
 npm run check
