@@ -44,6 +44,9 @@ CONFIG_KEYS = {"providers", "env", "hosts", "pi"}
 HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi"}
 AGENT_VARS = ("PASEO_AGENT_ID", "PASEO_AGENT_CWD", "PASEO_HOME")
 RELAY_TITLE = "loadout-provider-sync"
+# argv prefix for every paseo call made here; tests replace it with their fake (production always runs bare "paseo").
+# A paseo command sent over ssh is the host's own and stays the string "paseo reload".
+PASEO_COMMAND = ("paseo",)
 # Relay timings; the environment overrides exist for tests.
 RELAY_WAIT_SECONDS = float(os.environ.get("LOADOUT_RELAY_WAIT_SECONDS", 120))
 RELAY_POLL_SECONDS = float(os.environ.get("LOADOUT_RELAY_POLL_SECONDS", 2))
@@ -341,7 +344,8 @@ class Runner:
         return {**self.base_env(), "PASEO_HOST": self.offer_path.read_text(encoding="utf-8").strip()}
 
     def paseo(self, *args: str, timeout: int = 60) -> str:
-        done = subprocess.run(["paseo", *args], env=self.relay_env(), capture_output=True, text=True, timeout=timeout)
+        done = subprocess.run([*PASEO_COMMAND, *args], env=self.relay_env(), capture_output=True, text=True,
+                              timeout=timeout)
         if done.returncode != 0:
             raise RuntimeError(f"paseo {args[0]} {args[1] if len(args) > 1 else ''}: {done.stderr.strip() or done.stdout.strip()}")
         return done.stdout
@@ -470,10 +474,10 @@ class Runner:
 
     def reload(self) -> str:
         if self.mode == "local":
-            command = ["paseo", "reload"]
+            command = [*PASEO_COMMAND, "reload"]
             env = self.base_env()
         elif self.offer_path is not None:
-            command = ["paseo", "reload"]
+            command = [*PASEO_COMMAND, "reload"]
             env = self.relay_env()
         else:
             command = [*fleet.SSH_COMMAND, "-n", *fleet.SSH_OPTIONS, "--", self.name, "paseo reload"]

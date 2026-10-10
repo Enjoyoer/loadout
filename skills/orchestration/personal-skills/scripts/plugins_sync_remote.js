@@ -43,8 +43,16 @@ function winArg(arg) {
   if (/["%\r\n]/.test(arg)) throw new Error("cannot pass to cmd.exe: " + arg);
   return `"${arg}"`;
 }
+// Test-only hooks: LOADOUT_TEST_NPM and LOADOUT_TEST_PASEO each hold a JSON [interpreter, fake script] run in place
+// of npm or paseo, as argv without a shell. They are never set outside tests; unset, both run as below unchanged.
+const testNpm = process.env.LOADOUT_TEST_NPM, testPaseo = process.env.LOADOUT_TEST_PASEO;
 function sh(file, args, cwd, timeout = 900000) {
   const options = { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout, env: process.env };
+  const fake = file === "npm" ? testNpm : file === "paseo" ? testPaseo : null;
+  if (fake) {
+    const [interpreter, script] = JSON.parse(fake);
+    return execFileSync(interpreter, [script, ...args], options);
+  }
   if (process.platform === "win32") return execSync([file, ...args].map(winArg).join(" "), options);
   return execFileSync(file, args, options);
 }
@@ -52,7 +60,8 @@ function sh(file, args, cwd, timeout = 900000) {
 const WINDOWS_PASEO = "C:\\Program Files\\Paseo\\resources\\bin\\paseo.cmd";
 function paseo(args) {
   const bins = ["paseo"];
-  if (process.platform === "win32" && fs.existsSync(WINDOWS_PASEO)) bins.push(WINDOWS_PASEO);
+  // Under the test hook the fake is the only paseo: a test never reaches the installed Windows fallback.
+  if (!testPaseo && process.platform === "win32" && fs.existsSync(WINDOWS_PASEO)) bins.push(WINDOWS_PASEO);
   let last;
   for (const bin of bins) {
     try { return sh(bin, args, undefined, 120000); } catch (e) {

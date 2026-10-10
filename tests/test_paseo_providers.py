@@ -5,7 +5,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import textwrap
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -18,54 +17,7 @@ sys.path.insert(0, str(SCRIPTS))
 import fleet  # noqa: E402
 import paseo_providers  # noqa: E402
 
-FAKE_SSH = textwrap.dedent("""\
-    #!/bin/sh
-    while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
-    [ "$1" = "--" ] && shift
-    [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
-    host="$1"; shift
-    echo "ssh $host" >> "$FAKE_ROOT/calls.log"
-    [ -e "$FAKE_ROOT/cmd-limit" ] && [ "${#*}" -gt 8191 ] && { echo 'The command line is too long' >&2; exit 1; }
-    [ -e "$FAKE_ROOT/corrupt-stdin" ] && { printf corrupt | HOME="$FAKE_ROOT/hosts/$host" sh -c "$*"; exit $?; }
-    HOME="$FAKE_ROOT/hosts/$host" exec sh -c "$*"
-    """)
-
-# PASEO_HOST holds "offer:<host>"; without it the call targets the local daemon.
-# Like the real CLI, it refuses PASEO_HOME together with PASEO_HOST. Files in
-# FAKE_ROOT shape relay faults: drop-sends (count of send-keys to lose),
-# quiet-captures (captures that return nothing), fail-create (the host makes
-# the workspace but the call fails), fail-terminal, fail-archive.
-FAKE_PASEO = textwrap.dedent(r"""
-    #!/bin/sh
-    host="${PASEO_HOST#offer:}"; [ -n "$PASEO_HOST" ] || host=local
-    echo "paseo $host $*" >> "$FAKE_ROOT/calls.log"
-    [ -n "$PASEO_HOME" ] && [ -n "$PASEO_HOST" ] && { echo "TARGET_AMBIGUOUS" >&2; exit 1; }
-    ws="$FAKE_ROOT/workspaces"; touch "$ws"
-    counter() { n=$(cat "$FAKE_ROOT/$1" 2>/dev/null || echo 0); [ "$n" -gt 0 ] && { echo $((n - 1)) > "$FAKE_ROOT/$1"; return 0; }; return 1; }
-    case "$1 $2" in
-      "--fake-ok "*) echo fake ;;
-      "reload "*) [ -e "$FAKE_ROOT/fail-reload-$host" ] && { echo "request timed out" >&2; exit 1; }; echo reloaded ;;
-      "workspace create") id="ws-$(($(wc -l < "$ws") + 1))"; echo "$id loadout-provider-sync" >> "$ws"
-        [ -e "$FAKE_ROOT/fail-create" ] && { echo "request timed out" >&2; exit 1; }; echo "{\"workspaceId\":\"$id\"}" ;;
-      "workspace ls") awk 'BEGIN{printf "["} {printf "%s{\"workspaceId\":\"%s\",\"name\":\"%s\"}", (NR>1?",":""), $1, $2} END{print "]"}' "$ws" ;;
-      "workspace archive") [ -e "$FAKE_ROOT/fail-archive" ] && exit 1; grep -v "^$3 " "$ws" > "$ws.tmp"; mv "$ws.tmp" "$ws"; echo archived ;;
-      "terminal create") [ -e "$FAKE_ROOT/fail-terminal" ] && { echo "terminal failed" >&2; exit 1; }
-        : > "$FAKE_ROOT/term.out"; echo '{"id":"term-1"}' ;;
-      "terminal send-keys")
-        [ -e "$FAKE_ROOT/input-limit" ] && [ "${#4}" -gt 3000 ] && { echo 'relay input timeout' >&2; exit 1; }
-        counter drop-sends && exit 0
-        [ -e "$FAKE_ROOT/echo-only" ] && { printf '$ %s\n' "$4" | fold -w 50 >> "$FAKE_ROOT/term.out"; exit 0; }
-        # Input sent while the shell is still starting is lost, as on a slow relay host.
-        n=$(cat "$FAKE_ROOT/quiet-captures" 2>/dev/null || echo 0); [ "$n" -gt 0 ] && exit 0
-        case "$4" in *'exec 3<'*)
-          [ -e "$FAKE_ROOT/corrupt-relay" ] && for file in "$TMPDIR"/loadout-provider-*; do printf corrupt > "$file"; done ;;
-        esac
-        { printf '$ %s\n' "$4"; HOME="$FAKE_ROOT/hosts/$host" sh -c "$4" 2>&1; } | fold -w 50 >> "$FAKE_ROOT/term.out" ;;
-      "terminal capture") counter quiet-captures && exit 0; [ -s "$FAKE_ROOT/term.out" ] && cat "$FAKE_ROOT/term.out" || echo '$ ' ;;
-      "terminal kill") ;;
-      *) echo "unexpected: $*" >&2; exit 9 ;;
-    esac
-    """).lstrip()
+from fake_commands import assert_fake, install_fake_provider_paseo, install_fake_ssh, with_fakes
 
 HOSTS = {
     "schema_version": 2,
@@ -90,15 +42,6 @@ EXISTING = {
 }
 
 
-def assert_fakes_run(env, names=("ssh", "paseo")):
-    """A broken fake would let the real binary run, so refuse to continue."""
-    for name in names:
-        done = subprocess.run([name, "--fake-ok"], env=env, capture_output=True, text=True)
-        if done.stdout.strip() != "fake":
-            raise AssertionError(f"fake {name} is not the binary on PATH")
-
-
-@unittest.skipIf(os.name == "nt", "fake ssh and paseo are POSIX shell scripts")
 class ProviderSyncTest(unittest.TestCase):
     def setUp(self):
         if not shutil.which("node"):
@@ -110,20 +53,20 @@ class ProviderSyncTest(unittest.TestCase):
         (self.fleet / "hosts.json").write_text(json.dumps(HOSTS))
         shutil.copy(EXAMPLE / "paseo-providers.json", self.fleet / "paseo-providers.json")
         (self.fleet / "offers/tablet.offer").write_text("offer:tablet\n")
-        bin_dir = self.root / "bin"
-        bin_dir.mkdir()
-        for name, body in (("ssh", FAKE_SSH), ("paseo", FAKE_PASEO)):
-            (bin_dir / name).write_text(body)
-            (bin_dir / name).chmod(0o755)
+        self.ssh = install_fake_ssh(self.root / "bin")
+        self.paseo = install_fake_provider_paseo(self.root / "bin")
         for host in ("laptop", "desktop", "tablet", "devbox"):
             config = self.config_path(host)
             config.parent.mkdir(parents=True)
             config.write_text(json.dumps(EXISTING, indent=2))
         self.env = {
-            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "PATH": os.environ["PATH"],
             "HOME": str(self.root / "hosts/laptop"),
             "LOADOUT_FLEET": str(self.fleet),
             "FAKE_ROOT": str(self.root),
+            "FAKE_SSH_LOG": str(self.root / "calls.log"),
+            # A host's paseo, run over the fake ssh.
+            "LOADOUT_TEST_PASEO": json.dumps(self.paseo),
             "TMPDIR": str(self.root),
             # An agent session's variables must not reach the relay CLI.
             "PASEO_HOME": str(self.root / "agent-home"),
@@ -135,7 +78,17 @@ class ProviderSyncTest(unittest.TestCase):
             "LOADOUT_RELAY_SETTLE_SECONDS": "0",
             "LOADOUT_RELAY_RESEND_SECONDS": "0.5",
         }
-        assert_fakes_run(self.env)
+        self.env.update({k: v for k, v in os.environ.items()
+                         if k.upper() in ("SYSTEMROOT", "TEMP", "TMP")})
+        self.env["USERPROFILE"] = self.env["HOME"]
+        self.env["APPDATA"] = str(self.root / "hosts/laptop/.config")
+        assert_fake(self.ssh, self.env)
+        assert_fake(self.paseo, self.env)
+        # In-process runs reach the same fakes through the module hooks.
+        for module, name, fake in ((fleet, "SSH_COMMAND", self.ssh), (paseo_providers, "PASEO_COMMAND", self.paseo)):
+            hook = patch.object(module, name, fake)
+            hook.start()
+            self.addCleanup(hook.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -147,7 +100,7 @@ class ProviderSyncTest(unittest.TestCase):
         return json.loads(self.config_path(host).read_text())
 
     def run_sync(self, *args):
-        done = subprocess.run([sys.executable, str(SCRIPTS / "paseo_providers.py"), *args],
+        done = subprocess.run(with_fakes(SCRIPTS / "paseo_providers.py", *args, ssh=self.ssh, paseo=self.paseo),
                               env=self.env, capture_output=True, text=True, timeout=60)
         return done.returncode, done.stdout + done.stderr
 
@@ -380,10 +333,12 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertIn("workspace archive ws-old", self.calls())
         self.assertEqual((self.root / "workspaces").read_text(), "ws-keep someone-else\n")
 
+    @unittest.skipIf(os.name == "nt", "Windows has no SIGTERM to catch: send_signal(SIGTERM) is TerminateProcess")
     def test_sigterm_still_cleans_up_the_relay_workspace(self):
         (self.root / "drop-sends").write_text("99")
         self.env["LOADOUT_RELAY_WAIT_SECONDS"] = "30"
-        proc = subprocess.Popen([sys.executable, str(SCRIPTS / "paseo_providers.py"), "--host", "tablet"],
+        proc = subprocess.Popen(with_fakes(SCRIPTS / "paseo_providers.py", "--host", "tablet", ssh=self.ssh,
+                                           paseo=self.paseo),
                                 env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for _ in range(200):
             if "send-keys" in self.calls():
