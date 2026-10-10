@@ -42,7 +42,6 @@ pack = fleet.pack
 parse_result = fleet.parse_result
 CONFIG_KEYS = {"providers", "env", "hosts", "pi"}
 HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi"}
-AGENT_VARS = ("PASEO_AGENT_ID", "PASEO_AGENT_CWD", "PASEO_HOME")
 RELAY_TITLE = "loadout-provider-sync"
 # argv prefix for every paseo call made here; tests replace it with their fake (production always runs bare "paseo").
 # A paseo command sent over ssh is the host's own and stays the string "paseo reload".
@@ -336,7 +335,9 @@ class Runner:
         self.cleanup_warning: Optional[str] = None
 
     def base_env(self) -> dict:
-        return {k: v for k, v in os.environ.items() if k not in AGENT_VARS}
+        """No inherited daemon target: a local write and reload address this host's own daemon, never the one an
+        agent session or a scratch daemon's PASEO_HOST names, so a reload elsewhere cannot pay this host's debt."""
+        return fleet.daemon_env()
 
     def relay_env(self) -> dict:
         if self.offer_path is None or not self.offer_path.is_file():

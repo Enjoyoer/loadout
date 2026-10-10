@@ -54,6 +54,10 @@ SCOPES = ("skills", "plugins", "providers", "client-config")
 # Scopes that move files or secrets, so they need an ssh transport.
 SSH_SCOPES = {"skills", "plugins", "client-config"}
 OSES = {"macos", "windows", "linux"}
+# Paseo variables an agent session or a scratch daemon leaves in the environment. A program run on the source host
+# drops them all, so its config reads, gates, installs, reloads and confirmations address the host's own Paseo home
+# and the daemon that home names, as on an ssh host; only a relay call adds a host's own offer as PASEO_HOST.
+DAEMON_VARS = ("PASEO_HOST", "PASEO_HOME", "PASEO_AGENT_ID", "PASEO_AGENT_CWD")
 # Host names are ssh aliases and reach ssh's argv, so a leading '-' would read as an option.
 HOST_NAME = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 CLIENTS = {"codex", "claude", "opencode", "pi"}
@@ -297,6 +301,11 @@ def push_targets(fleet: dict) -> tuple:
             [host for host in others if host["transport"] != "ssh"])
 
 
+def daemon_env() -> dict:
+    """This environment without DAEMON_VARS: what a program on the source host runs with."""
+    return {k: v for k, v in os.environ.items() if k not in DAEMON_VARS}
+
+
 def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Optional[float] = None) -> tuple:
     """Run a Loadout node program, bundled with remote_common.js, on a host with a JSON payload.
 
@@ -307,8 +316,8 @@ def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Opti
     env = None
     if local:
         command = ["node", "-e", BOOT, "--", digest]
-        # Inside an agent session, keep daemon commands off the agent's own identity.
-        env = {k: v for k, v in os.environ.items() if k not in ("PASEO_AGENT_ID", "PASEO_AGENT_CWD")}
+        # Inside an agent session, keep daemon commands off the agent's own identity and the daemon it targets.
+        env = daemon_env()
     else:
         command = [*SSH_COMMAND, *SSH_OPTIONS, "--", name, f'node -e "{BOOT}" -- {digest}']
     try:

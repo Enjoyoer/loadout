@@ -350,6 +350,23 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertIn("terminal kill term-1", self.calls())
         self.assertEqual((self.root / "workspaces").read_text(), "")
 
+    def test_an_inherited_paseo_host_never_redirects_the_source_hosts_reload(self):
+        # The session that starts the sync targets another daemon; the source host's reload must stay on its own.
+        self.env["PASEO_HOST"] = "offer:desktop"
+        code, out = self.run_sync("--host", "laptop")
+        self.assertEqual(code, 0, out)
+        self.assertIn("laptop (local): reload ok", out)
+        self.assertIn("paseo local reload", self.calls())
+        self.assertNotIn("paseo desktop", self.calls())
+        self.assertNotEqual(self.config("laptop"), EXISTING)
+        self.assertEqual(self.config("desktop"), EXISTING)
+        # A host program on the source host, such as the plugin step's, inherits no daemon target either.
+        probe = self.root / "probe.js"
+        probe.write_text('process.stdout.write("\\n@@LOADOUT-RESULT " + JSON.stringify({host: process.env.PASEO_HOST '
+                         '|| null, home: process.env.PASEO_HOME || null}) + " @@END\\n");\n')
+        with patch.dict(os.environ, self.env):
+            self.assertEqual(fleet.run_node("laptop", True, probe, {})[0], {"host": None, "home": None})
+
     def test_reload_failure_is_reported_apart_from_the_write(self):
         (self.root / "fail-reload-tablet").touch()
         code, out = self.run_sync("--host", "tablet")
