@@ -230,9 +230,11 @@ for (const armed of [false, true]) {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     f.sweeper.noteArchivedWorkspace({ id: "workspace-0", projectId: "project-0", cwd: path.join(f.root, "missing-0") });
     t.mock.timers.tick(10_000);
-    // Drain async filesystem work, without advancing the re-check timer again.
+    // Drain async filesystem work, without advancing the re-check timer again. The wait is bounded by wall time, not by
+    // event-loop turns: thread-pool fs calls (the mount check reads fstab and mountinfo) can outlast many fast turns.
     const decisionLogged = () => f.logs.some((line) => line.includes(`decision=${armed ? "delete" : "would-delete"} source=re-check`));
-    for (let turn = 0; turn < 1000 && !decisionLogged(); turn++) await setImmediate();
+    const deadline = Date.now() + 1500;
+    while (!decisionLogged() && Date.now() < deadline) await setImmediate();
     assert.ok(decisionLogged(), "archive re-check completed");
     assert.deepEqual(f.removed, armed ? ["project-0"] : []);
     assert.deepEqual(f.calls, ["list", "fetch", "list", "fetch", ...(armed ? ["remove:project-0"] : [])]);
