@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertRepository, git, gitEnvironment, ownStartTime, processIdentity, processStartTime, readTask, updateTask } from './task-state.mjs';
@@ -14,18 +14,31 @@ export function sourceIdentity(task) {
   hashWorktree(hash, cwd, head);
   return {head, fingerprint:hash.digest('hex')};
 }
-// A repository lists a submodule, or an untracked nested repository, as one directory entry and its dirty state as one
-// "-dirty" line, so an initialized one is hashed the same way in turn: its head, its diff, and its working-tree bytes.
+// A repository lists a submodule as one gitlink and its dirty state as one "-dirty" diff line, so each gitlink in the
+// index is hashed the same way in turn: its head, its diff, and its working-tree bytes; an untracked nested repository
+// too. A gitlink whose working tree is not a real directory (a symlink anywhere in its path included) holding its own
+// .git file or directory cannot be bound to its bytes, and refuses the fingerprint.
+const checkedOut = dir => {
+  try {
+    if (!lstatSync(dir).isDirectory() || realpathSync(dir) !== dir) return false;
+    const dot = lstatSync(join(dir, '.git'));
+    return dot.isFile() || dot.isDirectory();
+  } catch (error) { if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error; return false; }
+};
 function hashWorktree(hash, cwd, head) {
-  const paths = execFileSync('git', ['-C', cwd, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], {env:gitEnvironment()})
-    .toString().split('\0').filter(Boolean);
+  const list = args => execFileSync('git', ['-C', cwd, 'ls-files', '-z', ...args], {env:gitEnvironment()}).toString().split('\0').filter(Boolean);
+  const gitlinks = new Set(list(['--stage']).filter(entry => entry.startsWith('160000 ')).map(entry => entry.slice(entry.indexOf('\t') + 1)));
+  for (const path of gitlinks) {
+    if (!checkedOut(join(cwd, path))) throw Error(`submodule ${path} is not a checked-out directory with its own .git; its bytes cannot be fingerprinted`);
+  }
+  const paths = list(['--cached', '--others', '--exclude-standard']);
   hash.update(head ? git(cwd, 'diff', '--binary', head) : '<no head>');
   for (const path of [...new Set(paths)].sort()) {
     hash.update(path + '\0');
     try {
       const file = join(cwd, path), stat = lstatSync(file);
       hash.update(String(stat.mode) + '\0');
-      if (stat.isDirectory() && existsSync(join(file, '.git'))) {
+      if (gitlinks.has(path) || (stat.isDirectory() && existsSync(join(file, '.git')))) {
         let nested = null;
         try { nested = git(file, 'rev-parse', '--verify', '-q', 'HEAD'); } catch { /* a repository with no commit yet */ }
         hash.update(`<repository ${nested}>\0`);
@@ -73,18 +86,24 @@ export function recoverTests(taskPath) {
   }).tests;
 }
 // SIGINT or SIGTERM passes to the test command's group, which gets graceMs to exit. Then the group is killed under the
-// identity rule recovery uses; if that rule forbids the kill, the controller stops waiting and records why.
+// identity rule recovery uses and gets graceMs more to close. If that rule forbids the kill, or the command still has not
+// closed, the controller stops waiting and the receipt records why, with the command's pid and start time.
+// A source that cannot be fingerprinted fails the receipt with the reason.
 export async function runTests(taskPath, {argv, graceMs=10000}) {
   if(!Array.isArray(argv) || !argv.length || argv.some(a=>typeof a !== 'string') || !argv[0]) throw Error('test argv required');
   recoverTests(taskPath);
   const task=readTask(taskPath); idle(task);
-  const source=sourceIdentity(task);
+  let source;
+  try { source=sourceIdentity(task); }
+  catch(error) { return updateTask(taskPath,t=>{idle(t);t.tests={argv,status:'failed',reason:error.message};}).tests; }
   const pidStart=ownStartTime();
   updateTask(taskPath,t=>{idle(t);t.tests={...source,argv,status:'running',pid:process.pid,pid_start:pidStart,started_at:new Date().toISOString()};});
   let code,child,childStart=null,signal=null,cleanup='exited after signal',timer,abandon;
   const escalate=()=>{
     cleanup=cleanupTests({child_pid:child?.pid,child_start:childStart});
-    if(cleanup!=='group signalled'){child?.unref();abandon?.(null);}
+    const giveUp=()=>{child?.unref();abandon?.(null);};
+    if(cleanup==='group signalled')timer=setTimeout(()=>{cleanup='cleanup incomplete: did not exit';giveUp();},graceMs);
+    else giveUp();
   };
   const stop=name=>{if(signal===null)timer=setTimeout(escalate,graceMs);signal??=name;if(child?.pid)stopGroup(child.pid,name);};
   for(const name of ['SIGINT','SIGTERM'])process.on(name,stop);
@@ -100,9 +119,11 @@ export async function runTests(taskPath, {argv, graceMs=10000}) {
     updateTask(taskPath,t=>{t.tests.status='failed';});
     throw error;
   } finally { clearTimeout(timer); for(const name of ['SIGINT','SIGTERM'])process.off(name,stop); }
-  if(signal)return updateTask(taskPath,t=>{t.tests={...source,argv,status:'blocked',reason:'interrupted',signal,exit_code:code,cleanup};}).tests;
-  const unchanged=same(source,sourceIdentity(readTask(taskPath)));
-  return updateTask(taskPath,t=>{t.tests={...source,argv,status:code===0&&unchanged?'passed':'failed',exit_code:code};}).tests;
+  if(signal)return updateTask(taskPath,t=>{t.tests={...source,argv,status:'blocked',reason:'interrupted',signal,exit_code:code,cleanup,
+    child_pid:child?.pid??null,child_start:childStart};}).tests;
+  let after=null,refused={};
+  try { after=sourceIdentity(readTask(taskPath)); } catch(error) { refused={reason:error.message}; }
+  return updateTask(taskPath,t=>{t.tests={...source,argv,status:code===0&&after&&same(source,after)?'passed':'failed',exit_code:code,...refused};}).tests;
 }
 function repositoryName(remote) {
   const name=/^(?:https:\/\/github\.com\/|git@github\.com:)([^/]+\/[^/]+?)(?:\.git)?$/.exec(remote)?.[1];

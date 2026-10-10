@@ -204,6 +204,48 @@ class OpcDeliveryTest(unittest.TestCase):
                 except ProcessLookupError:
                     pass
 
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX signals only')
+    def test_test_command_still_open_after_the_kill_settles_as_cleanup_incomplete(self):
+        ready, output = Path(self.task).parent / 'ready', Path(self.task).parent / 'runner.out'
+        command = ('import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+                   'open(' + repr(str(ready)) + ',"w").close(); time.sleep(120)')
+        # The controller's group kill is swallowed, as for a command that cannot exit (uninterruptible sleep).
+        script = f"""
+            import {{ runTests }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())};
+            const kill = process.kill.bind(process);
+            process.kill = (pid, signal) => pid < 0 && signal === 'SIGKILL' ? true : kill(pid, signal);
+            const argv = {json.dumps([sys.executable, '-c', command])};
+            console.log(JSON.stringify(await runTests({json.dumps(self.task)}, {{ argv, graceMs: 300 }})));
+        """
+        child = None
+        with output.open('w') as out:
+            # A file, not a pipe: the command that never exits keeps the runner's output open.
+            runner = subprocess.Popen(['node', '--input-type=module', '-e', script], stdout=out, stderr=subprocess.STDOUT)
+        try:
+            for _ in range(200):
+                tests = json.loads(Path(self.task).read_text())['tests'] or {}
+                child = tests.get('child_pid')
+                if ready.exists() and child:
+                    break
+                time.sleep(.05)
+            self.assertTrue(ready.exists() and child)
+            started = time.monotonic()
+            runner.send_signal(signal.SIGTERM)
+            runner.wait(timeout=20)
+            self.assertLess(time.monotonic() - started, 10)
+            settled = json.loads(output.read_text().strip().splitlines()[-1])
+            self.assertEqual((settled['status'], settled['reason'], settled['cleanup'], settled['child_pid'], settled['child_start']),
+                             ('blocked', 'interrupted', 'cleanup incomplete: did not exit', child, tests['child_start']))
+            self.assertEqual(json.loads(Path(self.task).read_text())['tests'], settled)
+        finally:
+            if runner.poll() is None:
+                runner.kill()
+            if child:
+                try:
+                    os.killpg(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
     def test_cloud_intent_precedes_command_and_failed_launch_refuses_retry(self):
         done = run('node', '--input-type=module', '-e', f'''
             import {{ beginCloudLaunch, recordCloudLaunch, recordCloudLaunchFailure }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
@@ -762,6 +804,31 @@ class OpcDeliveryTest(unittest.TestCase):
             prints.append(done.stdout.strip())
         self.assertNotEqual(prints[0], prints[1])
 
+
+    def test_symlinked_gitlink_fails_the_receipt(self):
+        def git(cwd, *args):
+            subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+                           check=True, capture_output=True)
+        sub = self.repo / "sub"
+        sub.mkdir()
+        git(sub, "init", "-q")
+        (sub / "file.txt").write_text("committed\n")
+        git(sub, "add", "file.txt")
+        git(sub, "commit", "-q", "-m", "sub")
+        git(self.repo, "add", "sub")
+        git(self.repo, "commit", "-q", "-m", "gitlink")
+        # The gitlink's working tree moves outside the repository and a symlink takes its place.
+        moved = Path(self.task).parent / "sub-elsewhere"
+        sub.rename(moved)
+        try:
+            sub.symlink_to(moved, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks unavailable")
+        done = run("node", str(SCRIPTS / "delivery.mjs"), "test", self.task, sys.executable, "-c", "")
+        self.assertNotEqual(done.returncode, 0)
+        tests = json.loads(done.stdout.strip().splitlines()[-1])
+        self.assertEqual((tests["status"], tests["reason"]),
+                         ("failed", "submodule sub is not a checked-out directory with its own .git; its bytes cannot be fingerprinted"))
 
 
 if __name__ == "__main__":
