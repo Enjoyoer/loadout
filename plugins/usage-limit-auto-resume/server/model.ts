@@ -3,6 +3,11 @@ import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 
 export type ResumeState = "detected" | "parked" | "resuming" | "verifying" | "done" | "exhausted" | "opted-out" | "superseded" | "uncertain";
 
+/** A record in one of these states can still send or is verifying a send; every other state is terminal. */
+export function isActive(record: { state: ResumeState }): boolean {
+  return record.state === "detected" || record.state === "parked" || record.state === "resuming" || record.state === "verifying";
+}
+
 export type ResumeAttempt = {
   at: string;
   messageId: string;
@@ -37,6 +42,8 @@ export type ResumeRecord = {
   notBefore: string;
   resetAt: string | null;
   attempts: ResumeAttempt[];
+  // Older attempts trimmed from `attempts`; they still count toward the next attempt's message ID.
+  attemptsDropped?: number;
   state: ResumeState;
   sentAt: string | null;
   resumeTurnId: string | null;
@@ -76,6 +83,7 @@ export type AgentSnapshot = {
   attentionReason?: string | null;
   archivedAt?: string | null;
   lastUserMessageAt?: string | null;
+  updatedAt?: string | null;
   persistence?: { provider: string; sessionId: string; nativeHandle?: string; metadata?: Record<string, unknown> } | null;
   labels?: Record<string, string>;
 };
@@ -320,11 +328,21 @@ export function transientRejectionState(reason: string): ResumeState {
   return reason === "newer-user-message" ? "superseded" : reason === "max-attempts" ? "exhausted" : "uncertain";
 }
 
+// Failed-turn records retry without a cap, so only their newest attempts are kept in full.
+export const MAX_KEPT_ATTEMPTS = 20;
+
+export function attemptCount(record: ResumeRecord): number {
+  return (record.attemptsDropped ?? 0) + record.attempts.length;
+}
+
 export function afterTransientFailure(record: ResumeRecord, assistant: string, userText: string, userMessageId: string, lastUserMessageAt: string, config: ResumeConfig, now = Date.now()): ResumeRecord {
   const exhausted = !record.failedOutcome && record.attempts.length >= (config.transientMaxAttempts ?? 3);
   const updatedAt = new Date(now).toISOString();
+  const attempts = record.attempts.slice(-MAX_KEPT_ATTEMPTS);
+  const dropped = record.attempts.length - attempts.length;
   return {
     ...record,
+    ...(dropped > 0 ? { attempts, attemptsDropped: (record.attemptsDropped ?? 0) + dropped } : {}),
     state: exhausted ? "exhausted" : "parked",
     terminalReason: exhausted ? "max-attempts" : null,
     failedAssistantText: assistant,
@@ -332,7 +350,7 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
     expectedUserText: userText,
     expectedUserMessageId: userMessageId,
     lastUserMessageAt,
-    notBefore: new Date(now + transientDelaySeconds(config, record.attempts.length) * 1000).toISOString(),
+    notBefore: new Date(now + transientDelaySeconds(config, attemptCount(record)) * 1000).toISOString(),
     resumeTurnId: null, resumeStartedAt: null, resumeFinishedAt: null,
     sentAt: null, verificationDeadlineAt: null, updatedAt,
   };
@@ -341,14 +359,65 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
 /** A turn start seen while a send was in flight, noted before the store records it. */
 export type TurnObservation = { turnId: string | null; startedAt: string | null };
 
-/** One send in flight: what its claim writes, whether its rollback has replaced the claim, and any turn seen meanwhile. */
+/** The decision of an event (a permission request, an archive, another turn) that stops a send not yet started. */
+export type ClaimCancel = { state: ResumeState; reason: string };
+
+/**
+ * One send in flight: what its claim writes, whether its rollback has replaced the claim, and any turn seen meanwhile.
+ * The claim is unsent until send() is invoked (sendStarted). Until then a permission request, an archive, or any turn
+ * start or end for the agent cancels it, and no turn is attached to its attempt. settled resolves once the send or its
+ * cancellation is stored.
+ */
 export type InFlightClaim = TurnObservation & {
   recordId: string;
   attempt: ResumeAttempt;
   sentAt: string;
   verificationDeadlineAt: string;
   released: boolean;
+  cancelled: ClaimCancel | null;
+  sendStarted: boolean;
+  settled: Promise<void>;
 };
+
+/** What the send checks saw of the agent's turns: its latest user message, its running turn, and its last change. */
+export type TurnMark = { lastUserMessageAt: string | null; activeTurnId: string | null; updatedAt: string | null };
+
+export function turnMark(agent: AgentSnapshot): TurnMark {
+  return { lastUserMessageAt: agent.lastUserMessageAt ?? null, activeTurnId: agent.activeTurn?.turnId ?? null, updatedAt: agent.updatedAt ?? null };
+}
+
+// The agent re-read right before send(): the send checks still pass, and its latest user message and turn are the ones
+// the claim was taken on. Returns the decision that cancels the send, or null to send.
+export function presendCancel(record: ResumeRecord, taken: TurnMark, agent: AgentSnapshot | null, config: ResumeConfig, now = Date.now()): ClaimCancel | null {
+  if (!agent) return { state: record.kind === "transient" ? "uncertain" : "superseded", reason: "agent-missing" };
+  const mark = turnMark(agent);
+  if (mark.lastUserMessageAt !== taken.lastUserMessageAt) return { state: "superseded", reason: "newer-user-message" };
+  if (mark.activeTurnId !== taken.activeTurnId || mark.updatedAt !== taken.updatedAt) return { state: "superseded", reason: "turn-changed-before-send" };
+  const gate = shouldResume(record, agent, config, now);
+  return gate.ok ? null : { state: "uncertain", reason: gate.reason };
+}
+
+const isClaimAttempt = (attempt: ResumeAttempt, claim: InFlightClaim) => attempt.messageId === claim.attempt.messageId && attempt.at === claim.attempt.at;
+
+/** The record still carries this claim: resuming, with the claim's own attempt. */
+export function holdsClaim(current: ResumeRecord, claim: InFlightClaim): boolean {
+  return current.state === "resuming" && current.attempts.some((attempt) => isClaimAttempt(attempt, claim));
+}
+
+// Undoes a claim whose send never started because an event or the re-read agent cancelled it: the claim's attempt, send
+// time and deadline go. A record still resuming takes that event's decision; a state the event's handler or another writer
+// already stored is kept.
+export function cancelClaim(current: ResumeRecord, before: ResumeRecord, claim: InFlightClaim, cancel: ClaimCancel, now = Date.now()): ResumeRecord {
+  if (!current.attempts.some((attempt) => isClaimAttempt(attempt, claim))) return current;
+  return {
+    ...current,
+    ...(current.state === "resuming" ? { state: cancel.state, terminalReason: cancel.reason } : {}),
+    sentAt: current.sentAt === claim.sentAt ? before.sentAt : current.sentAt,
+    verificationDeadlineAt: current.verificationDeadlineAt === claim.verificationDeadlineAt ? before.verificationDeadlineAt : current.verificationDeadlineAt,
+    attempts: current.attempts.filter((attempt) => !isClaimAttempt(attempt, claim)),
+    updatedAt: new Date(now).toISOString(),
+  };
+}
 
 // Applies a turn start seen for an in-flight claim to the claim's record. While the record still carries the claim,
 // the turn is attached. Once the claim's rollback is stored (released, record parked again), the message may have
@@ -436,5 +505,16 @@ export function continuationPrompt(record: ResumeRecord): string {
 }
 
 export function messageId(record: ResumeRecord): string {
-  return `${record.recordId}:attempt:${record.attempts.length + 1}`;
+  return `${record.recordId}:attempt:${attemptCount(record) + 1}`;
+}
+
+/** The exact text a send for this record carries. */
+export function resumePrompt(record: ResumeRecord): string {
+  return record.kind === "transient" ? record.retryPrompt! : continuationPrompt(record);
+}
+
+// True when the newest user row is the record's latest automatic message: its stable ID and the exact text it sent.
+export function isOwnLatestMessage(record: ResumeRecord, user: Extract<AgentTimelineItem, { type: "user_message" }> | null): boolean {
+  const sent = record.attempts.at(-1);
+  return !!sent && !!user && (user.messageId ?? user.clientMessageId) === sent.messageId && user.text === resumePrompt(record);
 }
