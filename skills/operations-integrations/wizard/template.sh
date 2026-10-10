@@ -53,7 +53,7 @@ _bind() {
   local here dir repo='^([A-Za-z0-9.-]+/)?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
   [[ "$PROJECT_ROOT" == /* && -d "$PROJECT_ROOT" && "$(cd -P -- "$PROJECT_ROOT" && pwd -P)" == "$PROJECT_ROOT" ]] \
     || _die "PROJECT_ROOT must be the project's absolute, canonical path (got '$PROJECT_ROOT')"
-  here=$(pwd -P)
+  here=$(pwd -P) || here=""
   [[ "$here" == "$PROJECT_ROOT" || "$here" == "$PROJECT_ROOT"/* ]] \
     || _die "this wizard sets up $PROJECT_ROOT: cd there and run it again"
   ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env}"
@@ -124,13 +124,13 @@ confirm() {
 # single quotes. Those loaders read ' \ $ and control characters differently
 # even inside quotes, so a value holding one is refused, not stored.
 _ENV_PLAIN='^[A-Za-z0-9_./:@%+=,-]*$'
-_ENV_QUOTABLE="^[^'\\\$[:cntrl:]]*\$"
+_env_quotable() { [[ "$1" != *[\'\\\$[:cntrl:]]* ]]; }
 
 # _env_line KEY VALUE prints KEY's .env line, or fails when VALUE has no form
 # that every one of those loaders reads back unchanged.
 _env_line() {
   if [[ "$2" =~ $_ENV_PLAIN ]]; then printf '%s=%s' "$1" "$2"
-  elif [[ "$2" =~ $_ENV_QUOTABLE ]]; then printf "%s='%s'" "$1" "$2"
+  elif _env_quotable "$2"; then printf "%s='%s'" "$1" "$2"
   else return 1; fi
 }
 
@@ -143,7 +143,7 @@ _existing() {
   line=$(grep -E "^${1}=" "$ENV_FILE" | tail -n1) || return 1
   value="${line#*=}"; inner="${value#\'}"; inner="${inner%\'}"
   if [[ "$value" =~ $_ENV_PLAIN ]]; then printf '%s' "$value"
-  elif [[ "$value" == "'$inner'" && "$inner" =~ $_ENV_QUOTABLE ]]; then printf '%s' "$inner"
+  elif [[ "$value" == "'$inner'" ]] && _env_quotable "$inner"; then printf '%s' "$inner"
   else return 1; fi
 }
 
