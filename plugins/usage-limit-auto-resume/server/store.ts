@@ -1,4 +1,5 @@
 import { mkdir, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { ResumeRecord } from "./model.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
@@ -12,8 +13,9 @@ function defaultState(): State {
   return { version: 2, records: [] };
 }
 
+// The same home the daemon endpoint resolver uses, so state lives with the daemon it serves.
 function paseoHome(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PASEO_HOME?.trim() || path.join(env.HOME ?? process.env.HOME ?? "/tmp", ".paseo");
+  return env.PASEO_HOME?.trim() || path.join(homedir(), ".paseo");
 }
 
 export class ResumeStore {

@@ -1,5 +1,6 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { paseoHome } from "./store.ts";
 
 /**
  * Append-only usage log for measuring whether compaction saves tokens.
@@ -8,7 +9,7 @@ import path from "node:path";
 export class MetricsLog {
   private readonly filePath: string;
   private writes: Promise<void> = Promise.resolve();
-  constructor(filePath = path.join(process.env.PASEO_HOME?.trim() || path.join(process.env.HOME ?? "/tmp", ".paseo"), "plugin-state", "cache-aware-autocompact", "metrics.jsonl")) {
+  constructor(filePath = path.join(paseoHome(), "plugin-state", "cache-aware-autocompact", "metrics.jsonl")) {
     this.filePath = filePath;
   }
   async append(record: Record<string, unknown>): Promise<void> {

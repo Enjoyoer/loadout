@@ -1,4 +1,5 @@
 import { mkdir, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { Checkpoint } from "./runtime.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
@@ -17,8 +18,9 @@ export type StateEntry = {
 type State = { version: 1; entries: StateEntry[]; turns?: Checkpoint[] };
 export type WriteJson = typeof writeJsonAtomically;
 
-function home(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PASEO_HOME?.trim() || path.join(env.HOME ?? "/tmp", ".paseo");
+// The same home the daemon endpoint resolver uses, so state lives with the daemon it serves.
+export function paseoHome(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PASEO_HOME?.trim() || path.join(homedir(), ".paseo");
 }
 
 // Writes from every StateStore for one file share one queue in this process. It lives on
@@ -44,7 +46,7 @@ export class StateStore {
   private readonly generation: number;
   private writes: Promise<void> = Promise.resolve();
   private closed = false;
-  constructor(filePath = path.join(home(), "plugin-state", "cache-aware-autocompact", "state.json"), writeJson = writeJsonAtomically) {
+  constructor(filePath = path.join(paseoHome(), "plugin-state", "cache-aware-autocompact", "state.json"), writeJson = writeJsonAtomically) {
     this.filePath = filePath;
     this.writeJson = writeJson;
     this.lane = laneFor(filePath);
