@@ -8,7 +8,7 @@ import tempfile
 import textwrap
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -463,30 +463,53 @@ class ProviderSyncTest(unittest.TestCase):
         # This run's reload succeeded, but the newer run's debt is not this run's to clear.
         self.assertEqual(list(owed["desktop"]), ["newer"])
 
-    def test_older_operation_failing_after_a_newer_one_cleared_still_owes_a_reload(self):
+    def test_a_second_operation_while_one_is_in_flight_fails_and_does_not_write(self):
         doc, catalog, program, env = self.in_process()
         lines = []
         with env:
-            older, newer = (paseo_providers.Runner(doc["hosts"][1], "laptop", self.fleet) for _ in range(2))
+            first, second = (paseo_providers.Runner(doc["hosts"][1], "laptop", self.fleet) for _ in range(2))
+            second.write = Mock(side_effect=AssertionError("the second operation wrote"))
+            write = first.write
 
-            def newer_completes_then_this_write_fails(*args):
-                # While this write runs, a newer operation writes, reloads, and clears its own debt.
-                self.assertEqual(paseo_providers.sync_host(newer, catalog, program, "20261010-000001", False,
-                                                           lines.append), "updated")
-                raise RuntimeError("connection lost")
+            def second_starts_during_this_write(*args):
+                self.assertEqual(paseo_providers.sync_host(second, catalog, program, "20261010-000001", False,
+                                                           lines.append), "FAILED")
+                return write(*args)
 
-            older.write = newer_completes_then_this_write_fails
-            status = paseo_providers.sync_host(older, catalog, program, "20261010-000000", False, lines.append)
+            first.write = second_starts_during_this_write
+            status = paseo_providers.sync_host(first, catalog, program, "20261010-000000", False, lines.append)
             owed = paseo_providers.owed_reloads()
-        self.assertEqual(status, "FAILED", lines)
-        self.assertIn("desktop (ssh): reload (owed since 20261010-000000) ok", lines)
-        self.assertIn("desktop (ssh): write FAILED: connection lost", lines)
-        self.assertEqual([debt["since"] for debt in owed["desktop"].values()], ["20261010-000000"])
-        # The next run pays it: its reload starts after the failed operation ended.
-        code, out = self.run_sync("--host", "desktop")
-        self.assertEqual(code, 0, out)
-        self.assertIn("desktop (ssh): reload (owed since 20261010-000000) ok", out)
-        self.assertEqual(json.loads((self.root / "hosts/laptop/.config/loadout/provider-reloads.json").read_text()), {})
+        second.write.assert_not_called()
+        self.assertIn("desktop (ssh): FAILED, nothing written: another provider sync is in flight on desktop "
+                      "(since 20261010-000000); an entry left by a killed run expires after 24 hours", lines)
+        self.assertEqual(status, "updated", lines)
+        self.assertEqual(owed, {})
+
+    def test_an_uncertain_write_is_paid_only_by_a_reload_after_twice_the_write_timeout(self):
+        doc, catalog, program, env = self.in_process()
+        lines, clock = [], [1_000_000.0]
+        window = 2 * paseo_providers.WRITE_TIMEOUT_SECONDS
+        with env, patch.object(paseo_providers, "now", lambda: clock[0]):
+            host = doc["hosts"][1]
+            lost = paseo_providers.Runner(host, "laptop", self.fleet)
+            lost.write = Mock(side_effect=RuntimeError(f"timed out after {paseo_providers.WRITE_TIMEOUT_SECONDS}s"))
+            self.assertEqual(paseo_providers.sync_host(lost, catalog, program, "20261010-000000", False, lines.append),
+                             "FAILED")
+            failed_at = clock[0]
+            self.assertEqual(list(paseo_providers.owed_reloads()["desktop"].values()),
+                             [{"since": "20261010-000000", "uncertain": failed_at}])
+            # Not more than twice the write timeout after it failed, the lost write may still land.
+            clock[0] = failed_at + window
+            self.assertEqual(paseo_providers.sync_host(paseo_providers.Runner(host, "laptop", self.fleet), catalog,
+                                                       program, "20261010-001000", False, lines.append), "updated")
+            self.assertEqual(list(paseo_providers.owed_reloads()["desktop"].values()),
+                             [{"since": "20261010-000000", "uncertain": failed_at}])
+            clock[0] = failed_at + window + 1
+            self.assertEqual(paseo_providers.sync_host(paseo_providers.Runner(host, "laptop", self.fleet), catalog,
+                                                       program, "20261010-002000", False, lines.append), "updated")
+            owed = paseo_providers.owed_reloads()
+        self.assertEqual(lines.count("desktop (ssh): reload (owed since 20261010-000000) ok"), 2, lines)
+        self.assertEqual(owed, {})
 
     def test_a_record_lock_timeout_after_a_write_fails_that_host_and_the_next_host_syncs(self):
         doc, _, _, env = self.in_process()
@@ -517,6 +540,40 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertIn("; the write changed the config and the reload succeeded, so a reload may still be owed", failure)
         self.assertIn("laptop (local): reload ok", lines)
         self.assertEqual(list(owed), ["desktop"])
+
+    def test_a_lock_release_failure_fails_that_host_and_the_next_host_syncs(self):
+        doc, _, _, env = self.in_process()
+        hosts = {host["name"]: host for host in doc["hosts"]}
+        lines, armed = [], []
+        unlink, write = os.unlink, paseo_providers.Runner.write
+        with env:
+            lock = paseo_providers.reloads_path().with_name(paseo_providers.RELOADS_LOCK)
+
+            def unlink_failing_once(path, *args, **kwargs):
+                if armed and Path(path) == lock:
+                    armed.clear()
+                    raise PermissionError(13, "Permission denied", str(path))
+                return unlink(path, *args, **kwargs)
+
+            def write_then_fail_the_next_release(runner, *args):
+                output = write(runner, *args)
+                if runner.name == "desktop":
+                    armed.append(True)
+                return output
+
+            def emit(line):  # the owner deletes the lock left behind once the host has failed
+                lines.append(line)
+                if line.startswith("desktop (ssh): FAILED"):
+                    unlink(lock)
+
+            with patch.object(paseo_providers.Runner, "write", write_then_fail_the_next_release), \
+                    patch.object(paseo_providers.os, "unlink", unlink_failing_once):
+                statuses = paseo_providers.run(doc, self.fleet, [hosts["desktop"], hosts["laptop"]], False, emit)
+        self.assertEqual(statuses, {"desktop": "FAILED", "laptop": "updated"}, lines)
+        failure = next(line for line in lines if line.startswith("desktop (ssh): FAILED"))
+        self.assertIn("FAILED on the reload record: cannot release the reload record lock", failure)
+        self.assertIn("; the write changed the config and the reload succeeded, so a reload may still be owed", failure)
+        self.assertIn("laptop (local): reload ok", lines)
 
     def test_relay_cleanup_failure_is_reported(self):
         (self.root / "fail-archive").touch()
