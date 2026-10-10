@@ -7,7 +7,9 @@ Code. Private skills come from the fleet directory's skills/<skill>/ overlay,
 which is never published. Each host is preflighted before any write; a changed
 file that matches no published or recorded overlay version is a conflict and
 stops that host. A skill the host's sync record shows the sync installed, and
-that is no longer published, is removed unless it was edited there.
+that is no longer published, is removed unless it was edited there. When the
+overlay is missing or not a directory, a host whose record holds skills from it
+retires nothing and reports `blocked`.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Callable, Optional
@@ -60,6 +63,14 @@ def overlay_history(fleet_dir: Path) -> dict:
         return json.loads(path.read_text()) if path.is_file() else {}
     except ValueError as error:
         raise fleet.FleetError(f"unreadable overlay history {path}: {error}") from error
+
+
+def overlay_problem(fleet_dir: Path) -> Optional[str]:
+    """Why <fleet>/skills/ cannot be read as the overlay, or None when it is a directory."""
+    root = fleet_dir / OVERLAY
+    if root.is_dir():
+        return None
+    return "is not a directory" if os.path.lexists(root) else "is missing"
 
 
 def overlay_files(fleet_dir: Path, published: set, prior_by_dest: dict) -> dict:
@@ -135,7 +146,9 @@ def describe(result: dict) -> str:
     dry = status == "would update"
     unpublished = (f"; {'would retire' if dry else 'retired'} unpublished: {listed(retired)}" if retired else "") + (
         f"; unpublished with local edits, {'would keep' if dry else 'kept'} and stop managing: {listed(kept)}" if kept else "")
-    return f"{status}" + (f" ({counts})" if counts else "") + (f"; {clients}" if clients else "") + elevation + unpublished
+    stopped = f"; retirement stopped: {result['retire_stopped']}" if result.get("retire_stopped") else ""
+    return (f"{status}" + (f" ({counts})" if counts else "") + (f"; {clients}" if clients else "") + elevation + unpublished
+            + stopped)
 
 
 def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[str], None],
@@ -150,13 +163,19 @@ def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[s
         unknown = sorted(only - names)
         if unknown:
             raise fleet.FleetError(f"unknown skills: {unknown}")
+    # A missing overlay must not read as an empty one: hosts get the names any publication had, so a
+    # recorded skill outside them is known to come from the overlay.
+    missing = overlay_problem(fleet_dir)
+    if missing:
+        ever = published | {path.split("/")[2] for path in pub.prior() if path.startswith("skills/") and path.count("/") > 2}
+        missing = {"why": missing, "published": sorted(ever)}
     glob = global_payload(fleet_doc, fleet_dir)
     selected = names if only is None else only
     emit(f"source_commit {pub.source[:12]}: {len(selected)} skills selected"
          + (f" ({len(selected & overlay_names)} from the private overlay)" if selected & overlay_names else "")
          + ("; global instructions" if glob else ""))
     return {"fleet_doc": fleet_doc, "fleet_dir": fleet_dir, "dry_run": dry_run, "only": only, "pub": pub,
-            "overlay": overlay, "names": names, "global": glob}
+            "overlay": overlay, "overlay_missing": missing, "names": names, "global": glob}
 
 
 def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
@@ -171,7 +190,8 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
     # overlay, nor excluded on this host; a run narrowed to some skills retires nothing.
     keep = sorted(state["names"] | exclude) if only is None else None
     payload = {"dry_run": state["dry_run"], "clients": host.get("clients", []), "files": files,
-               "global": state["global"], "keep": keep}
+               "global": state["global"], "keep": keep, "overlay": sorted({dest.split("/")[0] for dest in overlay}),
+               "overlay_missing": state["overlay_missing"]}
     result, output = fleet.run_node(name, name == state["fleet_doc"]["source_host"], REMOTE_JS, payload,
                                     TIMEOUT_SECONDS)
     if result is None:

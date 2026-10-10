@@ -271,6 +271,25 @@ class SkillsSyncTest(unittest.TestCase):
         self.assertIn("conflict: local edits, nothing written: claude:mine/SKILL.md", out)
         self.assertEqual(target.read_text(), "hand edit")
 
+    def test_missing_overlay_retires_nothing_and_says_why(self):
+        self.overlay("mine/SKILL.md", "v1")
+        full = lambda: subprocess.run(with_fake_ssh(SCRIPTS / "skills_sync.py", self.ssh), env=self.env,
+                                      capture_output=True, text=True, timeout=120)
+        done = full()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        mine = [self.installed("laptop", ".claude/skills/mine/SKILL.md"), self.installed("desktop", ".codex/skills/mine/SKILL.md"),
+                self.installed("desktop", ".claude/skills/mine/SKILL.md")]
+        self.assertEqual([path.read_text() for path in mine], ["v1"] * 3)
+        # The overlay vanishes, say a fleet directory restored without it: it must not read as an empty one.
+        shutil.rmtree(self.fleet / "skills")
+        done = full()
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        why = "retirement stopped: the fleet overlay skills/ is missing, and this host has skills from it"
+        self.assertIn(f"desktop: skills blocked; codex present, claude present; {why} (codex:mine, claude:mine); "
+                      "restore it, or leave an empty skills/ to retire them", done.stdout)
+        self.assertIn(f"laptop: skills blocked; claude present; {why} (claude:mine)", done.stdout)
+        self.assertEqual([path.read_text() for path in mine], ["v1"] * 3)
+
     def test_overlay_is_not_pushed_with_the_fleet(self):
         self.overlay("mine/SKILL.md", "v1")
         self.assertNotIn("skills/mine/SKILL.md", fleet.fleet_files(self.fleet))
