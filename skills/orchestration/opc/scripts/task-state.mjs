@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, lstatSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { validateRecordedWorkerRoute } from './agent-routing.mjs';
 
@@ -307,31 +307,45 @@ export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'H
   return { taskPath, task };
 }
 
-// A lock file holds its writer's pid, then on a second line that process's start time when it could be read.
+// A lock file holds its writer's pid, that process's start time when it could be read (else an empty line), and a
+// token unique to the acquisition. It is published whole (publish below), so a live writer's lock is never empty.
 // lockOwner returns the owner pid and whether the lock is stale: its pid is dead or now names a process with another
-// start time, or it is empty and over 10 s old (its writer crashed between open and write). A younger empty lock is
-// still being written, and a live pid whose start time is missing or unreadable keeps its lock. null when gone.
+// start time, or it is empty and over 10 s old (an earlier OPC writer, which created the lock before writing it,
+// crashed between the two). A live pid whose start time is missing or unreadable keeps its lock. null when gone.
+const lockLines = path => readFileSync(path, 'utf8').trim().split(/\r?\n/).map(line => line.trim());
 function lockOwner(path) {
   try {
-    const [owner = '', start = null] = readFileSync(path, 'utf8').trim().split(/\r?\n/).map(line => line.trim());
+    const [owner = '', start = null] = lockLines(path);
     const age = Date.now() - statSync(path).mtimeMs;
     return { owner, age, stale: /^\d+$/.test(owner) ? ['gone', 'reused'].includes(processIdentity(Number(owner), start)) : owner === '' && age > 10000 };
   } catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
 }
 
-function releaseOwn(path) {
-  if (lockOwner(path)?.owner === String(process.pid)) unlinkSync(path);
+function lockToken(path) {
+  try { return lockLines(path)[2] ?? null; } catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
+}
+
+// Creates path holding content, or fails with EEXIST when path exists, like an exclusive write; but the content is
+// written to a private file first and then hard-linked to path, so path never exists empty or partly written.
+function publish(path, content) {
+  const draft = join(dirname(path), `.lock-${randomUUID()}.tmp`);
+  writeFileSync(draft, content, { flag: 'wx', mode: 0o600 });
+  try { linkSync(draft, path); } finally { unlinkSync(draft); }
+}
+
+function releaseOwn(path, token) {
+  if (lockToken(path) === token) unlinkSync(path);
 }
 
 // beforeReclaim is a test seam that runs after a stale lock is read and before it is reclaimed.
 export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
   canonicalPath(taskPath);
-  const lock = `${taskPath}.lock`, reclaim = `${lock}.reclaim`;
-  const holder = [process.pid, ownStartTime()].filter(value => value !== null).join('\n');
+  const lock = `${taskPath}.lock`, reclaim = `${lock}.reclaim`, token = randomUUID();
+  const holder = `${process.pid}\n${ownStartTime() ?? ''}\n${token}`;
   const deadline = Date.now() + 2000;
   while (true) {
     try {
-      writeFileSync(lock, holder, { flag: 'wx', mode: 0o600 });
+      publish(lock, holder);
       break;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
@@ -339,11 +353,11 @@ export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
       if (seen?.stale) {
         beforeReclaim?.(lock);
         // One reclaimer at a time. While we hold the reclaim marker no one else removes the task lock, its dead or
-        // crashed owner cannot release it, and an existing lock cannot be replaced (wx), so a lock that still reads
+        // crashed owner cannot release it, and an existing lock cannot be replaced (publish), so a lock that still reads
         // stale here is the same file we judged and unlinking it removes no live holder's lock. A different owner
         // means the lock changed hands since we read it: fail closed and touch nothing.
         let marked = false;
-        try { writeFileSync(reclaim, String(process.pid), { flag: 'wx', mode: 0o600 }); marked = true; }
+        try { publish(reclaim, holder); marked = true; }
         catch (markError) {
           if (markError.code !== 'EEXIST') throw markError;
           // A reclaim takes microseconds; a marker over 10 s old whose writer is gone is left by a crash.
@@ -357,7 +371,7 @@ export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
             const now = lockOwner(lock);
             if (now && (!now.stale || now.owner !== seen.owner)) throw Error('task lock contention; another process took the lock during reclaim');
             if (now) unlinkSync(lock);
-          } finally { releaseOwn(reclaim); }
+          } finally { releaseOwn(reclaim, token); }
           continue;
         }
       }
@@ -398,11 +412,12 @@ export function updateTask(taskPath, mutator, { beforeReclaim } = {}) {
     validate(task, taskPath);
     temporary = join(dirname(taskPath), `.task-${randomUUID()}.tmp`);
     writeFileSync(temporary, JSON.stringify(task, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    if (lockToken(lock) !== token) throw Error('task lock lost; another process reclaimed it');
     renameSync(temporary, taskPath);
     return task;
   } finally {
     if (temporary && existsSync(temporary)) unlinkSync(temporary);
-    // Release only our own lock; a lock holding another pid belongs to someone else.
-    releaseOwn(lock);
+    // Release only our own lock; a lock holding another token belongs to someone else.
+    releaseOwn(lock, token);
   }
 }
