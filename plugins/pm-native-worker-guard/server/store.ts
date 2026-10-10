@@ -9,7 +9,11 @@ import { writeJsonAtomically } from "./vendor/atomic-json.ts";
 // plugin reloads. Pending notices (PM was mid-turn) live on the same record.
 
 export type Outcome = "skip" | "would-archive" | "archiving" | "archived" | "archive-failed";
-export type NoticeState = "pending" | "sent" | "failed" | "dropped";
+/** `sending` is written before the send; a record left there is never sent again. */
+export type NoticeState = "pending" | "sending" | "sent" | "failed" | "dropped";
+
+const OUTCOMES: Record<Outcome, true> = { skip: true, "would-archive": true, archiving: true, archived: true, "archive-failed": true };
+const NOTICE_STATES: Record<NoticeState, true> = { pending: true, sending: true, sent: true, failed: true, dropped: true };
 
 export interface HandledRecord {
   childId: string;
@@ -27,6 +31,19 @@ interface State {
   handled: HandledRecord[];
 }
 
+function isRecord(value: unknown): value is HandledRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.childId === "string" && record.childId !== "" &&
+    typeof record.parentId === "string" && record.parentId !== "" &&
+    typeof record.provider === "string" &&
+    typeof record.outcome === "string" && Object.hasOwn(OUTCOMES, record.outcome) &&
+    typeof record.reason === "string" &&
+    typeof record.at === "string" && Number.isFinite(Date.parse(record.at)) &&
+    (record.notice === undefined || (typeof record.notice === "string" && Object.hasOwn(NOTICE_STATES, record.notice))) &&
+    (record.noticeText === undefined || typeof record.noticeText === "string");
+}
+
 export function defaultStatePath(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.PASEO_HOME?.trim() || path.join(homedir(), ".paseo");
   return path.join(home, "plugin-state", PLUGIN_ID, "state.json");
@@ -40,25 +57,36 @@ export function defaultStatePath(env: NodeJS.ProcessEnv = process.env): string {
 export class StateStore {
   private readonly filePath: string;
   private cache: State | null = null;
+  private loading: Promise<State> | null = null;
   private writes: Promise<void> = Promise.resolve();
 
   constructor(filePath: string = defaultStatePath()) {
     this.filePath = filePath;
   }
 
-  private async load(): Promise<State> {
-    if (this.cache) return this.cache;
-    let state: State;
+  private async read(): Promise<State> {
     try {
       const parsed = JSON.parse(await readFile(this.filePath, "utf8")) as Partial<State>;
-      if (parsed.version !== 1 || !Array.isArray(parsed.handled)) throw new Error(`invalid state file ${this.filePath}`);
-      state = { version: 1, handled: parsed.handled };
+      if (parsed.version !== 1 || !Array.isArray(parsed.handled) || !parsed.handled.every(isRecord)) throw new Error(`invalid state file ${this.filePath}`);
+      return { version: 1, handled: parsed.handled };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      state = { version: 1, handled: [] };
+      return { version: 1, handled: [] };
     }
-    this.cache = state;
-    return state;
+  }
+
+  // Concurrent first reads share one read, so a slow one can never replace a cache that a
+  // write has already advanced. A failed read is not kept: the next call reads again.
+  private load(): Promise<State> {
+    if (this.cache) return Promise.resolve(this.cache);
+    this.loading ??= this.read().then(
+      (state) => (this.cache ??= state),
+      (error: unknown) => {
+        this.loading = null;
+        throw error;
+      },
+    );
+    return this.loading;
   }
 
   async get(childId: string): Promise<HandledRecord | null> {

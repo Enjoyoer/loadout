@@ -28,6 +28,7 @@ CONSUMERS = {
         "cache-aware-autocompact",
         "merged-worker-archiver",
         "orphan-project-sweeper",
+        "pi-fast-toggle",
         "usage-limit-auto-resume",
     ),
 }

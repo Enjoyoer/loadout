@@ -9,12 +9,17 @@ async function fixture(){
   let body='';for await(const c of req)body+=c;const value=JSON.parse(body);writes++;assert.equal(value.params.name,'update_agent');assert.deepEqual(Object.keys(value.params.arguments),['agentId','labels']);assert.deepEqual(Object.keys(value.params.arguments.labels),['opc.service-tier']);
   agent.labels={...agent.labels,...value.params.arguments.labels};res.end(JSON.stringify({jsonrpc:'2.0',id:value.id,result:{structuredContent:{}}}));
  });await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+(server.address() as any).port;
- await writeFile(join(root,'runtime.json'),JSON.stringify({paseoMcp:{url:base+'/mcp'},python:process.env.PYTHON??(process.platform==='win32'?'python':'python3')}));await writeFile(join(root,'credential.py'),'print("fixture-key")\n');
+ // The fixture server stands in for the plugin's own daemon, recorded in its home's paseo.pid.
+ const env={home:process.env.PASEO_HOME,host:process.env.PASEO_HOST};const home=join(root,'home');await mkdir(home);process.env.PASEO_HOME=home;delete process.env.PASEO_HOST;
+ const setDaemon=(record:string|null)=>record===null?rm(join(home,'paseo.pid'),{force:true}):writeFile(join(home,'paseo.pid'),record);
+ await setDaemon(JSON.stringify({listen:new URL(base).host}));
+ const setMcp=(url:string)=>writeFile(join(root,'runtime.json'),JSON.stringify({paseoMcp:{url},python:process.env.PYTHON??(process.platform==='win32'?'python':'python3')}));
+ await setMcp(base+'/mcp');await writeFile(join(root,'credential.py'),'print("fixture-key")\n');
  await writeFile(join(root,'agent/models.json'),JSON.stringify({providers:{fleet:{api:'openai-responses',baseUrl:base,models:[{id:'example-sol'}]}}}));
  const handlers=new Map<string,any>();let configured=true;
  contribute({registerSettings(){return {read:async()=>({status:'ready',values:{runtimeRoot:configured?root:''}})}},handle(contract:any,fn:any){handlers.set(contract.name,fn)}} as any);
  const context={paseo:{agents:{ref(){return {refresh:async()=>({agent})}}}}};
- return {call:(method:string,input:any)=>handlers.get(method)(input,context),get agent(){return agent},setAgent(v:any){agent=v},setRows(v:any[]){rows=v},fail(){fail=true},unconfigure(){configured=false},get writes(){return writes},async cleanup(){await new Promise<void>(r=>server.close(()=>r()));await rm(root,{recursive:true,force:true})}};
+ return {call:(method:string,input:any)=>handlers.get(method)(input,context),get agent(){return agent},setAgent(v:any){agent=v},setRows(v:any[]){rows=v},fail(){fail=true},unconfigure(){configured=false},setMcp,setDaemon,host:new URL(base).host,get writes(){return writes},async cleanup(){for(const [name,value] of [['PASEO_HOME',env.home],['PASEO_HOST',env.host]]as const)if(value===undefined)delete process.env[name];else process.env[name]=value;await new Promise<void>(r=>server.close(()=>r()));await rm(root,{recursive:true,force:true})}};
 }
 test('backend validates catalog and writes only requested label with readback',async()=>{
  const f=await fixture();try{
@@ -30,4 +35,30 @@ for(const mode of ['native','archived','unsupported','outage','unconfigured'])te
   assert.equal((await f.call('fast.inspect',{agentId:'a'})).capable,false);
   await assert.rejects(f.call('fast.toggle',{agentId:'a',fast:true}));assert.equal(f.writes,0);
  }finally{await f.cleanup()}
+});
+test('writes only to its own daemon\'s MCP endpoint and never follows a redirect',async()=>{
+ const f=await fixture();let elsewhere=0;
+ const other=http.createServer((req,res)=>{elsewhere++;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({jsonrpc:'2.0',id:'fast-toggle',result:{}}))});
+ await new Promise<void>(r=>other.listen(0,'127.0.0.1',r));const otherUrl='http://127.0.0.1:'+(other.address() as any).port+'/mcp';
+ const redirector=http.createServer((req,res)=>{res.statusCode=307;res.setHeader('Location',otherUrl);res.end()});
+ await new Promise<void>(r=>redirector.listen(0,'127.0.0.1',r));const redirectHost='127.0.0.1:'+(redirector.address() as any).port;
+ try{
+  await f.setMcp(otherUrl);
+  await assert.rejects(f.call('fast.toggle',{agentId:'a',fast:true}),/not this plugin's daemon/);
+  await f.setMcp('http://'+redirectHost+'/mcp');await f.setDaemon(JSON.stringify({listen:redirectHost}));
+  await assert.rejects(f.call('fast.toggle',{agentId:'a',fast:true}));
+  assert.equal(elsewhere,0);assert.equal(f.writes,0);assert.equal(f.agent.labels['opc.service-tier'],undefined);
+ }finally{await f.cleanup();await new Promise<void>(r=>other.close(()=>r()));await new Promise<void>(r=>redirector.close(()=>r()))}
+});
+test('writes nothing to either of two daemons when its own daemon record is missing or unreadable',async()=>{
+ const f=await fixture();let elsewhere=0;
+ const other=http.createServer((req,res)=>{elsewhere++;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({jsonrpc:'2.0',id:'fast-toggle',result:{}}))});
+ await new Promise<void>(r=>other.listen(0,'127.0.0.1',r));const otherHost='127.0.0.1:'+(other.address() as any).port;
+ try{
+  for(const record of [null,'{not json',JSON.stringify({listen:null})])for(const daemon of [f.host,otherHost]){
+   await f.setDaemon(record);await f.setMcp('http://'+daemon+'/mcp');process.env.PASEO_HOST=daemon;
+   await assert.rejects(f.call('fast.toggle',{agentId:'a',fast:true}),/paseo\.pid/);
+  }
+  assert.equal(elsewhere,0);assert.equal(f.writes,0);assert.equal(f.agent.labels['opc.service-tier'],undefined);
+ }finally{await f.cleanup();await new Promise<void>(r=>other.close(()=>r()))}
 });

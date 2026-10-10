@@ -6,7 +6,9 @@
 // run python3 scripts/check_vendored.py, which CI also runs.
 
 import { randomBytes } from "node:crypto";
-import { open, rename, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, open, rename, rm } from "node:fs/promises";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 export interface WriteJsonOptions {
@@ -38,6 +40,50 @@ async function retryWhileBusy(operation: () => Promise<void>): Promise<void> {
   }
 }
 
+async function syncDirectory(directory: string): Promise<string> {
+  const handle = await open(directory, "r");
+  try {
+    await handle.sync();
+    const { dev, ino } = await handle.stat();
+    return `${dev}:${ino}`;
+  } finally {
+    await handle.close();
+  }
+}
+
+// Each directory whose parents this process has all flushed, by path, with the identity it had then.
+const flushedTrees = new Map<string, string>();
+// What access() reports for a directory this process cannot write to.
+const NOT_WRITABLE = new Set(["EACCES", "EPERM", "EROFS"]);
+
+/**
+ * Make a rename into filePath's directory survive a host crash on POSIX: flush that
+ * directory. The first time this process writes there, or after the directory was
+ * replaced, the directory itself may be new (callers create it just before writing), so
+ * also flush each parent up to the first one this process cannot write to, which holds no
+ * entry it could have created. Any other error checking or flushing a parent rejects, and
+ * the directory is remembered only once every parent it needed was flushed. Windows has no
+ * directory flush in Node; nothing is done.
+ */
+async function flushDirectory(filePath: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const directory = path.dirname(path.resolve(filePath));
+  const identity = await syncDirectory(directory);
+  if (flushedTrees.get(directory) === identity) return;
+  let current = directory;
+  while (path.dirname(current) !== current) {
+    current = path.dirname(current);
+    try {
+      await access(current, constants.W_OK);
+    } catch (error) {
+      if (!NOT_WRITABLE.has((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      break;
+    }
+    await syncDirectory(current);
+  }
+  flushedTrees.set(directory, identity);
+}
+
 function withLeftTemp(error: unknown, tempFile: string, tempCleanupError: unknown): LeftTempError {
   const failure = (error instanceof Error ? error : new Error(String(error))) as LeftTempError;
   const reason = tempCleanupError instanceof Error ? tempCleanupError.message : String(tempCleanupError);
@@ -54,6 +100,12 @@ function withLeftTemp(error: unknown, tempFile: string, tempCleanupError: unknow
  * at that name is never followed, then flushed to disk and renamed over filePath. The
  * temp file is removed on any failure; if that fails too, the write's error is thrown as
  * a LeftTempError. The directory must already exist.
+ *
+ * On POSIX the promise resolves only once the rename is flushed too (see flushDirectory),
+ * so the new file survives a host crash or power loss; if that flush fails it rejects,
+ * although readers may already see the new file. On Windows the replacement is atomic and
+ * the contents are flushed, but the rename is not: a host crash soon after the promise
+ * resolves can bring back the previous file.
  */
 export async function writeJsonAtomically(filePath: string, value: unknown, options: WriteJsonOptions = {}): Promise<void> {
   const text = JSON.stringify(value, null, 2);
@@ -70,6 +122,7 @@ export async function writeJsonAtomically(filePath: string, value: unknown, opti
       await handle.close();
     }
     await retryWhileBusy(() => rename(temp, filePath));
+    await flushDirectory(filePath);
   } catch (error) {
     if (created) {
       try {

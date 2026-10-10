@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { requestedState, tierCapable, LABEL } from "../shared/model";
+import { resolveDaemonTarget } from "./vendor/daemon-target";
 const exec = promisify(execFile);
 export async function runtime(root: string, selection: string) {
   if (!root) throw Error("Configure the Pi runtime root first");
@@ -38,10 +39,33 @@ async function fetchCatalog(root: string, route: Awaited<ReturnType<typeof runti
   if (!Array.isArray(value.models)) throw Error("Router catalog malformed");
   return value.models as Array<{ id?: string; slug?: string; service_tiers?: Array<{ id: string }> }>;
 }
-export async function writeTier(url: string, agentId: string, fast: boolean) {
+// The listen address the daemon itself recorded in paseo.pid under this plugin's PASEO_HOME.
+// PASEO_HOST and the default address are not that record, so they never qualify.
+function daemonRecordHost(env: NodeJS.ProcessEnv): string | null {
+  try {
+    const target = resolveDaemonTarget({ ...env, PASEO_HOST: undefined });
+    return target.source === "paseo.pid" ? new URL(target.url).host : null;
+  } catch {
+    return null;
+  }
+}
+
+// The update goes only to the daemon this plugin runs in, at the address its own record
+// gives. Without that record, or at any other address, it fails before any request.
+function daemonMcpEndpoint(url: string, env: NodeJS.ProcessEnv): URL {
   const endpoint = new URL(url);
+  if (endpoint.protocol !== "http:") throw Error("Pi MCP must use http");
   if (!["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname)) throw Error("Pi MCP must use loopback");
-  const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+  if (endpoint.hostname === "localhost") endpoint.hostname = "127.0.0.1";
+  const daemon = daemonRecordHost(env);
+  if (!daemon) throw Error("This plugin's daemon has no readable listen address in its PASEO_HOME paseo.pid; tier not written");
+  if (endpoint.host !== daemon) throw Error("Pi MCP is not this plugin's daemon");
+  return endpoint;
+}
+export async function writeTier(url: string, agentId: string, fast: boolean, env: NodeJS.ProcessEnv = process.env) {
+  const endpoint = daemonMcpEndpoint(url, env);
+  // A redirect could carry the update to another destination; refuse it.
+  const response = await fetch(endpoint, { method: "POST", redirect: "error", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
     body: JSON.stringify({ jsonrpc: "2.0", id: "fast-toggle", method: "tools/call", params: { name: "update_agent", arguments: { agentId, labels: { [LABEL]: fast ? "fast" : "standard" } } } }), signal: AbortSignal.timeout(10000) });
   const text = await response.text();
   const value = response.headers.get("content-type")?.includes("text/event-stream") ? JSON.parse(text.split("\n").find(line => line.startsWith("data:"))!.slice(5)) : JSON.parse(text);

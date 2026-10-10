@@ -1,4 +1,4 @@
-import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
+import type { AgentTimelineItem, ToolCallTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import type { AutoCompactConfig } from "./config.ts";
 
@@ -23,7 +23,9 @@ export function cacheFamily(provider: string, model?: string | null): "claude" |
 export function cacheExpired(provider: string, model: string | null | undefined, endedAt: string, now: number): boolean {
   const family = cacheFamily(provider, model);
   const ttlMs = family === "claude" ? 60 * 60_000 : family === "codex" ? 30 * 60_000 : null;
-  return ttlMs !== null && now - Date.parse(endedAt) >= ttlMs;
+  const ended = Date.parse(endedAt);
+  // An unreadable end time counts as expired, never as warm.
+  return ttlMs !== null && (!Number.isFinite(ended) || now - ended >= ttlMs);
 }
 
 /** Cache expiry as a terminal skip. With extendIdleCompaction, a cold Claude-family agent still compacts once. */
@@ -40,6 +42,13 @@ export function providerDelayMinutes(provider: string, config: AutoCompactConfig
   return null;
 }
 
+const SETTLED_TOOL_STATUSES = new Set(["completed", "failed", "canceled"]);
+
+/** A tool call that has not settled: running, or a status this plugin does not know. */
+export function unsettledTool(item: AgentTimelineItem): item is ToolCallTimelineItem {
+  return item.type === "tool_call" && !SETTLED_TOOL_STATUSES.has(item.status);
+}
+
 /**
  * The only boundary check is a running tool. Heuristics on the final answer,
  * open todos, or coordination wording are intentionally absent: an idle agent
@@ -50,10 +59,25 @@ export function safeBoundary(
   timeline: readonly AgentTimelineItem[],
   tier: StrictnessTier = "safe",
 ): Decision {
-  if (timeline.some((item) => item.type === "tool_call" && item.status === "running")) {
+  if (timeline.some(unsettledTool)) {
     return { ok: false, reason: "running-tool" };
   }
   return { ok: true, reason: tier === "recall" ? "safe-boundary-recall" : "safe-boundary" };
+}
+
+/**
+ * The turn's timeline with each unsettled tool call replaced by the same call from fresh
+ * history once that call has settled there, so a tool that finished after the turn ended
+ * no longer blocks. A call fresh history lacks, or reports with a status this plugin does
+ * not know, stays unsettled.
+ */
+export function withFreshToolState(timeline: readonly AgentTimelineItem[], fresh: readonly AgentTimelineItem[]): AgentTimelineItem[] {
+  const latest = new Map<string, AgentTimelineItem>();
+  for (const item of fresh) if (item.type === "tool_call") latest.set(item.callId, item);
+  return timeline.map((item) => {
+    const update = unsettledTool(item) ? latest.get(item.callId) : undefined;
+    return update && !unsettledTool(update) ? update : item;
+  });
 }
 
 export function guardDecision(

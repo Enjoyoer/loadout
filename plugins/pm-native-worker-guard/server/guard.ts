@@ -229,14 +229,19 @@ export class Guard {
     return current;
   }
 
-  private async mark(records: readonly HandledRecord[], notice: NoticeState, config: GuardConfig): Promise<void> {
+  /** Record `notice` on each record; resolves to the records written. */
+  private async mark(records: readonly HandledRecord[], notice: NoticeState, config: GuardConfig): Promise<HandledRecord[]> {
+    const written: HandledRecord[] = [];
     for (const record of records) {
+      const next = { ...record, notice };
       try {
-        await this.deps.store.put({ ...record, notice }, config.maxStateEntries);
+        await this.deps.store.put(next, config.maxStateEntries);
+        written.push(next);
       } catch (error) {
         this.emit("state-write-failed", { childId: record.childId, reason: errorMessage(error) });
       }
     }
+    return written;
   }
 
   private async deliverOnce(parentId: string, api: GuardApi, config: GuardConfig, fresh: HandledRecord | null): Promise<void> {
@@ -275,15 +280,26 @@ export class Guard {
       this.emit("notify-deferred", { parentId, childIds, reason: `parent-${parent.status}` });
       return;
     }
-    const text = pending.map((record) => record.noticeText ?? noticeText(record.childId, record.provider, config.notice)).join("\n");
+    // Reserve before sending. A notice left `sending` (its outcome could not be recorded, or
+    // the process stopped mid-send) is never sent again; one not reserved waits.
+    const reserved = await this.mark(pending, "sending", config);
+    if (reserved.length === 0) {
+      this.emit("notify-deferred", { parentId, childIds, reason: "state-write-failed" });
+      return;
+    }
+    const sentIds = reserved.map((record) => record.childId);
+    const text = reserved.map((record) => record.noticeText ?? noticeText(record.childId, record.provider, config.notice)).join("\n");
     try {
       await api.agents.ref(parentId).send(text);
     } catch (error) {
-      await this.mark(pending, "failed", config);
-      this.emit("notify-failed", { parentId, childIds, reason: errorMessage(error) });
+      await this.mark(reserved, "failed", config);
+      this.emit("notify-failed", { parentId, childIds: sentIds, reason: errorMessage(error) });
       return;
     }
-    await this.mark(pending, "sent", config);
-    this.emit("notify-sent", { parentId, childIds });
+    if ((await this.mark(reserved, "sent", config)).length === reserved.length) {
+      this.emit("notify-sent", { parentId, childIds: sentIds });
+    } else {
+      this.emit("notify-unrecorded", { parentId, childIds: sentIds, effect: "sent but not recorded as sent; left as sending, never sent again" });
+    }
   }
 }
