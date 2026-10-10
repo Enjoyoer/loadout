@@ -36,9 +36,11 @@ function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
 
 /**
  * The plugin instances one test starts. dispose() runs each one's cleanup (timer, hooks, client), even when the test
- * failed before its own cleanup call, then waits for the sweeps and hook handlers it still has running, and with them
- * their state writes. Tests dispose first in finally, so nothing a plugin started writes to a removed PASEO_HOME or
- * logs into a later test's captured console. The wait is bounded: a handler a failed test left gated never settles.
+ * failed before its own cleanup call, then waits until the startup chain, sweeps and hook handlers each plugin still
+ * has running have finished, and with them their state writes. Tests release the gates they own, then dispose, and
+ * remove PASEO_HOME only once dispose() has returned, so nothing a plugin started writes to a removed home or logs
+ * into a later test's captured console. If that work has not settled within the bound, dispose() throws and the test
+ * keeps the home instead of deleting it under a write still in flight.
  */
 function pluginTracker() {
   const started: Array<ReturnType<typeof contribute>> = [];
@@ -48,10 +50,13 @@ function pluginTracker() {
       started.push(plugin);
       return plugin;
     },
-    async dispose() {
+    async dispose(home: string) {
       for (const plugin of started) plugin();
-      await within(Promise.all(started.map((plugin) => plugin.idle())), 5000, "the plugin's sweeps and hook handlers settling")
-        .catch((error: Error) => console.error(`[test] ${error.message}; removing PASEO_HOME anyway`));
+      try {
+        await within(Promise.all(started.map((plugin) => plugin.idle())), 10_000, "the plugin's startup, sweeps and hook handlers settling");
+      } catch (error) {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; kept PASEO_HOME ${home}`);
+      }
     },
   };
 }
@@ -112,11 +117,14 @@ it("opens a fresh daemon client on the sweep after the cached client's transport
     assert.equal(clients[0]!.refreshes, 1);
     (cleanup as () => void)();
   } finally {
-    await plugins.dispose();
-    mock.timers.reset();
-    console.log = originalLog;
-    if (previousHome === undefined) delete process.env.PASEO_HOME;
-    else process.env.PASEO_HOME = previousHome;
+    try {
+      await plugins.dispose(home);
+    } finally {
+      mock.timers.reset();
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
     await rm(home, { recursive: true, force: true });
   }
 });
@@ -156,10 +164,13 @@ it("leaves the record parked when the send fails because the transport is not co
     assert.equal(stored?.terminalReason, null);
     assert.deepEqual(stored?.attempts, []);
   } finally {
-    await plugins.dispose();
-    console.log = originalLog;
-    if (previousHome === undefined) delete process.env.PASEO_HOME;
-    else process.env.PASEO_HOME = previousHome;
+    try {
+      await plugins.dispose(home);
+    } finally {
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
     await rm(home, { recursive: true, force: true });
   }
 });
@@ -206,10 +217,13 @@ it("keeps the turn identity and deadline when a turn starts during a claim and t
     assert.equal(stored?.verificationDeadlineAt, claimedDeadline);
     assert.equal(stored?.attempts.length, 1);
   } finally {
-    await plugins.dispose();
-    console.log = originalLog;
-    if (previousHome === undefined) delete process.env.PASEO_HOME;
-    else process.env.PASEO_HOME = previousHome;
+    try {
+      await plugins.dispose(home);
+    } finally {
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
     await rm(home, { recursive: true, force: true });
   }
 });
@@ -279,12 +293,17 @@ it("keeps the turn from a claim when the rollback commits before the turn-start 
     assert.equal(sends, 1);
     (cleanup as () => void)();
   } finally {
-    await plugins.dispose();
-    mock.restoreAll();
-    mock.timers.reset();
-    console.log = originalLog;
-    if (previousHome === undefined) delete process.env.PASEO_HOME;
-    else process.env.PASEO_HOME = previousHome;
+    // A held handler write never lands on its own; open the gate so the plugin can settle before it is drained.
+    releaseHandler();
+    try {
+      await plugins.dispose(home);
+    } finally {
+      mock.restoreAll();
+      mock.timers.reset();
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
     // Windows can still hold a just-written file open for a moment; retry rather than mask a failure.
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
@@ -367,12 +386,15 @@ it("keeps the turn from a claim when it starts while the rollback write is still
     assert.equal(sends, 1);
     (cleanup as () => void)();
   } finally {
-    await plugins.dispose();
-    mock.restoreAll();
-    mock.timers.reset();
-    console.log = originalLog;
-    if (previousHome === undefined) delete process.env.PASEO_HOME;
-    else process.env.PASEO_HOME = previousHome;
+    try {
+      await plugins.dispose(home);
+    } finally {
+      mock.restoreAll();
+      mock.timers.reset();
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
     // Windows can still hold a just-written file open for a moment; retry rather than mask a failure.
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
