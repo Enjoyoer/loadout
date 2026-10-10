@@ -431,6 +431,7 @@ function main(argv) {
     if (!named.noSession && named.reason) throw Error(usage);
     // The session form settles the lane the task records, so its marker and repo come from the record.
     const cloud = readTask(path).cloud;
+    if (!cloud) throw Error('no cloud lane recorded in this task; nothing to reconcile');
     console.log(JSON.stringify(reconcileCloudLaunch(path, named.noSession
       ? { noSession: true, reason: named.reason, sessionId: named.session, url: named.url }
       : { sessionId: named.session, url: named.url, branch: cloud?.branch, repo: cloud?.repo })));
