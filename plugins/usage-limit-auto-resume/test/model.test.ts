@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { afterTransientFailure, buildFailedTransientRecord, buildRecord, buildTransientRecord, isTransientErrorMessage, configFingerprint, continuationPrompt, failureSignature, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, shouldResume, transientDelaySeconds, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
+import { MAX_KEPT_ATTEMPTS, afterTransientFailure, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, isTransientErrorMessage, configFingerprint, continuationPrompt, failureSignature, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, shouldResume, transientDelaySeconds, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 
 const NOW = Date.parse("2026-09-25T12:00:00.000Z");
@@ -207,6 +207,20 @@ describe("failed-turn transient classification", () => {
     }
     assert.equal(Date.parse(value.notBefore) - NOW, 900_000);
     assert.deepEqual(shouldResume(value, agent({ status: "error" }), config, Date.parse(value.notBefore)), { ok: true });
+  });
+
+  it("keeps only the newest failed-turn attempts while counting every attempt for message IDs and backoff", () => {
+    let value = buildFailedTransientRecord(agent(), failedTimeline, { message: CAPACITY }, config, NOW, "turn-1")!;
+    const total = MAX_KEPT_ATTEMPTS + 10;
+    for (let attempt = 1; attempt <= total; attempt++) {
+      assert.equal(messageId(value), `${value.recordId}:attempt:${attempt}`);
+      value = afterTransientFailure({ ...value, attempts: [...value.attempts, { at: value.createdAt, messageId: messageId(value), result: "sent" }] }, `failed: ${CAPACITY}`, "continue", messageId(value), agent().lastUserMessageAt!, config, NOW);
+    }
+    assert.equal(value.attempts.length, MAX_KEPT_ATTEMPTS);
+    assert.equal(attemptCount(value), total);
+    assert.equal(value.attempts.at(-1)?.messageId, `${value.recordId}:attempt:${total}`);
+    assert.equal(messageId(value), `${value.recordId}:attempt:${total + 1}`);
+    assert.equal(Date.parse(value.notBefore) - NOW, 900_000);
   });
 
   it("allows sending to an errored agent only for failed-outcome records", () => {

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
-import { ResumeStore, StateUnreadableError } from "../server/store.ts";
+import { MAX_TERMINAL_RECORDS, ResumeStore, StateUnreadableError } from "../server/store.ts";
 import { buildRecord, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
 
 const config: ResumeConfig = {
@@ -75,6 +77,26 @@ describe("ResumeStore", () => {
         await assert.rejects(store.upsert(record), (error) => error instanceof StateUnreadableError);
         assert.equal(await readFile(filePath, "utf8"), text);
       }
+    } finally {
+      await rm(filePath, { force: true });
+    }
+  });
+
+  it("keeps every actionable record and only the newest terminal records", async () => {
+    const filePath = path.join(tmpdir(), `usage-limit-auto-resume-retain-${process.pid}.json`);
+    const parked = { ...buildRecord(agent, "out of credits", undefined, config, Date.now(), "turn-parked")!, state: "parked" as const, updatedAt: "2026-01-01T00:00:00.000Z" };
+    const terminal = Array.from({ length: MAX_TERMINAL_RECORDS + 5 }, (_, n) => ({
+      ...buildRecord(agent, "out of credits", undefined, config, Date.now(), `turn-${n}`)!,
+      state: "done" as const,
+      updatedAt: new Date(Date.parse("2026-02-01T00:00:00.000Z") + n * 1000).toISOString(),
+    }));
+    await writeFile(filePath, JSON.stringify({ version: 2, records: [parked, ...terminal] }));
+    try {
+      const store = new ResumeStore(filePath);
+      const next = buildRecord(agent, "out of credits", undefined, config, Date.now(), "turn-next")!;
+      await store.upsert(next);
+      const ids = (await store.read()).map((record) => record.recordId);
+      assert.deepEqual(ids, [parked.recordId, ...terminal.slice(5).map((record) => record.recordId), next.recordId]);
     } finally {
       await rm(filePath, { force: true });
     }
