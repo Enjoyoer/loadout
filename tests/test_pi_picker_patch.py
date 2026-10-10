@@ -94,7 +94,7 @@ if(JSON.stringify([definitions,snapshots])!==before)throw Error('provider input 
             picker.run(root,'apply')
             publish=picker.publish
             def cut_off(target,data):
-                if target==p:raise KeyboardInterrupt
+                if target==p.resolve():raise KeyboardInterrupt  # run() resolves the root (macOS /var is a symlink)
                 publish(target,data)
             migration="localStorage.setItem('example', 'pi')"
             # The new generation's state lands; the bundle still holds the previous generation's patch.
