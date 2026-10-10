@@ -105,7 +105,7 @@ class FleetPushTest(unittest.TestCase):
         # desktop still holds the offer from a push that copied every file.
         old = self.target("desktop")
         old.mkdir(parents=True)
-        (old / "tablet.offer").write_text("offer:tablet\n")
+        (old / "tablet.offer").write_bytes(b"offer:tablet\n")  # bytes: the record hashes them, CRLF or not
         (old / fleet.SYNC_RECORD).write_text(json.dumps({"version": 1, "files": {
             "tablet.offer": hashlib.sha256(b"offer:tablet\n").hexdigest()}}))
         code, out = self.push()
