@@ -122,7 +122,9 @@ choose the agent id up front and children already handled in dry-run.
 
 Every decision past the provider and parent checks is recorded once per child id at
 `$PASEO_HOME/plugin-state/pm-native-worker-guard/state.json` (written atomically, mode
-0600, newest `maxStateEntries` kept). A repeated event for the same child, in the same
+0600, newest `maxStateEntries` kept). On Linux and macOS a write completes only after the
+state directory is flushed, so it survives a host crash; on Windows the rename is not
+flushed, and a host crash soon after a write can bring back the previous state. A repeated event for the same child, in the same
 process or after a reload, does nothing and logs nothing. An SDK error is therefore
 logged once and the child is never retried. A dry-run decision is not replayed when the
 plugin is armed later. When armed, the decision is recorded before the archive call; if
