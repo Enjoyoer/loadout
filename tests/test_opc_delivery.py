@@ -20,6 +20,13 @@ def run(*args, cwd=None, env=None):
 CATALOG = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptionIds": ["medium", "high", "xhigh"]}]
 # A start time in the fixed format task-state.mjs records, which no live process has.
 OLD_START = "1970-01-01T00:00:00.0000000Z" if sys.platform == "win32" else "Thu Jan 1 00:00:00 1970"
+# The code route as recorded before OPC 7.30: Opus xhigh at pace step 0, a level today's class table no longer selects.
+PRE_730_CODE_ROUTE = {
+    "role": "worker", "source": "task-default", "kind": "code", "model": "fleet/claude-opus-5-5", "effort": "xhigh",
+    "fastMode": False, "reason": "code default xhigh, no adjustment, no quota reading supplied",
+    "pace": {"pool": "claude", "step": 0, "weekly": None, "stale": "no quota reading supplied", "gapPct": None,
+             "fiveHourUsedPct": None, "resetSoon": None, "accounts": None, "staleAccounts": None, "ageSeconds": None},
+}
 
 
 class OpcDeliveryTest(unittest.TestCase):
@@ -298,6 +305,226 @@ class OpcDeliveryTest(unittest.TestCase):
         """)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(json.loads(done.stdout), [effort, effort])
+
+    def write_routes(self, task, routes):
+        """Write `routes` ({lane: route}) as the task's recorded lanes directly, as an old or tampered record would be."""
+        record = json.loads(Path(task).read_text())
+        record["routes"] = {lane: {"route": route, "reason": route.get("reason", "owner-named, never adjusted"),
+                                   "recorded_at": "2026-10-01T00:00:00.000Z"} for lane, route in routes.items()}
+        Path(task).write_text(json.dumps(record))
+
+    def ui_task(self):
+        root = Path(self.task).parent.parent
+        (root / "run-ui").mkdir()
+        done = run("node", "--input-type=module", "-e", f"""
+            import {{ createTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            console.log(createTask({{ workingDirectory: {json.dumps(str(self.repo))}, runDirectory: {json.dumps(str(root / 'run-ui'))},
+              owner: 'test', ui: true }}).taskPath);
+        """)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout.strip()
+
+    def launch(self, task, lane, route, catalog, source=None, record_lane=None, task_class=None, task_id=None, provider=None):
+        """Build the Worker request and brief for `lane` of `task`, bound to that task record, lane, and `task_class`, from
+        `route`: a JS expression that may use `recorded`, the routes readTask returns for `source` (default `task`). The
+        request uses the record's id unless `task_id` is given, an explicit `provider` when given, and no catalog when
+        `catalog` is None. With record_lane, also try recording `route` there for `task_class`. Returns each result or its
+        error."""
+        done = run("node", "--input-type=module", "-e", f"""
+            import {{ buildDelegatedBrief }} from {json.dumps((SCRIPTS / 'agent-routing.mjs').as_uri())};
+            import {{ buildManagedWorkerRequest }} from {json.dumps((SCRIPTS / 'paseo-worker.mjs').as_uri())};
+            import {{ recordWorkerRoute }} from {json.dumps((SCRIPTS / 'route.mjs').as_uri())};
+            import {{ readTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            const path = {json.dumps(task)}, lane = {json.dumps(lane)}, recordLane = {json.dumps(record_lane)};
+            const taskClass = {json.dumps(task_class)}, models = {json.dumps(catalog)} ?? undefined;
+            const task = readTask(path), recorded = readTask({json.dumps(source or task)}).routes;
+            const route = {route};
+            const attempt = make => {{ try {{ return make(); }} catch (error) {{ return {{ error: error.message }}; }} }};
+            console.log(JSON.stringify({{
+              request: attempt(() => buildManagedWorkerRequest({{ taskId: {json.dumps(task_id)} ?? task.id, lane, title: 'Worker',
+                initialPrompt: 'Repair the lane', route, task, taskClass, provider: {json.dumps(provider)} ?? undefined,
+                workspace: {{ workspaceId: 'wks-example', cwd: '/tmp/example-worktree' }},
+                capabilities: {{ enabled: true, status: 'available', modes: [], models }} }}).request),
+              brief: attempt(() => buildDelegatedBrief({{ role: 'worker', route, reason: 'route reason', brief: 'Repair the lane',
+                task, lane, taskClass }})),
+              record: recordLane && attempt(() => recordWorkerRoute(path, {{ lane: recordLane, route, reason: 'route reason', taskClass }})),
+            }}));
+        """)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_recorded_pre_730_code_route_rebuilds_when_catalog_serves_it(self):
+        catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
+        self.write_routes(self.task, {"code-lane": PRE_730_CODE_ROUTE})
+        built = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, task_class="code")
+        self.assertEqual(built["request"].get("provider"), "pi/fleet/claude-opus-5-5", built["request"])
+        self.assertEqual(built["request"]["settings"], {"thinkingOptionId": "xhigh"})
+        self.assertIn("model=fleet/claude-opus-5-5; effort=xhigh; Fast=off; route: route reason", built["brief"])
+
+    def test_recorded_route_missing_from_catalog_is_refused(self):
+        catalog = [{"id": "fleet/claude-opus-5-6", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "xhigh"}]}]
+        self.write_routes(self.task, {"code-lane": PRE_730_CODE_ROUTE})
+        built = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, task_class="code")
+        self.assertEqual(built["request"], {"error": "recorded code Worker route is no longer served: the Pi catalog has no "
+                                                     "fleet/claude-opus-5-5; this lane cannot relaunch on its recorded route, "
+                                                     "so resolve a route for a new lane"})
+
+    def test_new_xhigh_code_route_without_task_record_is_refused(self):
+        catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
+        self.write_routes(self.task, {"code-lane": PRE_730_CODE_ROUTE})
+        built = self.launch(self.task, "new-lane", json.dumps(PRE_730_CODE_ROUTE), catalog, record_lane="new-lane",
+                             task_class="code")
+        for step in ("request", "brief", "record"):
+            self.assertIn("recorded owner or task-default route required for worker", built[step].get("error", ""), step)
+        self.assertNotIn("new-lane", json.loads(Path(self.task).read_text())["routes"])
+
+    def test_tampered_recorded_gpt_code_route_is_refused(self):
+        catalog = [{"id": f"fleet/{model}", "label": label, "thinkingOptions": [{"id": "medium"}, {"id": "xhigh"}]}
+                   for model, label in (("claude-opus-5-5", "Opus"), ("gpt-6.1-sol", "Sol"))]
+        tampered = {**PRE_730_CODE_ROUTE, "model": "fleet/gpt-6.1-sol", "effort": "medium"}
+        self.write_routes(self.task, {"code-lane": tampered})
+        built = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, record_lane="gpt-lane",
+                             task_class="code")
+        for step in ("request", "brief"):
+            self.assertEqual(built[step].get("error"), "recorded code Worker route cannot rebuild: fleet/gpt-6.1-sol is a GPT "
+                                                       "or web model and the code class runs Opus", step)
+        self.assertIn("recorded owner or task-default route required for worker", built["record"].get("error", ""))
+
+    def test_recorded_opus_code_route_below_current_minimum_is_refused(self):
+        catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "low"}, {"id": "medium"}, {"id": "xhigh"}]}]
+        self.write_routes(self.task, {"code-lane": {**PRE_730_CODE_ROUTE, "effort": "low"}})
+        built = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, record_lane="low-lane",
+                             task_class="code")
+        for step in ("request", "brief"):
+            self.assertEqual(built[step].get("error"), "recorded code Worker route cannot rebuild: effort low is below the code "
+                                                       "minimum medium", step)
+        self.assertIn("recorded owner or task-default route required for worker", built["record"].get("error", ""))
+
+    def test_route_from_non_ui_task_cannot_launch_ui_task_lane(self):
+        root = Path(self.task).parent.parent
+        catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
+        (root / "catalog.json").write_text(json.dumps(catalog))
+        ui = self.ui_task()
+        for task, kind, lane in ((self.task, "code", "code-lane"), (ui, "ui", "ui-lane")):
+            recorded = run("node", str(SCRIPTS / "route.mjs"), "--class", kind, "--catalog", str(root / "catalog.json"),
+                           "--pq-file", str(root / "no-pq.json"), "--task", task, "--lane", lane)
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        own = self.launch(ui, "ui-lane", "recorded['ui-lane'].route", catalog)
+        self.assertEqual(own["request"].get("settings"), {"thinkingOptionId": "xhigh"}, own["request"])
+        replay = self.launch(ui, "ui-lane", "recorded['code-lane'].route", catalog, source=self.task, record_lane="ui-lane")
+        for step in ("request", "brief"):
+            self.assertEqual(replay[step].get("error"), "UI task: only the ui route (Opus xhigh, Fast off) can launch (owner rule); "
+                                                        "use the ui class", step)
+        self.assertEqual(replay["record"].get("error"), "UI task: only the ui route (Opus xhigh, Fast off) is recorded (owner rule); "
+                                                        "use the ui class")
+
+    def test_recorded_ui_route_not_opus_xhigh_fast_off_is_refused(self):
+        catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "high"}, {"id": "xhigh"}]}]
+        ui = self.ui_task()
+        for route in ({"role": "worker", "source": "owner-explicit", "model": "fleet/claude-opus-5-5", "effort": "high", "fastMode": False},
+                      {"role": "worker", "source": "owner-explicit", "model": "fleet/claude-opus-5-5", "effort": "xhigh", "fastMode": True}):
+            with self.subTest(route=route):
+                recorded = self.launch(ui, "ui-lane", json.dumps(route), catalog, record_lane="ui-lane")
+                self.assertEqual(recorded["record"].get("error"), "UI task: only the ui route (Opus xhigh, Fast off) is recorded "
+                                                                  "(owner rule); use the ui class")
+                self.write_routes(ui, {"ui-lane": route})
+                built = self.launch(ui, "ui-lane", "recorded['ui-lane'].route", catalog)
+                for step in ("request", "brief"):
+                    self.assertEqual(built[step].get("error"), "UI task: only the ui route (Opus xhigh, Fast off) can launch "
+                                                               "(owner rule); use the ui class", step)
+
+    def test_tampered_recorded_owner_explicit_gpt_code_route_is_refused(self):
+        catalog = [{"id": f"fleet/{model}", "label": label, "thinkingOptions": [{"id": "medium"}, {"id": "xhigh"}]}
+                   for model, label in (("claude-opus-5-5", "Opus"), ("gpt-6.1-sol", "Sol"))]
+        tampered = {"role": "worker", "source": "owner-explicit", "model": "fleet/gpt-6.1-sol", "effort": "medium", "fastMode": False}
+        self.write_routes(self.task, {"code-lane": tampered})
+        built = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, record_lane="gpt-lane",
+                            task_class="code")
+        for step in ("request", "brief"):
+            self.assertEqual(built[step].get("error"), "recorded code Worker route cannot rebuild: fleet/gpt-6.1-sol is a GPT "
+                                                       "or web model and the code class runs Opus", step)
+        self.assertEqual(built["record"].get("error"), "code lane refuses this Worker route: fleet/gpt-6.1-sol is a GPT or web "
+                                                       "model and the code class runs Opus")
+
+    def record_code_lane(self, catalog):
+        root = Path(self.task).parent.parent
+        (root / "catalog.json").write_text(json.dumps(catalog))
+        recorded = run("node", str(SCRIPTS / "route.mjs"), "--class", "code", "--catalog", str(root / "catalog.json"),
+                       "--pq-file", str(root / "no-pq.json"), "--task", self.task, "--lane", "code-lane")
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+
+    def test_mismatched_task_id_and_task_record_is_refused(self):
+        catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
+        self.record_code_lane(catalog)
+        built = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, task_class="code",
+                            task_id="task-0001-example")
+        self.assertEqual(built["request"], {"error": "Worker task id must be the bound task record id"})
+
+    def test_different_route_for_recorded_lane_is_refused(self):
+        catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
+        self.record_code_lane(catalog)
+        other = {"role": "worker", "source": "owner-explicit", "model": "fleet/claude-opus-5-5", "effort": "xhigh", "fastMode": False}
+        built = self.launch(self.task, "code-lane", json.dumps(other), catalog, record_lane="code-lane", task_class="code")
+        for step in ("request", "brief", "record"):
+            self.assertEqual(built[step].get("error"), "lane code-lane already has a recorded route; repairs and resumes reuse it", step)
+
+    def test_non_opus_claude_ui_route_is_refused_without_catalog(self):
+        ui = self.ui_task()
+        sonnet = {"role": "worker", "source": "owner-explicit", "model": "fleet/claude-sonnet-5-5", "effort": "xhigh", "fastMode": False}
+        fresh = self.launch(ui, "ui-lane", json.dumps(sonnet), None, record_lane="ui-lane")
+        self.assertEqual(fresh["record"].get("error"), "UI task: only the ui route (Opus xhigh, Fast off) is recorded (owner rule); "
+                                                       "use the ui class")
+        self.write_routes(ui, {"ui-lane": sonnet})
+        rebuilt = self.launch(ui, "ui-lane", "recorded['ui-lane'].route", None)
+        for built in (fresh, rebuilt):
+            for step in ("request", "brief"):
+                self.assertEqual(built[step].get("error"), "UI task: only the ui route (Opus xhigh, Fast off) can launch "
+                                                           "(owner rule); use the ui class", step)
+
+    def test_tampered_code_route_with_gpt_provider_is_refused_by_request(self):
+        catalog = [{"id": f"fleet/{model}", "label": label, "thinkingOptions": [{"id": "medium"}, {"id": "xhigh"}]}
+                   for model, label in (("claude-opus-5-5", "Opus"), ("gpt-6.1-sol", "Sol"))]
+        self.write_routes(self.task, {"code-lane": {**PRE_730_CODE_ROUTE, "model": "fleet/gpt-6.1-sol", "effort": "medium"}})
+        tampered = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, task_class="code",
+                               provider="pi/fleet/gpt-6.1-sol")
+        self.assertEqual(tampered["request"].get("error"), "recorded code Worker route cannot rebuild: fleet/gpt-6.1-sol is a "
+                                                           "GPT or web model and the code class runs Opus")
+        # A valid recorded Opus lane cannot be steered to the GPT provider either; its own mapped provider still launches.
+        self.write_routes(self.task, {"code-lane": PRE_730_CODE_ROUTE})
+        steered = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, task_class="code",
+                              provider="pi/fleet/gpt-6.1-sol")
+        self.assertEqual(steered["request"].get("error"), "explicit provider pi/fleet/gpt-6.1-sol is not what this lane's "
+                                                          "validated route maps to (pi/fleet/claude-opus-5-5)")
+        own = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, task_class="code",
+                          provider="pi/fleet/claude-opus-5-5")
+        self.assertEqual((own["request"].get("provider"), own["request"].get("settings")),
+                         ("pi/fleet/claude-opus-5-5", {"thinkingOptionId": "xhigh"}), own["request"])
+
+    def test_task_default_code_route_with_non_opus_claude_model_is_refused_without_catalog(self):
+        sonnet = {**PRE_730_CODE_ROUTE, "model": "fleet/claude-sonnet-5-5", "effort": "medium"}
+        fresh = self.launch(self.task, "sonnet-lane", json.dumps(sonnet), None, record_lane="sonnet-lane", task_class="code")
+        for step in ("record", "brief"):
+            self.assertEqual(fresh[step].get("error"), "code lane refuses this Worker route: fleet/claude-sonnet-5-5 does not "
+                                                       "name the code class's Opus model", step)
+        self.write_routes(self.task, {"code-lane": sonnet})
+        rebuilt = self.launch(self.task, "code-lane", "recorded['code-lane'].route", None, task_class="code")
+        self.assertEqual(rebuilt["brief"].get("error"), "recorded code Worker route cannot rebuild: fleet/claude-sonnet-5-5 "
+                                                        "does not name the code class's Opus model")
+
+    def test_route_cli_with_different_class_for_recorded_lane_exits_non_zero(self):
+        catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
+        self.record_code_lane(catalog)
+        root = Path(self.task).parent.parent
+        route = ("node", str(SCRIPTS / "route.mjs"), "--catalog", str(root / "catalog.json"), "--pq-file", str(root / "no-pq.json"),
+                 "--task", self.task, "--lane", "code-lane")
+        stored = json.loads(Path(self.task).read_text())["routes"]["code-lane"]["route"]
+        other = run(*route, "--class", "research")
+        self.assertNotEqual(other.returncode, 0, other.stdout)
+        self.assertIn("lane code-lane already has a recorded route that --class would not select", other.stderr)
+        for flags in ((), ("--class", "code")):
+            resumed = run(*route, *flags)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertEqual(json.loads(resumed.stdout)["route"], stored)
 
     def test_cloud_fallback_on_cloud_lane_records_local_route_atomically(self):
         root = Path(self.task).parent.parent
