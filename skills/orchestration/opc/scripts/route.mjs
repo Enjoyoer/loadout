@@ -6,8 +6,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { isGptOrWebRoute, materializeFixedRoute, OWNER_RULE_ROUTES, routeReason, selectWorkerRoute, validateRoleRoute,
-  WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
+import { isUiRoute, materializeFixedRoute, OWNER_RULE_ROUTES, recordedLaneEntry, routeReason, selectWorkerRoute,
+  validateLaneClass, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
 import { authorizeCloudFallback, checkCloudEligibility, CLOUD_ALL_CLASSES, cloudClasses, readCloudToggle,
   resolveCloudWorkerRoute } from './cloud-lane.mjs';
 import { defaultRoutingPath, readQuota, readRoutingSettings, ROUTING_DEFAULTS } from './quota-pace.mjs';
@@ -70,30 +70,54 @@ export async function resolveCloudFallback(taskPath, { lane, taskClass = null, o
   if (cloud?.status !== 'dead') throw Error('cloud fallback requires a heartbeat-recorded dead cloud lane');
   const local = await resolveWorkerRoute({ taskClass, ownerRoute, catalog, pqFile, settings, home });
   const fallback = { lane: `${lane}-fallback`, route: local.route, reason: `cloud lane dead (${cloud.reason}), local fallback: ${local.reason}` };
-  authorizeCloudFallback(taskPath, { route: fallback.route, reason: fallback.reason, record: task => recordLane(task, fallback) });
+  authorizeCloudFallback(taskPath, { route: fallback.route, reason: fallback.reason,
+    record: task => recordLane(task, { ...fallback, taskClass, catalog }) });
   return Object.freeze(fallback);
 }
 
-// One route per lane. Repairs and resumes reuse the recorded entry; a different route for the lane is refused.
-// A new entry is checked against today's class table here, once; later reads check only its shape.
-function recordLane(task, { lane, route, reason }) {
-  if (task.ui && isGptOrWebRoute(route)) throw Error('UI task: GPT and web routes are refused (owner rule); use the ui class');
-  const recorded = task.routes?.[lane];
+// One route per lane. Repairs and resumes reuse the recorded entry; a different route for the lane is refused, as the
+// Worker request and brief refuse it. A new entry is checked against today's class table and against its lane's class
+// (taskClass, or a task default's own class): the owner rules, and a task default's model by its catalog row when a
+// catalog is given, else by name. That happens here, once; later reads check only its shape. A UI task records only the
+// ui route (Opus xhigh, Fast off).
+function recordLane(task, { lane, route, reason, taskClass = null, catalog = null }) {
+  if (task.ui && !isUiRoute(route)) throw Error('UI task: only the ui route (Opus xhigh, Fast off) is recorded (owner rule); use the ui class');
+  const recorded = recordedLaneEntry(task, lane, route);
   if (recorded) {
-    if (JSON.stringify(recorded.route) !== JSON.stringify(route) || recorded.reason !== reason) {
-      throw Error(`lane ${lane} already has a recorded route; repairs and resumes reuse it`);
-    }
+    if (recorded.reason !== reason) throw Error(`lane ${lane} already has a recorded route; repairs and resumes reuse it`);
     return recorded;
   }
   validateRoleRoute('worker', route);
+  const laneClass = taskClass ?? (route.source === 'task-default' ? route.kind : null);
+  if (laneClass != null) validateLaneClass(route, laneClass, catalog);
   task.routes = { ...(task.routes ?? {}), [lane]: { route: structuredClone(route), reason, recorded_at: new Date().toISOString() } };
   return task.routes[lane];
 }
 
-export function recordWorkerRoute(taskPath, { lane, route, reason }) {
+export function recordWorkerRoute(taskPath, { lane, route, reason, taskClass = null, catalog = null }) {
   let entry;
-  updateTask(taskPath, task => { entry = recordLane(task, { lane, route, reason }); });
+  updateTask(taskPath, task => { entry = recordLane(task, { lane, route, reason, taskClass, catalog }); });
   return entry;
+}
+
+// The route-selection flags (--class, --owner-model, --owner-effort, --owner-fast) given for a lane that already has a
+// recorded route that they would not select. A task default records its class; an owner-named route must keep the named
+// class's owner rules, and a class alone selects an owner-named route only for ui.
+function differingLaneFlags(stored, flags, ownerRoute) {
+  const differ = [];
+  if (ownerRoute) {
+    if (stored.source !== 'owner-explicit' || ownerRoute.model !== stored.model) differ.push('owner-model');
+    if (ownerRoute.effort !== stored.effort) differ.push('owner-effort');
+    if (ownerRoute.fastMode !== stored.fastMode) differ.push('owner-fast');
+  }
+  if (flags.class != null) {
+    let fits = stored.source === 'task-default' ? stored.kind === flags.class : ownerRoute != null || flags.class === 'ui';
+    if (fits && stored.source !== 'task-default') {
+      try { validateLaneClass(stored, flags.class); } catch { fits = false; }
+    }
+    if (!fits) differ.push('class');
+  }
+  return differ;
 }
 
 // Catalog rows from Paseo capabilities ({id, label, thinkingOptions}) or `paseo provider models pi --json`.
@@ -140,9 +164,15 @@ async function main(argv) {
     return resolveCloudFallback(resolve(flags.task), { lane: flags.lane, taskClass: flags.class ?? null, ownerRoute,
       catalog: await readCatalog(flags.catalog), pqFile: flags['pq-file'] ?? null });
   }
-  if (flags.task && flags.lane && readTask(resolve(flags.task)).routes?.[flags.lane]) {
-    const { route, reason } = readTask(resolve(flags.task)).routes[flags.lane];
-    return { route, reason };
+  // A recorded lane resumes on its route: plainly, or with route flags that select exactly that route.
+  const recorded = flags.task && flags.lane ? readTask(resolve(flags.task)).routes?.[flags.lane] : null;
+  if (recorded) {
+    const differ = differingLaneFlags(recorded.route, flags, ownerRoute);
+    if (differ.length) {
+      throw Error(`lane ${flags.lane} already has a recorded route that --${differ.join(', --')} would not select; resume it ` +
+        'without route flags, or resolve a new lane');
+    }
+    return { route: recorded.route, reason: recorded.reason };
   }
   if (flags.class === 'planner' && !flags['owner-model']) {
     if (flags.task) throw Error('planner rounds are recorded by planner.mjs, not as a Worker lane');
@@ -156,7 +186,7 @@ async function main(argv) {
     eligibility: checkCloudEligibility(readJson(flags['cloud-facts'], 'cloud facts')) } : null;
   const resolved = await resolveWorkerRoute({ taskClass: flags.class ?? null, ownerRoute, catalog, cloud,
     pqFile: flags['pq-file'] ?? null });
-  if (flags.task) recordWorkerRoute(resolve(flags.task), { lane: flags.lane, ...resolved });
+  if (flags.task) recordWorkerRoute(resolve(flags.task), { lane: flags.lane, ...resolved, taskClass: flags.class ?? null, catalog });
   return resolved;
 }
 
