@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { it } from "node:test";
+import { syncBuiltinESMExports } from "node:module";
+import { it, mock } from "node:test";
 import { StateStore, type HandledRecord } from "../server/store.ts";
 import { tempStatePath } from "./fakes.ts";
 
@@ -43,5 +45,37 @@ it("throws on a state file whose records are malformed", async () => {
   for (const handled of [[null], [{ ...record("c1"), outcome: "deleted" }], [{ ...record("c1"), at: "not-a-date" }], [{ ...record("c1"), notice: 1 }]]) {
     await writeFile(file, JSON.stringify({ version: 1, handled }));
     await assert.rejects(new StateStore(file).get("c1"), /invalid state file/);
+  }
+});
+
+it("a cold first read that finishes after a newer write does not replace the cache", async () => {
+  const file = await tempStatePath();
+  await new StateStore(file).put(record("c0"), 10);
+  const store = new StateStore(file);
+  const realReadFile = fs.promises.readFile;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let reads = 0;
+  // The store's first read gets the old file, but returns it only once released.
+  mock.method(fs.promises, "readFile", async (...args: Parameters<typeof realReadFile>) => {
+    const text = await realReadFile(...args);
+    if (reads++ === 0) await held;
+    return text;
+  });
+  syncBuiltinESMExports();
+  try {
+    const first = store.get("c0");
+    const write = store.put(record("c1"), 10);
+    // Room for a separate read and the write to land before the first read finishes.
+    await Promise.race([write, new Promise((resolve) => setTimeout(resolve, 200))]);
+    release();
+    await Promise.all([first, write]);
+    assert.equal((await store.get("c1"))?.childId, "c1");
+    await store.put(record("c2"), 10);
+    const raw = JSON.parse(await readFile(file, "utf8")) as { handled: HandledRecord[] };
+    assert.deepEqual(raw.handled.map((entry) => entry.childId), ["c0", "c1", "c2"]);
+  } finally {
+    mock.restoreAll();
+    syncBuiltinESMExports();
   }
 });
