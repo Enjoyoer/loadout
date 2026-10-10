@@ -10,10 +10,6 @@
 // keep (null: retire nothing) names skills never retired. The record's skills section lists each
 // skill file the sync installed or found current; a recorded skill not in keep is removed while
 // every file in it is one of those, unedited, and otherwise kept, reported, and dropped from the record.
-// overlay names the payload's skills from the fleet overlay; the record's overlay section keeps the
-// recorded ones. overlay_missing ({why, published: every skill name a publication had}) says the
-// fleet overlay could not be read: then a recorded skill from it, or one never published, would look
-// unpublished, so this host retires nothing and reports why.
 // Helpers come from remote_common.js, which fleet.run_node ships ahead of this file.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execFileSync } = require("child_process");
@@ -190,8 +186,8 @@ try {
     if (sha(data[rel]) !== f.sha256) throw new Error("hash mismatch in transfer: " + rel);
   }
   const record = fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, "utf8")) : {};
-  const before = JSON.stringify(record), owned = record.skills || {}, roots = [], drops = [], candidates = [];
-  const writes = [], records = {}, overlay = p.overlay || [], fromOverlay = new Set(record.overlay || []);
+  const before = JSON.stringify(record), owned = record.skills || {}, roots = [], drops = [];
+  const writes = [], records = {};
   // A skill directory's entries, sorted: file hash, "dir", or false for anything else; null if it is not a directory.
   const snapshot = (root, dir) => {
     if (!fs.existsSync(dir) || !fs.lstatSync(dir).isDirectory()) return null;
@@ -238,7 +234,7 @@ try {
       for (const [rel, f] of Object.entries(p.files))
         consider(path.join(root, ...rel.split("/")), root, f.sha256, f.prior, client + ":" + rel, data[rel], false);
       for (const skill of p.keep ? new Set(Object.keys(owned[root] || {}).map(r => r.split("/")[0])) : [])
-        if (!p.keep.includes(skill)) candidates.push([root, skill, client + ":" + skill]);
+        if (!p.keep.includes(skill)) retire(root, skill, client + ":" + skill);
     }
     if (p.global && p.global.targets[client]) {
       const g = Buffer.from(p.global.data, "base64");
@@ -249,16 +245,9 @@ try {
       consider(file, path.dirname(file), p.global.sha256, record[file] ? [record[file]] : [], client + ":global", g, true);
     }
   }
-  const missing = p.overlay_missing;
-  const overlaid = missing ? candidates.filter(([, skill]) => fromOverlay.has(skill) || !missing.published.includes(skill)) : [];
-  if (overlaid.length)
-    result.retire_stopped = `the fleet overlay skills/ ${missing.why}, and this host has skills from it (`
-      + overlaid.map(c => c[2]).join(", ") + "); restore it, or leave an empty skills/ to retire them";
-  else candidates.forEach(c => retire(...c));
   if (result.conflicts.length) { result.status = "conflict"; done(5); }
   for (const w of writes) result[w.kind].push(w.label);
-  result.status = result.retire_stopped ? "blocked"
-    : writes.length + result.retired.length + result.kept.length ? (p.dry_run ? "would update" : "updated") : "same";
+  result.status = writes.length + result.retired.length + result.kept.length ? (p.dry_run ? "would update" : "updated") : "same";
   if (p.dry_run) done(0);
   // Elevation is checked before any write, and never prompts.
   for (const w of writes.filter(x => x.managed && x.managed.elevate)) {
@@ -287,12 +276,7 @@ try {
     for (const r of Object.keys(owned[d.root])) if (r.startsWith(d.skill + "/")) delete owned[d.root][r];
   }
   for (const root of roots) for (const [rel, f] of Object.entries(p.files)) (owned[root] = owned[root] || {})[rel] = f.sha256;
-  // Remember which recorded skills came from the overlay, while any root still records them.
-  if (roots.length) for (const rel of Object.keys(p.files)) fromOverlay[overlay.includes(rel.split("/")[0]) ? "add" : "delete"](rel.split("/")[0]);
-  for (const skill of fromOverlay)
-    if (!Object.values(owned).some(o => Object.keys(o).some(r => r.startsWith(skill + "/")))) fromOverlay.delete(skill);
   Object.assign(record, records, Object.keys(owned).length ? { skills: owned } : {});
-  if (fromOverlay.size) record.overlay = [...fromOverlay].sort(); else delete record.overlay;
   if (JSON.stringify(record) !== before) {
     fs.mkdirSync(path.dirname(recordPath), { recursive: true });
     replaceFile(fs, recordPath, JSON.stringify(record, null, 2), 0o600);

@@ -17,6 +17,14 @@ import skills_sync  # noqa: E402
 
 from fake_commands import assert_fake, install_fake_ssh, with_fake_ssh
 
+# Runs skills_sync.main() like with_fake_ssh, with extra paths in the publication history: a skill this
+# repository once published, which a test checkout's history does not hold.
+WITH_HISTORY = (
+    "import json, sys; scripts, prefix, extra = sys.argv[1:4]; sys.path.insert(0, scripts); import fleet, publication; "
+    "fleet.SSH_COMMAND = tuple(json.loads(prefix)); prior = publication.Publication.prior; "
+    "publication.Publication.prior = lambda self: {**prior(self), **json.loads(extra)}; "
+    "sys.argv = ['skills_sync', *sys.argv[4:]]; import skills_sync; sys.exit(skills_sync.main())")
+
 
 def entry(data, prior=()):
     digest = hashlib.sha256(data).hexdigest()
@@ -288,24 +296,54 @@ class SkillsSyncTest(unittest.TestCase):
         self.assertIn("conflict: local edits, nothing written: claude:mine/SKILL.md", out)
         self.assertEqual(target.read_text(), "hand edit")
 
-    def test_missing_overlay_retires_nothing_and_says_why(self):
-        self.overlay("mine/SKILL.md", "v1")
-        full = lambda: subprocess.run(with_fake_ssh(SCRIPTS / "skills_sync.py", self.ssh), env=self.env,
-                                      capture_output=True, text=True, timeout=120)
-        done = full()
-        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        mine = [self.installed("laptop", ".claude/skills/mine/SKILL.md"), self.installed("desktop", ".codex/skills/mine/SKILL.md"),
-                self.installed("desktop", ".claude/skills/mine/SKILL.md")]
-        self.assertEqual([path.read_text() for path in mine], ["v1"] * 3)
-        # The overlay vanishes, say a fleet directory restored without it: it must not read as an empty one.
-        shutil.rmtree(self.fleet / "skills")
-        done = full()
-        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
-        why = "retirement stopped: the fleet overlay skills/ is missing, and this host has skills from it"
-        self.assertIn(f"desktop: skills blocked; codex present, claude present; {why} (codex:mine, claude:mine); "
-                      "restore it, or leave an empty skills/ to retire them", done.stdout)
-        self.assertIn(f"laptop: skills blocked; claude present; {why} (claude:mine)", done.stdout)
-        self.assertEqual([path.read_text() for path in mine], ["v1"] * 3)
+    def full_sync(self, history):
+        """An unnarrowed sync, so retirement is on, whose publication history also holds history's paths."""
+        command = [sys.executable, "-c", WITH_HISTORY, str(SCRIPTS), json.dumps(list(self.ssh)), json.dumps(history)]
+        done = subprocess.run(command, env=self.env, capture_output=True, text=True, timeout=120)
+        return done.returncode, done.stdout + done.stderr
+
+    def legacy_install(self, host, roots, skill, data):
+        """Install a skill as an earlier sync did: its files, and the host's record of them, with no provenance."""
+        path = self.installed(host, ".config/loadout/global-sync.json")
+        record = json.loads(path.read_text()) if path.exists() else {}
+        for root in roots:
+            base = self.installed(host, root)
+            (base / skill).mkdir(parents=True, exist_ok=True)
+            (base / skill / "SKILL.md").write_bytes(data)
+            record.setdefault("skills", {}).setdefault(str(base), {})[f"{skill}/SKILL.md"] = sha(data)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record))
+
+    def test_missing_overlay_keeps_a_formerly_public_skill_from_a_legacy_record(self):
+        # moved was published once, then moved into the overlay, which is now missing.
+        (self.fleet / "hosts.json").write_text(json.dumps({**HOSTS, "skills_overlay": True}))
+        self.legacy_install("desktop", (".claude/skills", ".codex/skills"), "moved", b"moved")
+        code, out = self.full_sync({"skills/misc/moved/SKILL.md": [sha(b"moved")]})
+        self.assertEqual(code, 1, out)
+        why = ("retirement stopped: hosts.json sets skills_overlay, but the fleet overlay skills/ is missing, so no host "
+               "retires anything; restore it, or leave an empty skills/ to retire its skills")
+        self.assertIn("desktop: skills blocked (+", out)
+        self.assertIn(f"; codex present, claude present; {why}", out)
+        self.assertIn(f"; claude present; {why}; excluded grilling", out)
+        for root in (".claude/skills", ".codex/skills"):
+            self.assertEqual(self.installed("desktop", f"{root}/moved/SKILL.md").read_bytes(), b"moved")
+
+    def test_missing_overlay_also_keeps_an_unrelated_retired_public_skill(self):
+        (self.fleet / "hosts.json").write_text(json.dumps({**HOSTS, "skills_overlay": True}))
+        self.legacy_install("desktop", (".claude/skills",), "old", b"old")
+        history = {"skills/misc/old/SKILL.md": [sha(b"old")]}
+        # No overlay skill is recorded anywhere, and old is a plain unpublished package: still every host stops.
+        code, out = self.full_sync(history)
+        self.assertEqual(code, 1, out)
+        self.assertEqual(out.count("skills blocked"), 2, out)
+        self.assertNotIn("retired unpublished", out)
+        self.assertEqual(self.installed("desktop", ".claude/skills/old/SKILL.md").read_bytes(), b"old")
+        # A present, empty overlay retires as before.
+        (self.fleet / "skills").mkdir()
+        code, out = self.full_sync(history)
+        self.assertEqual(code, 0, out)
+        self.assertIn("desktop: skills updated (-1); codex present, claude present; retired unpublished: claude:old", out)
+        self.assertFalse(self.installed("desktop", ".claude/skills/old").exists())
 
     def test_overlay_is_not_pushed_with_the_fleet(self):
         self.overlay("mine/SKILL.md", "v1")

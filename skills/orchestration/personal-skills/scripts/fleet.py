@@ -57,7 +57,7 @@ OSES = {"macos", "windows", "linux"}
 # Host names are ssh aliases and reach ssh's argv, so a leading '-' would read as an option.
 HOST_NAME = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 CLIENTS = {"codex", "claude", "opencode", "pi"}
-TOP_KEYS = {"schema_version", "source_host", "transport", "notes", "hosts", "global"}
+TOP_KEYS = {"schema_version", "source_host", "transport", "notes", "hosts", "global", "skills_overlay"}
 HOST_KEYS = {"name", "os", "checkout", "clients", "paseo", "transport", "sync", "paseo_offer", "exclude_skills"}
 PASEO_KEYS = {"plugin_root", "stage", "install"}
 # global.claude may name the claudeMd field of Claude Code's managed settings instead of a file.
@@ -144,6 +144,8 @@ def validate(data: Any) -> dict:
         default_transport = "ssh"
     elif default_transport not in TRANSPORTS:
         raise FleetError(f"transport {default_transport!r} is not one of {sorted(TRANSPORTS)}")
+    if not isinstance(data.get("skills_overlay", False), bool):
+        raise FleetError("skills_overlay must be true or false")
     hosts = data.get("hosts")
     if not isinstance(hosts, list) or not hosts:
         raise FleetError("hosts must be a non-empty list")

@@ -34,7 +34,7 @@ Put skills that must stay private (personal, account-bound, or holding credentia
 
 - A name that is also a published skill stops the run; rename one of them.
 - Every overlay file hash a host has accepted is recorded in `skills/.loadout-overlay.json`, so a newer version replaces an older installed one while a hand edit on a host stays a conflict. A skill that moved here from the public repository also replaces its last published copy.
-- A skill removed from the overlay is retired from hosts like an unpublished package (see `Local-edit protection` in `SKILL.md`), so keep the overlay complete on the source host and check `--dry-run` first. A missing `skills/`, or one that is not a directory, retires nothing on hosts that have overlay skills and reports `blocked`; to retire every overlay skill, leave an empty `skills/` directory.
+- A skill removed from the overlay is retired from hosts like an unpublished package (see `Local-edit protection` in `SKILL.md`), so keep the overlay complete on the source host and check `--dry-run` first. Set `skills_overlay: true` in `hosts.json` when the fleet keeps an overlay: then a missing `skills/`, or one that is not a directory, stops all retirement on every host, each reported as `blocked`. To retire every overlay skill, leave an empty `skills/` directory.
 - `__pycache__`, `.pyc`, and `.DS_Store` are skipped; symlinks are errors.
 - The fleet push does not copy `skills/` to other hosts; skill bytes travel only through the skills step.
 
@@ -46,6 +46,7 @@ Put skills that must stay private (personal, account-bound, or holding credentia
 - `source_host`: name of the host whose checkout is the sync source. It runs locally, so it must use `ssh`.
 - `transport`: default for every host, `ssh` or `paseo-relay`. Record host names, not IP addresses that may change.
 - `notes`: optional free text.
+- `skills_overlay`: optional, `true` or `false` (default). `true` says this fleet keeps private skills in `skills/`, so the skills step stops all retirement while that directory is missing or not a directory.
 - `hosts[]`: one entry per host.
   - `name`: address used by the transport; for `ssh`, the SSH alias. Letters, digits, `.`, `_` and `-`, not starting with `-`.
   - `os`: `macos`, `windows`, or `linux`.

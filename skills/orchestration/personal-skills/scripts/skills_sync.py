@@ -7,9 +7,9 @@ Code. Private skills come from the fleet directory's skills/<skill>/ overlay,
 which is never published. Each host is preflighted before any write; a changed
 file that matches no published or recorded overlay version is a conflict and
 stops that host. A skill the host's sync record shows the sync installed, and
-that is no longer published, is removed unless it was edited there. When the
-overlay is missing or not a directory, a host whose record holds skills from it
-retires nothing and reports `blocked`.
+that is no longer published, is removed unless it was edited there. When
+hosts.json sets skills_overlay and the overlay is missing or not a directory, no
+host retires anything, and each reports `blocked` with the reason.
 """
 
 from __future__ import annotations
@@ -65,12 +65,14 @@ def overlay_history(fleet_dir: Path) -> dict:
         raise fleet.FleetError(f"unreadable overlay history {path}: {error}") from error
 
 
-def overlay_problem(fleet_dir: Path) -> Optional[str]:
-    """Why <fleet>/skills/ cannot be read as the overlay, or None when it is a directory."""
+def overlay_problem(fleet_doc: dict, fleet_dir: Path) -> Optional[str]:
+    """Why retirement stops: hosts.json sets skills_overlay, and <fleet>/skills/ is missing or not a directory."""
     root = fleet_dir / OVERLAY
-    if root.is_dir():
+    if not fleet_doc.get("skills_overlay") or root.is_dir():
         return None
-    return "is not a directory" if os.path.lexists(root) else "is missing"
+    return (f"hosts.json sets skills_overlay, but the fleet overlay skills/ "
+            f"{'is not a directory' if os.path.lexists(root) else 'is missing'}, so no host retires anything; "
+            "restore it, or leave an empty skills/ to retire its skills")
 
 
 def overlay_files(fleet_dir: Path, published: set, prior_by_dest: dict) -> dict:
@@ -163,19 +165,17 @@ def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[s
         unknown = sorted(only - names)
         if unknown:
             raise fleet.FleetError(f"unknown skills: {unknown}")
-    # A missing overlay must not read as an empty one: hosts get the names any publication had, so a
-    # recorded skill outside them is known to come from the overlay.
-    missing = overlay_problem(fleet_dir)
-    if missing:
-        ever = published | {path.split("/")[2] for path in pub.prior() if path.startswith("skills/") and path.count("/") > 2}
-        missing = {"why": missing, "published": sorted(ever)}
+    # A configured overlay that is missing must not read as an empty one: then every host retires nothing.
+    stopped = overlay_problem(fleet_doc, fleet_dir)
     glob = global_payload(fleet_doc, fleet_dir)
     selected = names if only is None else only
     emit(f"source_commit {pub.source[:12]}: {len(selected)} skills selected"
          + (f" ({len(selected & overlay_names)} from the private overlay)" if selected & overlay_names else "")
          + ("; global instructions" if glob else ""))
+    if (fleet_dir / OVERLAY).is_dir() and not fleet_doc.get("skills_overlay"):
+        emit("note: hosts.json does not set skills_overlay, so a missing skills/ overlay would not stop retirement")
     return {"fleet_doc": fleet_doc, "fleet_dir": fleet_dir, "dry_run": dry_run, "only": only, "pub": pub,
-            "overlay": overlay, "overlay_missing": missing, "names": names, "global": glob}
+            "overlay": overlay, "retire_stopped": stopped, "names": names, "global": glob}
 
 
 def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
@@ -187,15 +187,17 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
                if dest.split("/")[0] not in exclude and (only is None or dest.split("/")[0] in only)}
     files.update(overlay)
     # A host retires a skill it recorded only when the skill is in neither the publication nor the
-    # overlay, nor excluded on this host; a run narrowed to some skills retires nothing.
-    keep = sorted(state["names"] | exclude) if only is None else None
+    # overlay, nor excluded on this host; a run narrowed to some skills, or one whose configured
+    # overlay is missing, retires nothing.
+    keep = sorted(state["names"] | exclude) if only is None and not state["retire_stopped"] else None
     payload = {"dry_run": state["dry_run"], "clients": host.get("clients", []), "files": files,
-               "global": state["global"], "keep": keep, "overlay": sorted({dest.split("/")[0] for dest in overlay}),
-               "overlay_missing": state["overlay_missing"]}
+               "global": state["global"], "keep": keep}
     result, output = fleet.run_node(name, name == state["fleet_doc"]["source_host"], REMOTE_JS, payload,
                                     TIMEOUT_SECONDS)
     if result is None:
         result = {"status": "failed", "error": output}
+    if state["retire_stopped"] and only is None and result["status"] in ("same", "updated", "would update"):
+        result = {**result, "status": "blocked", "retire_stopped": state["retire_stopped"]}
     if (not state["dry_run"] and overlay and result["status"] in ("updated", "same")
             and "present" in result["clients"].values()):
         record_overlay(state["fleet_dir"], overlay)
