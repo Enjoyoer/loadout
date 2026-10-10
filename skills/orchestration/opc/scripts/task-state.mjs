@@ -328,11 +328,12 @@ function lockToken(path) {
 }
 
 // Creates path holding content, or fails with EEXIST when path exists, like an exclusive write; but the content is
-// written to a private file first and then hard-linked to path, so path never exists empty or partly written.
+// written to a private file first and then hard-linked to path, so path never exists empty or partly written. The link
+// alone decides: a draft Windows briefly reports busy is left behind rather than failing a lock already taken.
 function publish(path, content) {
   const draft = join(dirname(path), `.lock-${randomUUID()}.tmp`);
   writeFileSync(draft, content, { flag: 'wx', mode: 0o600 });
-  try { linkSync(draft, path); } finally { unlinkSync(draft); }
+  try { linkSync(draft, path); } finally { try { unlinkSync(draft); } catch { /* inert leftover */ } }
 }
 
 // Flushes a file's bytes, or a directory's entries, to disk. Windows flushes only a handle opened for writing.
