@@ -3,11 +3,13 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills/orchestration/personal-skills/scripts"
@@ -123,6 +125,23 @@ class RemotePreflightTest(unittest.TestCase):
         self.assertIn("not a real directory", got["error"])
         self.assertEqual(list(elsewhere.iterdir()), [])
 
+    def test_linked_client_home_is_refused(self):
+        elsewhere = self.home / "elsewhere"
+        (elsewhere / "skills").mkdir(parents=True)
+        (self.home / ".claude").rmdir()
+        (self.home / ".claude").symlink_to(elsewhere, target_is_directory=True)
+        got = self.run_remote({"demo/SKILL.md": entry(b"v2")})
+        self.assertEqual(got["status"], "failed", got)
+        self.assertIn("not a real directory: " + str(self.home / ".claude"), got["error"])
+        self.assertEqual(list((elsewhere / "skills").iterdir()), [])
+
+    def test_paths_that_name_one_file_on_another_host_are_refused(self):
+        for files in ({"demo/SKILL.md": entry(b"d"), "Demo/SKILL.md": entry(b"D")}, {"demo\\..\\other/SKILL.md": entry(b"o")}):
+            with self.subTest(files=list(files)):
+                got = self.run_remote(files)
+                self.assertEqual(got["status"], "failed", got)
+                self.assertFalse(self.skill("").exists())
+
     def test_transfer_hash_mismatch(self):
         bad = entry(b"v2")
         bad["sha256"] = "0" * 64
@@ -144,6 +163,14 @@ class RemotePreflightTest(unittest.TestCase):
         self.assertFalse((self.home / ".codex").exists(), "absent client gets no global file")
         record = json.loads((self.home / ".config/loadout/global-sync.json").read_text())
         self.assertEqual(record, {str(target): sha(b"g2")})
+
+    def test_global_target_shared_by_two_clients(self):
+        (self.home / ".codex").mkdir()
+        glob = lambda data: {**entry(data), "targets": {"claude": "~/AGENTS.md", "codex": "~/AGENTS.md"}}
+        for data in (b"g1", b"g2"):
+            got = self.run_remote({}, clients=("codex", "claude"), glob=glob(data))
+            self.assertEqual(got["status"], "updated", got)
+            self.assertEqual((self.home / "AGENTS.md").read_bytes(), data)
 
     def test_retires_a_recorded_skill_and_keeps_unrecorded_or_edited_ones(self):
         files = {"demo/SKILL.md": entry(b"d"), "old/SKILL.md": entry(b"o"), "old/refs/a.md": entry(b"a"),
@@ -295,6 +322,43 @@ class SkillsSyncTest(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("conflict: local edits, nothing written: claude:mine/SKILL.md", out)
         self.assertEqual(target.read_text(), "hand edit")
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions; Windows hosts rely on the profile's owner-only ACL")
+    def test_private_overlay_is_owner_only_on_the_host(self):
+        old = os.umask(0o022)
+        self.addCleanup(os.umask, old)
+        self.overlay("creds/SKILL.md", "v1")
+        self.overlay("creds/refs/token.md", "secret")
+        code, out = self.run_sync("--skills", "creds", "--host", "desktop")
+        self.assertEqual(code, 0, out)
+        for root in (".claude/skills", ".codex/skills"):
+            skill = self.installed("desktop", f"{root}/creds")
+            for path, mode in ((skill, 0o700), (skill / "refs", 0o700), (skill / "SKILL.md", 0o600),
+                               (skill / "refs/token.md", 0o600)):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), mode, path)
+        self.overlay("creds/refs/token.md", "secret v2")
+        code, out = self.run_sync("--skills", "creds", "--host", "desktop")
+        self.assertEqual(code, 0, out)
+        token = self.installed("desktop", ".claude/skills/creds/refs/token.md")
+        self.assertEqual((token.read_text(), stat.S_IMODE(token.stat().st_mode)), ("secret v2", 0o600))
+        # Installed by an earlier sync, before private files were owner-only: the next sync tightens them.
+        token.chmod(0o644)
+        token.parent.chmod(0o755)
+        code, out = self.run_sync("--skills", "creds", "--host", "desktop")
+        self.assertIn("desktop: skills same", out)
+        self.assertEqual((stat.S_IMODE(token.stat().st_mode), stat.S_IMODE(token.parent.stat().st_mode)), (0o600, 0o700))
+
+    def test_overlay_history_is_one_locked_transaction(self):
+        self.overlay("mine/SKILL.md", "v1")
+        history = self.fleet / "skills/.loadout-overlay.json"
+        with mock.patch.object(skills_sync, "OVERLAY_LOCK_SECONDS", 0.2), skills_sync.overlay_lock(self.fleet):
+            with self.assertRaisesRegex(fleet.FleetError, "overlay history stayed locked"):
+                skills_sync.record_overlay(self.fleet, {"mine/SKILL.md": {"sha256": sha(b"v1")}})
+        self.assertFalse(history.exists())
+        skills_sync.record_overlay(self.fleet, {"mine/SKILL.md": {"sha256": sha(b"v1")}})
+        self.assertEqual(json.loads(history.read_text()), {"mine/SKILL.md": [sha(b"v1")]})
+        self.assertEqual(sorted(p.name for p in history.parent.iterdir()),
+                         [".loadout-overlay.json", ".loadout-overlay.json.lock", "mine"])
 
     def full_sync(self, history):
         """An unnarrowed sync, so retirement is on, whose publication history also holds history's paths."""
