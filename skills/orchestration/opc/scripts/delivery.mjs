@@ -72,28 +72,35 @@ export function recoverTests(taskPath) {
     if(stale(t)) t.tests={...t.tests,status:'failed',reason:'interrupted',cleanup:cleanupTests(t.tests)};
   }).tests;
 }
-export async function runTests(taskPath, {argv}) {
+// SIGINT or SIGTERM passes to the test command's group, which gets graceMs to exit. Then the group is killed under the
+// identity rule recovery uses; if that rule forbids the kill, the controller stops waiting and records why.
+export async function runTests(taskPath, {argv, graceMs=10000}) {
   if(!Array.isArray(argv) || !argv.length || argv.some(a=>typeof a !== 'string') || !argv[0]) throw Error('test argv required');
   recoverTests(taskPath);
   const task=readTask(taskPath); idle(task);
   const source=sourceIdentity(task);
   const pidStart=ownStartTime();
   updateTask(taskPath,t=>{idle(t);t.tests={...source,argv,status:'running',pid:process.pid,pid_start:pidStart,started_at:new Date().toISOString()};});
-  let code,child,signal=null;
-  const stop=name=>{signal??=name;if(child?.pid)stopGroup(child.pid,name);};
+  let code,child,childStart=null,signal=null,cleanup='exited after signal',timer,abandon;
+  const escalate=()=>{
+    cleanup=cleanupTests({child_pid:child?.pid,child_start:childStart});
+    if(cleanup!=='group signalled'){child?.unref();abandon?.(null);}
+  };
+  const stop=name=>{if(signal===null)timer=setTimeout(escalate,graceMs);signal??=name;if(child?.pid)stopGroup(child.pid,name);};
   for(const name of ['SIGINT','SIGTERM'])process.on(name,stop);
   try {
     code=await new Promise((resolve,reject)=>{
+      abandon=resolve;
       child=spawn(argv[0],argv.slice(1),{cwd:task.repository.working_directory,env:gitEnvironment(),stdio:'inherit',detached:true});
       child.once('error',reject); child.once('close',code=>resolve(code));
       // The child's own start time, read right after spawn, is what recovery later compares exactly.
-      child.once('spawn',()=>{try { const start=processStartTime(child.pid); updateTask(taskPath,t=>{t.tests.child_pid=child.pid;t.tests.child_start=start;}); } catch(error) { stopGroup(child.pid); reject(error); }});
+      child.once('spawn',()=>{try { childStart=processStartTime(child.pid); updateTask(taskPath,t=>{t.tests.child_pid=child.pid;t.tests.child_start=childStart;}); } catch(error) { stopGroup(child.pid); reject(error); }});
     });
   } catch(error) {
     updateTask(taskPath,t=>{t.tests.status='failed';});
     throw error;
-  } finally { for(const name of ['SIGINT','SIGTERM'])process.off(name,stop); }
-  if(signal)return updateTask(taskPath,t=>{t.tests={...source,argv,status:'blocked',reason:'interrupted',signal,exit_code:code};}).tests;
+  } finally { clearTimeout(timer); for(const name of ['SIGINT','SIGTERM'])process.off(name,stop); }
+  if(signal)return updateTask(taskPath,t=>{t.tests={...source,argv,status:'blocked',reason:'interrupted',signal,exit_code:code,cleanup};}).tests;
   const unchanged=same(source,sourceIdentity(readTask(taskPath)));
   return updateTask(taskPath,t=>{t.tests={...source,argv,status:code===0&&unchanged?'passed':'failed',exit_code:code};}).tests;
 }

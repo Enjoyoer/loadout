@@ -12,6 +12,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - OPC test recovery records the cleanup of a test command whose pid another process now holds as `cleanup incomplete: PID reused` (was `incomplete: PID reused`).
 
 ### Fixed
+- OPC `delivery.mjs test` no longer waits forever after SIGINT or SIGTERM for a test command that ignores the signal: the command's group gets 10 s, then is killed under the same start-time identity rule as recovery, and the `blocked` receipt records the `cleanup` outcome. When that rule forbids the kill, the controller stops waiting and says so.
 - OPC test receipts fingerprint the working-tree bytes of initialized submodules and untracked nested repositories, recursively, instead of one directory entry, so a test that changes a file inside an already-dirty submodule no longer records `passed`, and a receipt is not reused across different dirty submodule contents.
 - OPC task updates flush the new `task.json` before the rename and the rename itself (its directory on POSIX, the renamed file on Windows) before returning, so a cloud launch intent that authorized a session command survives an OS crash or power loss.
 - OPC publishes a task lock already holding its writer's pid, start time and a unique token (a hard link to a finished file), so a writer paused between creating and writing its lock can no longer have it reclaimed as an aged empty lock while a second writer runs; a writer checks its token before replacing `task.json` and releases only a lock that holds it.

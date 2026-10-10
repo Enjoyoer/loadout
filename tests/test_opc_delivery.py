@@ -3,6 +3,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -169,6 +170,39 @@ class OpcDeliveryTest(unittest.TestCase):
                         os.kill(int(path.read_text()), 9)
                     except ProcessLookupError:
                         pass
+
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX signals only')
+    def test_signal_cancellation_kills_a_test_command_that_ignores_it(self):
+        ready = Path(self.task).parent / 'ready'
+        command = ('import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGINT, signal.SIG_IGN); '
+                   'open(' + repr(str(ready)) + ',"w").close(); time.sleep(120)')
+        runner = subprocess.Popen(['node', '--input-type=module', '-e', f"""
+            import {{ runTests }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())};
+            const argv = {json.dumps([sys.executable, '-c', command])};
+            console.log(JSON.stringify(await runTests({json.dumps(self.task)}, {{ argv, graceMs: 300 }})));
+        """], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        child = None
+        try:
+            for _ in range(200):
+                child = (json.loads(Path(self.task).read_text())['tests'] or {}).get('child_pid')
+                if ready.exists() and child:
+                    break
+                time.sleep(.05)
+            self.assertTrue(ready.exists() and child)
+            runner.send_signal(signal.SIGTERM)
+            out, err = runner.communicate(timeout=20)
+            tests = json.loads(out.strip().splitlines()[-1])
+            self.assertEqual((tests['status'], tests['reason'], tests['signal'], tests['cleanup']),
+                             ('blocked', 'interrupted', 'SIGTERM', 'group signalled'), err)
+            self.assertEqual(json.loads(Path(self.task).read_text())['tests']['status'], 'blocked')
+        finally:
+            if runner.poll() is None:
+                runner.kill()
+            if child:
+                try:
+                    os.killpg(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_cloud_intent_precedes_command_and_failed_launch_refuses_retry(self):
         done = run('node', '--input-type=module', '-e', f'''
