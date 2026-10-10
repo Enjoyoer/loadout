@@ -79,6 +79,27 @@ class WizardTest(unittest.TestCase):
         self.assertEqual(env_file.read_text(), "OTHER=keep\n")
         self.assertFalse(self.gh_log.exists())
 
+    def test_env_values_load_back_as_entered(self):
+        env_file = self.project / ".env"
+        done = self.run_wizard(self.project, "\nalpha # beta\n", KEY_STAGE)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        loaded = subprocess.run(["bash", "-c", 'set -a; . ./.env; printf %s "$API_KEY"'], cwd=self.project,
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(loaded.stdout, "alpha # beta")
+        # Enter keeps the stored value on a re-run, and CI gets that same value.
+        stored = env_file.read_text()
+        done = self.run_wizard(self.project, "\n\n", KEY_STAGE)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(env_file.read_text(), stored)
+        sent = "secret set API_KEY --repo octo/project-a\nalpha # beta\n"
+        self.assertEqual(self.gh_log.read_text(), sent * 2)
+        # A value dotenv loaders read differently stops the wizard before either write.
+        done = self.run_wizard(self.project, "\nit's\n", KEY_STAGE)
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertNotIn("it's", done.stdout + done.stderr)
+        self.assertEqual(env_file.read_text(), stored)
+        self.assertEqual(self.gh_log.read_text(), sent * 2)
+
     def test_a_held_env_file_lock_refuses_the_write(self):
         env_file = self.project / ".env"
         env_file.write_text("OTHER=keep\n")
