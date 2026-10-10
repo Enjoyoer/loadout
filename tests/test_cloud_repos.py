@@ -46,6 +46,22 @@ class CloudReposTest(unittest.TestCase):
         self.assertEqual(self.check(["Acme/*"], ["Acme/app", "acme/tools", "Other/app", "Acme/*", "Acme"]),
                          [True, True, False, False, False])
 
+    def test_dangling_cloud_toggle_link_fails_closed(self):
+        toggle, target = Path(self.tmp.name) / "cloud", Path(self.tmp.name) / "toggle-target"
+        try:
+            os.symlink(target, toggle)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are unavailable")
+        read = f"""
+            import {{ readCloudToggle }} from {json.dumps(SCRIPT.as_uri())};
+            const read = path => {{ try {{ return readCloudToggle({{ path }}); }} catch (error) {{ return error.code ?? error.message; }} }};
+            console.log(JSON.stringify([read({json.dumps(str(toggle))}), read({json.dumps(str(target))})]));
+        """
+        # The owner's toggle points at a target that is gone: not the default, which would offload code lanes.
+        self.assertEqual(node(read), ["ENOENT", "default"])
+        target.write_text("off\n")
+        self.assertEqual(node(read), ["off", "off"])
+
     def test_invalid_entries_are_rejected(self):
         for bad in ("*/*", "Acme", "Acme/a*", "a/b/c", "Acme/app;id"):
             with self.subTest(bad=bad), self.assertRaises(AssertionError):

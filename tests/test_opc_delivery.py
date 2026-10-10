@@ -324,11 +324,13 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout.strip()
 
-    def launch(self, task, lane, route, catalog, source=None, record_lane=None, task_class=None, task_id=None, provider=None):
+    def launch(self, task, lane, route, catalog, source=None, record_lane=None, task_class=None, task_id=None, provider=None,
+               extra="{}"):
         """Build the Worker request and brief for `lane` of `task`, bound to that task record, lane, and `task_class`, from
         `route`: a JS expression that may use `recorded`, the routes readTask returns for `source` (default `task`). The
         request uses the record's id unless `task_id` is given, an explicit `provider` when given, and no catalog when
-        `catalog` is None. With record_lane, also try recording `route` there for `task_class`. Returns each result or its
+        `catalog` is None; `extra`, a JS object expression that may use `models`, adds or overrides request builder
+        arguments. With record_lane, also try recording `route` there for `task_class`. Returns each result or its
         error."""
         done = run("node", "--input-type=module", "-e", f"""
             import {{ buildDelegatedBrief }} from {json.dumps((SCRIPTS / 'agent-routing.mjs').as_uri())};
@@ -344,7 +346,7 @@ class OpcDeliveryTest(unittest.TestCase):
               request: attempt(() => buildManagedWorkerRequest({{ taskId: {json.dumps(task_id)} ?? task.id, lane, title: 'Worker',
                 initialPrompt: 'Repair the lane', route, task, taskClass, provider: {json.dumps(provider)} ?? undefined,
                 workspace: {{ workspaceId: 'wks-example', cwd: '/tmp/example-worktree' }},
-                capabilities: {{ enabled: true, status: 'available', modes: [], models }} }}).request),
+                capabilities: {{ enabled: true, status: 'available', modes: [], models }}, ...({extra}) }}).request),
               brief: attempt(() => buildDelegatedBrief({{ role: 'worker', route, reason: 'route reason', brief: 'Repair the lane',
                 task, lane, taskClass }})),
               record: recordLane && attempt(() => recordWorkerRoute(path, {{ lane: recordLane, route, reason: 'route reason', taskClass }})),
@@ -499,6 +501,50 @@ class OpcDeliveryTest(unittest.TestCase):
                           provider="pi/fleet/claude-opus-5-5")
         self.assertEqual((own["request"].get("provider"), own["request"].get("settings")),
                          ("pi/fleet/claude-opus-5-5", {"thinkingOptionId": "xhigh"}), own["request"])
+
+    def test_fixed_role_selector_cannot_build_a_worker_for_a_bound_lane(self):
+        catalog = [{"id": f"fleet/{model}", "label": label, "thinkingOptions": [{"id": "low"}, {"id": "medium"}, {"id": "xhigh"}]}
+                   for model, label in (("claude-opus-5-5", "Opus"), ("gpt-6.1-sol", "Sol"))]
+        self.record_code_lane(catalog)
+        native = "{ enabled: true, status: 'available', modes: [{ id: 'full-access', isUnattended: true }], models }"
+        # A scout role with a GPT provider at low thinking skipped the code lane's route and class checks; with a native
+        # provider it also skipped the owner authorization a native Worker needs.
+        for provider, extra in (("pi/fleet/gpt-6.1-sol", "{ role: 'scout', agentSettings: { thinkingOptionId: 'low' } }"),
+                                ("codex/gpt-6.1-sol", f"{{ role: 'scout', agentSettings: {{ thinkingOptionId: 'low' }}, capabilities: {native} }}")):
+            with self.subTest(provider=provider):
+                built = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, task_class="code",
+                                    provider=provider, extra=extra)
+                self.assertEqual(built["request"], {"error": "buildManagedWorkerRequest builds only Workers (role worker), not scout"})
+
+    def test_caller_labels_cannot_turn_fast_on_for_a_fast_off_route(self):
+        catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
+        self.record_code_lane(catalog)
+        for key, value in (("opc.service-tier", "fast"), ("opc.fast-requested", "true")):
+            with self.subTest(label=key):
+                built = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, task_class="code",
+                                    extra=f"{{ workerLabels: {{ {json.dumps(key)}: {json.dumps(value)} }} }}")
+                self.assertEqual(built["request"], {"error": f"Worker labels cannot set {key}; the Worker's validated route decides it"})
+        described = self.launch(self.task, "code-lane", "recorded['code-lane'].route", catalog, task_class="code",
+                                extra="{ workerLabels: { 'opc.run': 'run-1' } }")
+        self.assertEqual(described["request"]["labels"].get("opc.run"), "run-1", described["request"])
+        self.assertNotIn("opc.service-tier", described["request"]["labels"])
+
+    def test_bound_lane_launches_an_authorized_native_claude_worker(self):
+        opus = {"role": "worker", "source": "owner-explicit", "model": "claude-opus-5-5[1m]", "effort": "xhigh", "fastMode": False}
+        native = ("{ nativeAuthorization: 'owner-explicit', capabilities: { enabled: true, status: 'available', "
+                  "modes: [{ id: 'bypassPermissions', isUnattended: true }], models }%s }")
+        claude = [{"id": "claude-opus-5-5[1m]", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
+        for provider, surface in (("claude/claude-opus-5-5[1m]", ""), (None, ", surface: 'claude'")):
+            with self.subTest(provider=provider):
+                built = self.launch(self.task, "claude-lane", json.dumps(opus), claude, task_class="code", provider=provider,
+                                    extra=native % surface)
+                self.assertEqual((built["request"].get("provider"), built["request"].get("settings")),
+                                 ("claude/claude-opus-5-5[1m]", {"thinkingOptionId": "xhigh", "modeId": "bypassPermissions"}),
+                                 built["request"])
+        # With no native surface named, a Claude route Pi does not serve is refused rather than rebuilt as a Codex request.
+        unserved = self.launch(self.task, "claude-lane", json.dumps(opus), CATALOG, task_class="code", extra=native % "")
+        self.assertEqual(unserved["request"], {"error": "claude-opus-5-5[1m] is a Claude model and never runs as a native Codex "
+                                                        "Worker; an authorized native Claude Code Worker takes the claude surface"})
 
     def test_task_default_code_route_with_non_opus_claude_model_is_refused_without_catalog(self):
         sonnet = {**PRE_730_CODE_ROUTE, "model": "fleet/claude-sonnet-5-5", "effort": "medium"}

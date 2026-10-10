@@ -31,9 +31,10 @@ const text = value => typeof value === 'string' && value.trim().length > 0;
 const minutes = (from, to) => (Date.parse(to) - Date.parse(from)) / 60000;
 
 // Missing means default: on for eligible code-class Workers only. on covers any eligible editing class; all also covers
-// ui (the cloud route is Opus xhigh, which meets the ui rule); off disables.
+// ui (the cloud route is Opus xhigh, which meets the ui rule); off disables. Only a confirmed-absent toggle is default;
+// any other error (unreadable, dangling link) fails closed, so a broken setting never turns offloading on.
 export function readCloudToggle({ path = defaultTogglePath() } = {}) {
-  if (!existsSync(path)) return 'default';
+  try { lstatSync(path); } catch (error) { if (error?.code === 'ENOENT') return 'default'; throw error; }
   const value = readFileSync(path, 'utf8').trim();
   if (!['on', 'off', 'all'].includes(value)) throw Error(`cloud toggle must contain on, off, or all: ${path}`);
   return value;
