@@ -129,7 +129,7 @@ class RemotePreflightTest(unittest.TestCase):
         elsewhere = self.home / "elsewhere"
         (elsewhere / "skills").mkdir(parents=True)
         (self.home / ".claude").rmdir()
-        (self.home / ".claude").symlink_to(elsewhere)
+        (self.home / ".claude").symlink_to(elsewhere, target_is_directory=True)
         got = self.run_remote({"demo/SKILL.md": entry(b"v2")})
         self.assertEqual(got["status"], "failed", got)
         self.assertIn("not a real directory: " + str(self.home / ".claude"), got["error"])
