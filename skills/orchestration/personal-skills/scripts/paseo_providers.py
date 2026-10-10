@@ -3,11 +3,13 @@
 
 Reads <fleet>/paseo-providers.json, merges its pinned provider fields into each
 host's ~/.paseo/config.json (every other provider and host-local field is kept,
-and the file is backed up in place), then reloads the daemon. Write and reload
-are reported separately. A write that may have changed the config leaves a
-reload owed to that host, recorded on the source host until a reload succeeds,
-so the next run retries it and a failed retry is a failure. A reload failure
-after an unchanged write with nothing owed is only a warning.
+a change another writer made during the merge is merged again rather than
+overwritten, and the revision replaced is backed up in place), then reloads the
+daemon. Write and reload are reported separately. A write that may have changed
+the config or a Pi runtime file leaves a reload owed to that host, recorded on
+the source host until a reload succeeds, so the next run retries it and a
+failed retry is a failure. A reload failure after an unchanged write with
+nothing owed is only a warning.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ else:
 import fleet
 
 MERGE_JS = Path(__file__).resolve().parent / "paseo_providers_merge.js"
+RELOAD_JS = Path(__file__).resolve().parent / "paseo_reload_remote.js"
 # Short relay commands carry the program and payload on argv (see run_in_terminal); everything
 # else here uses the stdin envelope from staged_payload.
 BOOT = "eval(require('zlib').gunzipSync(Buffer.from(process.argv[1],'base64')).toString())"
@@ -42,10 +45,9 @@ pack = fleet.pack
 parse_result = fleet.parse_result
 CONFIG_KEYS = {"providers", "env", "hosts", "pi"}
 HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi"}
-AGENT_VARS = ("PASEO_AGENT_ID", "PASEO_AGENT_CWD", "PASEO_HOME")
 RELAY_TITLE = "loadout-provider-sync"
 # argv prefix for every paseo call made here; tests replace it with their fake (production always runs bare "paseo").
-# A paseo command sent over ssh is the host's own and stays the string "paseo reload".
+# An ssh host reloads through RELOAD_JS instead, which runs that host's own paseo.
 PASEO_COMMAND = ("paseo",)
 # Relay timings; the environment overrides exist for tests.
 RELAY_WAIT_SECONDS = float(os.environ.get("LOADOUT_RELAY_WAIT_SECONDS", 120))
@@ -292,7 +294,7 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
     return data
 
 
-def payload(config: dict, host: str, stamp: str, dry_run: bool) -> dict:
+def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Optional[str] = None) -> dict:
     settings = config.get("hosts", {}).get(host, {})
     env = {k: dict(v) for k, v in config.get("env", {}).items()} if settings.get("inherit_env", True) else {}
     for provider, values in settings.get("env", {}).items():
@@ -320,6 +322,8 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool) -> dict:
         "stamp": stamp,
         "dry_run": dry_run,
         "config_path": None,
+        # The host's paseo_home from hosts.json, or None for the default home; an inherited PASEO_HOME never counts.
+        "paseo_home": paseo_home,
     }
 
 
@@ -333,10 +337,14 @@ class Runner:
         offer = host.get("paseo_offer")
         self.offer_path = (fleet_dir / Path(offer).expanduser()) if offer else None
         self.mode = "local" if self.local else host["transport"]
+        self.paseo_home: Optional[str] = host.get("paseo_home")
         self.cleanup_warning: Optional[str] = None
 
     def base_env(self) -> dict:
-        return {k: v for k, v in os.environ.items() if k not in AGENT_VARS}
+        """No inherited daemon target: a local write and reload address this host's own daemon, never the one an
+        agent session or a scratch daemon's PASEO_HOST names, so a reload elsewhere cannot pay this host's debt. The
+        merge finds the host's paseo_home in its payload."""
+        return fleet.daemon_env()
 
     def relay_env(self) -> dict:
         if self.offer_path is None or not self.offer_path.is_file():
@@ -390,7 +398,11 @@ class Runner:
                 self.cleanup_warning = str(error)
 
     def run_in_terminal(self, terminal: str, program: str, data: str) -> str:
-        self.wait_for_prompt(terminal)
+        # Input sent before the shell is up is lost, so nothing at all is sent until a prompt shows; the caller then
+        # cleans up the workspace and this host's write fails.
+        if not self.wait_for_prompt(terminal):
+            raise RuntimeError(f"relay terminal showed no shell prompt within {int(RELAY_READY_SECONDS)}s "
+                               "(readiness timeout); nothing was sent")
         # Keep the payload out of shell history. This is its own command because zsh with
         # SHARE_HISTORY saves a line as it is read, before a same-line unset runs.
         self.terminal_command(terminal, "unset HISTFILE", require_success=True)
@@ -473,15 +485,20 @@ class Runner:
         raise RuntimeError(f"relay workspace cleanup failed: {', '.join(left)}")
 
     def reload(self) -> str:
+        """Reload the daemon the merge wrote for: the one the host's paseo_home names, or the default home's, or the
+        one its pairing offer names."""
         if self.mode == "local":
             command = [*PASEO_COMMAND, "reload"]
-            env = self.base_env()
+            env = fleet.daemon_env(self.paseo_home)
         elif self.offer_path is not None:
             command = [*PASEO_COMMAND, "reload"]
             env = self.relay_env()
         else:
-            command = [*fleet.SSH_COMMAND, "-n", *fleet.SSH_OPTIONS, "--", self.name, "paseo reload"]
-            env = self.base_env()
+            result, output = fleet.run_node(self.name, False, RELOAD_JS, {}, RELOAD_TIMEOUT_SECONDS, self.paseo_home)
+            error = output if result is None else result["error"]
+            if error:
+                raise RuntimeError(error.strip()[-300:] + "; the write above still stands")
+            return "ok"
         try:
             done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=RELOAD_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
@@ -547,7 +564,8 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
                 return "FAILED"
             mine, owed = op, owed_since(before)
         try:
-            output = runner.write(program, pack(json.dumps(payload(config, runner.name, stamp, dry_run)).encode()))
+            data = payload(config, runner.name, stamp, dry_run, runner.paseo_home)
+            output = runner.write(program, pack(json.dumps(data).encode()))
             result = parse_result(output)
         except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
             write = "failed, though it may have landed"
@@ -609,11 +627,18 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
         return "FAILED"
 
 
+def merge_program() -> str:
+    """The merge program packed without its whole-line comments and indentation, so a relay still sends a typical
+    payload inline (RELAY_INLINE_LIMIT). The program holds no multiline string or template literal to change."""
+    lines = MERGE_JS.read_text(encoding="utf-8").splitlines()
+    return pack("\n".join(line.strip() for line in lines if not line.lstrip().startswith("//")).encode())
+
+
 def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool) -> dict:
     """Load the provider config and the merge program once per sync."""
     return {"fleet_doc": fleet_doc, "fleet_dir": fleet_dir, "dry_run": dry_run,
             "config": load_config(fleet_dir / "paseo-providers.json", fleet_doc),
-            "program": pack(MERGE_JS.read_bytes()), "stamp": datetime.now().strftime("%Y%m%d-%H%M%S")}
+            "program": merge_program(), "stamp": datetime.now().strftime("%Y%m%d-%H%M%S")}
 
 
 def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:

@@ -1,5 +1,5 @@
 """Stage or apply the pinned Pi agent home. No credential contents are written."""
-import argparse, copy, csv, io, json, os, re, shutil, subprocess, sys, tomllib
+import argparse, copy, csv, io, json, os, re, shutil, stat, subprocess, sys, tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -128,9 +128,21 @@ def build(spec, root):
     if "gmail" in spec: mcp["mcpServers"]["gmail"] = gmail_server(spec["gmail"])
     return {"runtime.json": spec, "agent/models.json": model, "agent/settings.json": settings, "agent/mcp.json": mcp}
 
+def link_like(path):
+    """Whether path is a symlink or, on Windows, any reparse point, a junction included (st_file_attributes, so it
+    works on Python 3.11 too); a missing path is not."""
+    try:
+        st = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def safe_target(root, target):
+    """Refuse a target that is, or sits under, a symlink or reparse point up to and including root; configure and
+    deploy call it for every path before any write."""
     for part in (target, *target.parents):
-        if part.is_symlink() or getattr(part, "is_junction", lambda: False)():
+        if link_like(part):
             raise ValueError("symlink or junction runtime target")
         if part == root: break
 
@@ -150,9 +162,15 @@ def secure_windows_user(root):
                    capture_output=True, text=True, check=True)
 
 
-def configure(spec, root, dry_run=False):
+def runtime_contents(spec, root):
+    """The exact bytes configure writes, by runtime-relative path."""
     contents = {name: (json.dumps(value, indent=2) + "\n").encode() for name, value in build(spec, root).items()}
     contents.update({name: (Path(__file__).parent / name).read_bytes() for name in FILES})
+    return contents
+
+
+def configure(spec, root, dry_run=False):
+    contents = runtime_contents(spec, root)
     for name in contents: safe_target(root, root / name)
     changed = [name for name, data in contents.items() if not (root / name).exists() or (root / name).read_bytes() != data]
     # Back up all affected files before the first write. Caller provides a new root for install.

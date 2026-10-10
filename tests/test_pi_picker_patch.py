@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / 'skills/orchestration/personal-skills/scripts/pi/picker-patch.py'
 spec = importlib.util.spec_from_file_location('picker_patch', SOURCE)
@@ -86,6 +87,27 @@ if(JSON.stringify([definitions,snapshots])!==before)throw Error('provider input 
             with self.assertRaisesRegex(ValueError,'obsolete bundle'):picker.run(root,'rollback')
             picker.run(root,'reapply');picker.run(root,'rollback')
             self.assertEqual(p.read_text(),BUNDLE+'// app update\n')
+
+    def test_a_write_cut_off_between_generations_still_reapplies_and_rolls_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);p=root/'index-original.js';p.write_text(BUNDLE)
+            picker.run(root,'apply')
+            publish=picker.publish
+            def cut_off(target,data):
+                if target==p.resolve():raise KeyboardInterrupt  # run() resolves the root (macOS /var is a symlink)
+                publish(target,data)
+            migration="localStorage.setItem('example', 'pi')"
+            # The new generation's state lands; the bundle still holds the previous generation's patch.
+            with patch.object(picker,'publish',cut_off),self.assertRaises(KeyboardInterrupt):
+                picker.run(root,'apply',migration)
+            picker.run(root,'reapply',migration)
+            self.assertIn(migration,p.read_text())
+            # A reviewed new script, cut off the same way: the bundle keeps the previous patch, which rollback recognizes.
+            with patch.object(picker,'publish',cut_off),self.assertRaises(KeyboardInterrupt):
+                picker.run(root,'apply',migration+';',picker.digest((migration+';').encode()))
+            picker.run(root,'rollback',None)
+            self.assertEqual(p.read_text(),BUNDLE)
+            self.assertEqual(sorted(x.name for x in root.iterdir() if 'loadout-next' in x.name),[])
 
     def test_preference_bootstrap_upgrade_preserves_original_rollback(self):
         with tempfile.TemporaryDirectory() as tmp:

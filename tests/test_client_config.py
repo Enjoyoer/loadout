@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills/orchestration/personal-skills/scripts"
@@ -178,6 +179,92 @@ class ClientConfigTest(unittest.TestCase):
         code, out = self.run_sync("--host", "devbox")
         self.assertEqual(code, 2)
         self.assertIn("does not have the client-config sync scope", out)
+
+
+class LocalMergeTest(unittest.TestCase):
+    """The host program run here, as on the source host, against a temporary home."""
+
+    def setUp(self):
+        if not shutil.which("node"):
+            self.skipTest("node is required")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.codex = Path(tmp.name) / ".codex"
+        self.codex.mkdir()
+        env = mock.patch.dict(os.environ, {"HOME": tmp.name, "USERPROFILE": tmp.name, "CODEX_HOME": str(self.codex)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def merge(self, text, top=None, sections=None, stamp="20261010-000000"):
+        (self.codex / "config.toml").write_bytes(text.encode())
+        payload = {"codex": {"top": top or {}, "sections": sections or {}, "reportOnly": []},
+                   "claude": {"settings": {}, "env": {}, "token_env": None, "minVersion": None},
+                   "token": None, "stamp": stamp, "dry_run": False, "update_claude": False}
+        result, output = fleet.run_node("here", True, client_config.MERGE_JS, payload, 60)
+        self.assertIsNotNone(result, output)
+        return result, (self.codex / "config.toml").read_bytes().decode()
+
+    def test_backups_from_one_stamp_never_overwrite_each_other(self):
+        self.merge('model = "first"\n', {"model": "second"})
+        self.merge('model = "second"\n', {"model": "third"})
+        backups = sorted(p.read_text() for p in self.codex.glob("config.toml.bak-loadout-20261010-000000-*"))
+        self.assertEqual(backups, ['model = "first"\n', 'model = "second"\n'])
+
+    def test_headers_with_comments_array_tables_and_multiline_strings_keep_their_scope(self):
+        text = "\n".join(["# host settings", 'model = "m"', "", "[[skills.config]]", 'path = "/x"', "enabled = true", "",
+                          "[model_providers.example_router] # host-local comment", 'base_url = "https://old.example.test"',
+                          "", "[notes]", 'instructions = """', "[model_providers.example_router]", "enabled = false", '"""', ""])
+        result, after = self.merge(text, {"enabled": True},
+                                   {"model_providers.example_router": {"base_url": "https://router.example.test/v1"}})
+        self.assertIsNone(result["error"], result)
+        lines = text.split("\n")
+        self.assertEqual(after.split("\n"), [*lines[:2], "enabled = true", *lines[2:8],
+                                              'base_url = "https://router.example.test/v1"', *lines[9:]])
+        # A dotted key already defines part of the section, so the merge cannot place its keys safely.
+        dotted = 'model_providers.example_router.base_url = "https://old.example.test"\n'
+        result, after = self.merge(dotted, sections={"model_providers.example_router": {"wire_api": "responses"}})
+        self.assertEqual(result["error"], "refused, nothing written: config.toml line 1 has a key that defines part of a "
+                                          "managed section; unsupported TOML, edit by hand")
+        self.assertEqual(after, dotted)
+        result, after = self.merge("[model_providers.example_router\n", {"model": "m"})
+        self.assertEqual(result["error"], "refused, nothing written: config.toml line 1 is TOML the merge cannot read "
+                                          "safely; unsupported TOML, edit by hand")
+        self.assertEqual(after, "[model_providers.example_router\n")
+
+    def test_an_inline_table_in_a_managed_table_is_refused_without_writing(self):
+        managed = {"features": {"fast_mode": True},
+                   "model_providers.example_router": {"base_url": "https://router.example.test/v1", "wire_api": "responses"}}
+        text = '[features]\nfast_mode = { enabled = true }\n'
+        result, after = self.merge(text, sections=managed)
+        self.assertEqual(result["error"], "refused, nothing written: config.toml line 2 has an inline table at a managed "
+                                          "key; unsupported TOML, edit by hand")
+        self.assertEqual(after, text)
+        self.assertEqual(list(self.codex.glob("config.toml.*")), [])
+        # An unmanaged inline table in a managed table, and a deeper table under a managed section, are left alone.
+        text = ('[features]\nmulti_agent_v2 = { enabled = true, max_concurrent_threads_per_session = 8 }\n\n'
+                '[model_providers.example_router]\nbase_url = "https://old.example.test"\n\n'
+                '[model_providers.example_router.http_headers]\nX-Example-Key = "example"\n')
+        result, after = self.merge(text, sections=managed)
+        self.assertIsNone(result["error"], result)
+        self.assertEqual(after, '[features]\nmulti_agent_v2 = { enabled = true, max_concurrent_threads_per_session = 8 }\n'
+                                'fast_mode = true\n\n[model_providers.example_router]\n'
+                                'base_url = "https://router.example.test/v1"\nwire_api = "responses"\n\n'
+                                '[model_providers.example_router.http_headers]\nX-Example-Key = "example"\n')
+
+    def test_a_change_between_the_read_and_the_rename_is_merged_not_overwritten(self):
+        hook = self.codex.parent / "edit_once.py"
+        hook.write_text("import pathlib, sys\n"
+                        "target = pathlib.Path(sys.argv[1]); marker = target.with_name('edited')\n"
+                        "if not marker.exists():\n"
+                        "    marker.touch(); target.write_bytes(target.read_bytes() + b'other = \"kept\"\\n')\n")
+        with mock.patch.dict(os.environ, {"LOADOUT_TEST_BEFORE_RENAME": json.dumps([sys.executable, str(hook)])}):
+            result, after = self.merge('model = "first"\n', {"model": "second"})
+        self.assertIsNone(result["error"], result)
+        self.assertEqual(after, 'model = "second"\nother = "kept"\n')
+        # The backup is the revision the write replaced, the other edit included; the first attempt's is gone.
+        self.assertEqual([p.read_bytes() for p in self.codex.glob("config.toml.bak-loadout-*")],
+                         [b'model = "first"\nother = "kept"\n'])
+        self.assertEqual(list(self.codex.glob("config.toml.loadout-tmp-*")), [])
 
 
 class VersionAndCatalogTest(unittest.TestCase):
