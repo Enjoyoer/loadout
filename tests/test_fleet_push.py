@@ -122,6 +122,49 @@ class FleetPushTest(unittest.TestCase):
         self.assertIn("desktop: fleet updated (~1)", out)
         self.assertEqual((self.target("desktop") / "global/AGENTS.md").read_text(), "# Global v2\n")
 
+    def test_planted_temp_symlink_is_refused_and_never_written_through(self):
+        self.push()
+        unrelated = self.root / "unrelated.txt"
+        unrelated.write_text("precious")
+        # The record's old fixed temp name, and a changed file's, each a link to a file outside the fleet.
+        for name in (fleet.SYNC_RECORD + ".loadout-tmp", "global/AGENTS.md.loadout-tmp"):
+            with self.subTest(name=name):
+                link = self.target("desktop") / name
+                link.symlink_to(unrelated)
+                (self.source / "global/AGENTS.md").write_text(f"# Global {name}\n")
+                code, out = self.push("--host", "desktop")
+                self.assertEqual(code, 1, out)
+                self.assertIn(f"desktop: fleet FAILED: symlink in fleet directory: {name}", out)
+                self.assertEqual(unrelated.read_text(), "precious")
+                self.assertEqual((self.target("desktop") / "global/AGENTS.md").read_text(), "# Global\n")
+                link.unlink()
+
+    def run_local(self, preload=None):
+        """Push the source to desktop's copy by running the host program here, optionally with a preload hook."""
+        payload = {"dry_run": False, "target": str(self.target("desktop")), "files": fleet.fleet_files(self.source)}
+        raw, digest = fleet.envelope(fleet.PUSH_JS, payload)
+        node = ["node", "-r", str(preload)] if preload else ["node"]
+        done = subprocess.run([*node, "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True)
+        return fleet.parse_result(done.stdout)
+
+    def test_run_cut_off_part_way_recognizes_its_own_writes(self):
+        self.assertEqual(self.run_local()["status"], "updated")
+        (self.source / "global/AGENTS.md").write_text("# Global B\n")
+        (self.source / "hosts.json").write_text(json.dumps(HOSTS))
+        # The process dies after writing global/AGENTS.md and before writing hosts.json.
+        hook = self.root / "die-before-hosts.js"
+        hook.write_text('const fs = require("fs"), rename = fs.renameSync;\n'
+                        'fs.renameSync = (from, to) => { if (String(to).endsWith("hosts.json")) process.exit(7); return rename(from, to); };\n')
+        self.assertIsNone(self.run_local(hook))
+        self.assertEqual((self.target("desktop") / "global/AGENTS.md").read_text(), "# Global B\n")
+        (self.source / "global/AGENTS.md").write_text("# Global C\n")
+        got = self.run_local()
+        self.assertEqual((got["status"], sorted(got["changed"]), got["conflicts"]),
+                         ("updated", ["global/AGENTS.md", "hosts.json"], []))
+        for rel in ("global/AGENTS.md", "hosts.json"):
+            self.assertEqual((self.target("desktop") / rel).read_bytes(), (self.source / rel).read_bytes())
+        self.assertNotIn("pending", json.loads((self.target("desktop") / fleet.SYNC_RECORD).read_text()))
+
     def test_existing_copy_without_record(self):
         shutil.copytree(self.source, self.target("desktop"))
         code, out = self.push("--host", "desktop")
