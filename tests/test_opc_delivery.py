@@ -3,6 +3,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -169,6 +170,39 @@ class OpcDeliveryTest(unittest.TestCase):
                         os.kill(int(path.read_text()), 9)
                     except ProcessLookupError:
                         pass
+
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX signals only')
+    def test_signal_cancellation_kills_a_test_command_that_ignores_it(self):
+        ready = Path(self.task).parent / 'ready'
+        command = ('import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGINT, signal.SIG_IGN); '
+                   'open(' + repr(str(ready)) + ',"w").close(); time.sleep(120)')
+        runner = subprocess.Popen(['node', '--input-type=module', '-e', f"""
+            import {{ runTests }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())};
+            const argv = {json.dumps([sys.executable, '-c', command])};
+            console.log(JSON.stringify(await runTests({json.dumps(self.task)}, {{ argv, graceMs: 300 }})));
+        """], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        child = None
+        try:
+            for _ in range(200):
+                child = (json.loads(Path(self.task).read_text())['tests'] or {}).get('child_pid')
+                if ready.exists() and child:
+                    break
+                time.sleep(.05)
+            self.assertTrue(ready.exists() and child)
+            runner.send_signal(signal.SIGTERM)
+            out, err = runner.communicate(timeout=20)
+            tests = json.loads(out.strip().splitlines()[-1])
+            self.assertEqual((tests['status'], tests['reason'], tests['signal'], tests['cleanup']),
+                             ('blocked', 'interrupted', 'SIGTERM', 'group signalled'), err)
+            self.assertEqual(json.loads(Path(self.task).read_text())['tests']['status'], 'blocked')
+        finally:
+            if runner.poll() is None:
+                runner.kill()
+            if child:
+                try:
+                    os.killpg(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_cloud_intent_precedes_command_and_failed_launch_refuses_retry(self):
         done = run('node', '--input-type=module', '-e', f'''
@@ -612,6 +646,108 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(task["cloud"]["fallback"]["route"], result["route"])
         self.assertEqual(task["routes"]["fix-auth-fallback"]["route"], result["route"])
         self.assertEqual(task["routes"]["fix-auth"]["route"], cloud_route)
+
+    def test_changes_request_from_another_reviewer_blocks_recorded_approval(self):
+        # Reviewer alice's approval is recorded and stays her newest review; bob then requests changes on the same head.
+        runs = Path(self.task).parent.parent / "review-run"
+        runs.mkdir()
+        created = run("node", "--input-type=module", "-e", f"""
+            import {{ createTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            console.log(createTask({{ workingDirectory: {json.dumps(str(self.repo))}, runDirectory: {json.dumps(str(runs))}, owner: 'test',
+              baseRef: 'main', delivery: 'pr', browserReview: true }}).taskPath);
+        """)
+        self.assertEqual(created.returncode, 0, created.stderr)
+        task_path = created.stdout.strip()
+        tested = run("node", str(SCRIPTS / "delivery.mjs"), "test", task_path, sys.executable, "-c", "")
+        self.assertEqual(tested.returncode, 0, tested.stderr)
+        head = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        task = json.loads(Path(task_path).read_text())
+        task["reviewer"] = {"rounds": [{
+            "id": "00000000-0000-4000-8000-000000000001", "pr": 7, "head": head, "role": "reviewer", "catalog_label": "Web Pro",
+            "catalog_model_id": "gpt-pro", "provider": "codex/gpt-pro", "status": "approved", "agent_id": "agent-review",
+            "review_id": 1, "reviewer_login": "alice", "review_url": "https://github.com/example/app/pull/7#pullrequestreview-1"}]}
+        Path(task_path).write_text(json.dumps(task))
+        done = run("node", "--input-type=module", "-e", f"""
+            import {{ verifyDelivery }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())};
+            const head = {json.dumps(head)}, side = {{ sha: head, ref: 'main', repo: {{ full_name: 'example/app' }} }};
+            const pr = {{ number: 7, head: side, base: side, user: {{ login: 'author' }}, state: 'open', merged: false, draft: false,
+              html_url: 'https://github.com/example/app/pull/7', merge_commit_sha: null }};
+            const approval = {{ id: 1, state: 'APPROVED', commit_id: head, user: {{ login: 'alice' }} }};
+            const changes = {{ id: 2, state: 'CHANGES_REQUESTED', commit_id: head, user: {{ login: 'bob' }} }};
+            const verify = reviews => verifyDelivery({json.dumps(task_path)}, {{ pr: 7, query: args => args[1].endsWith('/reviews?per_page=100') ? reviews : pr }});
+            console.log(JSON.stringify([verify([approval]), verify([approval, changes])].map(({{ status, blockers }}) => [status, blockers])));
+        """)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        approved, requested = json.loads(done.stdout)
+        self.assertEqual(approved, ["verified", []])
+        self.assertEqual(requested[0], "blocked")
+        self.assertIn("current exact-head non-author CHANGES_REQUESTED review blocks delivery", requested[1])
+
+    def test_lock_of_writer_paused_in_acquisition_is_not_reclaimed(self):
+        # Writer A pauses for over ten seconds at the first moment its lock exists, between an exclusive create and the
+        # holder bytes where the lock is still written that way; writer B then tries a second cloud launch.
+        cloud = json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())
+        task, lane = json.dumps(self.task), "{ branch: 'opc/example', repo: 'example/app' }"
+        other = (f"import {{ beginCloudLaunch }} from {cloud};"
+                 f"try {{ beginCloudLaunch({task}, {lane}); console.log('launched'); }} catch (error) {{ console.log(error.message); }}")
+        done = run("node", "--input-type=module", "-e", f"""
+            import fs from 'node:fs';
+            import {{ spawnSync }} from 'node:child_process';
+            import {{ syncBuiltinESMExports }} from 'node:module';
+            const lock = {task} + '.lock';
+            let other = null;
+            const pause = () => {{
+              if (other !== null || !fs.existsSync(lock)) return;
+              const old = new Date(Date.now() - 11000);
+              fs.utimesSync(lock, old, old);
+              other = spawnSync(process.execPath, ['--input-type=module', '-e', {json.dumps(other)}], {{ encoding: 'utf8' }}).stdout.trim();
+            }};
+            const {{ writeFileSync, linkSync }} = fs;
+            fs.writeFileSync = (path, data, options) => {{
+              if (options?.flag !== 'wx') return writeFileSync(path, data, options);
+              const fd = fs.openSync(path, 'wx', options.mode);
+              try {{ pause(); fs.writeSync(fd, data); }} finally {{ fs.closeSync(fd); }}
+            }};
+            fs.linkSync = (from, to) => {{ linkSync(from, to); pause(); }};
+            syncBuiltinESMExports();
+            const {{ beginCloudLaunch }} = await import({cloud});
+            let mine;
+            try {{ mine = beginCloudLaunch({task}, {lane}).status; }} catch (error) {{ mine = error.message; }}
+            console.log(JSON.stringify({{ other, mine }}));
+        """)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        result = json.loads(done.stdout)
+        self.assertIn("task lock busy", result["other"])
+        self.assertEqual(result["mine"], "launching")
+        cloud_record = json.loads(Path(self.task).read_text())["cloud"]
+        self.assertEqual((cloud_record["status"], cloud_record["attempt"]), ("launching", 1))
+        self.assertEqual(sorted(p.name for p in Path(self.task).parent.iterdir()), ["task.json"])
+
+    def test_source_fingerprint_covers_submodule_working_tree_bytes(self):
+        # The superproject sees a dirty submodule as one gitlink and one "-dirty" diff line, whatever its dirty bytes.
+        def git(cwd, *args):
+            subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+                           check=True, capture_output=True)
+        sub = self.repo / "sub"
+        sub.mkdir()
+        git(sub, "init", "-q")
+        (sub / "file.txt").write_text("committed\n")
+        git(sub, "add", "file.txt")
+        git(sub, "commit", "-q", "-m", "sub")
+        git(self.repo, "add", "sub")
+        git(self.repo, "commit", "-q", "-m", "gitlink")
+        fingerprint = f"""
+            import {{ sourceIdentity }} from {json.dumps((SCRIPTS / 'delivery.mjs').as_uri())};
+            import {{ readTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+            console.log(sourceIdentity(readTask({json.dumps(self.task)})).fingerprint);
+        """
+        prints = []
+        for content in ("dirty A\n", "dirty B\n"):
+            (sub / "file.txt").write_text(content)
+            done = run("node", "--input-type=module", "-e", fingerprint)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            prints.append(done.stdout.strip())
+        self.assertNotEqual(prints[0], prints[1])
 
     def test_empty_lock_is_stale_only_after_ten_seconds(self):
         lock = Path(self.task + ".lock")

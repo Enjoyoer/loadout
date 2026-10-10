@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertRepository, git, gitEnvironment, ownStartTime, processIdentity, processStartTime, readTask, updateTask } from './task-state.mjs';
@@ -9,20 +9,30 @@ import { requireReviewDelivery } from './web-reviewer.mjs';
 // Receipts are convenient bookkeeping, not a security boundary against trusted Workers.
 export function sourceIdentity(task) {
   assertRepository(task);
-  const cwd = task.repository.working_directory;
+  const cwd = task.repository.working_directory, head = git(cwd, 'rev-parse', 'HEAD');
+  const hash = createHash('sha256');
+  hashWorktree(hash, cwd, head);
+  return {head, fingerprint:hash.digest('hex')};
+}
+// A repository lists a submodule, or an untracked nested repository, as one directory entry and its dirty state as one
+// "-dirty" line, so an initialized one is hashed the same way in turn: its head, its diff, and its working-tree bytes.
+function hashWorktree(hash, cwd, head) {
   const paths = execFileSync('git', ['-C', cwd, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], {env:gitEnvironment()})
     .toString().split('\0').filter(Boolean);
-  const hash = createHash('sha256');
-  hash.update(git(cwd, 'diff', '--binary', 'HEAD'));
+  hash.update(head ? git(cwd, 'diff', '--binary', head) : '<no head>');
   for (const path of [...new Set(paths)].sort()) {
     hash.update(path + '\0');
     try {
       const file = join(cwd, path), stat = lstatSync(file);
       hash.update(String(stat.mode) + '\0');
-      hash.update(stat.isSymbolicLink() ? readlinkSync(file) : stat.isFile() ? readFileSync(file) : '<directory>');
+      if (stat.isDirectory() && existsSync(join(file, '.git'))) {
+        let nested = null;
+        try { nested = git(file, 'rev-parse', '--verify', '-q', 'HEAD'); } catch { /* a repository with no commit yet */ }
+        hash.update(`<repository ${nested}>\0`);
+        hashWorktree(hash, file, nested);
+      } else hash.update(stat.isSymbolicLink() ? readlinkSync(file) : stat.isFile() ? readFileSync(file) : '<directory>');
     } catch (error) { if(error.code !== 'ENOENT') throw error; hash.update('<deleted>'); }
   }
-  return {head:git(cwd, 'rev-parse', 'HEAD'), fingerprint:hash.digest('hex')};
 }
 const same = (a,b) => a?.head === b.head && a?.fingerprint === b.fingerprint;
 function idle(task) {
@@ -62,28 +72,35 @@ export function recoverTests(taskPath) {
     if(stale(t)) t.tests={...t.tests,status:'failed',reason:'interrupted',cleanup:cleanupTests(t.tests)};
   }).tests;
 }
-export async function runTests(taskPath, {argv}) {
+// SIGINT or SIGTERM passes to the test command's group, which gets graceMs to exit. Then the group is killed under the
+// identity rule recovery uses; if that rule forbids the kill, the controller stops waiting and records why.
+export async function runTests(taskPath, {argv, graceMs=10000}) {
   if(!Array.isArray(argv) || !argv.length || argv.some(a=>typeof a !== 'string') || !argv[0]) throw Error('test argv required');
   recoverTests(taskPath);
   const task=readTask(taskPath); idle(task);
   const source=sourceIdentity(task);
   const pidStart=ownStartTime();
   updateTask(taskPath,t=>{idle(t);t.tests={...source,argv,status:'running',pid:process.pid,pid_start:pidStart,started_at:new Date().toISOString()};});
-  let code,child,signal=null;
-  const stop=name=>{signal??=name;if(child?.pid)stopGroup(child.pid,name);};
+  let code,child,childStart=null,signal=null,cleanup='exited after signal',timer,abandon;
+  const escalate=()=>{
+    cleanup=cleanupTests({child_pid:child?.pid,child_start:childStart});
+    if(cleanup!=='group signalled'){child?.unref();abandon?.(null);}
+  };
+  const stop=name=>{if(signal===null)timer=setTimeout(escalate,graceMs);signal??=name;if(child?.pid)stopGroup(child.pid,name);};
   for(const name of ['SIGINT','SIGTERM'])process.on(name,stop);
   try {
     code=await new Promise((resolve,reject)=>{
+      abandon=resolve;
       child=spawn(argv[0],argv.slice(1),{cwd:task.repository.working_directory,env:gitEnvironment(),stdio:'inherit',detached:true});
       child.once('error',reject); child.once('close',code=>resolve(code));
       // The child's own start time, read right after spawn, is what recovery later compares exactly.
-      child.once('spawn',()=>{try { const start=processStartTime(child.pid); updateTask(taskPath,t=>{t.tests.child_pid=child.pid;t.tests.child_start=start;}); } catch(error) { stopGroup(child.pid); reject(error); }});
+      child.once('spawn',()=>{try { childStart=processStartTime(child.pid); updateTask(taskPath,t=>{t.tests.child_pid=child.pid;t.tests.child_start=childStart;}); } catch(error) { stopGroup(child.pid); reject(error); }});
     });
   } catch(error) {
     updateTask(taskPath,t=>{t.tests.status='failed';});
     throw error;
-  } finally { for(const name of ['SIGINT','SIGTERM'])process.off(name,stop); }
-  if(signal)return updateTask(taskPath,t=>{t.tests={...source,argv,status:'blocked',reason:'interrupted',signal,exit_code:code};}).tests;
+  } finally { clearTimeout(timer); for(const name of ['SIGINT','SIGTERM'])process.off(name,stop); }
+  if(signal)return updateTask(taskPath,t=>{t.tests={...source,argv,status:'blocked',reason:'interrupted',signal,exit_code:code,cleanup};}).tests;
   const unchanged=same(source,sourceIdentity(readTask(taskPath)));
   return updateTask(taskPath,t=>{t.tests={...source,argv,status:code===0&&unchanged?'passed':'failed',exit_code:code};}).tests;
 }
