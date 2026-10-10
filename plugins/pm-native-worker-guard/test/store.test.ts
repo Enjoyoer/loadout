@@ -52,27 +52,27 @@ it("a cold first read that finishes after a newer write does not replace the cac
   const file = await tempStatePath();
   await new StateStore(file).put(record("c0"), 10);
   const store = new StateStore(file);
-  const realReadFile = fs.promises.readFile;
-  let release = () => {};
-  const held = new Promise<void>((resolve) => { release = resolve; });
-  let reads = 0;
-  // The store's first read gets the old file, but returns it only once released.
-  mock.method(fs.promises, "readFile", async (...args: Parameters<typeof realReadFile>) => {
-    const text = await realReadFile(...args);
-    if (reads++ === 0) await held;
-    return text;
-  });
+  // Each read takes the file as it is when called, and returns it only when released.
+  const held: Array<() => void> = [];
+  mock.method(fs.promises, "readFile", ((filePath: string) => {
+    const text = fs.readFileSync(filePath, "utf8");
+    return new Promise<string>((resolve) => held.push(() => resolve(text)));
+  }) as typeof fs.promises.readFile);
   syncBuiltinESMExports();
   try {
     const first = store.get("c0");
     const write = store.put(record("c1"), 10);
-    // Room for a separate read and the write to land before the first read finishes.
-    await Promise.race([write, new Promise((resolve) => setTimeout(resolve, 200))]);
-    release();
+    // Every read either call starts is issued within the microtasks before this immediate.
+    await new Promise((resolve) => setImmediate(resolve));
+    // A read the write started on its own finishes first, and the write lands, before the first read returns.
+    const own = held.splice(1);
+    for (const release of own) release();
+    if (own.length > 0) await write;
+    for (const release of held.splice(0)) release();
     await Promise.all([first, write]);
     assert.equal((await store.get("c1"))?.childId, "c1");
     await store.put(record("c2"), 10);
-    const raw = JSON.parse(await readFile(file, "utf8")) as { handled: HandledRecord[] };
+    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as { handled: HandledRecord[] };
     assert.deepEqual(raw.handled.map((entry) => entry.childId), ["c0", "c1", "c2"]);
   } finally {
     mock.restoreAll();
