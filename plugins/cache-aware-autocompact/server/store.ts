@@ -15,6 +15,7 @@ export type StateEntry = {
   reason: string;
 };
 type State = { version: 1; entries: StateEntry[]; turns?: Checkpoint[] };
+export type WriteJson = typeof writeJsonAtomically;
 
 function home(env: NodeJS.ProcessEnv = process.env): string {
   return env.PASEO_HOME?.trim() || path.join(env.HOME ?? "/tmp", ".paseo");
@@ -38,12 +39,14 @@ function laneFor(filePath: string): Lane {
 
 export class StateStore {
   private readonly filePath: string;
+  private readonly writeJson: WriteJson;
   private readonly lane: Lane;
   private readonly generation: number;
   private writes: Promise<void> = Promise.resolve();
   private closed = false;
-  constructor(filePath = path.join(home(), "plugin-state", "cache-aware-autocompact", "state.json")) {
+  constructor(filePath = path.join(home(), "plugin-state", "cache-aware-autocompact", "state.json"), writeJson = writeJsonAtomically) {
     this.filePath = filePath;
+    this.writeJson = writeJson;
     this.lane = laneFor(filePath);
     this.generation = ++this.lane.generation;
   }
@@ -63,7 +66,7 @@ export class StateStore {
   }
   private async write(state: State): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeJsonAtomically(this.filePath, state, { mode: 0o600 });
+    await this.writeJson(this.filePath, state, { mode: 0o600 });
   }
   // Every read-modify-write runs inside the file's queue. A failed write still rejects
   // to its caller, but the queue recovers so later writes are not poisoned. A closed or
