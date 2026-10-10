@@ -31,6 +31,7 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1, options:
     beforeList: async (_call: number) => {},
     beforeFetch: async (_call: number) => {},
     active: [] as { projectId: string }[],
+    pageInfo: { nextCursor: null } as { nextCursor: string | null; hasMore?: boolean },
     failDelete: false,
     forgetProjects() { projects = []; },
   };
@@ -43,7 +44,7 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1, options:
     async fetchWorkspaces() {
       calls.push("fetch");
       await state.beforeFetch(++fetchCalls);
-      return { entries: state.active, pageInfo: { nextCursor: null } } as Awaited<ReturnType<SweeperApi["fetchWorkspaces"]>>;
+      return { entries: state.active, pageInfo: state.pageInfo } as Awaited<ReturnType<SweeperApi["fetchWorkspaces"]>>;
     },
     async removeProject(id) {
       calls.push(`remove:${id}`);
@@ -221,6 +222,18 @@ it("delete errors are logged without reporting successful deletion", async (t) =
   assert.ok(f.logs.some((line) => line.endsWith("deleted=0 wouldDelete=0")));
 });
 
+it("an incomplete workspace listing aborts an armed sweep instead of deleting", { timeout: 2000 }, async (t) => {
+  const f = await fixture(t, { armed: true });
+  // The daemon announces another page (which would hold the project's active workspace) but gives no cursor for it.
+  f.state.pageInfo = { hasMore: true, nextCursor: null };
+  await assert.rejects(f.sweeper.sweep(), /more pages without a cursor/);
+  assert.deepEqual(f.removed, []);
+  // A cursor handed out twice ends the listing too, instead of looping forever.
+  f.state.pageInfo = { hasMore: true, nextCursor: "cursor-1" };
+  await assert.rejects(f.sweeper.sweep(), /repeated cursor/);
+  assert.deepEqual(f.removed, []);
+});
+
 for (const armed of [false, true]) {
   it(`archive re-check honors armed=${armed} and re-evaluates`, { timeout: 2000 }, async (t) => {
     const f = await fixture(t, { armed });
@@ -237,6 +250,26 @@ for (const armed of [false, true]) {
     assert.deepEqual(f.calls, ["list", "fetch", "list", "fetch", ...(armed ? ["remove:project-0"] : [])]);
   });
 }
+
+it("an archive re-check whose removeProject fails keeps its remaining re-checks", { timeout: 3000 }, async (t) => {
+  const f = await fixture(t, { armed: true });
+  f.state.failDelete = true;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const drain = async (text: string) => {
+    const deadline = Date.now() + 1500;
+    while (!f.logs.some((line) => line.includes(text)) && Date.now() < deadline) await setImmediate();
+    // Let the re-check schedule its next attempt before the timer is advanced.
+    await setImmediate();
+    return f.logs.some((line) => line.includes(text));
+  };
+  f.sweeper.noteArchivedWorkspace({ id: "workspace-0", projectId: "project-0", cwd: path.join(f.root, "missing-0") });
+  t.mock.timers.tick(10_000);
+  assert.ok(await drain("decision=delete-failed source=re-check attempt=1/5"), f.logs.join("\n"));
+  f.state.failDelete = false;
+  t.mock.timers.tick(30_000);
+  assert.ok(await drain("decision=delete source=re-check attempt=2/5"), f.logs.join("\n"));
+  assert.deepEqual(f.removed, ["project-0"]);
+});
 
 it("on Windows a missing root under a junction is kept as mount-unverifiable, and one under plain folders stays a candidate", async (t) => {
   const host = fakeHost("win32", {

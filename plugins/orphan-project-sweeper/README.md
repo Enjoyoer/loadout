@@ -38,7 +38,9 @@ project's custom icon when deleting its row (see Recovery).
 - **`workspace.archived` hook**: the hook records the `projectId` and returns
   immediately (hooks abort after 30 seconds). A module-scope timer re-checks live
   state up to 5 times over about 5 minutes (10s, 30s, 60s, 90s, 120s), because archive
-  events can fire before worktree cleanup. Candidates are deduplicated per project and
+  events can fire before worktree cleanup. A re-check ends early only once the project is
+  deleted (or `would-delete` when unarmed) or gone; a final check that changed or a failed
+  `removeProject` leaves the remaining attempts. Candidates are deduplicated per project and
   capped at 64; anything dropped is caught by the next startup sweep.
 
 Every decision logs one stdout line (`paseo plugin logs orphan-project-sweeper`) with
@@ -47,7 +49,9 @@ Every decision logs one stdout line (`paseo plugin logs orphan-project-sweeper`)
 `active-workspaces`, `path-unverifiable`, `parent-missing`, `mount-absent`, `mount-unverifiable`,
 or `project-missing`. The project is re-evaluated immediately before each delete: filesystem and
 mount checks first, then the daemon's workspace count, then the root, parent and mount checks
-once more right before `removeProject`; any absent or unverifiable state skips the delete. The
+once more right before `removeProject`; any absent or unverifiable state skips the delete. A
+workspace listing that is incomplete (a page reports more without a cursor, a cursor repeats,
+or it runs past 50 pages) aborts the sweep or re-check without deleting anything. The
 daemon's `project.remove.request` carries only the project ID, so it cannot refuse a row that
 changed after that last check; closing the remaining gap needs a daemon-side precondition on the
 request.

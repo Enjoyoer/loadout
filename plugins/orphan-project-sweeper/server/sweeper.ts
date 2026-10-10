@@ -17,6 +17,7 @@ export const RECHECK_DELAYS_MS: readonly number[] = [10_000, 30_000, 60_000, 90_
 /** Upper bound on simultaneously tracked archive candidates. */
 export const MAX_TRACKED_CANDIDATES = 64;
 const WORKSPACE_PAGE_LIMIT = 200;
+const WORKSPACE_MAX_PAGES = 50;
 
 type ProjectRow = Awaited<ReturnType<DaemonClient["listProjects"]>>["projects"][number];
 
@@ -232,20 +233,28 @@ async function findAbsentMount(target: string, host: SweeperHost): Promise<Mount
  * Count active (non-archived) workspaces per project id. The daemon's workspace
  * fetch already excludes archived workspaces; workspaces that are mid-archive
  * (archivingAt set) are still counted as active on purpose. Joins on projectId only.
+ * An incomplete listing could hide a project's active workspace, so it throws instead of
+ * returning partial counts: more pages without a cursor, a repeated cursor, or too many pages.
  */
 async function countActiveWorkspaces(client: SweeperApi): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
+  const seen = new Set<string>();
   let cursor: string | undefined;
-  do {
+  for (let page = 0; page < WORKSPACE_MAX_PAGES; page += 1) {
     const payload = await client.fetchWorkspaces({
       page: { limit: WORKSPACE_PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
     });
     for (const workspace of payload.entries) {
       counts.set(workspace.projectId, (counts.get(workspace.projectId) ?? 0) + 1);
     }
-    cursor = payload.pageInfo.nextCursor ?? undefined;
-  } while (cursor);
-  return counts;
+    if (!payload.pageInfo.hasMore) return counts;
+    const next = payload.pageInfo.nextCursor;
+    if (!next) throw new Error("workspace pagination reported more pages without a cursor");
+    if (seen.has(next)) throw new Error(`workspace pagination repeated cursor ${quote(next)}`);
+    seen.add(next);
+    cursor = next;
+  }
+  throw new Error(`workspace pagination exceeded ${WORKSPACE_MAX_PAGES} pages`);
 }
 
 type VerdictBase = { projectId: string; path: string; name: string };
@@ -392,8 +401,8 @@ export class OrphanProjectSweeper {
       outcome = await this.connect(async (client) => {
         const verdict = await evaluateProject(client, projectId, this.host);
         if (verdict.kind === "delete") {
-          await this.deleteVerified(client, verdict, `re-check ${attempt}`, config);
-          return "done";
+          // A failed removeProject or a changed final check keeps the remaining re-checks.
+          return (await this.deleteVerified(client, verdict, `re-check ${attempt}`, config)) ? "done" : "retry";
         }
         if (verdict.reason === "project-missing") {
           this.logger.log(`${TAG} decision=skip source=re-check ${attempt} ${describe(verdict)}`);
