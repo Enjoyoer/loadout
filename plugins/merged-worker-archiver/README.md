@@ -125,34 +125,56 @@ time. Sweeps are serialized.
 One sweep makes at most `maxArchivesPerSweep` archive attempts (default 5). The cap
 counts attempts, not successes: an armed archive call that fails still uses a slot, a
 workspace that fails the armed fresh-state re-check does not, and deferred workspaces
-are not re-checked. Dry-run applies the same cap to `would-archive`, so it previews the
-same 5 an armed sweep would attempt.
+are not re-checked. Dry-run applies the same cap, order, and back-offs to
+`would-archive`, so it shows what an armed sweep would attempt from the same state. That
+is not a promise about the next armed sweep: see the dry-run note under Back-off.
 
 Further eligible workspaces are not archived: each gets a `deferred` log line, and they
-wait for the next sweep (the next turn end in their project or repository, or the
-periodic sweep). In `sweep-done`, `counts.archive` covers only the candidates within the
-cap and `counts.deferred` the rest (also reported as `deferred`), so a sweep that finds 7
-eligible workspaces reports `"archive":5,"deferred":2`.
+wait for a later sweep (the next turn end in their project or repository, or the
+periodic sweep), where they go first (see Fair order). In `sweep-done`, `counts.archive`
+covers only the candidates within the cap and `counts.deferred` the rest (also reported
+as `deferred`), so a sweep that finds 7 eligible workspaces reports
+`"archive":5,"deferred":2`.
+
+### Fair order across sweeps
+
+Paseo lists workspaces in a stable order, so without help the same first candidates
+would get the slots every sweep. Each sweep therefore visits first the workspaces that
+an earlier armed sweep deferred at the cap, longest-waiting first, and then the rest in
+listing order. A deferred workspace keeps its place in that queue until it is attempted
+or stops being eligible, so every eligible workspace is attempted within about
+(eligible candidates / `maxArchivesPerSweep`) sweeps, however many candidates ahead of
+it keep failing. With the cap at 5 and 45 workspaces whose archive call always fails
+listed ahead of 1 healthy one, the healthy one is attempted by the 10th armed sweep.
+
+The queue lives in memory only (a plugin reload or daemon restart clears it), and a full
+sweep forgets workspaces that are no longer listed. Only armed sweeps change it: a
+dry-run sweep visits candidates in queue order but attempts nothing, so it leaves the
+queue as it was.
 
 ### Back-off after a failed archive call
 
-Sweeps walk candidates in the same order every time, so archive calls that keep failing
-would otherwise take every sweep's slots before later candidates are reached. A
-workspace whose armed archive call fails (an error result or a thrown call) therefore
-backs off: it sits out the next sweeps that find it eligible, 1 after its first
-consecutive failure, then 2, 4, and at most 8. While it sits out it gets a `backoff` log
-line and takes no slot, so the candidates behind it get the slots. When its back-off
-ends it is retried like any other candidate; nothing is given up permanently. A
-successful archive clears the back-off. Back-offs live in memory only, so a plugin
-reload or daemon restart clears them, and a full sweep forgets workspaces that are no
-longer listed. Only sweeps that find the workspace eligible count, and dry-run sweeps
-honor and count back-offs the same way, so a preview still matches an armed sweep.
+A workspace whose armed archive call fails (an error result or a thrown call) backs off,
+so a call that keeps failing does not keep spending slots. It sits out the next sweeps
+that find it eligible: 1 after its first consecutive failure, then 2, 4, and at most 8.
+While it sits out it gets a `backoff` log line and takes no slot, so other candidates
+get the slots. When its back-off ends it is retried like any other candidate; nothing
+is given up permanently. A successful archive clears the back-off. Back-offs live in
+memory only, so a plugin reload or daemon restart clears them, and a full sweep forgets
+workspaces that are no longer listed. Only sweeps that find the workspace eligible
+count toward its back-off.
+
+Dry-run sweeps count too: a dry-run sweep that finds a backed-off workspace eligible
+advances its back-off exactly as an armed sweep would. A dry-run preview therefore does
+not promise to match the next armed sweep. A back-off that the preview shows as active
+may have ended by the time an armed sweep runs, and that sweep then retries the
+workspace.
 
 In `sweep-done`, backed-off workspaces are counted as `counts.backoff` (also reported as
 `backoff`), never as `archive` or `deferred`. With 5 workspaces whose archive call
 always fails ahead of 2 good ones, the first armed sweep reports 5 `archive-failed` and
-`"archive":5,"deferred":2`; the next reports `"backoff":5,"archive":2` and archives the
-good two; the one after retries the failing five.
+`"archive":5,"deferred":2`. The next archives the deferred good two first and reports
+`"archive":2,"backoff":5`, and the one after retries the failing five.
 
 ## Settings
 
