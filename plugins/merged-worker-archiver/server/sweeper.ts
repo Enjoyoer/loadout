@@ -56,6 +56,19 @@ export function isPendingMerge(decision: Decision): boolean {
 const PAGE_LIMIT = 200;
 const MAX_PAGES = 50;
 
+/**
+ * After its Nth consecutive failed archive call a workspace sits out the next
+ * 2^(N-1) sweeps that find it eligible (1, 2, 4, then at most 8), so it stops taking
+ * cap slots from the candidates behind it. Kept in memory only; it is always retried.
+ */
+const MAX_BACKOFF_EXPONENT = 3;
+
+interface Backoff {
+  failures: number;
+  sweeps: number;
+  skipsLeft: number;
+}
+
 async function listAll<T>(fetchPage: (cursor?: string) => Promise<Page<T>>, label: string): Promise<T[]> {
   const all: T[] = [];
   let cursor: string | undefined;
@@ -98,9 +111,21 @@ export function formatDecision(decision: Decision, action: string): string {
 export class Sweeper {
   private running: Promise<SweepResult> | null = null;
   private readonly deps: SweeperDeps;
+  private readonly backoffs = new Map<string, Backoff>();
+  /** Workspaces an armed sweep deferred at the cap, with the number of the sweep that first deferred them. */
+  private readonly waitingSince = new Map<string, number>();
+  private sweepCount = 0;
 
   constructor(deps: SweeperDeps) {
     this.deps = deps;
+  }
+
+  private noteArchiveFailure(workspaceId: string): Backoff {
+    const failures = (this.backoffs.get(workspaceId)?.failures ?? 0) + 1;
+    const sweeps = 2 ** Math.min(failures - 1, MAX_BACKOFF_EXPONENT);
+    const backoff = { failures, sweeps, skipsLeft: sweeps };
+    this.backoffs.set(workspaceId, backoff);
+    return backoff;
   }
 
   /** Triggers, plus every worktree sharing a trigger's projectId or git common dir. */
@@ -141,6 +166,7 @@ export class Sweeper {
   private async runSweep(config: ArchiverConfig, options: SweepOptions): Promise<SweepResult> {
     const dryRun = options.forceDryRun === true || config.armed !== true;
     const log = this.deps.log;
+    const sweepNumber = ++this.sweepCount;
     let lease: ApiLease;
     try {
       lease = await this.deps.acquireApi();
@@ -156,11 +182,28 @@ export class Sweeper {
       const inScope = options.triggerWorkspaceIds
         ? await this.scope(state.workspaces, options.triggerWorkspaceIds)
         : state.workspaces;
+      if (!options.triggerWorkspaceIds) {
+        // A full sweep sees every workspace: forget back-offs and waits of workspaces that are gone.
+        const listed = new Set(state.workspaces.map((workspace) => workspace.id));
+        for (const workspaceId of this.backoffs.keys()) if (!listed.has(workspaceId)) this.backoffs.delete(workspaceId);
+        for (const workspaceId of this.waitingSince.keys()) if (!listed.has(workspaceId)) this.waitingSince.delete(workspaceId);
+      }
+      // Fair order across sweeps: workspaces the cap deferred go first, longest-waiting first, then
+      // the rest in listing order. Candidates ahead of a deferred one cannot hold the slots forever,
+      // even when their archive calls keep failing.
+      const waitRank = (workspace: WorkspaceView) => this.waitingSince.get(workspace.id) ?? Number.MAX_SAFE_INTEGER;
+      const ordered = [...inScope].sort((a, b) => waitRank(a) - waitRank(b));
       let nonCandidates = 0;
       // Archive attempts (would-archive in dry-run) left this sweep; the rest wait for the next sweep.
+      // Backed-off workspaces do not take a slot, so later candidates get it.
       let remaining = config.maxArchivesPerSweep;
       const deferred = new Set<string>();
-      for (const workspace of inScope) {
+      const backedOff = new Set<string>();
+      for (const workspace of ordered) {
+        // Dry-run attempts nothing, so only an armed sweep moves the queue; a workspace stays
+        // queued, keeping its place, only while the cap keeps deferring it.
+        const waitingSince = this.waitingSince.get(workspace.id);
+        if (!dryRun) this.waitingSince.delete(workspace.id);
         const agents = state.agentsByWorkspace.get(workspace.id) ?? [];
         const decision = await evaluateWorkspace(workspace, agents, config, this.deps);
         decisions.push(decision);
@@ -173,8 +216,17 @@ export class Sweeper {
           log(formatDecision(decision, "skip"));
           continue;
         }
+        const backoff = this.backoffs.get(workspace.id);
+        if (backoff && backoff.skipsLeft > 0) {
+          backoff.skipsLeft -= 1;
+          backedOff.add(workspace.id);
+          const progress = `${backoff.sweeps - backoff.skipsLeft}/${backoff.sweeps}`;
+          log(formatDecision({ ...decision, reason: `${decision.reason}; archive back-off sweep ${progress} after ${backoff.failures} failed archive call(s)` }, "backoff"));
+          continue;
+        }
         if (remaining <= 0) {
           deferred.add(workspace.id);
+          if (!dryRun) this.waitingSince.set(workspace.id, waitingSince ?? sweepNumber);
           log(formatDecision({ ...decision, reason: `${decision.reason}; maxArchivesPerSweep=${config.maxArchivesPerSweep} reached` }, "deferred"));
           continue;
         }
@@ -196,28 +248,37 @@ export class Sweeper {
           continue;
         }
         remaining -= 1;
+        let failure: string;
         try {
           const result = await lease.api.workspaces.archive(workspace.id);
-          if (result.error) {
-            log(formatDecision({ ...recheck, reason: `${recheck.reason}; archive error: ${result.error}` }, "archive-failed"));
+          if (!result.error) {
+            this.backoffs.delete(workspace.id);
+            archived.push(workspace.id);
+            log(formatDecision(recheck, "archived"));
             continue;
           }
-          archived.push(workspace.id);
-          log(formatDecision(recheck, "archived"));
+          failure = `archive error: ${result.error}`;
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          log(formatDecision({ ...recheck, reason: `${recheck.reason}; archive threw: ${message}` }, "archive-failed"));
+          failure = `archive threw: ${error instanceof Error ? error.message : String(error)}`;
         }
+        const { sweeps } = this.noteArchiveFailure(workspace.id);
+        log(formatDecision({ ...recheck, reason: `${recheck.reason}; ${failure}; back-off ${sweeps} sweep(s)` }, "archive-failed"));
       }
       const counts = decisions.reduce<Record<string, number>>((acc, decision) => {
-        const key = !decision.candidate ? "nonCandidate" : deferred.has(decision.workspaceId) ? "deferred" : decision.action;
+        const key = !decision.candidate
+          ? "nonCandidate"
+          : deferred.has(decision.workspaceId)
+            ? "deferred"
+            : backedOff.has(decision.workspaceId)
+              ? "backoff"
+              : decision.action;
         acc[key] = (acc[key] ?? 0) + 1;
         return acc;
       }, {});
       const pendingMerge = decisions.filter(isPendingMerge).map((decision) => decision.workspaceId);
       const latencyMs = options.eventAt === undefined ? undefined : this.deps.now() - options.eventAt;
       log(
-        `[merged-worker-archiver] sweep-done ${JSON.stringify({ trigger: options.trigger, mode: dryRun ? "dry-run" : "armed", evaluated: decisions.length, nonCandidates, counts, archived, deferred: deferred.size, pendingMerge, latencyMs })}`,
+        `[merged-worker-archiver] sweep-done ${JSON.stringify({ trigger: options.trigger, mode: dryRun ? "dry-run" : "armed", evaluated: decisions.length, nonCandidates, counts, archived, deferred: deferred.size, backoff: backedOff.size, pendingMerge, latencyMs })}`,
       );
       return { decisions, archived, pendingMerge, error: null };
     } catch (error) {
