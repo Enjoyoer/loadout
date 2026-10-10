@@ -1,7 +1,8 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { PLUGIN_ID } from "./policy.ts";
+import { writeJsonAtomically } from "./vendor/atomic-json.ts";
 
 // Durable per-child decisions at $PASEO_HOME/plugin-state/pm-native-worker-guard/state.json.
 // One record per child id makes every decision idempotent across duplicate events and
@@ -75,9 +76,7 @@ export class StateStore {
       const handled = [...state.handled.filter((candidate) => candidate.childId !== record.childId), record].slice(-maxEntries);
       const next: State = { version: 1, handled };
       await mkdir(path.dirname(this.filePath), { recursive: true });
-      const temp = `${this.filePath}.${process.pid}.tmp`;
-      await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-      await rename(temp, this.filePath);
+      await writeJsonAtomically(this.filePath, next, { mode: 0o600 });
       this.cache = next;
     });
     this.writes = write.catch(() => undefined);

@@ -19,6 +19,11 @@ PLUGINS = ROOT / "plugins"
 SHARED = PLUGINS / "_shared"
 # The plugins that must carry each plugins/_shared file, byte-identical, in server/vendor/.
 CONSUMERS = {
+    "atomic-json.ts": (
+        "cache-aware-autocompact",
+        "pm-native-worker-guard",
+        "usage-limit-auto-resume",
+    ),
     "daemon-target.ts": (
         "cache-aware-autocompact",
         "merged-worker-archiver",

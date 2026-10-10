@@ -8,8 +8,9 @@ import type { PluginServerContext, PluginLifecycleEvents, PluginHookContext } fr
 import { defaultConfig } from "../server/config.ts";
 import { rearmSkipReason, recoverTurn, recoveryHistory, recoveryDelay, REARM_JITTER_MIN_MS, REARM_JITTER_MAX_MS } from "../server/recovery.ts";
 import { startScheduler, type Checkpoint } from "../server/runtime.ts";
-import { StateStore } from "../server/store.ts";
+import { StateStore, type WriteJson } from "../server/store.ts";
 import type { TimerApi } from "../server/timer.ts";
+import { writeJsonAtomically } from "../server/vendor/atomic-json.ts";
 
 const endedAt = "2026-09-26T08:00:00.000Z";
 const messageAt = "2026-09-26T07:55:00.000Z";
@@ -49,7 +50,7 @@ async function fixture(run: (f: ReturnType<typeof harness> & { store: StateStore
   const file = path.join(dir, "state.json");
   const f = { ...harness(), file, store: new StateStore(file) };
   // A state write can still be landing when a test ends; rm retries ENOTEMPTY.
-  try { await run(f); } finally { f.cleanup(); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
+  try { await run(f); } finally { await f.cleanup(); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
 }
 function harness() {
   let snapshots = [agent()];
@@ -57,7 +58,8 @@ function harness() {
   let bootstrapFails = false;
   let compactFails = false;
   let sendGate: Promise<void> | null = null;
-  let cleanup = () => {};
+  let cleanup: () => Promise<void> = async () => {};
+  let writeJson: WriteJson | undefined;
   let snapshotListener: (() => void) | undefined;
   const updates = new Set<PaseoAgentUpdateHandler>();
   const hooks = new Map<string, (event: never, context: PluginHookContext) => unknown>();
@@ -121,13 +123,14 @@ function harness() {
     event<Name extends keyof PluginLifecycleEvents>(name: Name, event: PluginLifecycleEvents[Name], contextApi = api) {
       hooks.get(name)?.(event as never, { paseo: contextApi, signal: new AbortController().signal });
     },
-    start(store: StateStore, armed = true, piGptEnabled = false, extendIdleCompaction = true) {
-      cleanup = startScheduler(server, { store, timerApi: timers, metrics: { append: async (record) => { metrics.push(record); } },
+    writeStateWith(writer: WriteJson) { writeJson = writer; },
+    start(store: StateStore | undefined, armed = true, piGptEnabled = false, extendIdleCompaction = true) {
+      cleanup = startScheduler(server, { store, writeJson, timerApi: timers, metrics: { append: async (record) => { metrics.push(record); } },
         now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed, piGptEnabled, extendIdleCompaction }),
         openApi: async () => { if (bootstrapFails) throw new Error("Unavailable"); return api; },
         log: (action, data) => { logs.push({ action, data }); } });
     },
-    cleanup() { cleanup(); },
+    cleanup() { return cleanup(); },
     async recovered() { await until(() => logs.some((line) => line.action === "rearm-summary")); },
   };
 }
@@ -159,7 +162,7 @@ describe("Pi scheduler", () => {
     f.setAgents([a]); f.histories.set(a.id, page); f.start(f.store); await f.recovered();
     f.timers.fire(); await until(() => f.logs.some(l => l.data.reason === "compaction-backoff"));
     assert.deepEqual(f.sends, []);
-    f.cleanup(); f.start(f.store); await until(() => f.timers.pending.size === 1);
+    await f.cleanup(); f.start(f.store); await until(() => f.timers.pending.size === 1);
     f.timers.fire(); await new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(f.sends, []);
   }));
@@ -167,7 +170,7 @@ describe("Pi scheduler", () => {
     f.setAgents([agent({ provider: "pi", model: "fleet/gpt-6.1-sol" })]);
     f.start(f.store); await f.recovered();
     assert.equal(f.timers.pending.size, 0);
-    f.cleanup();
+    await f.cleanup();
     f.setAgents([agent({ provider: "pi", model: "fleet/claude-opus-5-5" })]);
     f.failCompact(); f.start(f.store); await until(() => f.timers.pending.size === 1);
     f.timers.fire(); await until(() => f.logs.some(l => l.action === "compaction-failed"));
@@ -415,7 +418,7 @@ describe("restart recovery", () => {
     await until(() => f.logs.some((line) => line.action === "rearm-summary" &&
       (line.data.skipped as Record<string, number>).checkpointed === 1));
     assert.equal(f.timers.pending.size, 0);
-    f.cleanup(); f.logs.length = 0;
+    await f.cleanup(); f.logs.length = 0;
     f.start(new StateStore(f.file)); await f.recovered();
     assert.equal(f.timers.pending.size, 0);
     assert.deepEqual(f.sends, []);
@@ -461,7 +464,7 @@ describe("restart recovery", () => {
     f.event("agent.turn_ended", { agent: { ...a, workspaceId: "w1", parentAgentId: null }, turnId: "t1",
       outcome: { kind: "completed" }, timeline: history(a).entries.map((entry) => entry.item) });
     await until(() => f.logs.some((line) => line.action === "timer-started"));
-    f.cleanup();
+    await f.cleanup();
     assert.equal(f.timers.pending.size, 0);
     f.logs.length = 0;
     f.setNow(endedMs + 30 * 60_000);
@@ -477,7 +480,7 @@ describe("restart recovery", () => {
     f.setNow(endedMs + 50 * 60_000);
     f.timers.fire();
     await until(() => f.logs.some((line) => line.action === "compacted"));
-    f.cleanup();
+    await f.cleanup();
     f.logs.length = 0;
     const h = history(agent());
     h.entries[0]!.turnId = undefined;
@@ -541,7 +544,7 @@ describe("restart recovery", () => {
           // A recovered running tool uses the same retry path as a normal turn timer.
           turn.timeline = [{ type: "tool_call", callId: "tool1", name: "tool", detail: { type: "plain_text", text: "work" }, status: "running", error: null }];
           await f.store.rememberTurn(turn, 100);
-          f.cleanup(); f.logs.length = 0; f.start(f.store); await f.recovered();
+          await f.cleanup(); f.logs.length = 0; f.start(f.store); await f.recovered();
         }
         f.setAgents([a]);
         f.timers.fire();
@@ -566,7 +569,7 @@ describe("restart recovery", () => {
       if (trigger === "turn") f.event("agent.turn_started", { agent: { ...a, workspaceId: "w1", parentAgentId: null }, turnId: "t2" });
       if (trigger === "update") f.update(agent({ status: "running" }));
       if (trigger === "archive") f.event("agent.archived", { agent: { ...a, workspaceId: "w1", parentAgentId: null }, archivedAt: endedAt });
-      if (trigger === "cleanup") f.cleanup();
+      if (trigger === "cleanup") await f.cleanup();
       assert.equal(f.timers.pending.size, 0, trigger);
       f.timers.fire();
       assert.deepEqual(f.sends, [], trigger);
@@ -578,17 +581,50 @@ describe("restart recovery", () => {
     const turn = (await f.store.latestTurn("a1"))!;
     turn.timeline = [{ type: "tool_call", callId: "tool1", name: "tool", detail: { type: "plain_text", text: "work" }, status: "running", error: null }];
     await f.store.rememberTurn(turn, 100);
-    f.cleanup(); f.logs.length = 0;
+    await f.cleanup(); f.logs.length = 0;
     f.setNow(endedMs + 55 * 60_000);
     f.start(f.store); await f.recovered();
     f.timers.fire();
     await until(() => f.logs.some((line) => line.action === "retry-scheduled"));
-    f.cleanup(); f.logs.length = 0;
+    await f.cleanup(); f.logs.length = 0;
     f.start(new StateStore(f.file)); await f.recovered();
     f.timers.fire();
     await until(() => f.logs.some((line) => line.action === "retry-scheduled"));
     assert.equal(f.logs.find((line) => line.action === "retry-scheduled")?.data.retryCount, 2);
     assert.deepEqual(f.sends, []);
+  }));
+
+  it("keeps teardown pending until the state write of the store it owns settles", async () => fixture(async (f) => {
+    const home = process.env.PASEO_HOME;
+    process.env.PASEO_HOME = path.dirname(f.file);
+    try {
+      let enter = () => {};
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      let release = () => {};
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const landed: string[] = [];
+      f.writeStateWith(async (filePath, value, options) => {
+        enter(); await held;
+        await writeJsonAtomically(filePath, value, options);
+        landed.push(filePath);
+      });
+      // No store is passed in, so the scheduler creates its own under PASEO_HOME and closes it on teardown.
+      f.start(undefined);
+      await entered;
+      let landedAtStop: string[] | undefined;
+      const stopping = f.cleanup().then(() => { landedAtStop = [...landed]; });
+      const stoppedWith = () => landedAtStop;
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(stoppedWith(), undefined);
+      release();
+      await stopping;
+      const owned = path.join(path.dirname(f.file), "plugin-state", "cache-aware-autocompact", "state.json");
+      assert.deepEqual(stoppedWith(), [owned]);
+      assert.equal((await new StateStore(owned).latestTurn("a1"))?.key, "a1:t1");
+    } finally {
+      if (home === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = home;
+    }
   }));
 
   it("does not arm a stale recovery when a new turn begins during history fetch", async () => fixture(async (f) => {

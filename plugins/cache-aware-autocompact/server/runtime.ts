@@ -3,7 +3,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { AutoCompactConfig } from "./config.ts";
 import { cacheExpired, cacheExpiredSkip, checkpointKey, guardDecision, providerDelayMinutes, strictnessTier } from "./model.ts";
-import { StateStore, type StateEntry } from "./store.ts";
+import { StateStore, type StateEntry, type WriteJson } from "./store.ts";
 import { AgentTimers, realTimers, type TimerApi } from "./timer.ts";
 import { MetricsLog } from "./metrics.ts";
 import { MAX_RETRIES, nextRetryCount, RETRY_DELAY_MS } from "./retry.ts";
@@ -32,6 +32,8 @@ function safeError(error: unknown): string {
 export function startScheduler(server: PluginServerContext, dependencies: {
   readConfig: () => Promise<AutoCompactConfig | null>;
   store?: StateStore;
+  /** Writes state for the store this scheduler creates when none is passed in. */
+  writeJson?: WriteJson;
   metrics?: Pick<MetricsLog, "append">;
   timerApi?: TimerApi;
   openApi?: () => Promise<PaseoClient>;
@@ -39,7 +41,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   random?: () => number;
   log?: (action: string, data: Record<string, unknown>) => void;
 }) {
-  const store = dependencies.store ?? new StateStore();
+  const store = dependencies.store ?? new StateStore(undefined, dependencies.writeJson);
   const metrics = dependencies.metrics ?? new MetricsLog();
   const timers = new AgentTimers(dependencies.timerApi ?? realTimers);
   const now = dependencies.now ?? Date.now;
@@ -470,7 +472,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       note: "Set config.armed=true explicitly to permit sends",
     });
   });
-  return () => {
+  return async () => {
     stopped = true;
     lifetime.abort();
     void startupClient?.close().catch(() => undefined);
@@ -485,5 +487,8 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     deferredTurns.clear();
     expectedUserMessage.clear();
     recoveryFailures.clear();
+    // A store passed in belongs to the caller. Ours drops every later write, and teardown
+    // waits for the one in flight, so a reloaded instance never races this one's writes.
+    if (!dependencies.store) await store.close();
   };
 }
