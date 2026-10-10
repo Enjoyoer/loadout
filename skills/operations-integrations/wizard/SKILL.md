@@ -24,7 +24,7 @@ Never read `.env`, `.env.local`, `.env.production`, or any other file that holds
 
 Then show the user the ordered list of stages and the values each produces, and confirm: they may add, drop, or reorder.
 
-**Done when:** every stage is named in order, and for each captured value you know (a) where the human gets it, (b) where it's written (`.env`, a GitHub secret, both, or nowhere; some stages are pure actions), and (c) whether it's secret (hidden entry) or public. The user has also confirmed the wizard's targets: the project root (`pwd -P` in it), its env file, and, if anything goes to GitHub, the repository as `OWNER/NAME` (`gh repo view --json nameWithOwner -q .nameWithOwner` in that root).
+**Done when:** every stage is named in order, and for each captured value you know (a) where the human gets it, (b) where it's written (`.env`, a GitHub secret, both, or nowhere; some stages are pure actions), and (c) whether it's secret (hidden entry) or public. The user has also confirmed the wizard's targets: the project root (`pwd -P` in it), its env file, and, if anything goes to GitHub, the repository as `OWNER/NAME` (`gh repo view --json nameWithOwner -q .nameWithOwner` in that root; `HOST/OWNER/NAME` for one not on github.com).
 
 ### 2. Map each stage's journey
 
