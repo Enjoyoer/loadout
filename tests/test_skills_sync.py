@@ -40,15 +40,17 @@ class RemotePreflightTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_remote(self, files, clients=("claude",), glob=None, dry_run=False, keep=None):
+    def run_remote(self, files, clients=("claude",), glob=None, dry_run=False, keep=None, preload=None, extra_env=None):
         payload = {"dry_run": dry_run, "clients": list(clients), "files": files, "global": glob, "keep": keep}
         env = {k: v for k, v in os.environ.items() if k not in ("CODEX_HOME", "XDG_CONFIG_HOME")}
         env["HOME"] = str(self.home)
         # Windows reads the home from USERPROFILE and keeps the sync record under APPDATA, not ~/.config.
         env["USERPROFILE"] = str(self.home)
         env["APPDATA"] = str(self.home / ".config")
+        env.update(extra_env or {})
         raw, digest = fleet.envelope(skills_sync.REMOTE_JS, payload)
-        done = subprocess.run(["node", "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True, env=env)
+        node = ["node", "-r", str(preload)] if preload else ["node"]
+        done = subprocess.run([*node, "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True, env=env)
         return fleet.parse_result(done.stdout)
 
     def skill(self, rel):
@@ -157,6 +159,21 @@ class RemotePreflightTest(unittest.TestCase):
         got = self.run_remote(published, keep=["demo"])
         self.assertEqual((got["status"], got["retired"], got["kept"]), ("same", [], []))
         self.assertTrue(self.skill("edited").exists() and self.skill("mine").exists())
+
+    def test_skill_edited_between_preflight_and_removal_is_kept(self):
+        self.run_remote({"demo/SKILL.md": entry(b"d1"), "old/SKILL.md": entry(b"o")}, keep=["demo", "old"])
+        # Preloaded into the host program: its first write (demo's update, after preflight) also edits old.
+        hook = self.home / "edit-on-first-write.js"
+        hook.write_text('const fs = require("fs"), rename = fs.renameSync;\n'
+                        'fs.renameSync = (...args) => { fs.renameSync = rename;\n'
+                        '  fs.writeFileSync(process.env.LOADOUT_TEST_EDIT, "edited during the sync"); return rename(...args); };\n')
+        got = self.run_remote({"demo/SKILL.md": entry(b"d2", [sha(b"d1")])}, keep=["demo"], preload=hook,
+                              extra_env={"LOADOUT_TEST_EDIT": str(self.skill("old/SKILL.md"))})
+        self.assertEqual((got["status"], got["changed"], got["retired"], got["kept"]),
+                         ("updated", ["claude:demo/SKILL.md"], [], ["claude:old (changed since preflight)"]))
+        self.assertIn("kept and stop managing: claude:old (changed since preflight)", skills_sync.describe(got))
+        self.assertEqual(self.skill("old/SKILL.md").read_bytes(), b"edited during the sync")
+        self.assertEqual(self.skill("demo/SKILL.md").read_bytes(), b"d2")
 
     def test_dry_run_writes_nothing(self):
         got = self.run_remote({"demo/SKILL.md": entry(b"v2")}, dry_run=True)

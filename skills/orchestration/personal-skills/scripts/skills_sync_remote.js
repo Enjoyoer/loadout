@@ -203,13 +203,14 @@ try {
     walk(dir);
     return tree.sort(([a], [b]) => a < b ? -1 : 1);
   };
+  // Every file a regular one with the hash the record holds for it; directories need no record.
+  const mine = (root, tree) => !!tree && tree.every(([r, h]) => h === "dir" || (h && owned[root][r] === h));
   const retire = (root, skill, label) => {
     const dir = path.join(root, skill);
     checkAncestors(fs, path, root, dir);
-    const tree = snapshot(root, dir);
-    const mine = !!tree && tree.every(([r, h]) => h === "dir" || (h && owned[root][r] === h));
-    if (fs.existsSync(dir)) result[mine ? "retired" : "kept"].push(label);
-    drops.push({ root, skill, dir: mine && dir, tree, label });
+    const tree = snapshot(root, dir), ours = mine(root, tree);
+    if (fs.existsSync(dir)) result[ours ? "retired" : "kept"].push(label);
+    drops.push({ root, skill, dir: ours && dir, tree, label });
   };
   const consider = (file, root, want, allowed, label, bytes, isGlobal) => {
     const kind = plan(file, root, want, allowed);
@@ -273,9 +274,16 @@ try {
     if (w.global) records[w.key] = sha(w.data);
   }
   for (const d of drops) {
-    // Hash the skill again right before removal: anything changed since preflight keeps it.
-    if (d.dir && JSON.stringify(snapshot(d.root, d.dir)) === JSON.stringify(d.tree)) fs.rmSync(d.dir, { recursive: true });
-    else if (d.dir) { result.retired.splice(result.retired.indexOf(d.label), 1); result.kept.push(d.label + " (changed since preflight)"); }
+    // Verify again right before removal: ancestors, tree, file types, and recorded hashes. A skill that
+    // changed since preflight, or cannot be verified, is kept and reported as kept.
+    let why = null;
+    if (d.dir) try {
+      checkAncestors(fs, path, d.root, d.dir);
+      const now = snapshot(d.root, d.dir);
+      if (JSON.stringify(now) !== JSON.stringify(d.tree) || !mine(d.root, now)) why = "changed since preflight";
+    } catch (e) { why = "could not be verified again: " + e.message; }
+    if (d.dir && !why) fs.rmSync(d.dir, { recursive: true });
+    else if (d.dir) { result.retired.splice(result.retired.indexOf(d.label), 1); result.kept.push(`${d.label} (${why})`); }
     for (const r of Object.keys(owned[d.root])) if (r.startsWith(d.skill + "/")) delete owned[d.root][r];
   }
   for (const root of roots) for (const [rel, f] of Object.entries(p.files)) (owned[root] = owned[root] || {})[rel] = f.sha256;
