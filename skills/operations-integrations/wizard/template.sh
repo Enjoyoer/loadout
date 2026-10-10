@@ -119,11 +119,32 @@ confirm() {
   [[ "$reply" =~ ^[Yy] ]]
 }
 
-# _existing KEY: current value of KEY in ENV_FILE, if any.
+# .env lines are written for dotenv-style loaders (dotenv, dotenv-expand,
+# python-dotenv, `set -a; . ./.env`): a plain value bare, anything else in
+# single quotes. Those loaders read ' \ $ and control characters differently
+# even inside quotes, so a value holding one is refused, not stored.
+_ENV_PLAIN='^[A-Za-z0-9_./:@%+=,-]*$'
+_ENV_QUOTABLE="^[^'\\\$[:cntrl:]]*\$"
+
+# _env_line KEY VALUE prints KEY's .env line, or fails when VALUE has no form
+# that every one of those loaders reads back unchanged.
+_env_line() {
+  if [[ "$2" =~ $_ENV_PLAIN ]]; then printf '%s=%s' "$1" "$2"
+  elif [[ "$2" =~ $_ENV_QUOTABLE ]]; then printf "%s='%s'" "$1" "$2"
+  else return 1; fi
+}
+
+# _existing KEY: current value of KEY in ENV_FILE, if any, read back from the
+# form write_env stores. A line in any other form counts as no value, so it is
+# never reused as something it isn't.
 _existing() {
   [[ -f "$ENV_FILE" ]] || return 1
-  local line; line=$(grep -E "^${1}=" "$ENV_FILE" | tail -n1) || return 1
-  printf '%s' "${line#*=}"
+  local line value inner
+  line=$(grep -E "^${1}=" "$ENV_FILE" | tail -n1) || return 1
+  value="${line#*=}"; inner="${value#\'}"; inner="${inner%\'}"
+  if [[ "$value" =~ $_ENV_PLAIN ]]; then printf '%s' "$value"
+  elif [[ "$value" == "'$inner'" && "$inner" =~ $_ENV_QUOTABLE ]]; then printf '%s' "$inner"
+  else return 1; fi
 }
 
 # ask KEY "Prompt" reads a value into $KEY. Offers the existing .env value as
@@ -176,17 +197,20 @@ _upsert_env() {
 # write_env KEY VALUE upserts KEY=VALUE into ENV_FILE (creates it; replaces
 # any existing line). Idempotent. A lock directory beside ENV_FILE keeps two
 # runs from dropping each other's keys; the wizard stops, writing nothing, if
-# the lock stays held or the file can't be read or replaced.
+# the value can't be stored as is, the lock stays held, or the file can't be
+# read or replaced.
 write_env() {
-  local key="$1" value="$2" lock tries=0
+  local key="$1" value="$2" line lock tries=0
   _bind
+  line=$(_env_line "$key" "$value") \
+    || _die "the value for $key has a ' \\ \$ or control character, which .env loaders read differently; nothing was written, so store it by hand"
   lock="$ENV_FILE.lock"
   until mkdir -- "$lock" 2>/dev/null; do
     [[ -d "$lock" ]] || _die "couldn't write beside $ENV_FILE; it is unchanged"
     (( ++tries < 30 )) || _die "$ENV_FILE is in use by another run; it is unchanged (if none is running, remove $lock)"
     sleep 0.1
   done
-  if ! _upsert_env "$key" "$key=$value"; then
+  if ! _upsert_env "$key" "$line"; then
     rmdir -- "$lock" 2>/dev/null || true
     _die "couldn't update $ENV_FILE; it is unchanged"
   fi
