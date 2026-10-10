@@ -6,15 +6,16 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { isGptOrWebRoute, materializeFixedRoute, OWNER_RULE_ROUTES, routeReason, selectWorkerRoute, validateRoleRoute,
-  WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
+import { CODEX_FALLBACK_CLASSES, CODEX_FALLBACK_ROUTE, isGptOrWebRoute, materializeFixedRoute, OWNER_RULE_ROUTES, routeReason,
+  selectWorkerRoute, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
 import { authorizeCloudFallback, checkCloudEligibility, CLOUD_ALL_CLASSES, cloudClasses, readCloudToggle,
   resolveCloudWorkerRoute } from './cloud-lane.mjs';
-import { defaultRoutingPath, readQuota, readRoutingSettings, ROUTING_DEFAULTS } from './quota-pace.mjs';
+import { defaultRoutingPath, readQuota, readRoutingSettings, ROUTING_DEFAULTS, setCodexFallback } from './quota-pace.mjs';
 import { readTask, updateTask } from './task-state.mjs';
 
 const usage = 'usage: route.mjs --class <class> [--pq-file FILE] [--catalog FILE] [--cloud-facts FILE] ' +
-  '[--owner-model ID --owner-effort LEVEL [--owner-fast on|off]] [--task TASK_JSON --lane SLUG [--cloud-fallback]]';
+  '[--owner-model ID --owner-effort LEVEL [--owner-fast on|off]] [--task TASK_JSON --lane SLUG [--cloud-fallback]] ' +
+  '| route.mjs --codex-fallback on|off|status';
 
 // cloud is { toggle, eligibility } from readCloudToggle and checkCloudEligibility, or null when not checked.
 // An owner route is returned unchanged; owner-rule classes (ui) skip the pace, and the cloud lane unless its toggle is all; routing.json and
@@ -40,13 +41,19 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
   const relevant = cloud && (['on', 'all'].includes(cloud.toggle) ? cloudClasses(cloud.toggle).includes(taskClass) : taskClass === 'code');
   const note = !relevant ? '' : cloud.toggle === 'off' ? 'cloud lane off, '
     : `cloud lane ineligible (${cloud.eligibility?.reasons?.join('; ') || 'no eligibility facts'}), `;
+  const codexMode = CODEX_FALLBACK_CLASSES.includes(taskClass);
   let routing = settings ?? ROUTING_DEFAULTS, invalid = '';
-  if (rule.range && !settings) {
+  if ((rule.range || codexMode) && !settings) {
     const path = defaultRoutingPath();
     try { routing = readRoutingSettings({ path }); } catch (error) {
       const detail = error.message.replace(path, '').replace(/^:?\s*(?:is\s+)?/, '').replace(/ \(allowed: [^)]*\)$/, '');
       invalid = `routing.json invalid (${detail.replace(/\s+/g, ' ')}), defaults used, `;
     }
+  }
+  if (codexMode && routing.codexFallback === true) {
+    const route = selectWorkerRoute({ taskKind: taskClass, catalog, codexFallback: true });
+    return Object.freeze({ route, reason: `${note}${invalid}${taskClass}: Codex on its fallback account (routing.json codexFallback), ` +
+      `owner rule ${CODEX_FALLBACK_ROUTE.label} ${CODEX_FALLBACK_ROUTE.effort}` });
   }
   const quota = rule.range ? await readQuota({ settings: routing, pqFile, home }) : null;
   const route = selectWorkerRoute({ taskKind: taskClass, catalog, quota, settings: routing });
@@ -120,6 +127,11 @@ async function readCatalog(path) {
 }
 
 async function main(argv) {
+  if (argv[0] === '--codex-fallback') {
+    if (argv.length !== 2 || !['on', 'off', 'status'].includes(argv[1])) throw Error(usage);
+    if (argv[1] !== 'status') setCodexFallback(argv[1] === 'on');
+    return { codexFallback: readRoutingSettings().codexFallback, path: defaultRoutingPath() };
+  }
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--cloud-fallback') { flags['cloud-fallback'] = true; continue; }

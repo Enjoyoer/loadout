@@ -1,16 +1,17 @@
 // Quota pace for Worker routing. Reads Paceline's `pq --json` (schemaVersion 1) and turns one provider
 // pool into a level step: weekly pace first, then the 5-hour window. Stale or missing data never adjusts.
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 export const PACE_LEVELS = Object.freeze(['medium', 'high', 'xhigh']);
 export const PQ_TIMEOUT_MS = 15000;
 // Owner-tunable in ~/.config/opc/routing.json; pq is an argv run without a shell (a leading ~ is expanded here).
+// codexFallback is the owner's Codex quota mode: true while Codex runs on its fallback account.
 export const ROUTING_DEFAULTS = Object.freeze({
   behindPoints: 10, aheadPoints: 10, resetSoonHours: 24, resetSoonLeftPct: 15,
-  fiveHourNoUpPct: 75, fiveHourDownPct: 90, pq: Object.freeze(['~/.local/bin/pq', '--json']),
+  fiveHourNoUpPct: 75, fiveHourDownPct: 90, pq: Object.freeze(['~/.local/bin/pq', '--json']), codexFallback: false,
 });
 export const defaultRoutingPath = () => join(homedir(), '.config', 'opc', 'routing.json');
 export const POOL_NAMES = Object.freeze({ claude: 'Claude', codex: 'Codex' });
@@ -31,6 +32,9 @@ export function validateRoutingSettings(value, source = 'routing settings') {
         throw Error(`${source}: pq must be a nonempty argv array of strings`);
       }
       settings.pq = Object.freeze([...item]);
+    } else if (key === 'codexFallback') {
+      if (typeof item !== 'boolean') throw Error(`${source}: codexFallback must be true or false`);
+      settings.codexFallback = item;
     } else if (Object.hasOwn(ranges, key)) {
       const [min, max] = ranges[key];
       if (!num(item) || item < min || item > max) throw Error(`${source}: ${key} must be a number from ${min} to ${max}`);
@@ -48,6 +52,23 @@ export function readRoutingSettings({ path = defaultRoutingPath() } = {}) {
   let value;
   try { value = JSON.parse(readFileSync(path, 'utf8')); } catch (error) { throw Error(`${path} is not valid JSON (${error.message})`); }
   return validateRoutingSettings(value, path);
+}
+
+// Set the Codex quota mode in routing.json, keeping its other keys; a file that does not validate is left untouched.
+export function setCodexFallback(on, { path = defaultRoutingPath() } = {}) {
+  if (typeof on !== 'boolean') throw Error('codexFallback must be true or false');
+  let value = {};
+  if (existsSync(path)) {
+    try { value = JSON.parse(readFileSync(path, 'utf8')); } catch (error) { throw Error(`${path} is not valid JSON (${error.message}); fix it first`); }
+  }
+  validateRoutingSettings(value, path);
+  const next = { ...value, codexFallback: on };
+  validateRoutingSettings(next, path);
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`, { flag: 'wx' });
+  renameSync(temp, path);
+  return on;
 }
 
 // A quota reading is { snapshot } or { stale: why }; only a snapshot can move a level.
