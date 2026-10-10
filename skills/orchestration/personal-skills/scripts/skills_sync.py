@@ -20,8 +20,10 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
+import unicodedata
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -44,6 +46,9 @@ OVERLAY_SKIP = {".DS_Store", "__pycache__", OVERLAY_HISTORY}
 # this long for another sync. The file is never deleted, and the OS drops the lock when its holder exits.
 OVERLAY_LOCK = OVERLAY_HISTORY + ".lock"
 OVERLAY_LOCK_SECONDS = 15
+# A path part a Windows host splits, drops or maps (backslash, colon, control character, trailing dot or
+# space, device name); hosts refuse such a path, so the overlay is refused here first.
+NON_PORTABLE = re.compile(r"[\\:\x00-\x1f]|[. ]$|^(con|prn|aux|nul|com\d|lpt\d)(\.|$)", re.I)
 
 
 def payload_files(pub: publication.Publication, only: Optional[set], exclude: set = frozenset()) -> dict:
@@ -98,13 +103,14 @@ def overlay_files(fleet_dir: Path, published: set, prior_by_dest: dict) -> dict:
     if not root.is_dir():
         return {}
     history = overlay_history(fleet_dir)
-    files = {}
+    files, folded = {}, {}
+    published_folded = {name.casefold() for name in published}
     for skill in sorted(root.iterdir()):
         if skill.name.startswith(".") or skill.name in OVERLAY_SKIP:
             continue
         if skill.is_symlink() or not skill.is_dir():
             raise fleet.FleetError(f"overlay entry is not a skill directory: {skill.name}")
-        if skill.name in published:
+        if skill.name.casefold() in published_folded:
             raise fleet.FleetError(f"overlay skill {skill.name} has the same name as a published skill")
         if not (skill / "SKILL.md").is_file():
             raise fleet.FleetError(f"overlay skill {skill.name} has no SKILL.md")
@@ -116,9 +122,15 @@ def overlay_files(fleet_dir: Path, published: set, prior_by_dest: dict) -> dict:
                 raise fleet.FleetError(f"symlink in the overlay: {rel.as_posix()}")
             if not path.is_file():
                 continue
+            dest = rel.as_posix()
+            # Hosts refuse a path that is not portable, or two that are one file on macOS or Windows.
+            key = unicodedata.normalize("NFC", dest).casefold()
+            if any(NON_PORTABLE.search(part) for part in rel.parts) or key in folded:
+                raise fleet.FleetError(f"overlay path is not portable to every host: {dest}"
+                                       + (f" (one file with {folded[key]} on macOS or Windows)" if key in folded else ""))
+            folded[key] = dest
             data = path.read_bytes()
             digest = hashlib.sha256(data).hexdigest()
-            dest = rel.as_posix()
             prior = set(history.get(dest, [])) | prior_by_dest.get(dest, set())
             files[dest] = {"sha256": digest, "data": base64.b64encode(data).decode(), "prior": sorted(prior),
                            "private": True}

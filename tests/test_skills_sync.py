@@ -425,6 +425,13 @@ class SkillsSyncTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("overlay skill bare has no SKILL.md", out)
 
+    @unittest.skipIf(os.name == "nt", "Windows cannot hold such a file name")
+    def test_overlay_path_that_is_not_portable_is_refused(self):
+        self.overlay("mine/SKILL.md", "v1")
+        self.overlay("mine/notes:v1.md", "x")
+        with self.assertRaisesRegex(fleet.FleetError, "overlay path is not portable to every host: mine/notes:v1.md"):
+            skills_sync.overlay_files(self.fleet, {"handoff"}, {})
+
     def test_moved_skill_replaces_its_last_published_copy(self):
         class Pub:
             def prior(self):

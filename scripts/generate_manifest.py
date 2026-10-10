@@ -5,12 +5,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 # Canonical sources that plugins vendor into their own directories; not a plugin, so never published.
 SHARED_PLUGIN_DIR = "_shared"
+# A path part a Windows host splits, drops or maps (backslash, colon, control character, trailing dot or
+# space, device name), so it would install somewhere else there.
+NON_PORTABLE = re.compile(r"[\\:\x00-\x1f]|[. ]$|^(con|prn|aux|nul|com\d|lpt\d)(\.|$)", re.I)
 
 
 def git(*args: str) -> bytes:
@@ -19,12 +24,19 @@ def git(*args: str) -> bytes:
 
 def committed(source: str, kind: str, depth: int) -> list[tuple[str, tuple[str, ...]]]:
     """Path and parts of every committed file under `<kind>s` at source; only regular files qualify."""
-    found = []
+    found, folded = [], {}
     for line in git("ls-tree", "-r", source, "--", f"{kind}s").decode().splitlines():
         meta, path = line.split("\t", 1)
         parts = Path(path).parts
         if len(parts) < depth or parts[0] != f"{kind}s" or any(part in {"", ".", ".."} for part in parts):
             raise SystemExit(f"Invalid {kind} path: {path}")
+        if any(NON_PORTABLE.search(part) for part in parts):
+            raise SystemExit(f"Non-portable {kind} path: {path}")
+        # Two paths that differ only in case or Unicode normalization are one file on macOS and Windows.
+        key = unicodedata.normalize("NFC", path).casefold()
+        if key in folded:
+            raise SystemExit(f"{kind.capitalize()} paths name one file on a case-insensitive host: {folded[key]}, {path}")
+        folded[key] = path
         if meta.split()[0] not in {"100644", "100755"}:
             raise SystemExit(f"Non-regular {kind} file: {path}")
         found.append((path, parts))
