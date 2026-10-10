@@ -142,15 +142,19 @@ Paseo lists workspaces in a stable order, so without help the same first candida
 would get the slots every sweep. Each sweep therefore visits first the workspaces that
 an earlier armed sweep deferred at the cap, longest-waiting first, and then the rest in
 listing order. A deferred workspace keeps its place in that queue until it is attempted
-or stops being eligible, so every eligible workspace is attempted within about
-(eligible candidates / `maxArchivesPerSweep`) sweeps, however many candidates ahead of
-it keep failing. With the cap at 5 and 45 workspaces whose archive call always fails
-listed ahead of 1 healthy one, the healthy one is attempted by the 10th armed sweep.
+or stops being eligible, so in full sweeps (the startup and periodic sweeps) a
+workspace that stays eligible is attempted within about (eligible candidates /
+`maxArchivesPerSweep`) sweeps, however many candidates ahead of it keep failing. The
+bound counts full sweeps of candidates that stay eligible throughout: a scoped sweep
+(after a turn end, or a follow-up) attempts only the workspaces in its scope. With the
+cap at 5 and 45 workspaces whose archive call always fails listed ahead of 1 healthy
+one, all of them eligible throughout, the healthy one is attempted by the 10th armed
+full sweep.
 
-The queue lives in memory only (a plugin reload or daemon restart clears it), and a full
-sweep forgets workspaces that are no longer listed. Only armed sweeps change it: a
-dry-run sweep visits candidates in queue order but attempts nothing, so it leaves the
-queue as it was.
+The queue lives in memory only (a plugin reload or daemon restart clears it), and every
+full sweep, armed or dry-run, drops workspaces that are no longer listed. Apart from
+that, only armed sweeps change it: a dry-run sweep visits candidates in queue order but
+attempts nothing, so listed workspaces keep their places.
 
 ### Back-off after a failed archive call
 
