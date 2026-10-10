@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
 
@@ -16,54 +15,8 @@ sys.path.insert(0, str(SCRIPTS))
 import fleet  # noqa: E402
 import plugins_sync  # noqa: E402
 
-FAKE_SSH = textwrap.dedent(r"""
-    #!/bin/sh
-    [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
-    while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
-    [ "$1" = "--" ] && shift
-    host="$1"; shift
-    unset PASEO_HOME
-    HOME="$FAKE_ROOT/hosts/$host" exec sh -c "$*"
-    """).lstrip()
-
-FAKE_NPM = textwrap.dedent(r"""
-    #!/bin/sh
-    [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
-    echo "npm $* in $PWD" >> "$FAKE_ROOT/calls.log"
-    case "$1" in
-      ci) mkdir -p node_modules ;;
-      run) [ -e "$FAKE_ROOT/fail-check" ] && { echo "check failed: type error" >&2; exit 2; }; true ;;
-    esac
-    """).lstrip()
-
-# Installs record the plugin in $HOME/.paseo/config.json the way the daemon does.
-FAKE_PASEO = textwrap.dedent(r"""
-    #!/bin/sh
-    [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
-    echo "paseo $*" >> "$FAKE_ROOT/calls.log"
-    cfg="$HOME/.paseo/config.json"
-    case "$1 $2" in
-      "--version ") cat "$FAKE_ROOT/paseo-version" ;;
-      "daemon status") [ -e "$FAKE_ROOT/daemon-down" ] && { echo '{"error":{"code":"DAEMON_NOT_RUNNING"}}'; exit 1; }
-        printf '{"localDaemon":"running","daemonVersion":"%s"}
-' "$(cat "$FAKE_ROOT/daemon-version")" ;;
-      "plugin install") [ -e "$FAKE_ROOT/fail-install" ] && { echo "install failed" >&2; exit 1; }; node -e '
-        const fs=require("fs"),path=require("path");const [cfg,dir]=process.argv.slice(1);
-        const c=JSON.parse(fs.readFileSync(cfg,"utf8"));const id=JSON.parse(fs.readFileSync(path.join(dir,"paseo-plugin.json"),"utf8")).id;
-        c.plugins=c.plugins||{};c.plugins[id]={source:"local",path:dir,enabled:true};fs.writeFileSync(cfg,JSON.stringify(c));
-        const s=path.join(path.dirname(cfg),"plugin-settings",id);if(!fs.existsSync(s)){fs.mkdirSync(s,{recursive:true});
-        fs.writeFileSync(path.join(s,"config.json"),"{\"armed\":false}");}' "$cfg" "$3" ;;
-      "plugin remove") node -e '
-        const fs=require("fs"),path=require("path");const [cfg,id]=process.argv.slice(1);
-        const c=JSON.parse(fs.readFileSync(cfg,"utf8"));delete c.plugins[id];fs.writeFileSync(cfg,JSON.stringify(c));
-        fs.rmSync(path.join(path.dirname(cfg),"plugin-settings",id),{recursive:true,force:true});' "$cfg" "$3" ;;
-      "plugin reload") [ -e "$FAKE_ROOT/fail-reload" ] && { echo "reload failed" >&2; exit 1; }; true ;;
-      "plugin ls") node -e '
-        const fs=require("fs");const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const down=fs.existsSync(process.argv[2]);
-        console.log(JSON.stringify(Object.entries(c.plugins||{}).map(([id,p])=>({id,path:p.path,enabled:p.enabled,status:down?"error":"running",error:down?"load failed":null}))));' "$cfg" "$FAKE_ROOT/not-running" ;;
-      *) echo "unexpected: $*" >&2; exit 9 ;;
-    esac
-    """).lstrip()
+from fake_commands import (assert_fake, install_fake_npm, install_fake_plugin_paseo, install_fake_ssh,
+                           with_fake_ssh)
 
 
 def blob(data, prior=()):
@@ -83,17 +36,18 @@ class Fixture(unittest.TestCase):
             self.skipTest("node is required")
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        bin_dir = self.root / "bin"
-        bin_dir.mkdir()
-        for name, body in (("ssh", FAKE_SSH), ("npm", FAKE_NPM), ("paseo", FAKE_PASEO)):
-            (bin_dir / name).write_text(body)
-            (bin_dir / name).chmod(0o755)
+        self.ssh = install_fake_ssh(self.root / "bin")
+        npm = install_fake_npm(self.root / "bin")
+        paseo = install_fake_plugin_paseo(self.root / "bin")
         (self.root / "paseo-version").write_text("0.10.1\n")
         (self.root / "daemon-version").write_text("0.10.1\n")
-        self.env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "FAKE_ROOT": str(self.root)}
-        for name in ("ssh", "npm", "paseo"):
-            done = subprocess.run([name, "--fake-ok"], env=self.env, capture_output=True, text=True)
-            self.assertEqual(done.stdout.strip(), "fake", f"fake {name} is not the binary on PATH")
+        # The host program runs these fakes through its test-only hooks, as argv: never an npm or paseo on PATH.
+        self.env = {"PATH": os.environ["PATH"], "FAKE_ROOT": str(self.root),
+                    "LOADOUT_TEST_NPM": json.dumps(npm), "LOADOUT_TEST_PASEO": json.dumps(paseo)}
+        self.env.update({k: v for k, v in os.environ.items()
+                         if k.upper() in ("SYSTEMROOT", "TEMP", "TMP")})
+        for fake in (self.ssh, npm, paseo):
+            assert_fake(fake, self.env)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -103,7 +57,6 @@ class Fixture(unittest.TestCase):
         return path.read_text() if path.exists() else ""
 
 
-@unittest.skipIf(os.name == "nt", "fake ssh, npm and paseo are POSIX shell scripts")
 class RemotePluginTest(Fixture):
     def setUp(self):
         super().setUp()
@@ -125,7 +78,7 @@ class RemotePluginTest(Fixture):
         files = files or {rel: blob(data) for rel, data in PLUGIN_FILES.items()}
         payload = {"dry_run": dry_run, "migrate_path": migrate, "plugin_root": root, "stage": list(stage), "install": list(install),
                    "plugins": {"demo": {"pin": pin, "files": files}}}
-        env = {**self.env, "HOME": str(self.home)}
+        env = {**self.env, "HOME": str(self.home), "USERPROFILE": str(self.home)}
         raw, digest = fleet.envelope(plugins_sync.REMOTE_JS, payload)
         done = subprocess.run(["node", "-e", fleet.BOOT, "--", digest], input=raw, capture_output=True, text=True, env=env)
         return fleet.parse_result(done.stdout)
@@ -386,7 +339,6 @@ class RemotePluginTest(Fixture):
         self.assertEqual(json.loads(out), [c[1] for c in cases])
 
 
-@unittest.skipIf(os.name == "nt", "fake ssh, npm and paseo are POSIX shell scripts")
 class PluginsSyncDriverTest(Fixture):
     def setUp(self):
         super().setUp()
@@ -400,9 +352,11 @@ class PluginsSyncDriverTest(Fixture):
         (self.fleet / "hosts.json").write_text(json.dumps(hosts))
         (self.root / "hosts/desktop").mkdir(parents=True)
         self.env.update({"HOME": str(self.root / "hosts/laptop"), "LOADOUT_FLEET": str(self.fleet)})
+        self.env["USERPROFILE"] = self.env["HOME"]
+        self.env["APPDATA"] = str(self.root / "hosts/laptop/.config")
 
     def test_stages_the_manifest_bytes_over_ssh(self):
-        done = subprocess.run([sys.executable, str(SCRIPTS / "plugins_sync.py")], env=self.env,
+        done = subprocess.run(with_fake_ssh(SCRIPTS / "plugins_sync.py", self.ssh), env=self.env,
                               capture_output=True, text=True, timeout=120)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("desktop: plugins updated", done.stdout)

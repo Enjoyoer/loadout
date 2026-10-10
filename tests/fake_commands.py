@@ -52,7 +52,7 @@ def main():
         print(f"fake ssh: invalid command: {error}", file=sys.stderr)
         return 2
     env = os.environ.copy()
-    for name in ("CODEX_HOME", "XDG_CONFIG_HOME", "LOADOUT_FLEET"):
+    for name in ("CODEX_HOME", "XDG_CONFIG_HOME", "LOADOUT_FLEET", "PASEO_HOME"):
         env.pop(name, None)
     env["HOME"] = str(root / "hosts" / host)
     env["USERPROFILE"] = env["HOME"]
@@ -298,6 +298,103 @@ raise SystemExit(main())
 '''.lstrip()
 
 
+# Logs each call with its physical working directory; `ci` makes node_modules, and FAKE_ROOT/fail-check fails `run`.
+_FAKE_NPM = r'''
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+if args[:1] == ["--fake-ok"]:
+    print("fake")
+    raise SystemExit(0)
+root = Path(os.environ["FAKE_ROOT"])
+with open(root / "calls.log", "a", encoding="utf-8", newline="\n") as log:
+    log.write(f"npm {' '.join(args)} in {os.path.realpath(os.getcwd())}\n")
+if args[:1] == ["ci"]:
+    os.makedirs("node_modules", exist_ok=True)
+elif args[:1] == ["run"] and (root / "fail-check").exists():
+    sys.stderr.write("check failed: type error\n")
+    raise SystemExit(2)
+'''.lstrip()
+
+
+# The plugin sync's paseo. Installs record the plugin in $HOME/.paseo/config.json the way the daemon does. The
+# versions live in FAKE_ROOT/paseo-version and daemon-version; files there shape faults: daemon-down,
+# fail-install, fail-reload, not-running (plugin ls reports a load error).
+_FAKE_PLUGIN_PASEO = r'''
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+
+def out(stream, text):
+    stream.buffer.write(text.encode())
+    stream.flush()
+
+
+def main():
+    args = sys.argv[1:]
+    if args[:1] == ["--fake-ok"]:
+        out(sys.stdout, "fake\n")
+        return 0
+    root = Path(os.environ["FAKE_ROOT"])
+    with open(root / "calls.log", "a", encoding="utf-8", newline="\n") as log:
+        log.write(f"paseo {' '.join(args)}\n")
+    cfg = Path(os.environ["HOME"]) / ".paseo" / "config.json"
+    first, second, third = (args + ["", "", ""])[:3]
+    key = f"{first} {second}"
+    if key == "--version ":
+        out(sys.stdout, (root / "paseo-version").read_text())
+    elif key == "daemon status":
+        if (root / "daemon-down").exists():
+            out(sys.stdout, '{"error":{"code":"DAEMON_NOT_RUNNING"}}\n')
+            return 1
+        version = (root / "daemon-version").read_text().rstrip("\n")
+        out(sys.stdout, '{"localDaemon":"running","daemonVersion":"%s"}\n' % version)
+    elif key == "plugin install":
+        if (root / "fail-install").exists():
+            out(sys.stderr, "install failed\n")
+            return 1
+        config = json.loads(cfg.read_text(encoding="utf-8"))
+        plugin = json.loads((Path(third) / "paseo-plugin.json").read_text(encoding="utf-8"))["id"]
+        config["plugins"] = config.get("plugins") or {}
+        config["plugins"][plugin] = {"source": "local", "path": third, "enabled": True}
+        cfg.write_text(json.dumps(config, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+        settings = cfg.parent / "plugin-settings" / plugin
+        if not settings.exists():
+            settings.mkdir(parents=True)
+            (settings / "config.json").write_text('{"armed":false}')
+    elif key == "plugin remove":
+        config = json.loads(cfg.read_text(encoding="utf-8"))
+        config["plugins"].pop(third, None)
+        cfg.write_text(json.dumps(config, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+        settings = cfg.parent / "plugin-settings" / third
+        if settings.exists():
+            shutil.rmtree(settings)
+    elif key == "plugin reload":
+        if (root / "fail-reload").exists():
+            out(sys.stderr, "reload failed\n")
+            return 1
+    elif key == "plugin ls":
+        config = json.loads(cfg.read_text(encoding="utf-8"))
+        down = (root / "not-running").exists()
+        listed = [{"id": plugin, **{k: entry[k] for k in ("path", "enabled") if k in entry},
+                   "status": "error" if down else "running", "error": "load failed" if down else None}
+                  for plugin, entry in (config.get("plugins") or {}).items()]
+        out(sys.stdout, json.dumps(listed, separators=(",", ":"), ensure_ascii=False) + "\n")
+    else:
+        out(sys.stderr, f"unexpected: {' '.join(args)}\n")
+        return 9
+    return 0
+
+
+raise SystemExit(main())
+'''.lstrip()
+
+
 # Runs a Loadout script's main() with test-only module hooks set to the fakes (fleet.SSH_COMMAND, and
 # paseo_providers.PASEO_COMMAND when given), so ssh and paseo are never looked up.
 _WITH_FAKES = (
@@ -328,6 +425,16 @@ def install_fake_provider_paseo(bin_dir: Path) -> tuple[str, str]:
     """Write the provider sync's fake paseo and return the prefix for paseo_providers.PASEO_COMMAND and
     LOADOUT_TEST_PASEO."""
     return _install(bin_dir, "fake_provider_paseo.py", _FAKE_PROVIDER_PASEO)
+
+
+def install_fake_npm(bin_dir: Path) -> tuple[str, str]:
+    """Write the Python fake npm and return the [interpreter, script] for LOADOUT_TEST_NPM."""
+    return _install(bin_dir, "fake_npm.py", _FAKE_NPM)
+
+
+def install_fake_plugin_paseo(bin_dir: Path) -> tuple[str, str]:
+    """Write the plugin sync's fake paseo and return the [interpreter, script] for LOADOUT_TEST_PASEO."""
+    return _install(bin_dir, "fake_plugin_paseo.py", _FAKE_PLUGIN_PASEO)
 
 
 def with_fakes(script: Path, *args: str, ssh: tuple[str, str], paseo: tuple[str, str] | None = None) -> list[str]:

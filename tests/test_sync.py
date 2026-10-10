@@ -16,8 +16,6 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills/orchestration/personal-skills/scripts"
 EXAMPLE = REPO / "skills/orchestration/personal-skills/fleet/example"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_plugins_sync import FAKE_NPM  # noqa: E402
-
 FAKE_SSH = textwrap.dedent("""\
     #!/bin/sh
     while [ "$1" = "-o" ] || [ "$1" = "-n" ]; do [ "$1" = "-o" ] && shift; shift; done
@@ -75,6 +73,16 @@ def assert_fakes_run(env, names=("ssh", "paseo")):
         if done.stdout.strip() != "fake":
             raise AssertionError(f"fake {name} is not the binary on PATH")
 
+
+FAKE_NPM = textwrap.dedent(r"""
+    #!/bin/sh
+    [ "$1" = "--fake-ok" ] && { echo fake; exit 0; }
+    echo "npm $* in $PWD" >> "$FAKE_ROOT/calls.log"
+    case "$1" in
+      ci) mkdir -p node_modules ;;
+      run) [ -e "$FAKE_ROOT/fail-check" ] && { echo "check failed: type error" >&2; exit 2; }; true ;;
+    esac
+    """).lstrip()
 
 # Version lives in $HOME/claude-version; `claude update` installs 2.10.0.
 FAKE_CLAUDE = textwrap.dedent(r"""
