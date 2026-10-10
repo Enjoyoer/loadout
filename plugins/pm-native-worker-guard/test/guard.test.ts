@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 import { DEFAULT_NOTICE, defaultConfig } from "../server/config.ts";
-import { TIMELINE_KIND } from "../server/guard.ts";
+import { Guard, TIMELINE_KIND, type GuardStore } from "../server/guard.ts";
 import { PARENT_AGENT_ID_LABEL } from "../server/policy.ts";
-import { CHILD_ID, PM_ID, child, created, entries, fakeApi, harness, pm } from "./fakes.ts";
+import type { NoticeState } from "../server/store.ts";
+import { CHILD_ID, NOW, PM_ID, child, created, entries, fakeApi, harness, pm } from "./fakes.ts";
 
 const NOTICE = `pm-native-worker-guard archived ${CHILD_ID} (codex): ${DEFAULT_NOTICE}`;
 const mutations = (calls: readonly string[]) => calls.filter((call) => !call.startsWith("refresh:"));
@@ -205,6 +206,38 @@ describe("fail safe", () => {
     assert.deepEqual(await h.guard.handleCreated(created({ id: "agent-child-0002" }), api), { action: "skip", reason: "state-unreadable" });
     assert.deepEqual(api.calls, []);
     assert.deepEqual(entries(h.logs).map((entry) => entry.action), ["state-unreadable"]);
+  });
+
+  it("a notice sent but not recorded as sent is never sent again; one not reserved waits", async () => {
+    const h = await harness({ armed: true });
+    const failing = new Set<NoticeState>(["sent"]);
+    const store: GuardStore = {
+      get: (childId) => h.store.get(childId),
+      pendingFor: (parentId) => h.store.pendingFor(parentId),
+      put: async (record, maxEntries) => {
+        if (record.notice && failing.has(record.notice)) throw new Error("disk full");
+        await h.store.put(record, maxEntries);
+      },
+    };
+    const logs: string[] = [];
+    const guard = new Guard({ readConfig: async () => defaultConfig({ armed: true }), store, log: (line) => logs.push(line), now: () => NOW });
+    const api = fakeApi([pm(), child(), child({ id: "agent-child-0002" })]);
+    assert.equal((await guard.handleCreated(created(), api)).action, "archived");
+    assert.equal(api.sent.length, 1);
+    assert.equal((await h.store.get(CHILD_ID))?.notice, "sending");
+    assert.ok(entries(logs).some((entry) => entry.action === "notify-unrecorded"));
+    assert.ok(!entries(logs).some((entry) => entry.action === "notify-sent"));
+    await guard.handleTurnEnded({ id: PM_ID }, api);
+    assert.equal(api.sent.length, 1);
+
+    failing.add("sending");
+    assert.equal((await guard.handleCreated(created({ id: "agent-child-0002" }), api)).action, "archived");
+    assert.equal(api.sent.length, 1);
+    assert.equal((await h.store.get("agent-child-0002"))?.notice, "pending");
+    failing.clear();
+    await guard.handleTurnEnded({ id: PM_ID }, api);
+    assert.equal(api.sent.length, 2);
+    assert.match(api.sent[1]?.text ?? "", /archived agent-child-0002 /);
   });
 
   it("a parent whose state cannot be read is not interrupted; the notice waits", async () => {

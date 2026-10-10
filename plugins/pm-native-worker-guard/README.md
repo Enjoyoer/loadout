@@ -90,6 +90,12 @@ Pi agents produce no log line. Native agents produce one line each.
    - an archived or missing PM gets nothing (`notify-dropped`). A failed send is logged
      and not retried.
 
+   Each notice is recorded as `sending` before it goes out. A notice whose outcome cannot
+   be recorded (the state write fails after the send, or the plugin stops mid-send) stays
+   `sending` and is never sent again (`notify-unrecorded`), so a disk failure or a restart
+   cannot repeat it. If the `sending` record cannot be written, nothing is sent and the
+   notice waits for the PM's next turn end.
+
 The plugin never deletes anything, never edits `~/.paseo/config.json`, and never acts
 on the PM itself.
 
@@ -128,8 +134,8 @@ flushed, and a host crash soon after a write can bring back the previous state. 
 process or after a reload, does nothing and logs nothing. An SDK error is therefore
 logged once and the child is never retried. A dry-run decision is not replayed when the
 plugin is armed later. When armed, the decision is recorded before the archive call; if
-that write fails, nothing is done. An unreadable or invalid state file stops all action
-and is logged once per process.
+that write fails, nothing is done. An unreadable or invalid state file, including one
+with a malformed record, stops all action and is logged once per process.
 
 ## Logs
 
@@ -147,6 +153,7 @@ One stdout line per decision (`paseo plugin logs pm-native-worker-guard`):
 | `archived` | Stopped and archived (`childStatus` is the status read just before). |
 | `archive-failed` | The archive call failed; the PM is not notified. |
 | `notify-sent` / `notify-deferred` / `notify-dropped` / `notify-failed` | Notice to the PM. |
+| `notify-unrecorded` | The notice was sent but not recorded as sent; it stays `sending` and is never sent again. |
 | `timeline-row-failed` | The timeline row on a mid-turn PM could not be appended. |
 | `state-unreadable` / `state-write-failed` / `config-invalid` / `config-unreadable` | Fail-safe conditions. |
 

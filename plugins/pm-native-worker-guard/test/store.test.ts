@@ -37,3 +37,11 @@ it("throws on an invalid state file instead of treating it as empty", async () =
   await writeFile(file, "{");
   await assert.rejects(new StateStore(file).get("c1"));
 });
+
+it("throws on a state file whose records are malformed", async () => {
+  const file = await tempStatePath();
+  for (const handled of [[null], [{ ...record("c1"), outcome: "deleted" }], [{ ...record("c1"), at: "not-a-date" }], [{ ...record("c1"), notice: 1 }]]) {
+    await writeFile(file, JSON.stringify({ version: 1, handled }));
+    await assert.rejects(new StateStore(file).get("c1"), /invalid state file/);
+  }
+});
