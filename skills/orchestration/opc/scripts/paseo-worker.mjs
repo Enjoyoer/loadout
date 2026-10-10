@@ -14,12 +14,18 @@ function adapter(value, name) {
   return value;
 }
 
+// Labels the builder derives from the validated route: the Pi Fast toggle tier, its legacy form, and the route source.
+// Caller labels are descriptive only, so a reused label set can never turn Fast on for a Fast-off route.
+const ROUTE_LABELS = Object.freeze(['opc.service-tier', 'opc.fast-requested', 'opc.route-source']);
+
 function labels(value) {
   if (value == null) return {};
   if (typeof value !== 'object' || Array.isArray(value) ||
       Object.values(value).some(item => typeof item !== 'string')) {
     throw Error('Worker labels must be string values');
   }
+  const reserved = ROUTE_LABELS.find(key => Object.hasOwn(value, key));
+  if (reserved) throw Error(`Worker labels cannot set ${reserved}; the Worker's validated route decides it`);
   return { ...value };
 }
 
@@ -93,10 +99,11 @@ export function buildManagedWorkspaceRequest({ taskId, lane, sourcePath, baseBra
 
 // task is the destination task record (readTask) whose id is taskId, and taskClass the lane's intended class; with them
 // a recorded lane takes only its recorded route and every route meets the class's owner rules (agent-routing.mjs
-// validateLaunchedWorkerRoute).
+// validateLaunchedWorkerRoute). The request always creates a Worker, so it is routed and gated only as one.
 export function buildManagedWorkerRequest({ taskId, lane, title, provider, initialPrompt,
   agentSettings = {}, workerLabels = {}, workspace, capabilities, role = 'worker', route, surface = 'pi',
   nativeAuthorization = null, task = null, taskClass = null }) {
+  if (role !== 'worker') throw Error(`buildManagedWorkerRequest builds only Workers (role worker), not ${String(role)}`);
   const names = managedWorkerNames({ taskId, lane });
   const agentTitle = required(title, 'Worker title');
   if (task != null && task.id !== taskId) throw Error('Worker task id must be the bound task record id');

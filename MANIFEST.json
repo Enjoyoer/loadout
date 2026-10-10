@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "f4a4ae6802aa524ba6c16f5342de0eef5937c2ba",
+  "source_commit": "da58eb01f79668da3cdd9a365f8cc1d727d05b87",
   "skill_count": 22,
   "file_count": 128,
   "files": [
@@ -192,7 +192,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5408,
-      "sha256": "3f63260f5baceedcd7693cd8bd435cc3cf0678b73a4f1c1d391857edb4170216"
+      "sha256": "c190e2c31e998686ce8234965b6603739a7a93c428cee2af674af9779ebd9edc"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -310,15 +310,15 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 28237,
-      "sha256": "5debb6e5eb2deacab504d83791d4cf2ad04eafefb10c3f1bd42503b53d27ca2f"
+      "bytes": 29791,
+      "sha256": "ebfd62724852143521f563c21984ec95da0e87c2314cd08913be1fbef6a8fa48"
     },
     {
       "path": "skills/orchestration/opc/scripts/cloud-lane.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 31492,
-      "sha256": "ba24e4f0fe59bf77408d6e1faa67f0b74ed6aceef3ecf3353d45714cec7c35dd"
+      "bytes": 31706,
+      "sha256": "547dfe0028998f9befd3c0f15640a370af06f2526ef7c42745131300e47f21ec"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -331,8 +331,8 @@
       "path": "skills/orchestration/opc/scripts/paseo-worker.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 8776,
-      "sha256": "7c131e9aa700f8892789d339d0ec5530a7ea29150ec9d18faea5540441650b1d"
+      "bytes": 9483,
+      "sha256": "8da3ae2324fd14daadee6054288afd423b04283eae548ba38fdfe73c0517246f"
     },
     {
       "path": "skills/orchestration/opc/scripts/planner.mjs",
