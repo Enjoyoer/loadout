@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { it, mock } from "node:test";
@@ -8,7 +8,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server.ts";
 import { ConfigSchema } from "../server/config.ts";
 import { buildRecord, type AgentSnapshot, type ResumeRecord } from "../server/model.ts";
-import { ResumeStore } from "../server/store.ts";
+import { MAX_SETTLED_RECORDS, ResumeStore } from "../server/store.ts";
 
 const agent: AgentSnapshot = {
   id: "agent-1",
@@ -396,6 +396,279 @@ it("keeps the turn from a claim when it starts while the rollback write is still
       else process.env.PASEO_HOME = previousHome;
     }
     // Windows can still hold a just-written file open for a moment; retry rather than mask a failure.
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  }
+});
+
+it("sends nothing when a permission request's decision lands between the send gates and the resume claim", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-claim-"));
+  const plugins = pluginTracker();
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  const originalLog = console.log;
+  const logs: string[] = [];
+  console.log = (line: string) => { logs.push(line); };
+  try {
+    const config = ConfigSchema.parse({ armed: true });
+    const record: ResumeRecord = { ...buildRecord(agent, "out of credits", undefined, config, Date.now() - 6 * 3600_000, "turn-1")!, state: "parked" };
+    const store = new ResumeStore();
+    await store.upsert(record);
+    const handlers = new Map<string, (event: unknown) => void>();
+    let sends = 0;
+    // The gates have passed and the claim is the sweep's first store write. Deliver the permission request first and
+    // let its handler store its decision before the claim's write runs.
+    let holdClaim = true;
+    let permissionStored: Promise<void> | null = null;
+    const update = ResumeStore.prototype.update;
+    mock.method(ResumeStore.prototype, "update", function (this: ResumeStore, ...args: Parameters<ResumeStore["update"]>) {
+      if (!holdClaim) return update.apply(this, args);
+      holdClaim = false;
+      handlers.get("agent.permission_requested")!({ agent: { id: agent.id } });
+      permissionStored = (async () => {
+        for (let attempt = 0; attempt < 200 && (await store.read())[0]?.state !== "uncertain"; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+      })();
+      return permissionStored.then(() => update.apply(this, args));
+    });
+    const open = async () => ({
+      getConnectionState: () => ({ status: "connected" }),
+      close: async () => undefined,
+      agents: { ref: () => ({
+        refresh: async () => ({ agent }),
+        send: async () => { sends += 1; },
+      }) },
+    } as unknown as PaseoClient);
+    const server = {
+      registerSettings: () => ({ read: async () => ({ status: "ready", revision: "r1", values: config }) }),
+      on: (name: string, handler: (event: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
+    } as unknown as PluginServerContext;
+    const cleanup = plugins.start(server, open);
+    await until(() => logs.some((line) => line.includes("send-skipped") || line.includes("resume-sent")));
+    assert.ok(permissionStored, "the claim's write was held behind the permission request");
+    await permissionStored;
+    (cleanup as () => void)();
+    assert.equal(sends, 0);
+    const [stored] = await store.read();
+    assert.equal(stored?.state, "uncertain");
+    assert.equal(stored?.terminalReason, "permission-requested");
+    assert.deepEqual(stored?.attempts, []);
+  } finally {
+    try {
+      await plugins.dispose(home);
+    } finally {
+      mock.restoreAll();
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  }
+});
+
+it("keeps verifying a long resumed turn whose only newer user message is the resume itself", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-verify-"));
+  const plugins = pluginTracker();
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  const originalLog = console.log;
+  const logs: string[] = [];
+  console.log = (line: string) => { logs.push(line); };
+  mock.timers.enable({ apis: ["setInterval"] });
+  try {
+    const config = ConfigSchema.parse({ armed: true, pollIntervalSeconds: 5 });
+    const record = buildRecord(agent, "out of credits", undefined, config, Date.now() - 6 * 3600_000, "turn-1")!;
+    const store = new ResumeStore();
+    await store.upsert(record);
+    const handlers = new Map<string, (event: unknown) => void>();
+    let settingsReads = 0;
+    let snapshot: AgentSnapshot = agent;
+    let latestUser: { type: "user_message"; text: string; messageId: string } | null = null;
+    const open = async () => ({
+      getConnectionState: () => ({ status: "connected" }),
+      close: async () => undefined,
+      agents: { ref: () => ({
+        refresh: async () => ({ agent: snapshot }),
+        send: async (text: string, options: { messageId: string }) => {
+          // The resume is a user message: the agent's latest user time moves on and the resumed turn keeps running.
+          latestUser = { type: "user_message", text, messageId: options.messageId };
+          snapshot = { ...agent, status: "running", activeTurn: { turnId: "turn-2" }, lastUserMessageAt: new Date().toISOString() };
+          handlers.get("agent.turn_started")!({ turnId: "turn-2", agent: { id: agent.id } });
+        },
+        timeline: { refetch: async () => ({ entries: latestUser ? [{ item: latestUser }] : [], error: null, gap: false, staleCursor: false, hasNewer: false }) },
+      }) },
+    } as unknown as PaseoClient);
+    const server = {
+      registerSettings: () => ({ read: async () => { settingsReads += 1; return { status: "ready", revision: "r1", values: config }; } }),
+      on: (name: string, handler: (event: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
+    } as unknown as PluginServerContext;
+    const cleanup = plugins.start(server, open);
+    await until(() => logs.some((line) => line.includes("resume-sent")));
+    await completeNextSweep(() => settingsReads, 5000);
+    let [stored] = await store.read();
+    assert.equal(stored?.state, "verifying");
+    assert.equal(stored?.resumeTurnId, "turn-2");
+    assert.equal(stored?.lastUserMessageAt, snapshot.lastUserMessageAt);
+    // A genuinely newer request still supersedes the record.
+    latestUser = { type: "user_message", text: "Stop and do something else.", messageId: "user-2" };
+    snapshot = { ...snapshot, lastUserMessageAt: new Date(Date.now() + 1000).toISOString() };
+    await completeNextSweep(() => settingsReads, 5000);
+    [stored] = await store.read();
+    assert.equal(stored?.state, "superseded");
+    assert.equal(stored?.terminalReason, "newer-user-message");
+    (cleanup as () => void)();
+  } finally {
+    try {
+      await plugins.dispose(home);
+    } finally {
+      mock.timers.reset();
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  }
+});
+
+it("sends nothing when a newer user turn starts and ends while the claim is being written", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-unsent-"));
+  const plugins = pluginTracker();
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  const originalLog = console.log;
+  const logs: string[] = [];
+  console.log = (line: string) => { logs.push(line); };
+  let releaseClaimWrite!: () => void;
+  const claimWriteGate = new Promise<void>((resolve) => { releaseClaimWrite = resolve; });
+  try {
+    const config = ConfigSchema.parse({ armed: true });
+    const record = buildRecord(agent, "out of credits", undefined, config, Date.now() - 6 * 3600_000, "turn-1")!;
+    const store = new ResumeStore();
+    await store.upsert(record);
+    const handlers = new Map<string, (event: unknown, context?: unknown) => void>();
+    let sends = 0;
+    let snapshot: AgentSnapshot = agent;
+    const api = { agents: { ref: () => ({ refresh: async () => ({ agent: snapshot }) }) } };
+    // Hold the claim's persist; meanwhile the user sends a message whose turn starts and ends.
+    let held = false;
+    type Persisting = { persist(records: ResumeRecord[]): Promise<void> };
+    const persist = (ResumeStore.prototype as unknown as Persisting).persist;
+    mock.method(ResumeStore.prototype as unknown as Persisting, "persist", async function (this: Persisting, records: ResumeRecord[]) {
+      if (!held && records.find((value) => value.recordId === record.recordId)?.state === "resuming") {
+        held = true;
+        snapshot = { ...agent, lastUserMessageAt: new Date().toISOString() };
+        handlers.get("agent.turn_started")!({ turnId: "turn-2", agent: { id: agent.id } });
+        handlers.get("agent.turn_ended")!({
+          turnId: "turn-2",
+          agent: { id: agent.id },
+          outcome: { kind: "completed" },
+          timeline: [{ type: "user_message", text: "Do something else.", messageId: "user-2" }, { type: "assistant_message", text: "Done." }],
+        }, { paseo: api });
+        await claimWriteGate;
+      }
+      return persist.call(this, records);
+    });
+    const open = async () => ({
+      getConnectionState: () => ({ status: "connected" }),
+      close: async () => undefined,
+      agents: { ref: () => ({
+        refresh: async () => ({ agent: snapshot }),
+        send: async () => { sends += 1; },
+      }) },
+    } as unknown as PaseoClient);
+    const server = {
+      registerSettings: () => ({ read: async () => ({ status: "ready", revision: "r1", values: config }) }),
+      on: (name: string, handler: (event: unknown, context?: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
+    } as unknown as PluginServerContext;
+    const cleanup = plugins.start(server, open);
+    await until(() => held);
+    releaseClaimWrite();
+    await until(() => logs.some((line) => line.includes("send-skipped") || line.includes("resume-sent")));
+    (cleanup as () => void)();
+    await plugins.dispose(home);
+    assert.equal(sends, 0);
+    const records = await store.read();
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.state, "superseded");
+    assert.equal(records[0]?.resumeTurnId, null);
+    assert.deepEqual(records[0]?.attempts, []);
+  } finally {
+    releaseClaimWrite();
+    try {
+      await plugins.dispose(home);
+    } finally {
+      mock.restoreAll();
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  }
+});
+
+it("treats a repeated turn as handled after the history bound, through an uncertain record or a pruned record's guard", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-guard-"));
+  const plugins = pluginTracker();
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  const originalLog = console.log;
+  const logs: string[] = [];
+  console.log = (line: string) => { logs.push(line); };
+  try {
+    const config = ConfigSchema.parse({ armed: true });
+    const seen = { ...agent, lastUserMessageAt: "2026-01-01T00:00:00.000Z" };
+    const settle = (state: "done" | "uncertain", turn: string, updatedAt: string): ResumeRecord => ({ ...buildRecord(seen, "out of credits", undefined, config, Date.now(), turn)!, state, updatedAt });
+    const uncertain = settle("uncertain", "turn-uncertain", "2026-01-01T00:00:00.000Z");
+    const done = settle("done", "turn-done", "2026-01-01T00:00:01.000Z");
+    const newer = Array.from({ length: MAX_SETTLED_RECORDS }, (_, n) => settle("done", `turn-${n}`, new Date(Date.parse("2026-02-01T00:00:00.000Z") + n * 1000).toISOString()));
+    await mkdir(path.join(home, "plugin-state", "usage-limit-auto-resume"), { recursive: true });
+    await writeFile(path.join(home, "plugin-state", "usage-limit-auto-resume", "state.json"), JSON.stringify({ version: 2, records: [uncertain, done, ...newer] }));
+    const store = new ResumeStore();
+    // One more settled record goes past the bound: the oldest done record leaves only its guard.
+    await store.upsert(settle("done", "turn-last", "2026-03-01T00:00:00.000Z"));
+    const kept = (await store.read()).map((record) => record.recordId);
+    const handlers = new Map<string, (event: unknown, context?: unknown) => void>();
+    let sends = 0;
+    // The agent's model changed, so a record built for either turn now has another config fingerprint and record ID.
+    const changed: AgentSnapshot = { ...seen, model: "other-model" };
+    const user = { type: "user_message", text: "Process the queue.", messageId: "user-1" };
+    const api = {
+      agents: { ref: () => ({
+        refresh: async () => ({ agent: changed }),
+        timeline: { refetch: async () => ({ entries: [{ item: user }], error: null, gap: false, staleCursor: false, hasNewer: false }) },
+        send: async () => { sends += 1; },
+      }) },
+    };
+    const open = async () => ({ getConnectionState: () => ({ status: "connected" }), close: async () => undefined, ...api } as unknown as PaseoClient);
+    const server = {
+      registerSettings: () => ({ read: async () => ({ status: "ready", revision: "r1", values: config }) }),
+      on: (name: string, handler: (event: unknown, context?: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
+    } as unknown as PluginServerContext;
+    const cleanup = plugins.start(server, open);
+    const before = (await store.read()).length;
+    for (const turnId of [uncertain.sourceTurnId, done.sourceTurnId]) {
+      handlers.get("agent.turn_ended")!({
+        turnId,
+        agent: { id: agent.id },
+        outcome: { kind: "failed", error: { message: "Selected model is at capacity. Please try a different model." } },
+        timeline: [user],
+      }, { paseo: api });
+    }
+    await until(() => logs.filter((line) => /duplicate-turn|duplicate-detected|detected kind=/.test(line)).length === 2);
+    (cleanup as () => void)();
+    await plugins.dispose(home);
+    assert.equal(sends, 0);
+    assert.equal((await store.read()).length, before);
+    assert.equal(logs.filter((line) => line.includes("duplicate-turn")).length, 2);
+    // One turn was answered by the uncertain record past the bound, the other by the done record's guard alone.
+    assert.ok(kept.includes(uncertain.recordId));
+    assert.ok(!kept.includes(done.recordId));
+  } finally {
+    try {
+      await plugins.dispose(home);
+    } finally {
+      console.log = originalLog;
+      if (previousHome === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = previousHome;
+    }
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
 });
