@@ -14,22 +14,37 @@ export interface WriteJsonOptions {
   mode?: number;
 }
 
-// Windows refuses to replace a file that another process, often a virus scanner or an
-// indexer, briefly holds open, and reports EPERM or EBUSY. Node does not retry, so this does.
-const RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320];
+/** A failed write whose temp file could not be removed either; the message names the temp file. */
+export interface LeftTempError extends Error {
+  tempFile: string;
+  tempCleanupError: unknown;
+}
 
-async function renameOver(from: string, to: string): Promise<void> {
+// Windows refuses to replace or remove a file that another process, often a virus scanner
+// or an indexer, briefly holds open, and reports EPERM or EBUSY. Node does not retry, so this does.
+const BUSY_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320];
+
+async function retryWhileBusy(operation: () => Promise<void>): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
-      await rename(from, to);
+      await operation();
       return;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      const wait = RENAME_RETRY_DELAYS_MS[attempt];
+      const wait = BUSY_RETRY_DELAYS_MS[attempt];
       if (process.platform !== "win32" || (code !== "EPERM" && code !== "EBUSY") || wait === undefined) throw error;
       await delay(wait);
     }
   }
+}
+
+function withLeftTemp(error: unknown, tempFile: string, tempCleanupError: unknown): LeftTempError {
+  const failure = (error instanceof Error ? error : new Error(String(error))) as LeftTempError;
+  const reason = tempCleanupError instanceof Error ? tempCleanupError.message : String(tempCleanupError);
+  failure.message += `; temp file ${tempFile} was left behind: ${reason}`;
+  failure.tempFile = tempFile;
+  failure.tempCleanupError = tempCleanupError;
+  return failure;
 }
 
 /**
@@ -37,7 +52,8 @@ async function renameOver(from: string, to: string): Promise<void> {
  * sees the old file or the new one, never a partial write. The text goes to a uniquely
  * named temp file in the same directory, created exclusively so an existing file or link
  * at that name is never followed, then flushed to disk and renamed over filePath. The
- * temp file is removed on any failure. The directory must already exist.
+ * temp file is removed on any failure; if that fails too, the write's error is thrown as
+ * a LeftTempError. The directory must already exist.
  */
 export async function writeJsonAtomically(filePath: string, value: unknown, options: WriteJsonOptions = {}): Promise<void> {
   const text = JSON.stringify(value, null, 2);
@@ -53,9 +69,15 @@ export async function writeJsonAtomically(filePath: string, value: unknown, opti
     } finally {
       await handle.close();
     }
-    await renameOver(temp, filePath);
+    await retryWhileBusy(() => rename(temp, filePath));
   } catch (error) {
-    if (created) await rm(temp, { force: true }).catch(() => undefined);
+    if (created) {
+      try {
+        await retryWhileBusy(() => rm(temp, { force: true }));
+      } catch (cleanupError) {
+        throw withLeftTemp(error, temp, cleanupError);
+      }
+    }
     throw error;
   }
 }
