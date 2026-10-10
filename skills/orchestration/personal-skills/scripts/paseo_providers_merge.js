@@ -1,8 +1,10 @@
 // Merge pinned Paseo provider fields into this host's Paseo config.
 // Shipped gzip+base64 by paseo_providers.py; argv[2] is the gzip+base64 JSON payload:
 // {host, providers, env, required_env, stamp, dry_run, config_path}.
-const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib");
+// It ships without whole-line comments and indentation (merge_program), so it holds no multiline string.
+const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toString());
+// wrote: this run changed, or may have changed, the host (its config or its Pi runtime), so a reload is owed.
 const result = { host: p.host, changed: false, wrote: false, backup: null, preserved: [], verified: false, error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
@@ -16,7 +18,7 @@ function labelsMatch(providers) {
 }
 try {
   const cfgPath = p.config_path || path.join(process.env.PASEO_HOME || path.join(os.homedir(), ".paseo"), "config.json");
-  const raw = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, "utf8") : "{}";
+  const read = () => fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, "utf8") : "{}";
   const expand = value => value.replace(/^~(?=[/\\]|$)/, os.homedir())
     .replace(/%([^%]+)%/g, (_, key) => {
       // A host value lands in config.json and its backups in plain text, so never copy a secret.
@@ -30,6 +32,24 @@ try {
     : Array.isArray(value) ? value.map(visit) : value && typeof value === 'object'
       ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, visit(v)])) : value;
   p.providers = visit(p.providers);
+  // The pinned rows merged into one config revision, with the required env checked on the result. It changes
+  // nothing, so it runs before the Pi runtime is touched, and again on any newer revision before publishing.
+  const merge = raw => {
+    const cfg = JSON.parse(raw), agents = cfg.agents || {}, prev = agents.providers || {};
+    const merged = Object.assign({}, prev);
+    for (const k of Object.keys(p.providers)) merged[k] = Object.assign({}, prev[k] || {}, p.providers[k]);
+    for (const k of Object.keys(p.env)) {
+      merged[k] = Object.assign({}, merged[k] || {});
+      merged[k].env = Object.assign({}, (prev[k] || {}).env || {}, p.env[k]);
+    }
+    const missing = [];
+    for (const k of Object.keys(p.required_env))
+      for (const key of p.required_env[k]) if (!((merged[k] || {}).env || {})[key]) missing.push(k + "." + key);
+    if (missing.length) throw new Error("required env missing: " + missing.join(", "));
+    return { raw, prev, merged, rows: JSON.stringify(prev) !== JSON.stringify(merged),
+             text: JSON.stringify({ ...cfg, agents: { ...agents, providers: merged } }, null, 2) };
+  };
+  let m = merge(read());
   if (p.pi) {
     const {spawnSync} = require('child_process');
     const runtimeRoot = expand(p.pi.root);
@@ -42,8 +62,8 @@ try {
         : spawnSync('paseo',['daemon','status','--json'],{env,encoding:'utf8'});
       const daemon=status.status===0 ? JSON.parse(status.stdout) : {};
       // >=0.10.3 <0.12.0, release versions only.
-      const m=/^(\d+)\.(\d+)\.(\d+)$/.exec(typeof daemon.daemonVersion==='string'?daemon.daemonVersion:'');
-      const v=m?m.slice(1).map(Number):null, cmp=(a,b)=>a[0]-b[0]||a[1]-b[1]||a[2]-b[2];
+      const got=/^(\d+)\.(\d+)\.(\d+)$/.exec(typeof daemon.daemonVersion==='string'?daemon.daemonVersion:'');
+      const v=got?got.slice(1).map(Number):null, cmp=(a,b)=>a[0]-b[0]||a[1]-b[1]||a[2]-b[2];
       if(!v||cmp(v,[0,10,3])<0||cmp(v,[0,12,0])>=0||daemon.connectedDaemon!=='reachable') throw Error('reachable stock Paseo >=0.10.3 <0.12.0 required for Pi sync');
     }
     const pkg = path.join(runtimeRoot, 'app/node_modules/@earendil-works/pi-coding-agent/package.json');
@@ -56,38 +76,47 @@ try {
       const args=[path.join(temp,'configure.py'),'--spec',spec,'--root',runtimeRoot];
       if(p.dry_run) args.push('--dry-run');
       const configured=spawnSync(p.pi.runtime.python || (process.platform==='win32'?'python':'python3'),args,{encoding:'utf8'});
-      if(configured.status!==0) throw Error('Pi runtime configuration failed');
-      result.pi=JSON.parse(configured.stdout);
+      let report=null;
+      try { report=configured.status===0 ? JSON.parse(configured.stdout) : null; } catch (e) { /* below */ }
+      if(!report) {
+        // configure.py backs up and replaces runtime files one by one, so unless it never started, a failure can
+        // leave some written: they count as written, and the reload they need stays owed.
+        if(!p.dry_run && !configured.error) result.wrote=true;
+        throw Error('Pi runtime configuration failed'+(result.wrote?'; runtime files may have changed':''));
+      }
+      result.pi=report;
+      if(!p.dry_run && report.changed.length) result.wrote=true;
     } finally {fs.rmSync(temp,{recursive:true,force:true});}
   }
-  const cfg = JSON.parse(raw);
-  cfg.agents = cfg.agents || {};
-  const prev = cfg.agents.providers || {};
-  const merged = Object.assign({}, prev);
-  for (const k of Object.keys(p.providers)) merged[k] = Object.assign({}, prev[k] || {}, p.providers[k]);
-  for (const k of Object.keys(p.env)) {
-    merged[k] = Object.assign({}, merged[k] || {});
-    merged[k].env = Object.assign({}, (prev[k] || {}).env || {}, p.env[k]);
+  let published = false;
+  if (!p.dry_run) {
+    // Replace the config only while it still holds the revision this merge read. A change another writer (the
+    // daemon, an editor) made since then is merged again, never overwritten, and the backup is the revision
+    // replaced, under a name no other run uses.
+    for (let attempt = 1; ; attempt++) {
+      const raw = read();
+      if (raw !== m.raw) m = merge(raw);
+      if (!m.rows) break;
+      if (attempt > 3) throw new Error("config.json kept changing during the merge; it was not replaced");
+      const tag = p.stamp + "-" + crypto.randomBytes(4).toString("hex");
+      const bak = cfgPath + ".bak-loadout-" + tag, next = cfgPath + ".loadout-next-" + tag;
+      fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+      fs.writeFileSync(bak, m.raw, { mode: 0o600, flag: "wx" });
+      if (fs.readFileSync(bak, "utf8") !== m.raw) throw new Error("backup failed: " + bak);
+      fs.writeFileSync(next, m.text, { mode: 0o600, flag: "wx" });
+      if (read() === m.raw) {
+        fs.renameSync(next, cfgPath);
+        result.backup = path.basename(bak);
+        result.wrote = published = true;
+        break;
+      }
+      fs.rmSync(next, { force: true });
+      fs.rmSync(bak, { force: true });
+    }
   }
-  const missing = [];
-  for (const k of Object.keys(p.required_env))
-    for (const key of p.required_env[k]) if (!((merged[k] || {}).env || {})[key]) missing.push(k + "." + key);
-  if (missing.length) throw new Error("required env missing: " + missing.join(", "));
-  result.preserved = Object.keys(prev).filter(k => !(k in p.providers) && !(k in p.env));
-  result.changed = Boolean(result.pi?.changed?.length) || JSON.stringify(prev) !== JSON.stringify(merged);
-  if (result.changed && !p.dry_run) {
-    const bak = cfgPath + ".bak-loadout-" + p.stamp;
-    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-    fs.writeFileSync(bak, raw, { mode: 0o600 });
-    if (fs.readFileSync(bak, "utf8") !== raw) throw new Error("backup failed: " + bak);
-    result.backup = path.basename(bak);
-    cfg.agents.providers = merged;
-    const next = cfgPath + ".loadout-next";
-    fs.writeFileSync(next, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-    fs.renameSync(next, cfgPath);
-    result.wrote = true;
-  }
-  const now = result.wrote ? JSON.parse(fs.readFileSync(cfgPath, "utf8")).agents.providers : merged;
+  result.preserved = Object.keys(m.prev).filter(k => !(k in p.providers) && !(k in p.env));
+  result.changed = Boolean(result.pi?.changed?.length) || m.rows;
+  const now = published ? JSON.parse(fs.readFileSync(cfgPath, "utf8")).agents.providers : m.merged;
   result.verified = labelsMatch(now);
   done(result.verified ? 0 : 4);
 } catch (e) {

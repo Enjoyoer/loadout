@@ -407,6 +407,71 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             churn=derive(source,pi);self.assertEqual(churn['catalog_model_id'],'fleet/backend-next')
             self.assertEqual(churn['runtime']['settings']['defaultModel'],'backend-next')
 
+    def pi_merge_fixture(self, base):
+        """A Pi provider catalog, an installed Pi package and a stock daemon on PATH; returns (catalog, run)."""
+        sys.path.insert(0,str(PI));sys.path.insert(0,str(PI.parent))
+        import gzip,base64,paseo_providers
+        package=base/'pi/app/node_modules/@earendil-works/pi-coding-agent/package.json';package.parent.mkdir(parents=True);package.write_text('{"version":"1.0.0"}')
+        bin_dir=base/'bin';bin_dir.mkdir();paseo=bin_dir/'paseo';paseo.write_text("#!/bin/sh\necho '{\"daemonVersion\":\"0.10.3\",\"connectedDaemon\":\"reachable\"}'\n");paseo.chmod(0o755)
+        source={'codex':{'models':[{'id':'backend-current','label':'Luna','isDefault':True,'thinkingOptions':[{'id':'max','label':'Max','isDefault':True}]}]}}
+        pi={'root':str(base/'pi'),'runtime':{'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'EXISTING_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'}}}
+        env={**os.environ,'PATH':str(bin_dir)+os.pathsep+os.environ['PATH']}
+        def run(catalog):
+            data=paseo_providers.payload(catalog,'example','test',False);data['config_path']=str(base/'config.json')
+            packed=base64.b64encode(gzip.compress(json.dumps(data).encode())).decode()
+            done=subprocess.run(['node',str(PI.parent/'paseo_providers_merge.js'),packed],env=env,capture_output=True,text=True)
+            return paseo_providers.parse_result(done.stdout) or {'error':done.stdout+done.stderr}
+        return {'providers':source,'pi':pi}, run
+
+    @unittest.skipIf(os.name == "nt", "fake paseo is a POSIX shell script")
+    def test_pi_runtime_waits_for_a_valid_config_and_every_runtime_write_owes_a_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);config=base/'config.json';config.write_text('{"agents":{"providers":{}}}')
+            catalog,run=self.pi_merge_fixture(base)
+            runtime=base/'pi/runtime.json'
+            # A required provider env is missing: the host fails before anything on it changes.
+            catalog['hosts']={'example':{'required_env':{'codex':['EXAMPLE_BASE_URL']}}}
+            got=run(catalog)
+            self.assertEqual(got['error'],'required env missing: codex.EXAMPLE_BASE_URL')
+            self.assertFalse(got['wrote'])
+            self.assertFalse(runtime.exists())
+            self.assertEqual(config.read_text(),'{"agents":{"providers":{}}}')
+            catalog['env']={'codex':{'EXAMPLE_BASE_URL':'https://router.example.test'}}
+            got=run(catalog)
+            self.assertEqual((got['error'],got['wrote']),(None,True))
+            self.assertTrue(runtime.exists())
+            # A runtime-only change leaves config.json alone but still counts as a write, so a reload is owed.
+            catalog['pi']['runtime']['paseoMcp']['url']='http://127.0.0.1:6768/mcp/agents'
+            got=run(catalog)
+            self.assertEqual((got['error'],got['changed'],got['wrote'],got['backup']),(None,True,True,None))
+            self.assertEqual(got['pi']['changed'],['runtime.json'])
+            # A configure run that fails may have written some files: it counts as a write too.
+            fail=base/'fail-python';fail.write_text('#!/bin/sh\nexit 1\n');fail.chmod(0o755)
+            catalog['pi']['runtime']['python']=str(fail)
+            got=run(catalog)
+            self.assertEqual(got['error'],'Pi runtime configuration failed; runtime files may have changed')
+            self.assertTrue(got['wrote'])
+
+    @unittest.skipIf(os.name == "nt", "fake paseo is a POSIX shell script")
+    def test_a_config_change_during_the_pi_runtime_step_is_merged_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);config=base/'config.json';config.write_text('{"agents":{"providers":{}}}')
+            catalog,run=self.pi_merge_fixture(base)
+            # The daemon saves a host-local setting while the Pi runtime is being configured.
+            python=base/'python-and-daemon-write'
+            python.write_text(f'#!/bin/sh\n"{sys.executable}" -c "import json,sys; c=json.load(open(sys.argv[1])); '
+                              f'c[\'daemon\']={{\'port\':4321}}; json.dump(c,open(sys.argv[1],\'w\'))" "{config}"\n'
+                              f'exec "{sys.executable}" "$@"\n')
+            python.chmod(0o755)
+            catalog['pi']['runtime']['python']=str(python)
+            got=run(catalog)
+            self.assertEqual((got['error'],got['wrote']),(None,True))
+            after=json.loads(config.read_text())
+            self.assertEqual(after['daemon'],{'port':4321})
+            self.assertEqual([row['label'] for row in after['agents']['providers']['pi']['models']],['Luna'])
+            # The backup is the revision the write replaced, the daemon's change included.
+            self.assertEqual(json.loads((base/got['backup']).read_text())['daemon'],{'port':4321})
+
     def test_real_planner_builder_persists_pi_route_and_authorized_fallback(self):
         script=r"""
 import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {execFileSync} from 'node:child_process';
@@ -552,6 +617,39 @@ vm.runInNewContext(appDefaultsScript('route/example','high',true),{localStorage}
             deploy.restore(record,home,False)
             self.assertEqual((home/'config.json').read_bytes(),original)
             self.assertFalse((root/'agent/settings.json').exists())
+
+    def test_deploy_rollback_refuses_runtime_edits_before_changing_anything(self):
+        sys.path.insert(0,str(PI))
+        import deploy
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);home=base/'daemon';home.mkdir();root=base/'pi'
+            (home/'config.json').write_bytes(b'{"agents":{"providers":{}}}\n')
+            pkg=root/'app/node_modules/@earendil-works/pi-coding-agent/package.json'
+            pkg.parent.mkdir(parents=True);pkg.write_text('{"version":"1.0.0"}')
+            settings=root/'agent/settings.json';settings.parent.mkdir();settings.write_text('{"owner":"before apply"}')
+            runtime={'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'ROUTE_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'},'models':[{'id':'example','name':'Astra'}],'settings':{'defaultProvider':'fleet','defaultModel':'example','defaultThinkingLevel':'high'}}
+            spec=base/'proposal.json';spec.write_text(json.dumps({'root':str(root),'runtime':runtime,'provider':{'models':[{'id':'fleet/example','label':'Astra'}]},'catalog_model_id':'fleet/example'}))
+            state=base/'state.json'
+            status={'daemonVersion':'0.10.3','connectedDaemon':'reachable','home':str(home)}
+            with patch.object(deploy,'version_gate',return_value=status),patch.object(sys,'argv',['deploy','apply','--spec',str(spec),'--state',str(state)]):deploy.main()
+            record=json.loads(state.read_text());applied=(home/'config.json').read_bytes();written=settings.read_bytes()
+            # The owner edits a runtime file apply wrote, leaving the daemon config alone.
+            settings.write_text('{"owner":"edited after apply"}')
+            with self.assertRaisesRegex(ValueError,'runtime agent/settings.json changed since apply'):deploy.restore(record,home,False)
+            self.assertEqual(settings.read_text(),'{"owner":"edited after apply"}')
+            self.assertEqual((home/'config.json').read_bytes(),applied)
+            self.assertTrue((root/'runtime.json').exists())
+            if os.name!='nt':  # creating a symlink needs privileges on Windows
+                outside=base/'outside.json';outside.write_bytes(written)
+                settings.unlink();settings.symlink_to(outside)
+                with self.assertRaisesRegex(ValueError,'symlink'):deploy.restore(record,home,False)
+                self.assertEqual(outside.read_bytes(),written)
+                settings.unlink()
+            settings.write_bytes(written)
+            deploy.restore(record,home,False)
+            self.assertEqual(settings.read_text(),'{"owner":"before apply"}')
+            self.assertFalse((root/'runtime.json').exists())
+            self.assertEqual((home/'config.json').read_bytes(),b'{"agents":{"providers":{}}}\n')
 
     def test_app_default_carries_saved_or_catalog_route_and_refuses_unsupported(self):
         script=r"""

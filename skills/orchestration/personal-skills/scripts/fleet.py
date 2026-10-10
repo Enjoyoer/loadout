@@ -5,8 +5,8 @@ Order: $LOADOUT_FLEET, then the per-user config directory
 (${XDG_CONFIG_HOME:-~/.config}/loadout/fleet, or %APPDATA%\\loadout\\fleet on
 Windows), then the legacy fleet/local/ beside the installed SKILL.md.
 
-`push` carries the source host's fleet directory to every other ssh host, so the
-source host is the only place the fleet is edited.
+`push` carries the source host's published fleet files (PUBLISHED) to every other
+ssh host, so the source host is the only place the fleet is edited.
 """
 
 from __future__ import annotations
@@ -29,7 +29,11 @@ PUSH_JS = Path(__file__).resolve().parent / "fleet_push_remote.js"
 # Helpers the remote programs share; run_node ships it ahead of each program.
 COMMON_JS = Path(__file__).resolve().parent / "remote_common.js"
 SYNC_RECORD = ".loadout-sync.json"
-SKIP_NAMES = {SYNC_RECORD, ".DS_Store"}
+# All the fleet push copies to the other ssh hosts: the fleet description and its shared settings. A token file,
+# a pairing offer, a backup, the skills/ overlay, or any other file in the fleet directory stays on the source host;
+# a token reaches only the hosts that name its env through the client-config step, and an offer is read only where
+# the sync runs. A file an earlier push copied and this list leaves out is removed while the host's copy is unedited.
+PUBLISHED = ("hosts.json", "paseo-providers.json", "client-config.json", "global/AGENTS.md")
 # A remote program and its payload travel together on stdin as one base64 envelope, so the
 # command line holds only this fixed boot and the envelope's sha256: short enough for cmd.exe
 # whatever the program's size, and free of shell quoting. The boot runs nothing unless the
@@ -54,6 +58,10 @@ SCOPES = ("skills", "plugins", "providers", "client-config")
 # Scopes that move files or secrets, so they need an ssh transport.
 SSH_SCOPES = {"skills", "plugins", "client-config"}
 OSES = {"macos", "windows", "linux"}
+# Paseo variables an agent session or a scratch daemon leaves in the environment. A program run on the source host
+# drops them all, so its config reads, gates, installs, reloads and confirmations address the host's own Paseo home
+# and the daemon that home names, as on an ssh host; only a relay call adds a host's own offer as PASEO_HOST.
+DAEMON_VARS = ("PASEO_HOST", "PASEO_HOME", "PASEO_AGENT_ID", "PASEO_AGENT_CWD")
 # Host names are ssh aliases and reach ssh's argv, so a leading '-' would read as an option.
 HOST_NAME = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 CLIENTS = {"codex", "claude", "opencode", "pi"}
@@ -274,15 +282,11 @@ def parse_result(output: str) -> Optional[dict]:
 
 
 def fleet_files(directory: Path) -> dict:
-    """Every regular file in the fleet directory except the skills/ overlay, by POSIX relative path."""
+    """The PUBLISHED files the fleet directory holds, by POSIX relative path; every other file stays here."""
     files = {}
-    for path in sorted(directory.rglob("*")):
-        rel = path.relative_to(directory).as_posix()
-        if path.name in SKIP_NAMES or path.name.endswith(".loadout-tmp"):
-            continue
-        if rel == "skills" or rel.startswith("skills/"):
-            continue  # the private skill overlay installs through the skills step, not the fleet copy
-        if path.is_symlink():
+    for rel in PUBLISHED:
+        path = directory / rel
+        if any(part.is_symlink() for part in (path, *path.parents[:rel.count("/")])):
             raise FleetError(f"symlink in the source fleet directory: {rel}")
         if path.is_file():
             data = path.read_bytes()
@@ -297,6 +301,11 @@ def push_targets(fleet: dict) -> tuple:
             [host for host in others if host["transport"] != "ssh"])
 
 
+def daemon_env() -> dict:
+    """This environment without DAEMON_VARS: what a program on the source host runs with."""
+    return {k: v for k, v in os.environ.items() if k not in DAEMON_VARS}
+
+
 def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Optional[float] = None) -> tuple:
     """Run a Loadout node program, bundled with remote_common.js, on a host with a JSON payload.
 
@@ -307,8 +316,8 @@ def run_node(name: str, local: bool, program: Path, payload: dict, timeout: Opti
     env = None
     if local:
         command = ["node", "-e", BOOT, "--", digest]
-        # Inside an agent session, keep daemon commands off the agent's own identity.
-        env = {k: v for k, v in os.environ.items() if k not in ("PASEO_AGENT_ID", "PASEO_AGENT_CWD")}
+        # Inside an agent session, keep daemon commands off the agent's own identity and the daemon it targets.
+        env = daemon_env()
     else:
         command = [*SSH_COMMAND, *SSH_OPTIONS, "--", name, f'node -e "{BOOT}" -- {digest}']
     try:

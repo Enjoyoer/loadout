@@ -102,7 +102,8 @@ def main(argv: Optional[list] = None) -> int:
     source = fleet.resolve()
     print(fleet.describe(source))
     if source.path is None:
-        print("no fleet directory; create one from fleet/example (see fleet/README.md)", file=sys.stderr)
+        print("no fleet directory, so nothing synced; create one from fleet/example (see fleet/README.md), "
+              "listing just this host to sync it alone", file=sys.stderr)
         return 1
     try:
         doc = fleet.load(source.path)
