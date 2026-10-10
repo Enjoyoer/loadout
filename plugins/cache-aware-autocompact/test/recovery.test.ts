@@ -610,10 +610,10 @@ describe("restart recovery", () => {
   it("keeps teardown pending until the state write of the store it owns settles", async () => fixture(async (f) => {
     const home = process.env.PASEO_HOME;
     process.env.PASEO_HOME = path.dirname(f.file);
+    let release = () => {};
     try {
       let enter = () => {};
       const entered = new Promise<void>((resolve) => { enter = resolve; });
-      let release = () => {};
       const held = new Promise<void>((resolve) => { release = resolve; });
       const landed: string[] = [];
       f.writeStateWith(async (filePath, value, options) => {
@@ -635,6 +635,8 @@ describe("restart recovery", () => {
       assert.deepEqual(stoppedWith(), [owned]);
       assert.equal((await new StateStore(owned).latestTurn("a1"))?.key, "a1:t1");
     } finally {
+      // The held write never lands on its own; open it even when an assertion failed first, so teardown can drain it.
+      release();
       if (home === undefined) delete process.env.PASEO_HOME;
       else process.env.PASEO_HOME = home;
     }
