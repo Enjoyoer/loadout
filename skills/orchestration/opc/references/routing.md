@@ -2,7 +2,7 @@
 
 ## Resolve
 
-An owner-named model, effort, or Fast wins and is never adjusted. Otherwise pick the task class below and resolve it with `resolveWorkerRoute` from `scripts/route.mjs`, or from a shell:
+An owner-named model, effort, or Fast wins and is never adjusted. Pi has Fast on GPT routes: `--owner-fast on` records it, and the Worker builder sets the `opc.service-tier` label that the composer's Fast pill shows. Never report Fast as unavailable on Pi, and never skip the builder with a raw `create_agent`. Otherwise pick the task class below and resolve it with `resolveWorkerRoute` from `scripts/route.mjs`, or from a shell:
 
 `node scripts/route.mjs --class <class> [--cloud-facts FILE] [--task TASK_JSON --lane SLUG]`
 

@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.39"
+  version: "7.40"
 ---
 
 # OPC
@@ -25,7 +25,7 @@ Choose the smallest useful scouting topology, splitting only independent questio
 
 ## 3. Worker
 
-Workers run on Pi with Codemode; native Codex or Claude Code Workers need an explicit per-task owner decision. An owner-named model, effort, and Fast wins unadjusted; otherwise resolve the task class [route](references/routing.md "branch:routing"). UI work (designing, building, styling, visually reviewing, or browser-checking interfaces) always runs on Opus `xhigh`, never a GPT or web model in any lane, and quota pace never lowers it. Record the route and reason; preserve them through repairs and resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks. Place and brief Workers through the execution mechanics.
+Workers run on Pi with Codemode; native Codex or Claude Code Workers need an explicit per-task owner decision. Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast (Pi GPT routes) win unadjusted. UI work (designing, building, styling, visually reviewing, or browser-checking interfaces) always runs on Opus `xhigh`, never a GPT or web model in any lane, and quota pace never lowers it. Record the route and reason; preserve them through repairs and resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks. Place and brief Workers through the execution mechanics.
 
 All repository source and test edits, including small repairs, belong to Workers. No test-driven development: Workers add only owner- or PM-specified tests and keep existing tests and CI green. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
