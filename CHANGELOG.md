@@ -14,6 +14,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - `cache-aware-autocompact`, `merged-worker-archiver`, `orphan-project-sweeper`, and `usage-limit-auto-resume` now share one fail-closed daemon endpoint resolver. Its canonical source is `plugins/_shared/daemon-target.ts`, each plugin vendors a byte-identical copy, and CI fails when a copy drifts. Endpoint resolution is unchanged.
 - OPC test recovery records the cleanup of a test command whose pid another process now holds as `cleanup incomplete: PID reused` (was `incomplete: PID reused`).
 - OPC 7.39: PMs split separable outcomes into parallel Worker lanes, one owner per file; a shared live resource serializes only live checks.
+- OPC 7.40: every route, owner-named included, resolves through the routing tool, and OPC states that Pi has Fast on GPT routes.
 
 ### Fixed
 - OPC PR evidence is published from a detached worktree with `git push origin HEAD:pr-evidence`, instead of `git worktree add -B`, which reset a local `pr-evidence` branch and dropped evidence commits never pushed; such commits are carried over first, and a rejected push is rebased and retried before the worktree is removed.
