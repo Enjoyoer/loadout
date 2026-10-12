@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "a85435813b40854133c2ea8aeca9f040466ad53b",
+  "source_commit": "d0097ad1c880908541afba80acf41f3882c9419c",
   "skill_count": 21,
   "file_count": 126,
   "files": [
@@ -888,8 +888,8 @@
       "sha256": "6b0fbd210ee2c2ff81840169f5f533bb1b71ab42f6747b5ec9c451b6587ef848"
     }
   ],
-  "plugin_count": 6,
-  "plugin_file_count": 112,
+  "plugin_count": 7,
+  "plugin_file_count": 118,
   "plugins": [
     {
       "id": "cache-aware-autocompact",
@@ -913,6 +913,10 @@
     },
     {
       "id": "usage-limit-auto-resume",
+      "paseo": ">=0.10.3 <0.12.0"
+    },
+    {
+      "id": "workspace-folder-title",
       "paseo": ">=0.10.3 <0.12.0"
     }
   ],
@@ -1588,6 +1592,42 @@
       "plugin": "usage-limit-auto-resume",
       "bytes": 431,
       "sha256": "e89a10f974c258b9358f8fcd7c56ec1153b2eff0ea61e490c9c736312112362d"
+    },
+    {
+      "path": "plugins/workspace-folder-title/README.md",
+      "plugin": "workspace-folder-title",
+      "bytes": 1322,
+      "sha256": "d6226f0a625f8553bba27e41df60a0fc96012aac95c05278d23f2645c822398c"
+    },
+    {
+      "path": "plugins/workspace-folder-title/index.server.ts",
+      "plugin": "workspace-folder-title",
+      "bytes": 2128,
+      "sha256": "b245942dae59818f04094a59d4cab96c80a28fb4b39d6618bfc9207511375bcd"
+    },
+    {
+      "path": "plugins/workspace-folder-title/package-lock.json",
+      "plugin": "workspace-folder-title",
+      "bytes": 21202,
+      "sha256": "fcfb6c52cf3c4e4698ac61b8fcba537e4e6c1080a3c742bc6ac7138fa79799b8"
+    },
+    {
+      "path": "plugins/workspace-folder-title/package.json",
+      "plugin": "workspace-folder-title",
+      "bytes": 861,
+      "sha256": "01ef1a663d9a06b3da7752605544bd72af4219fdadb4dc17b7cfe2da035974a0"
+    },
+    {
+      "path": "plugins/workspace-folder-title/paseo-plugin.json",
+      "plugin": "workspace-folder-title",
+      "bytes": 216,
+      "sha256": "839cb59d7a61d5cf7ebb6f8a9d4a6fdd903b4fb01bf5006757165d13b9cfde68"
+    },
+    {
+      "path": "plugins/workspace-folder-title/tsconfig.json",
+      "plugin": "workspace-folder-title",
+      "bytes": 470,
+      "sha256": "02762367fc58004ef5d053f645436ac4734f633b3f61753d0e164622eac37630"
     }
   ]
 }
