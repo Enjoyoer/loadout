@@ -29,8 +29,9 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
   }
   if (model?.api === 'openai-responses') {
     const web = model.id.startsWith('chatgpt-web/');
-    // The Web backend gets only the folder name: the full path carries the local user name.
-    const where = web ? basename(cwd) || cwd : cwd;
+    // The Web backend gets a neutral absolute path ending in the folder name: the full path carries the local user
+    // name, and the gateway accepts only absolute cwd and root paths.
+    const where = web ? '/workspace' + (basename(cwd) ? '/' + basename(cwd) : '') : cwd;
     const metadata = { thread_id: sessionId, turn_id: turnId, sandbox: 'none', workspaces: { [where]: {} } };
     result.client_metadata = { ...result.client_metadata, 'x-codex-turn-metadata': JSON.stringify(metadata),
       ...(requestId ? { 'x-fleet-request-id': requestId } : {}) };
