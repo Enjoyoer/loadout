@@ -180,33 +180,6 @@ function validateReviewer(reviewer, task) {
   }
 }
 
-// One cloud lane per task; the heartbeat, not the PM, moves it out of running. CLOUD_MOVES lists each status's allowed
-// next statuses. no_session (a launch reconciled as never started) permits a new launch, which replaces the record.
-const CLOUD_MOVES = Object.freeze({
-  launching: ['launching', 'uncertain', 'running', 'no_session'], uncertain: ['uncertain', 'running', 'no_session'],
-  running: ['running', 'ready', 'dead'], ready: ['ready'], dead: ['dead'], no_session: ['no_session', 'launching'],
-});
-function validateCloud(cloud) {
-  if (cloud == null) return;
-  const text = value => typeof value === 'string' && value.trim().length > 0;
-  const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-  if (!object(cloud) || !Object.hasOwn(CLOUD_MOVES, cloud.status) ||
-      !['branch', 'repo', 'launched_at'].every(key => text(cloud[key])) ||
-      (['running', 'ready', 'dead'].includes(cloud.status) && !['session_id', 'url'].every(key => text(cloud[key]))) ||
-      (['launching', 'uncertain', 'no_session'].includes(cloud.status) && (cloud.session_id !== null || cloud.url !== null)) ||
-      (cloud.attempt != null && (!Number.isSafeInteger(cloud.attempt) || cloud.attempt < 1)) ||
-      (cloud.heartbeat_id !== null && !text(cloud.heartbeat_id)) ||
-      !/^opc\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(cloud.branch) ||
-      !object(cloud.route) || cloud.route.model !== 'claude-opus-5-5[1m]' || cloud.route.effort !== 'xhigh') {
-    throw Error('invalid cloud lane record');
-  }
-  if ((['running', 'launching'].includes(cloud.status)) !== (cloud.reason == null)) throw Error('cloud lane reason must accompany an uncertain or terminal state');
-  if (cloud.fallback != null && (cloud.status !== 'dead' || !object(cloud.fallback) ||
-      cloud.fallback.authorized_by !== 'cloud-toggle')) {
-    throw Error('cloud fallback requires a dead cloud lane and the cloud toggle');
-  }
-}
-
 // Recorded Worker routes, one per lane: the resolved route and its one-line reason, kept through repairs and resumes
 // even after a routing class changes.
 function validateRoutes(routes) {
@@ -245,7 +218,7 @@ function validate(task, path) {
   }
   validatePlanner(task.planner);
   validateReviewer(task.reviewer, task);
-  validateCloud(task.cloud);
+  // task.cloud is a lane record from OPC 7.40 and earlier. Nothing reads or checks it; an update carries it unchanged.
   validateRoutes(task.routes);
   return task;
 }
@@ -302,7 +275,6 @@ export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'H
     tests: null,
     merge: null,
     reviewer: null,
-    cloud: null,
   };
   if (!task.repository.branch) throw Error('detached worktree cannot own a task');
   const taskPath = join(runDirectory, 'task.json');
@@ -384,23 +356,6 @@ export function updateTask(taskPath, mutator) {
     const result = mutator(task);
     if (result?.then) throw Error('task mutation must be synchronous');
     if (identity(old) !== identity(task)) throw Error('immutable task identity changed');
-    if (old.cloud) {
-      if (!CLOUD_MOVES[old.cloud.status].includes(task.cloud?.status)) {
-        throw Error(`cloud lane cannot move from ${old.cloud.status} to ${task.cloud?.status ?? 'no record'}`);
-      }
-      // The one launch a no_session lane permits keeps its marker, repo, and route under a new launch time.
-      const relaunch = old.cloud.status === 'no_session' && task.cloud.status === 'launching';
-      for (const key of ['session_id', 'url', 'branch', 'repo', 'launched_at', 'heartbeat_id', 'route']) {
-        if (key === 'heartbeat_id' && old.cloud.heartbeat_id === null) continue; // bound once, after the launch record
-        if (['session_id', 'url'].includes(key) && ['launching', 'uncertain'].includes(old.cloud.status) && old.cloud[key] === null) continue;
-        if (key === 'launched_at' && relaunch) continue;
-        if (JSON.stringify(old.cloud[key]) !== JSON.stringify(task.cloud[key])) throw Error(`immutable cloud ${key} changed`);
-      }
-      if ((task.cloud.attempt ?? 1) !== (old.cloud.attempt ?? 1) + (relaunch ? 1 : 0)) throw Error('cloud launch attempt changed');
-      if (old.cloud.fallback && JSON.stringify(old.cloud.fallback) !== JSON.stringify(task.cloud.fallback)) {
-        throw Error('immutable cloud fallback changed');
-      }
-    }
     for (const [lane, entry] of Object.entries(old.routes ?? {})) {
       if (JSON.stringify(entry) !== JSON.stringify(task.routes?.[lane])) throw Error(`immutable Worker route for lane ${lane} changed`);
     }
@@ -414,8 +369,7 @@ export function updateTask(taskPath, mutator) {
     try { writeFileSync(fd, JSON.stringify(task, null, 2) + '\n'); fsyncSync(fd); } finally { closeSync(fd); }
     if (lockToken(lock) !== token) throw Error('task lock lost; it no longer holds this writer\'s token');
     renameSync(temporary, taskPath);
-    // POSIX syncs the file and then the directory entry the rename wrote, so an update it returned, such as a cloud
-    // launch intent, survives an OS crash or power loss. Node cannot sync a directory on Windows: there an update gets
+    // POSIX syncs the file and then the directory entry the rename wrote, so an update it returned survives an OS crash or power loss. Node cannot sync a directory on Windows: there an update gets
     // a flushed file and an atomic rename only.
     if (process.platform !== 'win32') syncDirectory(dirname(taskPath));
     return task;
