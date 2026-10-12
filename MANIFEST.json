@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "de7ba03fe5091619438d89fb6d481933ca96172b",
+  "source_commit": "e50195a2e393a6a8edf512b2f031131af7addafb",
   "skill_count": 22,
   "file_count": 129,
   "files": [
@@ -1589,8 +1589,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/test/index.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 33679,
-      "sha256": "f9fed0c190ccc98c3b8f87116109ded87c42cc4d45a3097bf16d4aeaf381c8c6"
+      "bytes": 33798,
+      "sha256": "9a4f1722940790746164f6bf76e5be6e07eb01b1770e3cb52037b8c0da030d46"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/model.test.ts",
