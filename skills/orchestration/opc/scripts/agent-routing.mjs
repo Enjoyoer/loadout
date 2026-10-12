@@ -22,7 +22,7 @@ export const FIXED_ROLE_ROUTES = Object.freeze({
 // [floor, ceiling] the quota pace may move the default within (medium < high < xhigh); null means fixed.
 const workerClass = (label, effort, range, fastMode = false) =>
   Object.freeze({ label, effort, range: range && Object.freeze(range), fastMode });
-// Local code lanes default to Opus medium (owner rule); the cloud lane and ui stay Opus xhigh. Routes are the minimum
+// Local code lanes default to Opus medium (owner rule); ui stays Opus xhigh. Routes are the minimum
 // (owner rule): every range starts at its default, so the pace can raise a level but never lower one.
 export const WORKER_DEFAULT_ROUTES = Object.freeze({
   code: workerClass('Opus', 'medium', ['medium', 'high']),
@@ -290,7 +290,7 @@ function validateFixedRoute(role, route) {
   return fixed;
 }
 
-// Recording a lane (route.mjs, cloud-lane.mjs) checks a Worker route as new. With no catalog at hand it also refuses a
+// Recording a lane (route.mjs) checks a Worker route as new. With no catalog at hand it also refuses a
 // GPT or web model for a Claude class, which a launch refuses by catalog label.
 export function validateRoleRoute(role, route) {
   if (role === 'worker') {

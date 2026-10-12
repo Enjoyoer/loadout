@@ -15,6 +15,8 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - OPC test recovery records the cleanup of a test command whose pid another process now holds as `cleanup incomplete: PID reused` (was `incomplete: PID reused`).
 - OPC 7.39: PMs split separable outcomes into parallel Worker lanes, one owner per file; a shared live resource serializes only live checks.
 - OPC 7.40: every route, owner-named included, resolves through the routing tool, and OPC states that Pi has Fast on GPT routes.
+- OPC 7.41: cloud lanes are removed; every Worker runs locally on its normal route. The code is in git history.
+- The `claude-cloud` skill is deprecated and no longer published or synced; its source is in `deprecated/claude-cloud`.
 
 ### Fixed
 - OPC PR evidence is published from a detached worktree with `git push origin HEAD:pr-evidence`, instead of `git worktree add -B`, which reset a local `pr-evidence` branch and dropped evidence commits never pushed; such commits are carried over first, and a rejected push is rebased and retried before the worktree is removed.

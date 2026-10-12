@@ -246,80 +246,6 @@ class OpcDeliveryTest(unittest.TestCase):
                 except ProcessLookupError:
                     pass
 
-    def test_cloud_intent_precedes_command_and_failed_launch_refuses_retry(self):
-        done = run('node', '--input-type=module', '-e', f'''
-            import {{ beginCloudLaunch, recordCloudLaunch, recordCloudLaunchFailure }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
-            import {{ readTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
-            const task = {json.dumps(self.task)}, lane = {{branch:'opc/example',repo:'example/app'}};
-            try {{ recordCloudLaunch(task, {{...lane, sessionId:'session_early', url:'https://example.invalid/session'}}); throw Error('launch recorded without intent'); }}
-            catch (error) {{ if (!error.message.includes('call beginCloudLaunch before')) throw error; }}
-            if (readTask(task).cloud !== null) throw Error('cloud record written without intent');
-            beginCloudLaunch(task,lane);
-            if (readTask(task).cloud.status !== 'launching') throw Error('intent missing before command');
-            recordCloudLaunchFailure(task,'capture interrupted');
-            try {{ beginCloudLaunch(task,lane); throw Error('second launch allowed'); }}
-            catch (error) {{ if (!error.message.includes('already recorded')) throw error; }}
-            console.log('refused');
-        ''')
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn('refused', done.stdout)
-        listed = run('node', str(SCRIPTS / 'cloud-lane.mjs'), 'reconcile', self.task)
-        self.assertEqual(json.loads(listed.stdout)['status'], 'uncertain', listed.stderr)
-
-    def test_uncertain_cloud_launch_reconciles_to_found_session(self):
-        done = run('node', '--input-type=module', '-e', f'''
-            import {{ beginCloudLaunch, recordCloudLaunchFailure }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
-            beginCloudLaunch({json.dumps(self.task)}, {{branch:'opc/example',repo:'example/app'}});
-            recordCloudLaunchFailure({json.dumps(self.task)}, 'capture interrupted');
-        ''')
-        self.assertEqual(done.returncode, 0, done.stderr)
-        settled = run('node', str(SCRIPTS / 'cloud-lane.mjs'), 'reconcile', self.task,
-                      '--session', 'session_found', '--url', 'https://example.invalid/session')
-        self.assertEqual(settled.returncode, 0, settled.stderr)
-        cloud = json.loads(Path(self.task).read_text())['cloud']
-        self.assertEqual((cloud['status'], cloud['session_id'], cloud['reason']), ('running', 'session_found', None))
-        listed = run('node', str(SCRIPTS / 'cloud-lane.mjs'), 'reconcile', self.task)
-        self.assertEqual(json.loads(listed.stdout)['status'], 'running', listed.stderr)
-        # A settled session refuses a second launch and a contradictory no_session, and the record stays byte for byte.
-        settled_bytes = Path(self.task).read_bytes()
-        refused = run('node', '--input-type=module', '-e', f'''
-            import {{ beginCloudLaunch, reconcileCloudLaunch }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
-            const task = {json.dumps(self.task)};
-            for (const [call, text] of [[() => beginCloudLaunch(task, {{branch:'opc/example',repo:'example/app'}}), 'already recorded'],
-                [() => reconcileCloudLaunch(task, {{noSession:true, reason:'no session found'}}), 'no launching or uncertain']]) {{
-              try {{ call(); }} catch (error) {{ if (error.message.includes(text)) continue; throw error; }}
-              throw Error('allowed: ' + text);
-            }}
-            console.log('refused');
-        ''')
-        self.assertEqual((refused.returncode, refused.stdout.strip()), (0, 'refused'), refused.stderr)
-        contradiction = run('node', str(SCRIPTS / 'cloud-lane.mjs'), 'reconcile', self.task, '--no-session', '--reason', 'no session found')
-        self.assertNotEqual(contradiction.returncode, 0)
-        self.assertIn('no launching or uncertain', contradiction.stderr)
-        self.assertEqual(Path(self.task).read_bytes(), settled_bytes)
-
-    def test_uncertain_cloud_launch_reconciles_to_no_session_and_one_relaunch(self):
-        done = run('node', '--input-type=module', '-e', f'''
-            import {{ beginCloudLaunch, recordCloudLaunch, recordCloudLaunchFailure, reconcileCloudLaunch }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
-            const task = {json.dumps(self.task)}, lane = {{branch:'opc/example',repo:'example/app'}};
-            const refused = (call, text) => {{
-              try {{ call(); }} catch (error) {{ if (error.message.includes(text)) return; throw error; }}
-              throw Error('allowed: ' + text);
-            }};
-            beginCloudLaunch(task, lane);
-            recordCloudLaunchFailure(task, 'capture interrupted');
-            if (reconcileCloudLaunch(task, {{noSession:true, reason:'no session with the marker'}}).status !== 'no_session') throw Error('not settled');
-            const relaunch = beginCloudLaunch(task, lane);
-            if (relaunch.status !== 'launching' || relaunch.attempt !== 2) throw Error('relaunch not recorded');
-            refused(() => beginCloudLaunch(task, lane), 'already recorded');
-            recordCloudLaunchFailure(task, 'capture interrupted again');
-            reconcileCloudLaunch(task, {{noSession:true, reason:'still no session'}});
-            refused(() => beginCloudLaunch(task, lane), 'relaunched once');
-            console.log('one relaunch');
-        ''')
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn('one relaunch', done.stdout)
-
     def test_crashed_lock_blocks_both_writers_and_unlock_needs_its_holder_gone(self):
         dead = subprocess.Popen([sys.executable, "-c", ""])
         dead.wait()
@@ -661,47 +587,6 @@ class OpcDeliveryTest(unittest.TestCase):
             self.assertEqual(resumed.returncode, 0, resumed.stderr)
             self.assertEqual(json.loads(resumed.stdout)["route"], stored)
 
-    def test_cloud_fallback_on_cloud_lane_records_local_route_atomically(self):
-        root = Path(self.task).parent.parent
-        home = root / "home"
-        home.mkdir()
-        env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
-        (root / "catalog.json").write_text(json.dumps(CATALOG))
-        (root / "facts.json").write_text(json.dumps({"githubRemote": True, "claudeAppInstalled": True, "selfContained": True,
-                                                     "authStatus": {"authMethod": "claude.ai"}}))
-        route = ("node", str(SCRIPTS / "route.mjs"), "--catalog", str(root / "catalog.json"), "--pq-file", str(root / "no-pq.json"),
-                 "--task", self.task)
-        cloud = run(*route, "--class", "code", "--cloud-facts", str(root / "facts.json"), "--lane", "fix-auth", env=env)
-        self.assertEqual(cloud.returncode, 0, cloud.stderr)
-        cloud_route = json.loads(cloud.stdout)["route"]
-        self.assertEqual(cloud_route["model"], "claude-opus-5-5[1m]")
-        # A taken fallback lane makes the route write fail, which must leave cloud.fallback unwritten too.
-        done = run("node", "--input-type=module", "-e", f"""
-            import {{ beginCloudLaunch, recordCloudLaunch }} from {json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())};
-            import {{ recordWorkerRoute }} from {json.dumps((SCRIPTS / 'route.mjs').as_uri())};
-            import {{ updateTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
-            const path = {json.dumps(self.task)};
-            recordWorkerRoute(path, {{ lane: 'taken-fallback', reason: 'owner-named, never adjusted',
-              route: {{ role: 'worker', source: 'owner-explicit', model: 'fleet/claude-opus-5-5', effort: 'high', fastMode: false }} }});
-            beginCloudLaunch(path, {{ branch: 'opc/fix-auth', repo: 'example/app', launchedAt: '2026-01-01T00:00:00.000Z' }});
-            recordCloudLaunch(path, {{ sessionId: 'session_example', url: 'https://example.invalid/session', branch: 'opc/fix-auth',
-              repo: 'example/app' }});
-            updateTask(path, task => {{ task.cloud.status = 'dead'; task.cloud.reason = 'session page shows failure'; }});
-        """)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        clash = run(*route, "--cloud-fallback", "--lane", "taken", env=env)
-        self.assertIn("lane taken-fallback already has a recorded route", clash.stderr)
-        self.assertIsNone(json.loads(Path(self.task).read_text())["cloud"]["fallback"])
-        fallback = run(*route, "--cloud-fallback", "--lane", "fix-auth", env=env)
-        self.assertEqual(fallback.returncode, 0, fallback.stderr)
-        result = json.loads(fallback.stdout)
-        self.assertEqual((result["lane"], result["route"]["source"], result["route"]["model"]),
-                         ("fix-auth-fallback", "task-default", "fleet/claude-opus-5-5"))
-        task = json.loads(Path(self.task).read_text())
-        self.assertEqual(task["cloud"]["fallback"]["route"], result["route"])
-        self.assertEqual(task["routes"]["fix-auth-fallback"]["route"], result["route"])
-        self.assertEqual(task["routes"]["fix-auth"]["route"], cloud_route)
-
     def test_changes_request_from_another_reviewer_blocks_recorded_approval(self):
         # Reviewer alice's approval is recorded and stays her newest review; bob then requests changes on the same head.
         runs = Path(self.task).parent.parent / "review-run"
@@ -740,11 +625,11 @@ class OpcDeliveryTest(unittest.TestCase):
 
     def test_lock_of_writer_paused_in_acquisition_is_not_reclaimed(self):
         # Writer A pauses for over ten seconds at the first moment its lock exists, between an exclusive create and the
-        # holder bytes where the lock is still written that way; writer B then tries a second cloud launch.
-        cloud = json.dumps((SCRIPTS / 'cloud-lane.mjs').as_uri())
-        task, lane = json.dumps(self.task), "{ branch: 'opc/example', repo: 'example/app' }"
-        other = (f"import {{ beginCloudLaunch }} from {cloud};"
-                 f"try {{ beginCloudLaunch({task}, {lane}); console.log('launched'); }} catch (error) {{ console.log(error.message); }}")
+        # holder bytes where the lock is still written that way; writer B then tries its own task update.
+        state = json.dumps((SCRIPTS / 'task-state.mjs').as_uri())
+        task = json.dumps(self.task)
+        other = (f"import {{ updateTask }} from {state};"
+                 f"try {{ updateTask({task}, () => {{}}); console.log('updated'); }} catch (error) {{ console.log(error.message); }}")
         done = run("node", "--input-type=module", "-e", f"""
             import fs from 'node:fs';
             import {{ spawnSync }} from 'node:child_process';
@@ -765,17 +650,15 @@ class OpcDeliveryTest(unittest.TestCase):
             }};
             fs.linkSync = (from, to) => {{ linkSync(from, to); pause(); }};
             syncBuiltinESMExports();
-            const {{ beginCloudLaunch }} = await import({cloud});
+            const {{ updateTask }} = await import({state});
             let mine;
-            try {{ mine = beginCloudLaunch({task}, {lane}).status; }} catch (error) {{ mine = error.message; }}
+            try {{ mine = updateTask({task}, () => {{}}).status; }} catch (error) {{ mine = error.message; }}
             console.log(JSON.stringify({{ other, mine }}));
         """)
         self.assertEqual(done.returncode, 0, done.stderr)
         result = json.loads(done.stdout)
         self.assertIn("task lock busy", result["other"])
-        self.assertEqual(result["mine"], "launching")
-        cloud_record = json.loads(Path(self.task).read_text())["cloud"]
-        self.assertEqual((cloud_record["status"], cloud_record["attempt"]), ("launching", 1))
+        self.assertEqual(result["mine"], "ready")
         self.assertEqual(sorted(p.name for p in Path(self.task).parent.iterdir()), ["task.json"])
 
     def test_source_fingerprint_covers_submodule_working_tree_bytes(self):
