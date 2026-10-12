@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.38"
+  version: "7.39"
 ---
 
 # OPC
@@ -15,17 +15,17 @@ Follow this state machine, reading linked references only when their branch appl
 
 ## 1. Scope
 
-Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks: observable behaviors from the owner's intent, preferably end-to-end or live. Consult root `STATUS.html` and `LESSONS.md` on resumption or when prior decisions matter. Escalate scope or authority changes to the owner.
+Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks: observable behaviors from the owner's intent, preferably end-to-end or live. Consult root `STATUS.html` and `LESSONS.md` when resuming. Escalate scope or authority changes to the owner.
 
 Enable browser review only when the initial request explicitly asks for it; preserve that immutable choice through repairs, resumes, and reinvocation. Initialize the [execution mechanics](references/imp-execution.md "runtime") before launching lanes.
 
 ## 2. Optional scouting
 
-Choose the smallest useful topology, splitting only independent questions or implementation ownership. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify the [planner](references/planner.md "branch:planning"). Initially enabled review reserves the web lane and skips planning.
+Choose the smallest useful scouting topology, splitting only independent questions. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify the [planner](references/planner.md "branch:planning"). Initially enabled review reserves the web lane and skips planning.
 
 ## 3. Worker
 
-Workers run on Pi with Codemode; native Codex or Claude Code Workers need an explicit per-task owner decision. An owner-named model, effort, and Fast wins unadjusted; otherwise resolve the task class [route](references/routing.md "branch:routing"). UI work (designing, building, styling, visually reviewing, or browser-checking interfaces) always runs on Opus `xhigh`, never a GPT or web model (Sol, Luna, Astra, Web Pro) in any lane, and quota pace never lowers it. Record the route and reason; preserve them through repairs and resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Give each non-overlapping lane one durable Worker lineage, placed and briefed through the execution mechanics.
+Workers run on Pi with Codemode; native Codex or Claude Code Workers need an explicit per-task owner decision. An owner-named model, effort, and Fast wins unadjusted; otherwise resolve the task class [route](references/routing.md "branch:routing"). UI work (designing, building, styling, visually reviewing, or browser-checking interfaces) always runs on Opus `xhigh`, never a GPT or web model in any lane, and quota pace never lowers it. Record the route and reason; preserve them through repairs and resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks. Place and brief Workers through the execution mechanics.
 
 All repository source and test edits, including small repairs, belong to Workers. No test-driven development: Workers add only owner- or PM-specified tests and keep existing tests and CI green. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
