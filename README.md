@@ -94,6 +94,7 @@ After changing a host's `plugin_root`, plugins installed from the old directory 
 | `merged-worker-archiver` | Archives worker worktree workspaces whose branch is merged into its base | Dry-run until `armed` |
 | `usage-limit-auto-resume` | Resumes an agent after a usage limit or a transient provider error | Dry-run until `armed` |
 | `orphan-project-sweeper` | Deletes Paseo project rows with no active workspace and a missing root path | Dry-run until `armed` |
+| `workspace-folder-title` | Titles new workspaces with their folder name instead of a bare git branch name | Active when installed |
 | `pm-native-worker-guard` | Stops and archives native Codex or Claude Code agents created by a PM, so PM workers run on Pi | Dry-run until `armed` |
 | `pi-fast-toggle` | Adds a per-agent Fast pill to Pi agents on tier-capable models; pressing it sets the agent's service-tier label for the next turn | Inactive until its `routing.json` setting exists |
 
