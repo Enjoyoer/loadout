@@ -22,8 +22,14 @@ const agent: AgentSnapshot = {
   persistence: { provider: "claude", sessionId: "session-1", nativeHandle: "native-1" },
 };
 
+/** Polls every 5 ms until `check` passes or 10 s of wall clock elapse; wall clock, not attempts, so coarse Windows timers do not shrink the budget. */
+async function poll(check: () => boolean | Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!(await check()) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+}
+
 async function until(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 200 && !check(); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  await poll(check);
   assert.ok(check(), "condition not reached");
 }
 
@@ -198,7 +204,7 @@ it("keeps the turn identity and deadline when a turn starts during a claim and t
         send: async () => {
           claimedDeadline = (await store.read())[0]!.verificationDeadlineAt;
           handlers.get("agent.turn_started")!({ turnId: "turn-2", agent: { id: agent.id } });
-          for (let attempt = 0; attempt < 200 && !(await store.read())[0]!.resumeTurnId; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+          await poll(async () => Boolean((await store.read())[0]!.resumeTurnId));
           throw new Error("Transport not connected (status: disconnected)");
         },
       }) },
@@ -425,7 +431,7 @@ it("sends nothing when a permission request's decision lands between the send ga
       holdClaim = false;
       handlers.get("agent.permission_requested")!({ agent: { id: agent.id } });
       permissionStored = (async () => {
-        for (let attempt = 0; attempt < 200 && (await store.read())[0]?.state !== "uncertain"; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+        await poll(async () => (await store.read())[0]?.state === "uncertain");
       })();
       return permissionStored.then(() => update.apply(this, args));
     });
