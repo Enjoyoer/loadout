@@ -205,6 +205,7 @@ assert.equal(inherit.client_metadata['x-fleet-request-id'],'r1');
 assert.equal(m.preparePayload(base,{...ctx,tier:D(R({'opc.service-tier':'standard'}),sol,cat)}).service_tier,'default');
 const webOut=m.preparePayload({model:'chatgpt-web/pro',input:[{role:'user',content:[]}]},{...ctx,model:web,cwd:'/home/someone/project'});
 assert.deepEqual(Object.keys(JSON.parse(webOut.client_metadata['x-codex-turn-metadata']).workspaces),['/workspace/project']);
+assert.equal(webOut.input[0].role,'user');assert.equal(webOut.input[0].internal_chat_message_metadata_passthrough.turn_id,'t');assert.equal(webOut.input[1].internal_chat_message_metadata_passthrough.turn_id,'t');
 assert.match(webOut.input[0].content[0].text,/<cwd>\/workspace\/project<\/cwd>[\s\S]*<root>\/workspace\/project<\/root>/);assert.ok(!JSON.stringify(webOut).includes('someone'));
 const blocked=m.blockedPayload(base,'service tier "ultrafast" is not supported');
 assert.ok(blocked.model.startsWith(m.BLOCKED_MODEL_PREFIX+':'));assert.equal(base.model,'gpt-6.1-sol');

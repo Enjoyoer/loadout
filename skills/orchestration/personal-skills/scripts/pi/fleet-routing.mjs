@@ -37,12 +37,19 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
       ...(requestId ? { 'x-fleet-request-id': requestId } : {}) };
     if (web) {
       const xml = where.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
-      const environment = { type:'message', role:'developer', content:[{type:'input_text',text:
+      // Codex's shape: the environment is a user item of the current turn, directly before the real instruction, so
+      // the gateway reads cwd and roots from it alone and never from Pi's system prompt, which holds the local path.
+      const environment = { type:'message', role:'user', internal_chat_message_metadata_passthrough:{turn_id:turnId},
+        content:[{type:'input_text',text:
         `<environment_context>\n<cwd>${xml}</cwd>\n<filesystem><workspace_roots><root>${xml}</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>\n</environment_context>`}] };
-      result.input = [environment, ...(Array.isArray(result.input) ? result.input : [])];
+      const input = Array.isArray(result.input) ? [...result.input] : [];
       // The Web backend binds replay to the latest real user instruction's turn.
-      const latest = result.input.findLast(item => item.role === 'user');
-      if (latest) { latest.type='message';latest.internal_chat_message_metadata_passthrough={turn_id:turnId}; }
+      const at = input.findLastIndex(item => item.role === 'user');
+      if (at >= 0) {
+        input[at] = { ...input[at], type:'message', internal_chat_message_metadata_passthrough:{turn_id:turnId} };
+        input.splice(at, 0, environment);
+      } else input.unshift(environment);
+      result.input = input;
     }
     // Explicit choice is sent as-is; an inherited preference sends no tier so the
     // fleet default applies upstream. A stray client tier never survives an inherit.
