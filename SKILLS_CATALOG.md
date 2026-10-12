@@ -6,7 +6,7 @@ Install packages flat under the target client's `skills` directory. Each name be
 | --- | --- |
 | Engineering | `codebase-design`, `domain-modeling`, `improve-codebase-architecture`, `uv-python` |
 | Operations and integrations | `recover-mouse-input`, `wizard` |
-| Orchestration | `claude-cloud`, `dispatching-parallel-agents`, `handoff`, `opc`, `opn`, `personal-skills`, `reassign-pm`, `repo-lessons` |
+| Orchestration | `dispatching-parallel-agents`, `handoff`, `opc`, `opn`, `personal-skills`, `reassign-pm`, `repo-lessons` |
 | Planning and writing | `grilling`, `sample` |
 | Research and documentation | `find-docs`, `liteparse` |
 | Web and browser | `browse-x`, `frontend-design`, `pake`, `playwright` |

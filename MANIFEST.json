@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "62f06fa63719d494d0c59c614c026ee027c7f85f",
-  "skill_count": 22,
-  "file_count": 129,
+  "source_commit": "71026bb93fae41f862361b9425826900bb4f60db",
+  "skill_count": 21,
+  "file_count": 128,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -151,13 +151,6 @@
       "skill": "wizard",
       "bytes": 17202,
       "sha256": "295fe45a45f5ae39cbc4595759c4bf332dcd1c92bb2b7bd0d50c414e8e53c852"
-    },
-    {
-      "path": "skills/orchestration/claude-cloud/SKILL.md",
-      "category": "orchestration",
-      "skill": "claude-cloud",
-      "bytes": 7428,
-      "sha256": "d1b124775a442c00df247eb948bb30620fdad3d0e16d77961f255fef781828ba"
     },
     {
       "path": "skills/orchestration/dispatching-parallel-agents/SKILL.md",

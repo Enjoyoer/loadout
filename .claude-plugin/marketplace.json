@@ -25,7 +25,7 @@
     {
       "name": "loadout-orchestration",
       "source": "./",
-      "description": "Multi-agent coding and workstream orchestration, cloud offload, handoffs, and project memory.",
+      "description": "Multi-agent coding and workstream orchestration, handoffs, and project memory.",
       "version": "0.1.0",
       "license": "MIT",
       "category": "productivity",
@@ -35,7 +35,6 @@
         "./skills/orchestration/opc",
         "./skills/orchestration/opn",
         "./skills/orchestration/dispatching-parallel-agents",
-        "./skills/orchestration/claude-cloud",
         "./skills/orchestration/handoff",
         "./skills/orchestration/repo-lessons",
         "./skills/orchestration/reassign-pm"
