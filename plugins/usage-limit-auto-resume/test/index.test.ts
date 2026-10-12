@@ -22,9 +22,9 @@ const agent: AgentSnapshot = {
   persistence: { provider: "claude", sessionId: "session-1", nativeHandle: "native-1" },
 };
 
-/** Polls every 5 ms until `check` passes or 10 s of wall clock elapse; wall clock, not attempts, so coarse Windows timers do not shrink the budget. */
-async function poll(check: () => boolean | Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 10_000;
+/** Polls every 5 ms until `check` passes or `budgetMs` of wall clock elapse; wall clock, not attempts, so coarse Windows timers do not shrink the budget. */
+async function poll(check: () => boolean | Promise<boolean>, budgetMs = 10_000): Promise<void> {
+  const deadline = Date.now() + budgetMs;
   while (!(await check()) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
 }
 
@@ -431,7 +431,8 @@ it("sends nothing when a permission request's decision lands between the send ga
       holdClaim = false;
       handlers.get("agent.permission_requested")!({ agent: { id: agent.id } });
       permissionStored = (async () => {
-        await poll(async () => (await store.read())[0]?.state === "uncertain");
+        // Bounded well under until()'s 10 s so the claim is released, and the test continues, before the outer wait expires.
+        await poll(async () => (await store.read())[0]?.state === "uncertain", 3_000);
       })();
       return permissionStored.then(() => update.apply(this, args));
     });
