@@ -62,7 +62,8 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   const recoveryFailures = new Map<string, Set<string>>();
   let lastRecoverySummary: string | null = null;
   let stopped = false;
-  const agentSubscriptions = new Map<PaseoApi, () => void>();
+  let subscribedApi: PaseoApi | null = null;
+  let removeAgentSubscription: (() => void) | null = null;
 
   const log = dependencies.log ?? ((action: string, data: Record<string, unknown>) => {
     console.log(`[cache-aware-autocompact] ${JSON.stringify({ action, ...data })}`);
@@ -399,14 +400,43 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   };
   const inFlightHasAgent = (agentId: string) => [...inFlight].some((key) => key.startsWith(`${agentId}:`));
 
+  const forgetAgent = (agentId: string) => {
+    timers.cancel(agentId);
+    invalidate(agentId);
+    expectedUserMessage.delete(agentId);
+    recoveryFailures.delete(agentId);
+    deferredTurns.delete(agentId);
+    // A closed or archived agent has no future work until a new lifecycle event.
+    // Drop its generation too, otherwise one entry remains for every historical agent.
+    generations.delete(agentId);
+  };
+
   const ensureSubscription = (api: PaseoApi, trigger = "first-subscription") => {
-    if (stopped || agentSubscriptions.has(api)) return;
-    agentSubscriptions.set(api, api.agents.subscribe((update) => {
-      if (update.kind !== "upsert") return;
+    if (stopped || subscribedApi === api) return;
+    removeAgentSubscription?.();
+    subscribedApi = api;
+    let active = true;
+    let removeListSubscription: () => void = () => {};
+    let removeLocalSubscription: () => void = () => {};
+    const remove = () => {
+      if (!active) return;
+      active = false;
+      removeListSubscription();
+      removeLocalSubscription();
+      removeAgentSubscription = null;
+      subscribedApi = null;
+    };
+    removeAgentSubscription = remove;
+    removeLocalSubscription = api.agents.subscribe((update) => {
+      if (!active || update.kind !== "upsert") return;
+      if (update.agent.archivedAt || update.agent.status === "closed") {
+        forgetAgent(update.agent.id);
+        return;
+      }
       if (update.agent.status === "running" || update.agent.activeTurn ||
         (expectedUserMessage.has(update.agent.id) &&
           (update.agent.lastUserMessageAt ?? null) !== expectedUserMessage.get(update.agent.id))) recoveryFailures.delete(update.agent.id);
-      if (busyStatus(update.agent.status) || update.agent.activeTurn || update.agent.archivedAt ||
+      if (busyStatus(update.agent.status) || update.agent.activeTurn ||
         (expectedUserMessage.has(update.agent.id) &&
           (update.agent.lastUserMessageAt ?? null) !== expectedUserMessage.get(update.agent.id))) invalidate(update.agent.id);
       const pendingKey = timers.key(update.agent.id);
@@ -416,21 +446,23 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         log("timer-canceled", { agentId: update.agent.id, reason: "new-user-message" });
         return;
       }
-      if (busyStatus(update.agent.status) || update.agent.activeTurn || update.agent.archivedAt) {
+      if (busyStatus(update.agent.status) || update.agent.activeTurn) {
         timers.cancel(update.agent.id);
         log("timer-canceled", { agentId: update.agent.id, reason: "new-turn-or-busy" });
       }
-    }));
+    });
     recover(api, trigger);
     // agents.subscribe only attaches a local listener in 0.9.2. The owned list
     // subscription enables daemon updates and restores snapshots on reconnect.
     void api.agents.list({ subscribe: {}, signal: lifetime.signal }).then(({ subscription }) => {
-      subscription.subscribe({
+      const removeList = subscription.subscribe({
         snapshot: () => recover(api, "connection-snapshot"),
         update: () => {},
-        error: (error) => { if (!stopped) log("subscription-failed", { reason: safeError(error) }); },
+        error: (error) => { if (!stopped && active) log("subscription-failed", { reason: safeError(error) }); },
       });
-    }).catch((error) => { if (!stopped) log("subscription-failed", { reason: safeError(error) }); });
+      removeListSubscription = removeList;
+      if (!active) removeListSubscription();
+    }).catch((error) => { if (!stopped && active) log("subscription-failed", { reason: safeError(error) }); });
   };
 
   const removeTurnEnded = server.on("agent.turn_ended", (event, context) => {
@@ -455,9 +487,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     ensureSubscription(context.paseo);
   });
   const removeArchived = server.on("agent.archived", (event) => {
-    timers.cancel(event.agent.id);
-    invalidate(event.agent.id);
-    expectedUserMessage.delete(event.agent.id);
+    forgetAgent(event.agent.id);
   });
 
   // 0.9.2 has no SDK handle on PluginServerContext before the first hook.
@@ -483,12 +513,12 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     removePermissionRequested();
     removePermissionResolved();
     removeArchived();
-    for (const remove of agentSubscriptions.values()) remove();
-    agentSubscriptions.clear();
+    removeAgentSubscription?.();
     timers.cancelAll();
     deferredTurns.clear();
     expectedUserMessage.clear();
     recoveryFailures.clear();
+    generations.clear();
     // A store passed in belongs to the caller. Ours drops every later write, and teardown
     // waits for the one in flight, so a reloaded instance never races this one's writes.
     if (!dependencies.store) await store.close();
