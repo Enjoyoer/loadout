@@ -3,9 +3,10 @@ import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 
 export type ResumeState = "detected" | "parked" | "resuming" | "verifying" | "done" | "exhausted" | "opted-out" | "superseded" | "uncertain";
 
-/** A record in one of these states can still send or is verifying a send; every other state is terminal. */
-export function isActive(record: { state: ResumeState }): boolean {
-  return record.state === "detected" || record.state === "parked" || record.state === "resuming" || record.state === "verifying";
+/** Transient uncertainty is recoverable, not terminal; usage uncertainty still fails closed. */
+export function isActive(record: { state: ResumeState; kind?: ResumeRecord["kind"] }): boolean {
+  return record.state === "detected" || record.state === "parked" || record.state === "resuming" || record.state === "verifying" ||
+    (record.kind === "transient" && record.state === "uncertain");
 }
 
 export type ResumeAttempt = {
@@ -77,6 +78,7 @@ export type AgentSnapshot = {
   cwd: string;
   title?: string | null;
   status: string;
+  lastError?: string;
   activeTurn?: { turnId: string; startedAt?: string | null } | null;
   pendingPermissions?: readonly unknown[];
   requiresAttention?: boolean;

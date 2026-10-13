@@ -136,7 +136,7 @@ export class ResumeStore {
 
   async activeForAgent(agentId: string): Promise<ResumeRecord | null> {
     const records = await this.read();
-    return records.find((record) => record.agentId === agentId && ["detected", "parked", "resuming", "verifying"].includes(record.state)) ?? null;
+    return records.find((record) => record.agentId === agentId && isActive(record)) ?? null;
   }
 
   async upsert(record: ResumeRecord): Promise<void> {

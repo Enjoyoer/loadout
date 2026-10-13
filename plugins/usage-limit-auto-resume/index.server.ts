@@ -1,6 +1,7 @@
 import { defineSettings } from "@getpaseo/plugin";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { PaseoApi } from "@getpaseo/client";
+import type { FetchAgentTimelineResponseMessage } from "@getpaseo/protocol/messages";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
 import { openDaemonClient } from "./server/daemon.ts";
 import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, releaseClaim, resumePrompt, shouldResume, transientRejectionState, turnMark, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
@@ -82,6 +83,90 @@ export default function contribute(server: PluginServerContext, openClient = ope
 
   const isUsageLimitError = (message: string, code?: string) => failureSignature(message, code) !== null;
 
+  // A long retry can fill the entire tail page. Walk back to the newest user, rather than treating a missing row
+  // in 200 entries as an ambiguous send. Older pages naturally have hasNewer; anchor them to the fresh tail's epoch.
+  async function transientTimeline(api: PaseoApi, agentId: string) {
+    const timeline = api.agents.ref(agentId).timeline;
+    let page = await timeline.refetch({ direction: "before", limit: 200 });
+    if (page.error || page.gap || page.staleCursor || page.hasNewer) throw new Error("timeline-incomplete");
+    const epoch = page.epoch;
+    let entries = page.entries;
+    while (!lastUserMessage(entries.map((entry) => entry.item)) && page.hasOlder) {
+      const cursor = page.startCursor;
+      if (!cursor || cursor.epoch !== epoch) throw new Error("timeline-incomplete");
+      page = await timeline.refetch({ direction: "before", cursor, limit: 200 });
+      if (page.error || page.gap || page.staleCursor || page.epoch !== epoch || !page.entries.length ||
+          (page.startCursor && page.startCursor.seq >= cursor.seq)) throw new Error("timeline-incomplete");
+      entries = [...page.entries, ...entries];
+    }
+    return entries;
+  }
+
+  // All ambiguous transient sends take this path, including persisted records from older plugin versions. Never
+  // infer delivery from prompt text alone: the latest user must be the original checked row or our stable send ID.
+  async function reverifyTransient(record: ResumeRecord, currentConfig: Config): Promise<ResumeRecord | null> {
+    if (!currentConfig.armed || inFlight.has(record.agentId)) return null;
+    const api = await acquire();
+    const agent = await fetchAgent(api, record.agentId);
+    if (!agent) return null;
+    const settle = async (state: ResumeState, reason: string) => store.update(record.recordId, (value) =>
+      value.state === record.state && value.updatedAt === record.updatedAt
+        ? { ...value, state, terminalReason: reason, updatedAt: new Date().toISOString() } : value);
+    if (record.terminalReason === "retry-turn-canceled") { await settle("superseded", "retry-turn-canceled"); return null; }
+    if (agent.archivedAt || agent.status === "closed") { await settle("superseded", "agent-closed-or-archived"); return null; }
+    if (!isSameAgentAndSession(record, agent)) { await settle("superseded", "identity-changed"); return null; }
+    if (agent.status === "running" || agent.activeTurn) return null;
+    if (agent.status !== "idle" && agent.status !== "error") return null;
+    if (agent.pendingPermissions?.length || (agent.requiresAttention && !["error", "finished"].includes(agent.attentionReason ?? ""))) return null;
+    let entries: FetchAgentTimelineResponseMessage["payload"]["entries"];
+    try {
+      entries = await transientTimeline(api, record.agentId);
+    } catch (error) {
+      log(`retry-verification-deferred agentId=${record.agentId} reason=${JSON.stringify(errorMessage(error))}`);
+      return null;
+    }
+    const fresh = await fetchAgent(api, record.agentId);
+    if (!fresh || JSON.stringify(turnMark(fresh)) !== JSON.stringify(turnMark(agent)) || fresh.activeTurn || fresh.status === "running") return null;
+    const user = lastUserMessage(entries.map((entry) => entry.item));
+    if (!user) return null;
+    const expected = (fresh.lastUserMessageAt ?? null) === record.lastUserMessageAt && user.text === record.expectedUserText &&
+      (!record.expectedUserMessageId || (user.messageId ?? user.clientMessageId) === record.expectedUserMessageId);
+    const ownLatest = isOwnLatestMessage(record, user);
+    if (!expected && !ownLatest) { await settle("superseded", "newer-user-message"); return null; }
+    // A send receipt can precede its timeline row. Keep the existing verification window before retrying an
+    // uncertain delivery whose newest user row is still the pre-send prompt.
+    if (record.sentAt && !ownLatest && record.verificationDeadlineAt && Date.parse(record.verificationDeadlineAt) > Date.now()) return null;
+    // Pi's failed outcome is rendered as a System Error assistant row. Ignore plugin decorations, not model output.
+    const final = entries.findLast((entry) => entry.item.type !== "plugin");
+    const item = final?.item;
+    const failure = fresh.status === "error" && fresh.lastError ? fresh.lastError
+      : item?.type === "error" ? item.message
+      : item?.type === "assistant_message" && /^\[System Error\]/.test(item.text) ? item.text.replace(/^\[System Error\]\s*/, "") : null;
+    if (!failure) {
+      if (fresh.status === "idle" && item?.type === "assistant_message" && !isTransientAssistantText(item.text)) await settle("done", "retry-succeeded-on-reverify");
+      return null;
+    }
+    if (isUsageLimitError(failure)) {
+      const usage = buildRecord(fresh, failure, undefined, currentConfig, Date.now(), final?.turnId ?? record.resumeTurnId ?? record.sourceTurnId, true);
+      if (usage) { await store.upsert(usage); await settle("superseded", "retry-to-usage"); }
+      return null;
+    }
+    if (!fresh.lastUserMessageAt) return null;
+    // A parked failure already has its backoff. A lost end event anchors the next delay to the live error row, not
+    // to each poll, so re-verification can never keep pushing the retry into the future.
+    const endedAt = final?.timestamp && Number.isFinite(Date.parse(final.timestamp)) ? Date.parse(final.timestamp) : Date.now();
+    const next = afterTransientFailure({ ...record, failedOutcome: true, retryPrompt: "continue" }, `failed: ${failure}`,
+      user.text, user.messageId ?? user.clientMessageId ?? "", fresh.lastUserMessageAt, currentConfig, endedAt);
+    if (!record.sentAt) next.notBefore = record.notBefore;
+    const gate = shouldResume({ ...next, notBefore: new Date(0).toISOString() }, fresh, currentConfig);
+    if (!gate.ok) {
+      if (["opted-out", "identity-changed", "archived", "newer-user-message"].includes(gate.reason)) await settle(gate.reason === "opted-out" ? "exhausted" : "superseded", gate.reason);
+      return null;
+    }
+    const stored = await store.update(record.recordId, (value) => value.state === record.state && value.updatedAt === record.updatedAt ? next : value);
+    return stored?.state === "parked" && stored.updatedAt === next.updatedAt ? stored : null;
+  }
+
   async function processRecord(record: ResumeRecord, currentConfig: Config) {
     if (!currentConfig.armed) {
       log(`would-resume agentId=${record.agentId} reason=${record.failureSignature} recordId=${record.recordId}`);
@@ -110,9 +195,8 @@ export default function contribute(server: PluginServerContext, openClient = ope
     let gated = agent;
     if (record.kind === "transient") {
       try {
-        const page = await api.agents.ref(record.agentId).timeline.refetch({ direction: "before", limit: 200 });
-        if (page.error || page.gap || page.staleCursor || page.hasNewer) throw new Error("timeline-incomplete");
-        const timelineGate = verifyTransientTimeline(record, page.entries.map((entry) => entry.item));
+        const entries = await transientTimeline(api, record.agentId);
+        const timelineGate = verifyTransientTimeline(record, entries.map((entry) => entry.item));
         if (!timelineGate.ok) throw new Error(timelineGate.reason);
         const freshAgent = await fetchAgent(api, record.agentId);
         const freshGate = freshAgent ? shouldResume(record, freshAgent, currentConfig) : { ok: false as const, reason: "agent-missing" };
@@ -279,6 +363,11 @@ export default function contribute(server: PluginServerContext, openClient = ope
           await store.update(latest.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: "send-state-unreconciled", updatedAt: new Date().toISOString() }));
           continue;
         }
+        if (latest.kind === "transient" && (latest.state === "uncertain" || latest.state === "verifying")) {
+          const rearmed = await reverifyTransient(latest, currentConfig);
+          if (rearmed) await processRecord(rearmed, currentConfig);
+          continue;
+        }
         if (latest.state === "verifying") {
           await reconcile(latest, currentConfig);
           continue;
@@ -338,6 +427,10 @@ export default function contribute(server: PluginServerContext, openClient = ope
       const currentConfig = await config();
       if (!currentConfig) return;
       const active = await store.activeForAgent(event.agent.id);
+      if (active?.kind === "transient" && event.outcome.kind === "canceled") {
+        await store.update(active.recordId, (value) => ({ ...value, state: "superseded", terminalReason: "retry-turn-canceled", updatedAt: new Date().toISOString() }));
+        return;
+      }
       if (active?.state === "verifying" && active.resumeTurnId === event.turnId) {
         if (active.kind === "transient") {
           const failedTransient = event.outcome.kind === "failed" && !isUsageLimitError(event.outcome.error.message, event.outcome.error.code);
@@ -359,7 +452,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
             }
             // Re-park only the attempt this turn ended; a decision another handler stored meanwhile stands.
             const next = await store.update(active.recordId, (value) => value.state === "verifying" && value.resumeTurnId === event.turnId
-              ? afterTransientFailure(value, assistant, user.text, sentMessageId!, agent.lastUserMessageAt!, currentConfig)
+              ? afterTransientFailure({ ...value, ...(failedTransient ? { failedOutcome: true, retryPrompt: "continue" } : {}) }, assistant, user.text, sentMessageId!, agent.lastUserMessageAt!, currentConfig)
               : value);
             if (next?.state === "parked" || next?.state === "exhausted") log(`retry-${next.state === "exhausted" ? "exhausted" : "scheduled"} agentId=${event.agent.id} attempts=${attemptCount(next)}`);
             return;
@@ -393,6 +486,13 @@ export default function contribute(server: PluginServerContext, openClient = ope
         } else {
           await store.update(active.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: `resumed-turn-${event.outcome.kind}`, updatedAt: new Date().toISOString() }));
         }
+        return;
+      }
+      if (active?.kind === "transient" && (active.state === "uncertain" || active.state === "parked")) {
+        // A missing/late start or end observation must not let the old record block a new failed turn indefinitely.
+        // The live timeline, not this possibly truncated event snapshot, decides whether another send is safe.
+        const rearmed = await reverifyTransient(active, currentConfig);
+        if (rearmed) await sweep();
         return;
       }
       if (active?.state === "verifying" || active?.state === "resuming") {
@@ -444,7 +544,8 @@ export default function contribute(server: PluginServerContext, openClient = ope
     cancelInFlight(event.agent.id, { state: "superseded", reason: "agent-archived" });
     track((async () => {
       const records = await store.read();
-      for (const record of records.filter((value) => value.agentId === event.agent.id && !["done", "superseded", "exhausted", "uncertain"].includes(value.state))) {
+      for (const record of records.filter((value) => value.agentId === event.agent.id &&
+        (!["done", "superseded", "exhausted", "uncertain"].includes(value.state) || (value.kind === "transient" && value.state === "uncertain")))) {
         await store.update(record.recordId, (value) => ({ ...value, state: "superseded", terminalReason: "agent-archived", updatedAt: new Date().toISOString() }));
         log(`record-superseded agentId=${event.agent.id} recordId=${record.recordId} reason=agent-archived`);
       }
