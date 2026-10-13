@@ -5,6 +5,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 ## Unreleased
 
 ### Changed
+- OPC 7.42: code, code-bounded, test-fix and automation lanes range up to Opus xhigh, and a lane with any UI work is the ui class.
 - Pi routing: the chatgpt-web environment context is a current-turn user item directly before the instruction, as Codex sends it, so the gateway no longer also reads the system prompt's real cwd and rejects the turn for conflicting cwd values.
 - Pi routing: chatgpt-web requests send `/workspace/<folder>` as cwd and workspace root instead of the bare folder name, which the gateway rejected as not absolute (every Web turn failed since the 10/09 change).
 - personal-skills: an optional `pi.contextWindows` map sets Pi's context window per canonical label (API entries included), so Pi's context meter and compaction trigger match a backend's effective cap.

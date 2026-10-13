@@ -14,12 +14,12 @@ Labels resolve through the target Pi catalog. Routes are the minimum (owner rule
 
 | Class | Use for | Default | Range | Fast |
 |---|---|---|---|---|
-| `code` | multi-step, multi-file, money, auth, prod changes | Opus medium | medium..high | off |
-| `code-bounded` | single file, clear spec | Opus medium | medium..high | off |
-| `test-fix` | make CI green | Opus medium | medium..high | off |
+| `code` | multi-step, multi-file, money, auth, prod changes | Opus medium | medium..xhigh | off |
+| `code-bounded` | single file, clear spec | Opus medium | medium..xhigh | off |
+| `test-fix` | make CI green | Opus medium | medium..xhigh | off |
 | `review-critical` | read-only security, money, architecture review | Sol xhigh | fixed | off |
 | `review-general` | other read-only review | Sol xhigh | fixed | off |
-| `automation` | computer use that builds automation code | Opus medium | medium..high | off |
+| `automation` | computer use that builds automation code | Opus medium | medium..xhigh | off |
 | `browser` | one-time browser or computer-use execution | Astra medium | medium..high | on |
 | `research` | read-only lookup | Luna xhigh | fixed | on |
 | `mechanical` | small mechanical edits, test removals, config syncs | Opus medium | fixed | off |
@@ -35,7 +35,7 @@ The `reviewer` fixed role is separate: it is the one ChatGPT web lane (Web Pro) 
 
 ## UI work
 
-UI work runs only on Opus xhigh, Fast off. The `ui` class resolves to an owner-explicit route with the reason `ui: owner rule, Opus xhigh, no GPT`; the pace never touches it. UI work never uses a GPT or web model: no Sol, Luna, or Astra Worker, no Luna scouts, no web planner or fallback, and no web reviewer. Create its task with `createTask({..., ui: true})` and pass `ui: true` to `selectTopology`: the task refuses browser review, the planner refuses to launch, `recordWorkerRoute` and the Worker builders given the task refuse anything but Opus xhigh, Fast off, with an Opus model id, and the topology runs no scouts or planner. An owner-named route for UI work other than Opus xhigh, Fast off is refused; ask the owner to use the `ui` class instead.
+UI work runs only on Opus xhigh, Fast off. A lane that includes any UI work is the `ui` class, even when most of it is code; split the UI part into its own lane only if that is faster. The `ui` class resolves to an owner-explicit route with the reason `ui: owner rule, Opus xhigh, no GPT`; the pace never touches it. UI work never uses a GPT or web model: no Sol, Luna, or Astra Worker, no Luna scouts, no web planner or fallback, and no web reviewer. Create its task with `createTask({..., ui: true})` and pass `ui: true` to `selectTopology`: the task refuses browser review, the planner refuses to launch, `recordWorkerRoute` and the Worker builders given the task refuse anything but Opus xhigh, Fast off, with an Opus model id, and the topology runs no scouts or planner. An owner-named route for UI work other than Opus xhigh, Fast off is refused; ask the owner to use the `ui` class instead.
 
 ## Pace
 

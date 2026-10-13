@@ -386,14 +386,17 @@ class OpcDeliveryTest(unittest.TestCase):
                                                      "fleet/claude-opus-5-5; this lane cannot relaunch on its recorded route, "
                                                      "so resolve a route for a new lane"})
 
-    def test_new_xhigh_code_route_without_task_record_is_refused(self):
+    def test_new_xhigh_code_route_is_allowed(self):
         catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
         self.write_routes(self.task, {"code-lane": PRE_730_CODE_ROUTE})
-        built = self.launch(self.task, "new-lane", json.dumps(PRE_730_CODE_ROUTE), catalog, record_lane="new-lane",
+        raised = {"role": "worker", "source": "owner-explicit", "model": "fleet/claude-opus-5-5",
+                  "effort": "xhigh", "fastMode": False}
+        built = self.launch(self.task, "new-lane", json.dumps(raised), catalog, record_lane="new-lane",
                              task_class="code")
-        for step in ("request", "brief", "record"):
-            self.assertIn("recorded owner or task-default route required for worker", built[step].get("error", ""), step)
-        self.assertNotIn("new-lane", json.loads(Path(self.task).read_text())["routes"])
+        self.assertEqual(built["request"].get("provider"), "pi/fleet/claude-opus-5-5")
+        self.assertEqual(built["request"]["settings"], {"thinkingOptionId": "xhigh"})
+        self.assertIn("model=fleet/claude-opus-5-5; effort=xhigh; Fast=off; route: route reason", built["brief"])
+        self.assertNotIn("error", built["record"])
 
     def test_tampered_recorded_gpt_code_route_is_refused(self):
         catalog = [{"id": f"fleet/{model}", "label": label, "thinkingOptions": [{"id": "medium"}, {"id": "xhigh"}]}
