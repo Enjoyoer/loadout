@@ -1,10 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { buildDelegatedBrief, FIXED_ROLE_ROUTES, MAX_CHATGPT_BROWSER_TABS, resolveAgentSurface } from './agent-routing.mjs';
-import { selectUnattendedMode, selectPiMode } from './paseo-worker.mjs';
+import { buildDelegatedBrief, FIXED_ROLE_ROUTES, resolveAgentSurface } from './agent-routing.mjs';
+import { selectPiMode } from './paseo-worker.mjs';
 import { recoverTests } from './delivery.mjs';
 import { assertRepository, readTask, updateTask } from './task-state.mjs';
-
-export { MAX_CHATGPT_BROWSER_TABS };
 
 const terminal = new Set(['failed', 'planned']);
 const latest = task => task.planner?.rounds?.at(-1);
@@ -21,31 +19,19 @@ function validateContextPack(contextPack) {
 
 export function buildPlannerPrompt({ contextPack, route }) {
   const body = `${validateContextPack(contextPack)}\n\nReturn one concise, implementable plan covering lane ownership, integration order, required behavior, checks, and material risks. This is a one-shot planning turn. Read only the assigned repository and linked context. Do not edit, implement, publish, review, merge, or steer another agent.`;
-  return buildDelegatedBrief({ role: route === FIXED_ROLE_ROUTES.planner_fallback ? 'planner_fallback' : 'planner', route, brief: body });
+  return buildDelegatedBrief({ role: 'planner', route, brief: body });
 }
 
 function available(task) {
   assertRepository(task);
-  if (task.browser_review) throw Error('reviewer reserves the one OPC web lane; skip the planner');
-  if (task.ui) throw Error('UI work never uses the web planner or its fallback (owner rule); the PM plans');
+  if (task.ui) throw Error('UI work never uses the GPT planner (owner rule); the PM plans');
   if (task.status !== 'ready' || task.tests?.status === 'running' || task.merge) {
     throw Error('task is busy, cancelled, or already delivering');
   }
   const previous = latest(task);
   if (previous && !terminal.has(previous.status)) throw Error('planner lane is active or uncertain');
   if (previous?.status === 'planned') throw Error('planner is one-shot and already completed');
-  if ((previous?.role === 'planner_fallback' || previous?.provider?.startsWith('claude/'))) throw Error('planner fallback is terminal; ask the owner how to proceed');
-}
-
-export function authorizePlannerFallback(taskPath, { answer }) {
-  if (answer !== 'yes') throw Error('planner fallback requires the owner to explicitly answer yes');
-  return updateTask(taskPath, task => {
-    const failed = latest(task);
-    if (!failed || (failed.role !== 'planner' && !failed.provider?.startsWith('codex/')) || failed.status !== 'failed') {
-      throw Error('owner approval may be recorded only after the Pro planner failure');
-    }
-    task.planner.fallback_authorization = { answer: 'yes', after_round: failed.id };
-  }).planner.fallback_authorization;
+  if (previous?.status === 'failed') throw Error('planner failed; stop and report to the owner');
 }
 
 // Prepare the exact MCP create_agent request. The PM calls that tool directly,
@@ -55,14 +41,14 @@ export function preparePlannerLaunch(taskPath, { contextPack, capabilities, surf
   const task = readTask(taskPath);
   available(task);
   const previous = latest(task);
-  const fallback = previous?.status === 'failed';
-  const role = fallback ? 'planner_fallback' : 'planner';
-  const route = resolveAgentSurface(role, fallback ? { plannerFailure: previous, fallbackAuthorization: task.planner?.fallback_authorization } : {}, capabilities.models, surface);
-  const requestedSettings = fallback ? { thinkingOptionId: route.effort } : {};
-  const modeId = route.provider.startsWith('pi/') ? selectPiMode(capabilities) : selectUnattendedMode(capabilities);
+  if (surface !== 'pi') throw Error('planner runs only on Pi');
+  const role = 'planner';
+  const route = resolveAgentSurface(role, {}, capabilities.models, surface);
+  const requestedSettings = { thinkingOptionId: route.effort };
+  const modeId = selectPiMode(capabilities);
   const round = {
     id: randomUUID(), role, catalog_label: route.label, catalog_model_id: route.model, provider: route.provider, status: 'launching', agent_id: null,
-    ...(fallback ? { effort: route.effort } : {}),
+    effort: route.effort,
   };
   const initialPrompt = buildPlannerPrompt({ contextPack, route: FIXED_ROLE_ROUTES[role] });
   updateTask(taskPath, current => {
@@ -74,11 +60,11 @@ export function preparePlannerLaunch(taskPath, { contextPack, capabilities, surf
   return Object.freeze({
     round: structuredClone(round),
     request: Object.freeze({
-      title: `OPC ${fallback ? 'fallback ' : ''}planner`,
+      title: 'OPC planner',
       provider: route.provider,
       initialPrompt,
       notifyOnFinish: true,
-      labels: { role: 'worker', 'opc.planner-round': round.id, 'opc.run': task.id },
+      labels: { role: 'worker', 'opc.planner-round': round.id, 'opc.run': task.id, 'opc.service-tier': 'fast' },
       settings: { ...requestedSettings, ...(modeId ? { modeId } : {}) },
     }),
   });

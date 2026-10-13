@@ -12,9 +12,8 @@ export function isValidModelId(value) {
 }
 
 export const FIXED_ROLE_ROUTES = Object.freeze({
-  scout: Object.freeze({ label: 'Luna', fallbackProvider: 'codex', effort: 'max', fastMode: true }),
-  planner: Object.freeze({ label: 'Web Pro', fallbackProvider: 'codex', effort: null, fastMode: false }),
-  planner_fallback: Object.freeze({ label: 'Opus', fallbackProvider: 'claude', effort: 'xhigh', fastMode: false }),
+  scout: Object.freeze({ label: 'Sol', fallbackProvider: 'codex', effort: 'xhigh', fastMode: true }),
+  planner: Object.freeze({ label: 'Sol', fallbackProvider: 'codex', effort: 'xhigh', fastMode: true }),
   reviewer: Object.freeze({ label: 'Web Pro', fallbackProvider: 'codex', effort: null, fastMode: false }),
 });
 
@@ -22,33 +21,35 @@ export const FIXED_ROLE_ROUTES = Object.freeze({
 // [floor, ceiling] the quota pace may move the default within (medium < high < xhigh); null means fixed.
 const workerClass = (label, effort, range, fastMode = false) =>
   Object.freeze({ label, effort, range: range && Object.freeze(range), fastMode });
-// Local code lanes default to Opus medium (owner rule); ui stays Opus xhigh. Routes are the minimum
+// Local code lanes default to Opus medium (owner rule); ui stays Fable high. Routes are the minimum
 // (owner rule): every range starts at its default, so the pace can raise a level but never lower one.
 export const WORKER_DEFAULT_ROUTES = Object.freeze({
   code: workerClass('Opus', 'medium', ['medium', 'xhigh']),
-  'code-bounded': workerClass('Opus', 'medium', ['medium', 'xhigh']),
-  'test-fix': workerClass('Opus', 'medium', ['medium', 'xhigh']),
-  'review-critical': workerClass('Sol', 'xhigh', null),
-  'review-general': workerClass('Sol', 'xhigh', null),
-  automation: workerClass('Opus', 'medium', ['medium', 'xhigh']),
+  review: workerClass('Sol', 'xhigh', null, true),
+  plan: workerClass('Sol', 'xhigh', null, true),
   browser: workerClass('Astra', 'medium', ['medium', 'high'], true),
-  research: workerClass('Luna', 'xhigh', null, true),
-  mechanical: workerClass('Opus', 'medium', null),
-  smoke: workerClass('Sonnet', 'low', null),
+  smoke: workerClass('Luna', 'low', null, true),
   watcher: workerClass('Luna', 'xhigh', null, true),
 });
+export const WORKER_CLASS_ALIASES = Object.freeze({
+  'code-bounded': 'code', 'test-fix': 'code', automation: 'code', mechanical: 'code',
+  research: 'plan', 'review-critical': 'review', 'review-general': 'review',
+});
+export const canonicalWorkerClass = kind => Object.hasOwn(WORKER_CLASS_ALIASES, kind ?? '')
+  ? WORKER_CLASS_ALIASES[kind] : kind;
+const workerRule = kind => WORKER_DEFAULT_ROUTES[canonicalWorkerClass(kind)];
 // Each label draws on one provider's quota pool.
 export const LABEL_POOLS = Object.freeze({ Opus: 'claude', Sonnet: 'claude', Fable: 'claude', Sol: 'codex', Luna: 'codex', Astra: 'codex' });
 // Owner rules that hold whatever the quota says. They resolve to owner-explicit routes, so nothing adjusts them.
 export const OWNER_RULE_ROUTES = Object.freeze({
-  ui: Object.freeze({ label: 'Opus', effort: 'xhigh', fastMode: false, reason: 'ui: owner rule, Opus xhigh, no GPT' }),
+  ui: Object.freeze({ label: 'Fable', effort: 'high', fastMode: false, reason: 'ui: owner rule, Fable high, no GPT' }),
 });
 // UI work never uses GPT models or the ChatGPT web lane (owner rule).
 export const GPT_WEB_LABELS = Object.freeze(['Sol', 'Luna', 'Astra', 'Web Pro', 'Web Extra']);
 const GPT_WEB_MODEL = /(?:^|\/)(?:gpt-|chatgpt-web\/)/i;
 export function isGptOrWebRoute(route, catalog = null) {
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
-  const label = route?.label ?? (route?.source === 'task-default' ? WORKER_DEFAULT_ROUTES[route.kind]?.label
+  const label = route?.label ?? (route?.source === 'task-default' ? workerRule(route.kind)?.label
     : rows?.find(row => row.id === route?.model || row.id?.slice(row.id.indexOf('/') + 1) === route?.model)?.label);
   return GPT_WEB_LABELS.includes(label) || GPT_WEB_MODEL.test(route?.model ?? '');
 }
@@ -64,8 +65,8 @@ const namesLabel = (model, label) => new RegExp(`(?:^|[/._-])${label.toLowerCase
 const isGptOrWebModel = (model, rows) => GPT_WEB_MODEL.test(model ?? '') ||
   GPT_WEB_LABELS.includes(rows?.find(row => namesRow(row, model))?.label);
 
-// A UI lane records and launches only the ui route: Opus xhigh, Fast off, never a GPT or web model (owner rule). With a
-// catalog the model must be its Opus row; without one (a brief, a record) the model id must name Opus.
+// A UI lane records and launches only the ui route: Fable high, Fast off, never a GPT or web model (owner rule). With a
+// catalog the model must be its Fable row; without one (a brief, a record) the model id must name Fable.
 export function isUiRoute(route, catalog = null) {
   const rule = OWNER_RULE_ROUTES.ui, rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   return route?.effort === rule.effort && route.fastMode === rule.fastMode && !isGptOrWebModel(route.model, rows) &&
@@ -75,10 +76,11 @@ export function isUiRoute(route, catalog = null) {
 // The owner's hard rules for a lane class bind every route, whatever its source says: ui is exactly the ui route, these
 // classes never run a GPT or web model, and no route runs below its class minimum. Inside them an owner-named route keeps
 // its model and effort.
-const CLAUDE_ONLY_CLASSES = Object.freeze(['code', 'code-bounded', 'test-fix', 'automation']);
+const CLAUDE_ONLY_CLASSES = Object.freeze(['code']);
 function laneProblem(route, taskClass, rows) {
-  if (route.source === 'task-default' && route.kind !== taskClass) return `it is a ${route.kind} route`;
-  if (taskClass === 'ui') return isUiRoute(route, rows) ? null : 'a ui lane runs only Opus xhigh, Fast off';
+  taskClass = canonicalWorkerClass(taskClass);
+  if (route.source === 'task-default' && canonicalWorkerClass(route.kind) !== taskClass) return `it is a ${route.kind} route`;
+  if (taskClass === 'ui') return isUiRoute(route, rows) ? null : 'a ui lane runs only Fable high, Fast off';
   const rule = WORKER_DEFAULT_ROUTES[taskClass];
   if (CLAUDE_ONLY_CLASSES.includes(taskClass) && isGptOrWebModel(route.model, rows)) {
     return `${route.model} is a GPT or web model and the ${taskClass} class runs ${rule.label}`;
@@ -86,17 +88,18 @@ function laneProblem(route, taskClass, rows) {
   return effortOrder.indexOf(route.effort) < effortOrder.indexOf(rule.effort)
     ? `effort ${route.effort} is below the ${taskClass} minimum ${rule.effort}` : null;
 }
-const knownClass = taskClass => Object.hasOwn(WORKER_DEFAULT_ROUTES, taskClass ?? '') || Object.hasOwn(OWNER_RULE_ROUTES, taskClass ?? '');
+const knownClass = taskClass => Object.hasOwn(WORKER_DEFAULT_ROUTES, canonicalWorkerClass(taskClass) ?? '') || Object.hasOwn(OWNER_RULE_ROUTES, taskClass ?? '');
 // A task default runs its class's own model: with a catalog exactly the class's row, without one a model id that names
 // the class's label (the name rule of the UI check), failing closed.
 function defaultIdentityProblem(route, rows) {
-  const rule = WORKER_DEFAULT_ROUTES[route.kind];
+  const rule = workerRule(route.kind);
   if (rows) return resolveCatalogLabel(rows, rule.label).id === route.model ? null : `${route.model} is not the ${route.kind} class's ${rule.label} model`;
   return namesLabel(route.model, rule.label) ? null : `${route.model} does not name the ${route.kind} class's ${rule.label} model`;
 }
 
 // A fresh lane's route checked against its intended class (recording, and a launch with no recorded route).
 export function validateLaneClass(route, taskClass, catalog = null) {
+  taskClass = canonicalWorkerClass(taskClass);
   if (!knownClass(taskClass)) throw workerRouteUnresolved();
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   const problem = laneProblem(route, taskClass, rows) ?? (route.source === 'task-default' ? defaultIdentityProblem(route, rows) : null);
@@ -175,7 +178,7 @@ export function validateRecordedWorkerRoute(route) {
 // A route being recorded or launched must also match today's class table: class, Fast, pace pool, and level.
 function validateWorkerRoute(route) {
   const valid = validateRecordedWorkerRoute(route);
-  const rule = Object.hasOwn(WORKER_DEFAULT_ROUTES, route.kind ?? '') ? WORKER_DEFAULT_ROUTES[route.kind] : null;
+  const rule = workerRule(route.kind);
   if (route.source === 'task-default' && (!rule || route.fastMode !== rule.fastMode ||
       (rule.range ? route.pace?.pool !== LABEL_POOLS[rule.label] : route.pace !== null) ||
       route.effort !== classLevel(rule, route.pace))) {
@@ -190,6 +193,7 @@ function validateWorkerRoute(route) {
 // class), the class's Fast, and, as the one allowance for levels a class-table change left behind, any effort from the
 // class minimum up to its ceiling, which the Pi catalog must still serve.
 function validateRebuild(route, taskClass, rows) {
+  taskClass = canonicalWorkerClass(taskClass);
   const valid = validateRecordedWorkerRoute(route);
   const rule = WORKER_DEFAULT_ROUTES[taskClass];
   const ceiling = rule && (rule.range?.[1] ?? rule.effort);
@@ -228,7 +232,7 @@ function validateLaunchedWorkerRoute(route, { task = null, lane = null, taskClas
   if (task != null && task.ui !== true && taskClass == null) throw Error('a Worker bound to a task record needs its lane class (taskClass)');
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi, laneClass = task?.ui === true ? 'ui' : taskClass;
   if (task?.ui === true && !isUiRoute(route, rows)) {
-    throw Error('UI task: only the ui route (Opus xhigh, Fast off) can launch (owner rule); use the ui class');
+    throw Error('UI task: only the ui route (Fable high, Fast off) can launch (owner rule); use the ui class');
   }
   if (recordedLaneEntry(task, lane, route)) return validateRebuild(route, laneClass, rows);
   const valid = validateWorkerRoute(route);
@@ -247,6 +251,7 @@ export const workerRouteUnresolved = () => Error('Worker route unresolved; ask t
 // and the class's quota pool pace may move its level within the class range. quota is a readQuota result.
 export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog, quota = null,
   settings = ROUTING_DEFAULTS } = {}) {
+  taskKind = canonicalWorkerClass(taskKind);
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   if (ownerRoute) {
     if (ownerRoute.source !== 'owner-explicit') throw Error('owner Worker route must have source owner-explicit');
@@ -291,7 +296,7 @@ function validateFixedRoute(role, route) {
 export function validateRoleRoute(role, route) {
   if (role === 'worker') {
     const valid = validateWorkerRoute(route);
-    if (route.source === 'task-default' && claudeClassOnGptModel(WORKER_DEFAULT_ROUTES[route.kind], route)) {
+    if (route.source === 'task-default' && claudeClassOnGptModel(workerRule(route.kind), route)) {
       throw Error('recorded owner or task-default route required for worker; a Claude class never runs a GPT or web model');
     }
     return valid;
@@ -300,19 +305,12 @@ export function validateRoleRoute(role, route) {
   return validateFixedRoute(role, route);
 }
 
-export function resolveAgentRoute(role, { explicitRoute = null, taskKind = null, catalog = null,
-  plannerFailure = null, fallbackAuthorization = null } = {}) {
+export function resolveAgentRoute(role, { explicitRoute = null, taskKind = null, catalog = null } = {}) {
   if (explicitRoute) {
     if (role !== 'worker') throw Error(`${role} must use the exact fixed OPC role route`);
     return validateWorkerRoute(explicitRoute);
   }
   if (role === 'worker') return validateWorkerRoute(selectWorkerRoute({ taskKind, catalog }));
-  if (role === 'planner_fallback') {
-    if (!plannerFailure?.id || plannerFailure.status !== 'failed' ||
-        fallbackAuthorization?.answer !== 'yes' || fallbackAuthorization?.after_round !== plannerFailure.id) {
-      throw Error('planner fallback requires recorded explicit owner yes after the Pro failure');
-    }
-  }
   const route = FIXED_ROLE_ROUTES[role];
   if (!route) throw Error(`unknown OPC role: ${role}`);
   return route;
@@ -332,6 +330,11 @@ export function buildDelegatedBrief({ role, route, brief, reason = null, task = 
   if (reason != null && (typeof reason !== 'string' || !reason.trim() || /[\r\n]/.test(reason))) throw Error('route reason must be one line');
   const resolved = route == null ? resolveAgentRoute(role)
     : role === 'worker' ? validateLaunchedWorkerRoute(route, { task, lane, taskClass, catalog }) : validateRoleRoute(role, route);
+  const kind = canonicalWorkerClass(taskClass ?? route?.kind);
+  if (role === 'worker' && ['plan', 'review'].includes(kind)) {
+    brief = `Read-only lane: do not edit, implement, or publish. ${kind === 'review'
+      ? 'Review the exact PR head using references/simplifier-review.md as the brief. ' : ''}\n\n${brief}`;
+  }
   const line = role === 'worker' ? `${routeText(resolved)}; route: ${reason ?? routeReason(resolved)}` : routeText(resolved);
   return `Fixed route for this ${role} lane: ${line}. This route is not a suggestion. You cannot delegate, launch another agent, choose another route, or substitute a model or effort. If this route fails, stop this lane and report the failure to the PM.\n\n${role === 'worker' ? `${WORKER_TESTING_RULE}\n\n` : ''}${brief}`;
 }
@@ -344,17 +347,17 @@ export function selectTopology({ scale, independentQuestions = 0, findingsConver
     throw Error('topology decisions must be explicit booleans');
   }
   if (ui && browserReview) throw Error('UI work never uses the web reviewer (owner rule)');
-  // UI work runs no Luna scouts and no web planner (owner rule); the PM explores and plans itself.
+  // UI work runs no GPT scouts or planner (owner rule); the PM explores and plans itself.
   const cap = scale === 'trivial' || ui ? 0 : scale === 'normal' ? 2 : 3;
   const scoutCount = Math.min(cap, independentQuestions);
   const plannerNeeded = scale !== 'trivial' && !findingsConverged && (materialAmbiguity || crossLaneDecision);
-  const planner = plannerNeeded && !browserReview && !ui;
+  const planner = plannerNeeded && !ui;
   return Object.freeze({
     scoutCount,
     scoutRoute: scoutCount ? FIXED_ROLE_ROUTES.scout : null,
     planner,
     plannerRoute: planner ? FIXED_ROLE_ROUTES.planner : null,
-    plannerSkipReason: planner ? null : ui && plannerNeeded ? 'UI work never uses the web planner' : browserReview && plannerNeeded ? 'reviewer reserves the one OPC web lane'
+    plannerSkipReason: planner ? null : ui && plannerNeeded ? 'UI work never uses the GPT planner'
       : findingsConverged ? 'scout findings converge into an implementable plan'
         : scale === 'trivial' ? 'trivial or localized work' : 'no material synthesis ambiguity',
   });
@@ -370,8 +373,8 @@ export function mapRouteToPi(route, catalog, { fallbackProvider = 'codex', surfa
   const originalProvider = route.provider?.split('/')[0] ?? fallbackProvider;
   const original = { ...route, provider: route.provider ?? `${originalProvider}/${route.model}` };
   if (surface !== 'pi' && !NATIVE_WORKER_SURFACES.includes(surface)) throw Error('surface must be pi, codex, or claude');
-  if (route.source === 'task-default' && (!Object.hasOwn(WORKER_DEFAULT_ROUTES, route.kind) ||
-      resolveCatalogLabel(catalog, WORKER_DEFAULT_ROUTES[route.kind].label).id !== route.model)) {
+  if (route.source === 'task-default' && (!workerRule(route.kind) ||
+      resolveCatalogLabel(catalog, workerRule(route.kind).label).id !== route.model)) {
     throw Error('task-default Worker route must match its Pi catalog label');
   }
   if (surface === 'codex') {
