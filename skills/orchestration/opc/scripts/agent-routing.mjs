@@ -25,12 +25,12 @@ const workerClass = (label, effort, range, fastMode = false) =>
 // Local code lanes default to Opus medium (owner rule); ui stays Opus xhigh. Routes are the minimum
 // (owner rule): every range starts at its default, so the pace can raise a level but never lower one.
 export const WORKER_DEFAULT_ROUTES = Object.freeze({
-  code: workerClass('Opus', 'medium', ['medium', 'high']),
-  'code-bounded': workerClass('Opus', 'medium', ['medium', 'high']),
-  'test-fix': workerClass('Opus', 'medium', ['medium', 'high']),
+  code: workerClass('Opus', 'medium', ['medium', 'xhigh']),
+  'code-bounded': workerClass('Opus', 'medium', ['medium', 'xhigh']),
+  'test-fix': workerClass('Opus', 'medium', ['medium', 'xhigh']),
   'review-critical': workerClass('Sol', 'xhigh', null),
   'review-general': workerClass('Sol', 'xhigh', null),
-  automation: workerClass('Opus', 'medium', ['medium', 'high']),
+  automation: workerClass('Opus', 'medium', ['medium', 'xhigh']),
   browser: workerClass('Astra', 'medium', ['medium', 'high'], true),
   research: workerClass('Luna', 'xhigh', null, true),
   mechanical: workerClass('Opus', 'medium', null),
@@ -185,10 +185,6 @@ function validateWorkerRoute(route) {
   return valid;
 }
 
-// Before 7.30 the code classes ran up to xhigh, so a lane of theirs recorded then rebuilds at that level. Other classes
-// rebuild up to their range ceiling or fixed level.
-const RECORDED_CEILINGS = Object.freeze({ code: 'xhigh', 'code-bounded': 'xhigh', 'test-fix': 'xhigh', automation: 'xhigh' });
-
 // A recorded route rebuilds (repair, restart) only inside the owner's hard rules for the lane's class, whatever its source.
 // A task default must also still be today's class: the class's catalog label (never a GPT or web model for a Claude
 // class), the class's Fast, and, as the one allowance for levels a class-table change left behind, any effort from the
@@ -196,7 +192,7 @@ const RECORDED_CEILINGS = Object.freeze({ code: 'xhigh', 'code-bounded': 'xhigh'
 function validateRebuild(route, taskClass, rows) {
   const valid = validateRecordedWorkerRoute(route);
   const rule = WORKER_DEFAULT_ROUTES[taskClass];
-  const ceiling = rule && (RECORDED_CEILINGS[taskClass] ?? rule.range?.[1] ?? rule.effort);
+  const ceiling = rule && (rule.range?.[1] ?? rule.effort);
   const problem = laneProblem(route, taskClass, rows) ?? (route.source !== 'task-default' ? null
     : route.fastMode !== rule.fastMode ? `Fast ${route.fastMode ? 'on' : 'off'} does not match the ${taskClass} class`
       : effortOrder.indexOf(route.effort) > effortOrder.indexOf(ceiling) ? `effort ${route.effort} is above the ${taskClass} ceiling ${ceiling}`
