@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.46"
+  version: "7.47"
 ---
 
 # OPC
@@ -21,11 +21,11 @@ Enable browser review only when the initial request explicitly asks for it; pres
 
 ## 2. Optional scouting
 
-Choose the smallest useful scouting topology, splitting only independent questions. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify the [planner](references/planner.md "branch:planning"). PMs delegate browser/research/scouting to GPT lanes, never themselves on Opus.
+Choose minimal useful scouting topology, splitting only independent questions. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify the [planner](references/planner.md "branch:planning"). PMs delegate browser/research/scouting to GPT lanes, never themselves on Opus.
 
 ## 3. Worker
 
-Workers use Pi with Codemode; native Codex/Claude Code requires explicit per-task owner authorization. Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast (Pi GPT routes) win unadjusted. UI design, building, styling, visual review, and browser checks require Fable `high` in every lane, never GPT/web or quota reductions. Record the route and reason; preserve them through repairs and resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks. Place and brief Workers through the execution mechanics.
+Workers use Pi/Codemode except browser classes on native Codex; other native lanes require per-task owner authorization. Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast (Pi GPT routes) win unadjusted. UI design, building, styling, visual review, and browser checks require Fable `high` in every lane, never GPT/web or quota reductions. Record the route and reason; preserve them through repairs and resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks. Place and brief Workers through the execution mechanics.
 
 All repository source and test edits, including small repairs, belong to Workers. No test-driven development: Workers add only owner- or PM-specified tests and keep existing tests and CI green. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 

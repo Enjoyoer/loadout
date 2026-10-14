@@ -12,11 +12,11 @@ Only explicitly read-only scouts, planners, reviewers, and advisors may share th
 
 ## Worker placement
 
-Use the pure request builders in `scripts/paseo-worker.mjs`, then make each MCP call yourself:
+Use `scripts/paseo-worker.mjs` pure request builders; call MCP yourself:
 
 1. Inspect parent Git status and select an explicit committed base. Worktrees inherit no staged, unstaged, or untracked parent changes. If required changes are uncommitted, ask the owner to commit them, choose another base, or exclude them. Never silently copy a dirty patch or share the dirty checkout.
 2. Use `buildManagedWorkspaceRequest` for the unique branch and `worktreeSlug`; call direct `create_workspace({isolation:'worktree', ...})` with that request.
-3. Inspect Pi at the returned path; supply its verbatim model catalog rows as `capabilities.models`. Pass the recorded `route` from `resolveWorkerRoute`, `task: readTask(taskPath)`, and its `taskClass`; omit `provider` and `agentSettings` to map its surface. Native or Pi-unserved routes need `nativeAuthorization: 'owner-explicit'`. Pass the returned `workspaceId` to `buildManagedWorkerRequest`, call direct `create_agent` with the unchanged request, then call `validateManagedWorkerLaunch`.
+3. Inspect Codex for browser classes, otherwise Pi, at the returned path; supply verbatim catalog rows as `capabilities.models`. Pass the recorded `route` from `resolveWorkerRoute`, `task: readTask(taskPath)`, and its `taskClass`; omit `provider` and `agentSettings` to map its surface. Except browser classes, native or Pi-unserved routes need `nativeAuthorization: 'owner-explicit'`; Codex requires explicit `settings.modeId` (`full-access`, advertised unattended). Pass the returned `workspaceId` to `buildManagedWorkerRequest`, call direct `create_agent` with the unchanged request, then call `validateManagedWorkerLaunch`.
 
 Record agent/workspace IDs, path, branch, base, and parentage. A failed placement stops the lane; preserve any created workspace for reconciliation. Permission requests require checking placement/settings, not accepting weaker permissions.
 
@@ -24,7 +24,7 @@ Repairs use `buildManagedWorkerFollowupRequest` with direct `send_agent_prompt`.
 
 ## Worker brief
 
-Bind route, reason, role, task, lane, class, catalog, and testing rule with `buildDelegatedBrief`. Include outcome, workspace ID, managed path, branch, base, allowed changes, acceptance checks, and source pointers. Live checks include state readbacks, canary runs, or dry runs showing exactly the intended change. Brief only PM-named tests, such as a regression test for an observed failure.
+Bind route, reason, role, task, lane, class, catalog, and testing rule with `buildDelegatedBrief`. Include outcome, workspace ID, managed path, branch, base, allowed changes, acceptance checks, and source pointers. Live checks use readbacks, canaries, or dry runs demonstrating intent. Brief only PM-named tests, including regressions for observed failures.
 
 Codemode comes from the Pi home. Before substantial integration, inspect the installed tool/API and its smallest real operation. Fixtures alone do not prove live behavior; distinguish human-authentication blockers.
 
