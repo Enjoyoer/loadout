@@ -293,6 +293,60 @@ class SkillsSyncTest(unittest.TestCase):
     def installed(self, host, rel):
         return self.root / "hosts" / host / rel
 
+    def bin_file(self, scope, name, data=b"#!/bin/sh\necho hello\n"):
+        target = self.fleet / "bin" / scope / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        return data
+
+    def test_bin_common_and_host_os_install_flat(self):
+        doc = json.loads((self.fleet / "hosts.json").read_text())
+        doc["hosts"].append({"name": "workstation", "os": "windows", "clients": [], "sync": ["skills"]})
+        (self.fleet / "hosts.json").write_text(json.dumps(doc))
+        self.bin_file("common", "hello-fleet")
+        self.bin_file("common", "notes.txt", b"notes\n")
+        for scope in ("macos", "linux", "windows"):
+            self.bin_file(scope, scope + ".sh")
+        pushed = fleet.fleet_files(self.fleet)
+        self.assertIn("bin/common/hello-fleet", pushed)
+        self.assertIn("bin/windows/windows.sh", pushed)
+        code, out = self.run_sync()
+        self.assertEqual(code, 0, out)
+        for host, scope in (("laptop", "macos"), ("desktop", "linux"), ("workstation", "windows")):
+            root = self.installed(host, ".local/bin")
+            self.assertEqual(sorted(p.name for p in root.iterdir()), sorted(["hello-fleet", "notes.txt", scope + ".sh"]))
+            self.assertEqual((root / "hello-fleet").read_bytes(), b"#!/bin/sh\necho hello\n")
+            if os.name != "nt":
+                for name, mode in (("hello-fleet", 0o755), (scope + ".sh", 0o755), ("notes.txt", 0o644)):
+                    self.assertEqual(stat.S_IMODE((root / name).stat().st_mode), mode)
+
+    def test_bin_identical_preexisting_file_is_adopted_as_same(self):
+        data = self.bin_file("common", "hello-fleet")
+        target = self.installed("laptop", ".local/bin/hello-fleet")
+        target.parent.mkdir(parents=True)
+        target.write_bytes(data)
+        code, out = self.run_sync("--skills", "handoff", "--host", "laptop")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("bin/hello-fleet", out)
+        record = json.loads(self.installed("laptop", ".config/loadout/global-sync.json").read_text())
+        self.assertEqual(record["bin"], {"hello-fleet": sha(data)})
+        code, out = self.run_sync("--skills", "handoff", "--host", "laptop")
+        self.assertEqual(code, 0, out)
+        self.assertIn("skills same", out)
+        self.assertEqual(target.read_bytes(), data)
+
+    def test_bin_differing_unrecorded_file_is_conflict_and_untouched(self):
+        self.bin_file("common", "hello-fleet")
+        target = self.installed("laptop", ".local/bin/hello-fleet")
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"local helper")
+        code, out = self.run_sync("--host", "laptop")
+        self.assertEqual(code, 1, out)
+        self.assertIn("conflict: local edits, nothing written: bin/hello-fleet", out)
+        self.assertEqual(target.read_bytes(), b"local helper")
+        self.assertFalse(self.installed("laptop", ".claude/skills").exists())
+        self.assertFalse(self.installed("laptop", ".config/loadout/global-sync.json").exists())
+
     def test_install_from_the_verified_manifest(self):
         code, out = self.run_sync()
         self.assertEqual(code, 0, out)

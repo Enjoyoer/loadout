@@ -252,7 +252,7 @@ def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[s
     if (fleet_dir / OVERLAY).is_dir() and not fleet_doc.get("skills_overlay"):
         emit("note: hosts.json does not set skills_overlay, so a missing skills/ overlay would not stop retirement")
     return {"fleet_doc": fleet_doc, "fleet_dir": fleet_dir, "dry_run": dry_run, "only": only, "pub": pub,
-            "overlay": overlay, "retire_stopped": stopped, "names": names, "global": glob}
+            "overlay": overlay, "retire_stopped": stopped, "names": names, "global": glob, "bin": fleet.bin_files(fleet_dir)}
 
 
 def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
@@ -268,7 +268,10 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
     # overlay is missing, retires nothing.
     keep = sorted(state["names"] | exclude) if only is None and not state["retire_stopped"] else None
     payload = {"dry_run": state["dry_run"], "clients": host.get("clients", []), "files": files,
-               "global": state["global"], "keep": keep}
+               "global": state["global"], "keep": keep,
+               "bin": {rel.split("/")[-1]: f for rel, f in state["bin"].items()
+                       if rel.split("/")[1] in ("common", host["os"])},
+               "bin_retire": only is None}
     result, output = fleet.run_node(name, name == state["fleet_doc"]["source_host"], REMOTE_JS, payload,
                                     TIMEOUT_SECONDS)
     if result is None:
