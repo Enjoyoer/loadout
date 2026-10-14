@@ -334,6 +334,29 @@ class SkillsSyncTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("skills same", out)
         self.assertEqual(target.read_bytes(), data)
+        if os.name != "nt":
+            # Existing helper links may point outside bin. Adoption must detach the
+            # identical link in bin, never write or chmod the original target.
+            linked_data = self.bin_file("common", "helper.py", b"print('hello')\n")
+            original = self.root / "original.py"
+            original.write_bytes(linked_data)
+            original.chmod(0o600)
+            link = target.parent / "helper.py"
+            link.symlink_to(original)
+            code, out = self.run_sync("--skills", "handoff", "--host", "laptop", "--dry-run")
+            self.assertEqual(code, 0, out)
+            self.assertIn("skills would update", out)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(stat.S_IMODE(original.stat().st_mode), 0o600)
+            code, out = self.run_sync("--skills", "handoff", "--host", "laptop")
+            self.assertEqual(code, 0, out)
+            self.assertIn("skills updated", out)
+            self.assertFalse(link.is_symlink())
+            self.assertEqual((link.read_bytes(), stat.S_IMODE(link.stat().st_mode)), (linked_data, 0o644))
+            self.assertEqual((original.read_bytes(), stat.S_IMODE(original.stat().st_mode)), (linked_data, 0o600))
+            code, out = self.run_sync("--skills", "handoff", "--host", "laptop")
+            self.assertEqual(code, 0, out)
+            self.assertIn("skills same", out)
 
     def test_bin_differing_unrecorded_file_is_conflict_and_untouched(self):
         self.bin_file("common", "hello-fleet")
@@ -346,6 +369,16 @@ class SkillsSyncTest(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"local helper")
         self.assertFalse(self.installed("laptop", ".claude/skills").exists())
         self.assertFalse(self.installed("laptop", ".config/loadout/global-sync.json").exists())
+        if os.name != "nt":
+            original = self.root / "original-helper"
+            original.write_bytes(b"local helper")
+            target.unlink()
+            target.symlink_to(original)
+            code, out = self.run_sync("--host", "laptop")
+            self.assertEqual(code, 1, out)
+            self.assertIn("conflict: local edits, nothing written: bin/hello-fleet", out)
+            self.assertTrue(target.is_symlink())
+            self.assertEqual(original.read_bytes(), b"local helper")
 
     def test_install_from_the_verified_manifest(self):
         code, out = self.run_sync()

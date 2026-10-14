@@ -167,11 +167,20 @@ function writeManaged(w) {
 }
 
 // Returns [kind, have]: "same", "added", "changed", or "conflict", and the hash a changed file has now.
-function plan(file, root, want, allowed) {
+function plan(file, root, want, allowed, replaceIdenticalLink = false) {
   checkAncestors(fs, path, root, file, baseFor(path, home, root));
   let st;
   try { st = fs.lstatSync(file); } catch (e) { if (e.code === "ENOENT") return ["added", null]; throw e; }
-  if (st.isSymbolicLink() || !st.isFile()) return ["conflict"];
+  if (st.isSymbolicLink()) {
+    // Bin-only adoption: replace the link entry, never write or chmod its target.
+    // A recorded prior hash does not authorize replacing a differing link.
+    if (replaceIdenticalLink) try {
+      if (fs.statSync(file).isFile() && sha(fs.readFileSync(file)) === want)
+        return ['changed', want, { dev: st.dev, ino: st.ino, target: fs.readlinkSync(file) }];
+    } catch (e) { if (e.code !== 'ENOENT' && e.code !== 'ELOOP') throw e; }
+    return ['conflict'];
+  }
+  if (!st.isFile()) return ["conflict"];
   const have = sha(fs.readFileSync(file));
   if (have === want) return ["same"];
   return allowed.includes(have) ? ["changed", have] : ["conflict"];
@@ -249,11 +258,11 @@ try {
     drops.push({ root, skill, dir: ours && dir, tree, label });
   };
   const consider = (file, root, want, allowed, label, bytes, isGlobal, isPrivate, mode) => {
-    const [kind, have] = plan(file, root, want, allowed);
+    const [kind, have, link] = plan(file, root, want, allowed, mode !== undefined);
     settled.push(file);
     if (kind === "conflict") result.conflicts.push(label);
     else if (kind === "same") { result.same++; if (isGlobal) records[file] = want; }
-    else writes.push({ file, key: file, root, label, kind, have: have ? [have] : null, data: bytes, global: isGlobal, private: !!isPrivate, mode });
+    else writes.push({ file, key: file, root, label, kind, have: have ? [have] : null, data: bytes, global: isGlobal, private: !!isPrivate, mode, link });
   };
   const considerManaged = (label, g) => {
     const file = managedSettingsPath(), key = file + "#claudeMd", claudeMd = g.toString("utf8");
@@ -348,13 +357,22 @@ try {
     written.add(w.key);
     if (w.managed) { writeManaged(w); records[w.key] = sha(w.data); continue; }
     // Right before the replace: the directories down to the file, and the file still as preflight found it.
-    const check = () => { checkAncestors(fs, path, w.root, w.file, baseFor(path, home, w.root)); checkUnchanged(fs, w.file, w.have); };
+    const check = () => {
+      checkAncestors(fs, path, w.root, w.file, baseFor(path, home, w.root));
+      if (!w.link) return checkUnchanged(fs, w.file, w.have);
+      const st = fs.lstatSync(w.file);
+      if (!st.isSymbolicLink() || st.dev !== w.link.dev || st.ino !== w.link.ino
+          || fs.readlinkSync(w.file) !== w.link.target || !fs.statSync(w.file).isFile()
+          || sha(fs.readFileSync(w.file)) !== sha(w.data))
+        throw new Error('changed since preflight, nothing written there: ' + w.file);
+    };
     check();
     fs.mkdirSync(w.root, { recursive: true });
     fs.mkdirSync(path.dirname(w.file), { recursive: true, ...(w.private ? { mode: 0o700 } : {}) });
     // A file keeps stricter permissions it already had.
     const mode = w.mode ?? ((w.private ? 0o600 : 0o666) & (w.have && process.platform !== "win32" ? fs.lstatSync(w.file).mode : 0o777));
-    replaceFile(fs, w.file, w.data, mode, null, check);
+    replaceFile(fs, w.file, w.data, mode,
+      w.mode !== undefined && process.platform !== 'win32' ? fd => fs.fchmodSync(fd, mode) : null, check);
     if (sha(fs.readFileSync(w.file)) !== sha(w.data)) throw new Error("verification failed after write: " + w.label);
     if (w.global) records[w.key] = sha(w.data);
   }
@@ -408,7 +426,8 @@ try {
   for (const [name, f] of Object.entries(binFiles)) {
     const file = path.join(binRoot, name);
     checkAncestors(fs, path, binRoot, file, home);
-    if (sha(fs.readFileSync(file)) !== f.sha256) throw new Error('changed since preflight: bin/' + name);
+    if (!fs.lstatSync(file).isFile() || sha(fs.readFileSync(file)) !== f.sha256)
+      throw new Error('changed since preflight: bin/' + name);
     if (process.platform !== 'win32') {
       const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
       try { fs.fchmodSync(fd, binMode(name)); } finally { fs.closeSync(fd); }
