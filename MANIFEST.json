@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "1d15a80ab535f05495da08c844837170b9b60857",
+  "source_commit": "dee21249d0fe3837da7cee454b1ea6b92180b788",
   "skill_count": 22,
-  "file_count": 129,
+  "file_count": 128,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -401,8 +401,8 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 24515,
-      "sha256": "9a992b13b2ddcb758f78f67e6fb93f7e5a90047c3432fa4999e16771f9bbf2be"
+      "bytes": 24641,
+      "sha256": "46d928c49c493f4ad498ac638405de7c90aac3b136dd8598e8b35f383aadbed6"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
@@ -690,13 +690,6 @@
       "skill": "wo",
       "bytes": 227,
       "sha256": "77662772ee0062f97498de8ae2d3e0fdd1f0b70c7c3896c23ab604f5f3922e15"
-    },
-    {
-      "path": "skills/orchestration/wo/slash/wo.md",
-      "category": "orchestration",
-      "skill": "wo",
-      "bytes": 174,
-      "sha256": "ae341b2da39118c91a11af9b5c8d149246c11314b32fcb7f6f6bbc7e4dd379ad"
     },
     {
       "path": "skills/planning-writing/grilling/LICENSE.txt",
