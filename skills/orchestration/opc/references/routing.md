@@ -18,9 +18,12 @@ Labels resolve through the target Pi catalog. Routes are the minimum (owner rule
 | `ui` | design, build, style, visually review interfaces, including browser UI checks | Fable high | fixed, owner rule | off |
 | `plan` | read-only root cause, specs, implementation plans, research, scouting | Sol xhigh | fixed | on |
 | `review` | read-only simplifier review | Sol xhigh | fixed | on |
-| `browser` | one-time browser or computer-use execution | Astra medium | medium..high | on |
+| `browser` | routine website navigation, data entry, repetitive and high-volume browser automation, ordinary computer use | Sol medium | medium..high | on |
+| `browser-hard` | complex desktop application workflows; fragile, ambiguous or repeatedly failing browser workflows | Astra medium | medium..high | on |
 | `smoke` | smokes, canaries | Luna low | fixed | on |
 | `watcher` | watchers, heartbeats | Luna xhigh | fixed | on |
+
+The PM picks `browser-hard` and records why for complex desktop application workflows or browser work that is fragile, ambiguous or failing repeatedly on `browser`; raise to high for difficult multi-app work or troubleshooting using `node scripts/route.mjs --class browser-hard --owner-model <Astra catalog id> --owner-effort high --owner-fast on` (the resolver has no class-effort override, so this records the owner-authorized high route).
 
 Aliases: `code-bounded`, `test-fix`, `automation`, `mechanical` resolve to `code`; `research` to `plan`; `review-critical`, `review-general` to `review`, with new routes and reasons naming the canonical class.
 

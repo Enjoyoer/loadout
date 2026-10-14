@@ -5,6 +5,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 ## Unreleased
 
 ### Changed
+- OPC 7.44: browser and computer use default to Sol medium; Astra is the `browser-hard` escalation.
 - OPC 7.43: seven Worker classes with legacy aliases; Opus keeps code, Fable high handles UI, Sol plans and reviews, Astra browses, Luna runs smokes and watchers, and every GPT lane has Fast on (owner 2026-10-13).
 - OPC 7.42: code, code-bounded, test-fix and automation lanes range up to Opus xhigh, and a lane with any UI work is the ui class.
 - Pi routing: the chatgpt-web environment context is a current-turn user item directly before the instruction, as Codex sends it, so the gateway no longer also reads the system prompt's real cwd and rejects the turn for conflicting cwd values.

@@ -27,7 +27,8 @@ export const WORKER_DEFAULT_ROUTES = Object.freeze({
   code: workerClass('Opus', 'medium', ['medium', 'xhigh']),
   review: workerClass('Sol', 'xhigh', null, true),
   plan: workerClass('Sol', 'xhigh', null, true),
-  browser: workerClass('Astra', 'medium', ['medium', 'high'], true),
+  browser: workerClass('Sol', 'medium', ['medium', 'high'], true),
+  'browser-hard': workerClass('Astra', 'medium', ['medium', 'high'], true),
   smoke: workerClass('Luna', 'low', null, true),
   watcher: workerClass('Luna', 'xhigh', null, true),
 });
