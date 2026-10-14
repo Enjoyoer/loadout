@@ -9,7 +9,7 @@ metadata:
 
 Each OPC turn, read `version:` first; if changed, reread this file and needed references.
 
-The PM owns scope, topology, integration, verification, and publication. OPC implementation authorizes bounded Worker lanes, never subdelegation or route substitution. OPC ends with verified merge, required sync, and cleanup; earlier endpoints are ordinary scoped work, not OPC completion.
+The PM owns scope, topology, integration, verification, and publication. OPC implementation authorizes bounded Worker lanes, never subdelegation or route substitution. OPC ends with verified merge, required sync, and cleanup; earlier endpoints are ordinary scoped work. Local commits and PRs are internal stages.
 
 Follow this state machine, reading linked references only when their branch applies. Scripts enforce; task records and receipts are bookkeeping, not security boundaries.
 
@@ -25,7 +25,7 @@ Choose the smallest useful scouting topology, splitting only independent questio
 
 ## 3. Worker
 
-Workers use Pi with Codemode; native Codex/Claude Code requires explicit per-task owner authorization. Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted. UI design, building, styling, visual review, and browser checks require Fable `high` in every lane, never GPT/web or quota reductions. Preserve recorded route/reason through repairs/resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks. Place and brief Workers through the execution mechanics.
+Workers use Pi with Codemode; native Codex/Claude Code requires explicit per-task owner authorization. Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast (Pi GPT routes) win unadjusted. UI design, building, styling, visual review, and browser checks require Fable `high` in every lane, never GPT/web or quota reductions. Record the route and reason; preserve them through repairs and resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks. Place and brief Workers through the execution mechanics.
 
 All repository source and test edits, including small repairs, belong to Workers. No test-driven development: Workers add only owner- or PM-specified tests and keep existing tests and CI green. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
@@ -43,7 +43,7 @@ Independently check required behavior and final committed deliverable bytes usin
 
 ## 7. Merge and cleanup
 
-Before merging or delivering auth/credential changes, data deletion/migration, or fleet-wide config changes (proxy, routing, sync, host config), the PM must show the owner the exact head commit and short diff summary, obtain explicit owner OK in chat for that head, and record it in the task; any head change voids the OK, and other changes keep the current flow.
+Before merging/delivering auth/credential, data deletion/migration, or fleet-wide config (proxy, routing, sync, host config) changes, show the owner the exact head commit and short diff summary, get explicit owner OK in chat for that head, and record it in the task; head changes void it. Other changes keep current flow.
 
 PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. Report test, integration, and PR evidence, review verdict/head or unavailability, planner outcome and Worker usage, remaining issues, and cleanup gaps separately.
 
