@@ -41,7 +41,7 @@ OPN never grants itself delegation authority. The current user and host runtime 
 
 ## Worker model and effort
 
-- An OPN Worker uses exactly one of two options, chosen by the user: `gpt-5.6-luna` at `max` reasoning with Fast requested, or `claude-opus-5-5[1m]` at `low` reasoning with Fast off. Fast is a request, not a verified service property.
+- An OPN Worker uses exactly one of two options, chosen by the user: `gpt-6-luna` at `max` reasoning with Fast requested, or `claude-opus-5-5[1m]` at `low` reasoning with Fast off. Fast is a request, not a verified service property.
 - The user chooses. When no choice is recorded for the owner, ask; do not guess or default to either option.
 - Once chosen, the option is the default for the remainder of the OPN run and persists with the durable folder owner across sessions, so a resumed run reuses it without asking again.
 - Switch only on an explicit user request. A new objective, a resumed session, or a different task is not a switch.
