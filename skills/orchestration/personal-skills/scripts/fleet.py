@@ -30,7 +30,7 @@ PUSH_JS = Path(__file__).resolve().parent / "fleet_push_remote.js"
 COMMON_JS = Path(__file__).resolve().parent / "remote_common.js"
 SYNC_RECORD = ".loadout-sync.json"
 # All the fleet push copies to the other ssh hosts: the fleet description and its shared settings. A token file,
-# a pairing offer, a backup, the skills/ overlay, or any other file in the fleet directory stays on the source host;
+# a pairing offer, a backup, the skills/ overlay, or any other unpublished file stays on the source host;
 # a token reaches only the hosts that name its env through the client-config step, and an offer is read only where
 # the sync runs. A file an earlier push copied and this list leaves out is removed while the host's copy is unedited.
 PUBLISHED = ("hosts.json", "paseo-providers.json", "client-config.json", "global/AGENTS.md")
@@ -240,6 +240,7 @@ def load(directory: Path) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise FleetError(f"cannot read {path}: {error}") from error
+    bin_files(directory)
     return validate(data)
 
 
@@ -316,18 +317,49 @@ def secret_sources(directory: Path) -> dict:
     return sources
 
 
+def bin_files(directory: Path) -> dict:
+    """Verified private helpers, restricted to portable plain names in the four bin scopes."""
+    root = directory / "bin"
+    if not os.path.lexists(root):
+        return {}
+    if root.is_symlink() or not root.is_dir():
+        raise FleetError("fleet bin/ must be a real directory")
+    files = {}
+    for scope in sorted(root.iterdir()):
+        if scope.name not in ("common", "macos", "linux", "windows") or scope.is_symlink() or not scope.is_dir():
+            raise FleetError(f"invalid fleet bin scope: {scope.name}")
+        folded = set()
+        for source in sorted(scope.iterdir()):
+            name = source.name
+            key = name.casefold()
+            if (not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*", name)
+                    or name.endswith(".") or re.match(r"^(con|prn|aux|nul|com\d|lpt\d)(\.|$)", name, re.I)
+                    or key in folded or source.is_symlink() or not source.is_file()):
+                raise FleetError(f"fleet bin name is not a portable plain file: {scope.name}/{name}")
+            folded.add(key)
+            data = source.read_bytes()
+            files[f"bin/{scope.name}/{name}"] = {
+                "sha256": hashlib.sha256(data).hexdigest(), "data": base64.b64encode(data).decode()}
+    common = {rel.split("/")[-1].casefold() for rel in files if rel.startswith("bin/common/")}
+    for rel in files:
+        if not rel.startswith("bin/common/") and rel.split("/")[-1].casefold() in common:
+            raise FleetError(f"duplicate fleet bin install name: {rel}")
+    return files
+
+
 def fleet_files(directory: Path) -> dict:
-    """The PUBLISHED files the fleet directory holds, by POSIX relative path; every other file stays here.
+    """The PUBLISHED files and bin helpers, by POSIX relative path; every other file stays here.
 
     Refused before any file is read: a token file or pairing offer that resolves to one of them, since the push
     would then carry a secret to every other ssh host.
     """
     real = lambda path: os.path.normcase(os.path.realpath(path))
-    published = {real(directory / rel): rel for rel in PUBLISHED}
+    helpers = bin_files(directory)
+    published = {real(directory / rel): rel for rel in (*PUBLISHED, *helpers)}
     for what, source in secret_sources(directory).items():
         if real(source) in published:
             raise FleetError(f"refusing to publish {published[real(source)]}: it is {what}, which stays on the source host")
-    files = {}
+    files = dict(helpers)
     for rel in PUBLISHED:
         path = directory / rel
         if any(part.is_symlink() for part in (path, *path.parents[:rel.count("/")])):

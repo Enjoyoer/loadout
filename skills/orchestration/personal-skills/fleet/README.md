@@ -8,12 +8,17 @@ example/                     public, made up
   paseo-providers.json       optional
   client-config.json         optional
   global/AGENTS.md           optional
+  bin/common/hello-fleet    optional helper example
 <fleet directory>/           yours, private (copy example/ here and edit)
   hosts.json
   paseo-providers.json       optional
   client-config.json         optional
   global/AGENTS.md           optional
   skills/<name>/SKILL.md     optional private skills (the overlay)
+  bin/common/               optional helpers for every host
+  bin/macos/                optional macOS helpers
+  bin/linux/                optional Linux helpers
+  bin/windows/              optional Windows helpers
 ```
 
 ## Where the fleet lives
@@ -24,9 +29,11 @@ example/                     public, made up
 2. `${XDG_CONFIG_HOME:-~/.config}/loadout/fleet/`. On Windows, `%APPDATA%\loadout\fleet\`.
 3. `fleet/local/` beside the installed `SKILL.md`, the older location. It is ignored by Git and absent from the manifest.
 
-Edit the fleet only on the source host. `python3 scripts/fleet.py push [--dry-run] [--host <name>]` copies its published files, `hosts.json`, `paseo-providers.json`, `client-config.json`, and `global/AGENTS.md`, to `~/.config/loadout/fleet/` (`%APPDATA%\loadout\fleet\` on Windows) on every other `ssh` host, and every sync run does this first. Every other file in the fleet directory, such as a token file, a pairing offer, a backup, or notes, stays on the source host; a file an earlier push copied and the push no longer publishes is removed from a host whose copy is unedited. Each copy carries a `.loadout-sync.json` record of the hashes last synced. A host's copy is replaced only while it still matches that record. Before it writes, a push also records there the versions of the published files it is about to write, so a push cut off part way recognizes its own writes. A hand-edited, added, or unrecorded differing file is a conflict, and nothing is written on that host until you resolve it, usually by deleting the host's copy. Each published file and the record are written through a uniquely named, exclusively created temp file, and the record is read back. Each write and removal checks its file and the directories from the home directory down again right before it, and a removal first moves the file aside and verifies it, so a linked `~/.config` or a file edited during the push stops the host and keeps the edit. `paseo-relay` hosts get no copy. Hosts need `node`.
+Edit the fleet only on the source host. `python3 scripts/fleet.py push [--dry-run] [--host <name>]` copies its published files, `hosts.json`, `paseo-providers.json`, `client-config.json`, `global/AGENTS.md`, and `bin/`, to `~/.config/loadout/fleet/` (`%APPDATA%\loadout\fleet\` on Windows) on every other `ssh` host, and every sync run does this first. Every other file in the fleet directory, such as a token file, a pairing offer, a backup, or notes, stays on the source host; a file an earlier push copied and the push no longer publishes is removed from a host whose copy is unedited. Each copy carries a `.loadout-sync.json` record of the hashes last synced. A host's copy is replaced only while it still matches that record. Before it writes, a push also records there the versions of the published files it is about to write, so a push cut off part way recognizes its own writes. A hand-edited, added, or unrecorded differing file is a conflict, and nothing is written on that host until you resolve it, usually by deleting the host's copy. Each published file and the record are written through a uniquely named, exclusively created temp file, and the record is read back. Each write and removal checks its file and the directories from the home directory down again right before it, and a removal first moves the file aside and verifies it, so a linked `~/.config` or a file edited during the push stops the host and keeps the edit. `paseo-relay` hosts get no copy. Hosts need `node`.
 
 With none of these, `fleet.py resolve` reports `fleet: none (current host only)`, and `sync.py` and every step stop with nothing synced until you create a fleet. To sync only this host, create one whose `hosts.json` lists just this host as `source_host`. To move an existing `fleet/local/`, copy it to the config directory, check `fleet.py resolve` reports `config`, then remove the old copy.
+
+The optional private `bin/` holds portable plain files only. The skills step installs `common/` plus the host's `os` folder flat into `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows), with verified bytes and local-edit protection recorded in `loadout/global-sync.json`; identical existing files are adopted (an identical destination symlink is atomically replaced by a regular file without changing its target), differing unrecorded files are conflicts, and only recorded, unedited files retire on a full run. On macOS/Linux, extensionless files and `.sh` files are `0755`, others `0644`. Duplicate common/OS names, links, nested directories and nonportable names stop the run. Fleet push carries these helpers just like global instructions; real helpers stay in the private fleet, never in this public repository.
 
 ## Private skills
 

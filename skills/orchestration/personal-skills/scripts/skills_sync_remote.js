@@ -1,7 +1,7 @@
 // Install verified Loadout skill files and global instructions on this host.
 // Shipped by skills_sync.py through fleet.run_node in a digest-checked stdin envelope; process.argv[2] is the gzip+base64 JSON payload
 // {dry_run, clients, files: {"<skill>/<file>": {sha256, data, prior, private}},
-//  global: {sha256, data, targets: {client: path}} | null}.
+//  global: {sha256, data, targets: {client: path}} | null, bin: {name: {sha256, data}}, bin_retire}.
 // Preflight first, write second: a file may be replaced only when it matches the
 // desired blob or a prior publication (skills), or the last synced version
 // (global instructions). Anything else is a conflict and nothing is written.
@@ -14,6 +14,8 @@
 // keep (null: retire nothing) names skills never retired. The record's skills section lists each
 // skill file the sync installed or found current; a recorded skill not in keep is removed while
 // every file in it is one of those, unedited, and otherwise kept, reported, and dropped from the record.
+// Private fleet bin files install flat in the user bin, independent of present clients. The bin record
+// accepts only the last installed or pending hash; retirement of recorded files needs a full run.
 // Helpers come from remote_common.js, which fleet.run_node ships ahead of this file.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execFileSync } = require("child_process");
@@ -165,11 +167,20 @@ function writeManaged(w) {
 }
 
 // Returns [kind, have]: "same", "added", "changed", or "conflict", and the hash a changed file has now.
-function plan(file, root, want, allowed) {
+function plan(file, root, want, allowed, replaceIdenticalLink = false) {
   checkAncestors(fs, path, root, file, baseFor(path, home, root));
   let st;
   try { st = fs.lstatSync(file); } catch (e) { if (e.code === "ENOENT") return ["added", null]; throw e; }
-  if (st.isSymbolicLink() || !st.isFile()) return ["conflict"];
+  if (st.isSymbolicLink()) {
+    // Bin-only adoption: replace the link entry, never write or chmod its target.
+    // A recorded prior hash does not authorize replacing a differing link.
+    if (replaceIdenticalLink) try {
+      if (fs.statSync(file).isFile() && sha(fs.readFileSync(file)) === want)
+        return ['changed', want, { dev: st.dev, ino: st.ino, target: fs.readlinkSync(file) }];
+    } catch (e) { if (e.code !== 'ENOENT' && e.code !== 'ELOOP') throw e; }
+    return ['conflict'];
+  }
+  if (!st.isFile()) return ["conflict"];
   const have = sha(fs.readFileSync(file));
   if (have === want) return ["same"];
   return allowed.includes(have) ? ["changed", have] : ["conflict"];
@@ -213,6 +224,9 @@ try {
   const record = fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, "utf8")) : {};
   const owned = record.skills || {}, pending = record.pending || {}, roots = [], drops = [], settled = [];
   const promptOwners = record.slash || {}, promptInstalls = [], promptDrops = [];
+  const binRoot = path.join(home, '.local', 'bin'), binOwned = record.bin || {}, binDrops = [];
+  const binFiles = p.bin || {};
+  const binMode = name => !path.extname(name) || name.endsWith('.sh') ? 0o755 : 0o644;
   const writes = [], records = {};
   let saved = JSON.stringify(record);
   const save = () => {
@@ -243,12 +257,12 @@ try {
     if (fs.existsSync(dir)) result[ours ? "retired" : "kept"].push(label);
     drops.push({ root, skill, dir: ours && dir, tree, label });
   };
-  const consider = (file, root, want, allowed, label, bytes, isGlobal, isPrivate) => {
-    const [kind, have] = plan(file, root, want, allowed);
+  const consider = (file, root, want, allowed, label, bytes, isGlobal, isPrivate, mode) => {
+    const [kind, have, link] = plan(file, root, want, allowed, mode !== undefined);
     settled.push(file);
     if (kind === "conflict") result.conflicts.push(label);
     else if (kind === "same") { result.same++; if (isGlobal) records[file] = want; }
-    else writes.push({ file, key: file, root, label, kind, have: have ? [have] : null, data: bytes, global: isGlobal, private: !!isPrivate });
+    else writes.push({ file, key: file, root, label, kind, have: have ? [have] : null, data: bytes, global: isGlobal, private: !!isPrivate, mode, link });
   };
   const considerManaged = (label, g) => {
     const file = managedSettingsPath(), key = file + "#claudeMd", claudeMd = g.toString("utf8");
@@ -305,6 +319,23 @@ try {
       consider(file, path.dirname(file), p.global.sha256, [...(record[file] ? [record[file]] : []), ...accepted(file)], client + ":global", g, true);
     }
   }
+  checkPaths(Object.keys(binFiles));
+  for (const [name, f] of Object.entries(binFiles)) {
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(name)) throw new Error('invalid bin name: ' + name);
+    const bytes = Buffer.from(f.data, 'base64'), file = path.join(binRoot, name);
+    if (sha(bytes) !== f.sha256) throw new Error('hash mismatch in transfer: bin/' + name);
+    consider(file, binRoot, f.sha256, [...(binOwned[name] ? [binOwned[name]] : []), ...accepted(file)],
+      'bin/' + name, bytes, false, false, binMode(name));
+  }
+  if (p.bin_retire) for (const [name, digest] of Object.entries(binOwned)) {
+    checkPaths([name]);
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(name)) throw new Error('invalid recorded bin name: ' + name);
+    if (Object.keys(binFiles).some(n => foldPath(n) === foldPath(name))) continue;
+    const file = path.join(binRoot, name), label = 'bin/' + name;
+    const [kind] = plan(file, binRoot, digest, []), ours = kind === 'same';
+    if (fs.existsSync(file)) result[ours ? 'retired' : 'kept'].push(label);
+    binDrops.push({ name, file, label, ours, digest });
+  }
   if (result.conflicts.length) { result.status = "conflict"; done(5); }
   for (const w of writes) result[w.kind].push(w.label);
   result.status = writes.length + result.retired.length + result.kept.length ? (p.dry_run ? "would update" : "updated") : "same";
@@ -326,13 +357,22 @@ try {
     written.add(w.key);
     if (w.managed) { writeManaged(w); records[w.key] = sha(w.data); continue; }
     // Right before the replace: the directories down to the file, and the file still as preflight found it.
-    const check = () => { checkAncestors(fs, path, w.root, w.file, baseFor(path, home, w.root)); checkUnchanged(fs, w.file, w.have); };
+    const check = () => {
+      checkAncestors(fs, path, w.root, w.file, baseFor(path, home, w.root));
+      if (!w.link) return checkUnchanged(fs, w.file, w.have);
+      const st = fs.lstatSync(w.file);
+      if (!st.isSymbolicLink() || st.dev !== w.link.dev || st.ino !== w.link.ino
+          || fs.readlinkSync(w.file) !== w.link.target || !fs.statSync(w.file).isFile()
+          || sha(fs.readFileSync(w.file)) !== sha(w.data))
+        throw new Error('changed since preflight, nothing written there: ' + w.file);
+    };
     check();
     fs.mkdirSync(w.root, { recursive: true });
     fs.mkdirSync(path.dirname(w.file), { recursive: true, ...(w.private ? { mode: 0o700 } : {}) });
     // A file keeps stricter permissions it already had.
-    const mode = (w.private ? 0o600 : 0o666) & (w.have && process.platform !== "win32" ? fs.lstatSync(w.file).mode : 0o777);
-    replaceFile(fs, w.file, w.data, mode, null, check);
+    const mode = w.mode ?? ((w.private ? 0o600 : 0o666) & (w.have && process.platform !== "win32" ? fs.lstatSync(w.file).mode : 0o777));
+    replaceFile(fs, w.file, w.data, mode,
+      w.mode !== undefined && process.platform !== 'win32' ? fd => fs.fchmodSync(fd, mode) : null, check);
     if (sha(fs.readFileSync(w.file)) !== sha(w.data)) throw new Error("verification failed after write: " + w.label);
     if (w.global) records[w.key] = sha(w.data);
   }
@@ -373,6 +413,28 @@ try {
     if (owned[d.root]) delete owned[d.root][d.name];
     delete promptOwners[d.root][d.name];
   }
+  for (const d of binDrops) {
+    if (d.ours) try {
+      checkAncestors(fs, path, binRoot, d.file, home);
+      removeFile(fs, d.file, [d.digest]);
+    } catch (e) {
+      result.retired.splice(result.retired.indexOf(d.label), 1);
+      result.kept.push(`${d.label} (${e.message})`);
+    }
+    delete binOwned[d.name];
+  }
+  for (const [name, f] of Object.entries(binFiles)) {
+    const file = path.join(binRoot, name);
+    checkAncestors(fs, path, binRoot, file, home);
+    if (!fs.lstatSync(file).isFile() || sha(fs.readFileSync(file)) !== f.sha256)
+      throw new Error('changed since preflight: bin/' + name);
+    if (process.platform !== 'win32') {
+      const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      try { fs.fchmodSync(fd, binMode(name)); } finally { fs.closeSync(fd); }
+    }
+    binOwned[name] = f.sha256;
+  }
+  if (p.bin !== undefined || record.bin) record.bin = binOwned;
   for (const { root, name, skill, f } of promptInstalls) {
     if (f.private && process.platform !== 'win32') tighten(path.join(root, name));
     (owned[root] = owned[root] || {})[name] = f.sha256;
