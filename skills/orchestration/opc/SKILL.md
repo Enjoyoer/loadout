@@ -2,14 +2,14 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.44"
+  version: "7.45"
 ---
 
 # OPC
 
-Freshness: each turn you act on OPC, first read this file's `version:` line. Only if it changed since last read, reread it and the references you will use.
+Each OPC turn, read `version:` first; if changed, reread this file and needed references.
 
-The invoked PM owns the request, topology, integration, verification, and publication. Delegate bounded implementation or investigation only; delegated agents cannot delegate or substitute routes. An OPC implementation request authorizes those lanes within scope. OPC ends with verified merge, required repository sync, and cleanup. A request ending earlier is ordinary scoped work; local commits and PRs are internal stages.
+The PM owns scope, topology, integration, verification, and publication. OPC implementation authorizes bounded Worker lanes, never subdelegation or route substitution. OPC ends with verified merge, required sync, and cleanup; earlier endpoints are ordinary scoped work, not OPC completion.
 
 Follow this state machine, reading linked references only when their branch applies. Scripts enforce; task records and receipts are bookkeeping, not security boundaries.
 
@@ -25,23 +25,25 @@ Choose the smallest useful scouting topology, splitting only independent questio
 
 ## 3. Worker
 
-Workers run on Pi with Codemode; native Codex or Claude Code Workers need an explicit per-task owner decision. Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast (Pi GPT routes) win unadjusted. UI work (designing, building, styling, visually reviewing, or browser-checking interfaces) always runs on Fable `high`, never a GPT or web model in any lane, and quota pace never lowers it. Record the route and reason; preserve them through repairs and resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks. Place and brief Workers through the execution mechanics.
+Workers use Pi with Codemode; native Codex/Claude Code requires explicit per-task owner authorization. Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted. UI design, building, styling, visual review, and browser checks require Fable `high` in every lane, never GPT/web or quota reductions. Preserve recorded route/reason through repairs/resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks. Place and brief Workers through the execution mechanics.
 
 All repository source and test edits, including small repairs, belong to Workers. No test-driven development: Workers add only owner- or PM-specified tests and keep existing tests and CI green. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
 ## 4. Yield
 
-For every OPC-created agent and background follow-up, launch through the agent-scoped Paseo `create_agent` or `send_agent_prompt` MCP tool with `notifyOnFinish: true`, finish independent work, then immediately end the PM turn. Paseo wakes the PM with a completion, error, or permission notification. After that notification, read `get_agent_status` once and `get_agent_activity` once. No polling, babysitting, sleeps, CLI waits, terminal inspection, status narration, retries, or replacements while the lane runs. Report terminal failures as failures.
+Launch every OPC agent and background follow-up through agent-scoped Paseo `create_agent` or `send_agent_prompt` MCP with `notifyOnFinish: true`; finish independent work, then end the PM turn. On completion, error, or permission notification, read `get_agent_status` and `get_agent_activity` once each. No polling, babysitting, sleeps, CLI waits, terminal inspection, status narration, retries, or replacements while running. Report terminal failures.
 
 ## 5. Integrate
 
-Verify the returned agent/workspace identity, path, branch, commits, selected-base ancestry, and exact diff. Integrate deliberately by repository merge or cherry-pick policy. Completion or idle status alone never authorizes integration. Send repairs to the same Worker agent, then repeat yield and integration.
+Verify returned agent/workspace identity, path, branch, commits, selected-base ancestry, and exact diff. Integrate by repository merge/cherry-pick policy, never merely on completion/idle status. Send repairs to the same Worker; repeat yield and integration.
 
 ## 6. Verify
 
 Independently check required behavior and final committed deliverable bytes using the execution mechanics. Reuse a receipt only while head, bytes, command, and evidence remain unchanged; otherwise rerun. For initially enabled review only, read [review](references/web-reviewer.md "branch:review") at the published candidate head. Review does not replace PM correctness checks. Platform or browser checks not actually run remain unverified.
 
 ## 7. Merge and cleanup
+
+Before merging or delivering auth/credential changes, data deletion/migration, or fleet-wide config changes (proxy, routing, sync, host config), the PM must show the owner the exact head commit and short diff summary, obtain explicit owner OK in chat for that head, and record it in the task; any head change voids the OK, and other changes keep the current flow.
 
 PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. Report test, integration, and PR evidence, review verdict/head or unavailability, planner outcome and Worker usage, remaining issues, and cleanup gaps separately.
 

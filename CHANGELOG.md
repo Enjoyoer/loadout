@@ -4,6 +4,9 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ## Unreleased
 
+### Added
+- OPC 7.45: owner approval gate for auth, data deletion or migration, and fleet-wide config changes.
+
 ### Changed
 - OPC 7.44: browser and computer use default to Sol medium; Astra is the `browser-hard` escalation.
 - OPC 7.43: seven Worker classes with legacy aliases; Opus keeps code, Fable high handles UI, Sol plans and reviews, Astra browses, Luna runs smokes and watchers, and every GPT lane has Fast on (owner 2026-10-13).

@@ -195,6 +195,11 @@ function validate(task, path) {
   if(typeof task.repository.working_directory!=='string'||!isAbsolute(task.repository.working_directory))throw Error('absolute repository path required');
   if (within(path, task.repository.working_directory)) throw Error('task evidence must be outside worktree');
   if (!['local', 'pr', 'merge'].includes(task.delivery)) throw Error('invalid task delivery target');
+  if (task.human_approval != null) {
+    const approval = task.human_approval;
+    if (typeof approval.required !== 'boolean' || typeof approval.reason !== 'string' || !approval.reason.trim() ||
+        (approval.head !== null && !/^[0-9a-f]{40}$/.test(approval.head ?? ''))) throw Error('invalid human approval record');
+  }
   if (typeof task.browser_review !== 'boolean') throw Error('browser review choice required');
   if (typeof (task.ui ?? false) !== 'boolean') throw Error('UI choice must be boolean');
   if (task.ui && task.browser_review) throw Error('UI work never uses the web reviewer (owner rule)');
@@ -231,7 +236,7 @@ export function readTask(taskPath) {
 }
 
 // ui marks UI work: Fable high only, never a GPT or web lane (owner rule). It is immutable like browserReview.
-export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'HEAD', delivery = 'local', browserReview = false, ui = false }) {
+export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'HEAD', delivery = 'local', browserReview = false, ui = false, humanApproval = null }) {
   canonicalPath(workingDirectory);
   canonicalPath(runDirectory);
   if (within(runDirectory, workingDirectory) || within(workingDirectory, runDirectory)) {
@@ -256,6 +261,7 @@ export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'H
       base_branch: baseBranch,
       assigned_head_sha: git(workingDirectory, 'rev-parse', 'HEAD'),
     },
+    ...(humanApproval === null ? {} : { human_approval: { required: true, reason: humanApproval, head: null } }),
     contract_version: 2,
     status: 'ready',
     planner: null,

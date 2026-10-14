@@ -52,6 +52,37 @@ class OpcDeliveryTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def check_human_approval(self, approved):
+        task = json.loads(Path(self.task).read_text())
+        task['human_approval'] = {'required': True, 'reason': 'auth', 'head': None}
+        Path(self.task).write_text(json.dumps(task))
+        delivery = str(SCRIPTS / 'delivery.mjs')
+        tested = run('node', delivery, 'test', self.task, sys.executable, '-c', '')
+        self.assertEqual(tested.returncode, 0, tested.stderr)
+        if approved:
+            head = run('git', '-C', str(self.repo), 'rev-parse', 'HEAD').stdout.strip()
+            done = run('node', delivery, 'approve', self.task, head)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            if approved == 'older':
+                committed = run('git', '-C', str(self.repo), '-c', 'user.name=t', '-c', 'user.email=t@example.com',
+                                'commit', '-q', '--allow-empty', '-m', 'later head')
+                self.assertEqual(committed.returncode, 0, committed.stderr)
+                tested = run('node', delivery, 'test', self.task, sys.executable, '-c', '')
+                self.assertEqual(tested.returncode, 0, tested.stderr)
+        verified = run('node', delivery, 'verify', self.task)
+        result = json.loads(verified.stdout)
+        self.assertEqual(result['blockers'], [] if approved == 'matching' else ['owner approval required for this head'])
+        self.assertEqual(result['status'], 'verified' if approved == 'matching' else 'blocked')
+
+    def test_required_human_approval_without_head_blocks(self):
+        self.check_human_approval(None)
+
+    def test_required_human_approval_matching_head_passes(self):
+        self.check_human_approval('matching')
+
+    def test_required_human_approval_older_head_blocks(self):
+        self.check_human_approval('older')
+
     def test_stale_running_tests_with_dead_pid_recover(self):
         dead = subprocess.Popen([sys.executable, "-c", ""])
         dead.wait()
