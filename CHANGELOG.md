@@ -8,6 +8,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - OPC 7.45: owner approval gate for auth, data deletion or migration, and fleet-wide config changes.
 
 ### Changed
+- `wo`: no separate prompt file; the skill is the slash entry (`/wo`, Pi `/skill:wo`).
 - OPC 7.44: browser and computer use default to Sol medium; Astra is the `browser-hard` escalation.
 - OPC 7.43: seven Worker classes with legacy aliases; Opus keeps code, Fable high handles UI, Sol plans and reviews, Astra browses, Luna runs smokes and watchers, and every GPT lane has Fast on (owner 2026-10-13).
 - OPC 7.42: code, code-bounded, test-fix and automation lanes range up to Opus xhigh, and a lane with any UI work is the ui class.
@@ -75,7 +76,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - Fleet sync's remote programs travel on stdin with their payload in one SHA256-checked envelope, so the ssh command line is a short fixed boot and Windows hosts stay far below the `cmd.exe` length limit; a corrupted envelope runs nothing.
 
 ### Added
-- `wo` skill and `/wo` entry: how agents ask the owner questions, read short answers, and list open items.
+- `wo` skill: how agents ask the owner questions, read short answers, and list open items. Claude Code and Codex use `/wo`; Pi uses `/skill:wo`.
 - Skills sync installs package slash prompts for Pi and Codex with verified blobs, local-edit protection and retirement; Claude Code invokes user skills directly.
 - `pi-fast-toggle`, a Paseo plugin with a per-agent composer pill that requests Fast on Pi agents whose model supports service tiers.
 - OPC routes Pi Workers by task class. Code, code-bounded, test-fix, and automation start at Opus medium; reviews use Sol xhigh; browser uses Astra medium with Fast on; research is fixed at Luna xhigh; UI is fixed at Opus xhigh. Quota can raise an adjustable route but never lowers one; a `codexFallback` key in `routing.json` is accepted and ignored.
