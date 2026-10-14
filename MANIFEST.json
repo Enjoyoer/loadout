@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "6836351411b77fad1f7d2372ef18226e49c7a1e8",
+  "source_commit": "b25ea5025d1c38cb030e5c06aac66b23beed7ad7",
   "skill_count": 21,
   "file_count": 126,
   "files": [
@@ -185,7 +185,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5344,
-      "sha256": "2eb2353e6e10c3b8d42c0b71ef31e498db7ee0e72f10c7f7e0ce5cddce4cd298"
+      "sha256": "dd637b85df1ba8dbfa5ada85bdfd9d4d3562845ac1a329e6fe8b11846a1ac2c1"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -198,8 +198,8 @@
       "path": "skills/orchestration/opc/references/codex-sites.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 2991,
-      "sha256": "8debfe22eb0e00971373baa1542ebfbb10161fb857d6d9dfe9866f765d54b213"
+      "bytes": 3145,
+      "sha256": "34ca93f54f216d97aedaad5a4ac9c26676f99dd8c5e55b595efb41f2a18e1779"
     },
     {
       "path": "skills/orchestration/opc/references/exploration-swarm.md",
