@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b25ea5025d1c38cb030e5c06aac66b23beed7ad7",
-  "skill_count": 21,
-  "file_count": 126,
+  "source_commit": "ce39a75a694c561571bb50aa4c4293b1ada6b976",
+  "skill_count": 22,
+  "file_count": 129,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -401,8 +401,8 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 23862,
-      "sha256": "380f49052da19f05ddf4a45892af0cd7d4921b6cb41b9b8a2900678699cd9a8c"
+      "bytes": 24515,
+      "sha256": "9a992b13b2ddcb758f78f67e6fb93f7e5a90047c3432fa4999e16771f9bbf2be"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
@@ -625,15 +625,15 @@
       "path": "skills/orchestration/personal-skills/scripts/skills_sync.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 15414,
-      "sha256": "7d5f93a26cb50f85172f4f461ed3eddf1e2ee9b68b65edf8d8f906847676cfa9"
+      "bytes": 15643,
+      "sha256": "b351710f9074c0f0e33811130b9eb19b82523b92f04016aea5d7fa8204a00821"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/skills_sync_remote.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 21036,
-      "sha256": "66555b020dadbd8549760aad137081b83e82f2246fc7504582075b022a71f07e"
+      "bytes": 23806,
+      "sha256": "1eea54a0fa339e68490fcec173445d1a7bfe1e40ccb9141184e89a2e9d3648bc"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/sync.py",
@@ -676,6 +676,27 @@
       "skill": "repo-lessons",
       "bytes": 241,
       "sha256": "fd60fa18204967eff3b4056e85a0ea25b1139135e52cbc3ff4d188a580b4bd85"
+    },
+    {
+      "path": "skills/orchestration/wo/SKILL.md",
+      "category": "orchestration",
+      "skill": "wo",
+      "bytes": 1436,
+      "sha256": "d497f97fddf839430915843f5b287deda177230a54df7ffdc86b29c6bb16318b"
+    },
+    {
+      "path": "skills/orchestration/wo/agents/openai.yaml",
+      "category": "orchestration",
+      "skill": "wo",
+      "bytes": 227,
+      "sha256": "77662772ee0062f97498de8ae2d3e0fdd1f0b70c7c3896c23ab604f5f3922e15"
+    },
+    {
+      "path": "skills/orchestration/wo/slash/wo.md",
+      "category": "orchestration",
+      "skill": "wo",
+      "bytes": 174,
+      "sha256": "ae341b2da39118c91a11af9b5c8d149246c11314b32fcb7f6f6bbc7e4dd379ad"
     },
     {
       "path": "skills/planning-writing/grilling/LICENSE.txt",

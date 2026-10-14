@@ -37,7 +37,8 @@
         "./skills/orchestration/dispatching-parallel-agents",
         "./skills/orchestration/handoff",
         "./skills/orchestration/repo-lessons",
-        "./skills/orchestration/reassign-pm"
+        "./skills/orchestration/reassign-pm",
+        "./skills/orchestration/wo"
       ]
     },
     {

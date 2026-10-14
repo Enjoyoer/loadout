@@ -10,6 +10,9 @@ stops that host. A skill the host's sync record shows the sync installed, and
 that is no longer published, is removed unless it was edited there. When
 hosts.json sets skills_overlay and the overlay is missing or not a directory, no
 host retires anything, and each reports `blocked` with the reason.
+Package slash/<name>.md files also install to Codex and configured Pi prompt
+directories with the same verified bytes, preflight, records and retirement.
+Claude Code invokes the user skill directly, so no command copy is needed.
 """
 
 from __future__ import annotations

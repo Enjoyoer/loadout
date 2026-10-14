@@ -27,6 +27,8 @@ const home = os.homedir();
 const codexHome = process.env.CODEX_HOME || path.join(home, ".codex");
 const CLIENT_HOMES = { codex: codexHome, claude: path.join(home, ".claude"), opencode: path.join(home, ".config", "opencode") };
 const SKILL_ROOTS = { codex: path.join(codexHome, "skills"), claude: path.join(home, ".claude", "skills") };
+// Claude Code invokes user skills directly as /name; it needs no duplicate command file.
+const PROMPT_ROOTS = { codex: path.join(codexHome, "prompts") };
 const recordPath = path.join(loadoutDir(path, os), "global-sync.json");
 const MANAGED_CLAUDE_MD = "managed-settings:claudeMd";
 // Every other global target is a path: ~, /, $VAR or ${VAR}, %VAR%, or a drive like C:\.
@@ -189,6 +191,7 @@ try {
       if (fs.existsSync(pkg) && JSON.parse(fs.readFileSync(pkg, 'utf8')).version === '1.0.0') {
         CLIENT_HOMES.pi = agentHome;
         SKILL_ROOTS.pi = path.join(agentHome, 'skills');
+        PROMPT_ROOTS.pi = path.join(agentHome, 'prompts');
         p.clients = [...new Set([...p.clients, 'pi'])];
         if (p.global) p.global.targets.pi = path.join(agentHome, 'AGENTS.md');
       }
@@ -202,8 +205,14 @@ try {
     data[rel] = Buffer.from(f.data, "base64");
     if (sha(data[rel]) !== f.sha256) throw new Error("hash mismatch in transfer: " + rel);
   }
+  // Package slash files remain skill files too, and additionally install flat in prompt roots.
+  const slash = Object.entries(p.files).filter(([rel]) => rel.split('/')[1] === 'slash');
+  for (const [rel] of slash)
+    if (!/^[^/]+\/slash\/[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(rel)) throw new Error('invalid slash path: ' + rel);
+  checkPaths(slash.map(([rel]) => rel.split('/')[2]));
   const record = fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, "utf8")) : {};
   const owned = record.skills || {}, pending = record.pending || {}, roots = [], drops = [], settled = [];
+  const promptOwners = record.slash || {}, promptInstalls = [], promptDrops = [];
   const writes = [], records = {};
   let saved = JSON.stringify(record);
   const save = () => {
@@ -265,6 +274,27 @@ try {
       // A skill renamed only in case is the kept skill itself on a macOS or Windows host, so it stays.
       for (const skill of p.keep ? new Set(Object.keys(owned[root] || {}).map(r => r.split("/")[0])) : [])
         if (!p.keep.some(k => foldPath(k) === foldPath(skill))) retire(root, skill, client + ":" + skill);
+    }
+    const promptRoot = PROMPT_ROOTS[client];
+    if (root && promptRoot) {
+      for (const [rel, f] of slash) {
+        const [skill, , name] = rel.split('/'), file = path.join(promptRoot, name);
+        consider(file, promptRoot, f.sha256, [...f.prior, ...accepted(file, promptRoot, name)],
+          client + ':prompts/' + name, data[rel], false, f.private);
+        promptInstalls.push({ root: promptRoot, name, skill, f });
+      }
+      // A narrowed run or missing overlay retires nothing. Excluded packages stay managed and untouched.
+      for (const [name, skill] of Object.entries(promptOwners[promptRoot] || {})) {
+        checkPaths([name]);
+        if (name.includes('/')) throw new Error('invalid recorded prompt path: ' + name);
+        if (!p.keep || slash.some(([rel]) => foldPath(rel.split('/')[2]) === foldPath(name))
+            || (p.keep.includes(skill) && !Object.keys(p.files).some(rel => rel.startsWith(skill + '/')))) continue;
+        const file = path.join(promptRoot, name), label = client + ':prompts/' + name;
+        const [kind] = plan(file, promptRoot, owned[promptRoot]?.[name], []);
+        const ours = kind === 'same';
+        if (fs.existsSync(file)) result[ours ? 'retired' : 'kept'].push(label);
+        promptDrops.push({ root: promptRoot, name, file, label, ours });
+      }
     }
     if (p.global && p.global.targets[client]) {
       const g = Buffer.from(p.global.data, "base64");
@@ -332,8 +362,25 @@ try {
     else if (d.dir) { result.retired.splice(result.retired.indexOf(d.label), 1); result.kept.push(`${d.label} (${why})`); }
     for (const r of Object.keys(owned[d.root])) if (r.startsWith(d.skill + "/")) delete owned[d.root][r];
   }
+  for (const d of promptDrops) {
+    if (d.ours) try {
+      checkAncestors(fs, path, d.root, d.file, baseFor(path, home, d.root));
+      removeFile(fs, d.file, [owned[d.root][d.name]]);
+    } catch (e) {
+      result.retired.splice(result.retired.indexOf(d.label), 1);
+      result.kept.push(`${d.label} (${e.message})`);
+    }
+    if (owned[d.root]) delete owned[d.root][d.name];
+    delete promptOwners[d.root][d.name];
+  }
+  for (const { root, name, skill, f } of promptInstalls) {
+    if (f.private && process.platform !== 'win32') tighten(path.join(root, name));
+    (owned[root] = owned[root] || {})[name] = f.sha256;
+    (promptOwners[root] = promptOwners[root] || {})[name] = skill;
+  }
   for (const root of roots) for (const [rel, f] of Object.entries(p.files)) (owned[root] = owned[root] || {})[rel] = f.sha256;
-  Object.assign(record, records, Object.keys(owned).length ? { skills: owned } : {});
+  Object.assign(record, records, Object.keys(owned).length ? { skills: owned } : {},
+    Object.keys(promptOwners).length ? { slash: promptOwners } : {});
   for (const key of settled) delete pending[key];
   if (Object.keys(pending).length) record.pending = pending; else delete record.pending;
   save();

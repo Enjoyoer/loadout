@@ -74,6 +74,8 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - Fleet sync's remote programs travel on stdin with their payload in one SHA256-checked envelope, so the ssh command line is a short fixed boot and Windows hosts stay far below the `cmd.exe` length limit; a corrupted envelope runs nothing.
 
 ### Added
+- `wo` skill and `/wo` entry: how agents ask the owner questions, read short answers, and list open items.
+- Skills sync installs package slash prompts for Pi and Codex with verified blobs, local-edit protection and retirement; Claude Code invokes user skills directly.
 - `pi-fast-toggle`, a Paseo plugin with a per-agent composer pill that requests Fast on Pi agents whose model supports service tiers.
 - OPC routes Pi Workers by task class. Code, code-bounded, test-fix, and automation start at Opus medium; reviews use Sol xhigh; browser uses Astra medium with Fast on; research is fixed at Luna xhigh; UI is fixed at Opus xhigh. Quota can raise an adjustable route but never lowers one; a `codexFallback` key in `routing.json` is accepted and ignored.
 - OPC cloud lane: an owner toggle sends eligible editing lanes (`on`), or editing lanes and UI (`all`), to one Claude Code cloud session, always Opus 5.5 at xhigh on launch and follow-up, with an optional per-host cloud profile for a second claude.ai login that fails closed when unreadable. A dead cloud lane gets one local fallback Worker on its class route, the `ui` route for UI work.
