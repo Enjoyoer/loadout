@@ -94,6 +94,39 @@ class RemotePreflightTest(unittest.TestCase):
         self.assertEqual(got['status'],'conflict')
         self.assertEqual(self.skill('demo/SKILL.md').read_bytes(),b'same verified skill')
 
+    def configure_pi(self):
+        root = self.home / "pi-runtime"
+        agent = root / "agent"
+        agent.mkdir(parents=True)
+        pkg = root / "app/node_modules/@earendil-works/pi-coding-agent/package.json"
+        pkg.parent.mkdir(parents=True)
+        pkg.write_text('{"version":"1.0.0"}')
+        cfg = self.home / ".paseo/config.json"
+        cfg.parent.mkdir()
+        cfg.write_text(json.dumps({"agents": {"providers": {"pi": {"command": ["node", str(root / "launch.mjs")]}}}}))
+        return agent
+
+    def test_package_slash_installs_to_pi_prompts(self):
+        agent = self.configure_pi()
+        files = {"demo/SKILL.md": entry(b"skill"), "demo/slash/demo.md": entry(b"Follow demo.")}
+        got = self.run_remote(files)
+        self.assertEqual(got["status"], "updated", got)
+        self.assertEqual((agent / "prompts/demo.md").read_bytes(), b"Follow demo.")
+        self.assertEqual(self.run_remote(files)["status"], "same")
+
+    def test_hand_edited_slash_is_conflict_and_not_overwritten(self):
+        agent = self.configure_pi()
+        files = {"demo/SKILL.md": entry(b"skill"), "demo/slash/demo.md": entry(b"Follow demo.")}
+        self.assertEqual(self.run_remote(files)["status"], "updated")
+        prompt = agent / "prompts/demo.md"
+        prompt.write_bytes(b"hand edit")
+        files["demo/slash/demo.md"] = entry(b"Next prompt.", [sha(b"Follow demo.")])
+        got = self.run_remote(files)
+        self.assertEqual(got["status"], "conflict", got)
+        self.assertIn("pi:prompts/demo.md", got["conflicts"])
+        self.assertEqual(prompt.read_bytes(), b"hand edit")
+        self.assertEqual(self.skill("demo/slash/demo.md").read_bytes(), b"Follow demo.")
+
     def test_prior_publication_is_replaced(self):
         self.skill("demo").mkdir(parents=True)
         self.skill("demo/SKILL.md").write_bytes(b"v1")
