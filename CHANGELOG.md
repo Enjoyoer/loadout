@@ -25,6 +25,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - The `claude-cloud` skill is deprecated and no longer published or synced; its source is in `deprecated/claude-cloud`.
 
 ### Fixed
+- OPC 7.46: Codex Sites route uses `gpt-6-luna` (was the retired `gpt-5.6-luna`).
 - OPC PR evidence is published from a detached worktree with `git push origin HEAD:pr-evidence`, instead of `git worktree add -B`, which reset a local `pr-evidence` branch and dropped evidence commits never pushed; such commits are carried over first, and a rejected push is rebased and retried before the worktree is removed.
 - `claude-cloud` records a launch as `launching` in the project's `STATUS.html` before the session command and as `uncertain` when the command or capture fails or is ambiguous; such a launch is reconciled against the marker's PR and claude.ai/code, never repeated, and only a confirmed `no session` permits one new launch. Under OPC it defers to the cloud lane's intent and reconcile calls.
 - OPC `delivery.mjs test` no longer waits forever after SIGINT or SIGTERM for a test command that ignores the signal: the command's group gets 10 s, then is killed under the same start-time identity rule as recovery and gets 10 s more to close. The `blocked` receipt records the `cleanup` outcome, `cleanup incomplete: did not exit` when the command still has not closed, and keeps the command's pid and start time; when the rule forbids the kill, the controller stops waiting and says so.
