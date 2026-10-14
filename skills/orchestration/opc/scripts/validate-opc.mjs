@@ -81,7 +81,7 @@ export async function validatePackage(root = defaultRoot) {
     'quota-pace.mjs': ['readRoutingSettings', 'validateRoutingSettings', 'readQuota', 'poolPace', 'paceLevel'],
     'route.mjs': ['resolveWorkerRoute', 'recordWorkerRoute'],
     'planner.mjs': ['buildPlannerPrompt', 'preparePlannerLaunch', 'bindPlannerAgent',
-      'recordPlannerLaunchFailure', 'collectPlanner', 'authorizePlannerFallback'],
+      'recordPlannerLaunchFailure', 'collectPlanner'],
     'web-reviewer.mjs': ['buildReviewPrompt', 'prepareReviewLaunch', 'bindReviewAgent',
       'recordReviewLaunchFailure', 'collectReview', 'requireReviewApproval', 'requireReviewDelivery'],
     'paseo-worker.mjs': ['managedWorkerNames', 'selectUnattendedMode', 'buildManagedWorkspaceRequest',

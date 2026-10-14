@@ -87,27 +87,17 @@ function validatePlanner(planner) {
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   const text = value => typeof value === 'string' && value.trim().length > 0;
   const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(value);
-  if (!object(planner) || !Array.isArray(planner.rounds) || planner.rounds.length > 2) throw Error('invalid planner record');
-  const authorization = planner.fallback_authorization;
-  if (authorization != null && (!object(authorization) || authorization.answer !== 'yes' || !uuid(authorization.after_round))) {
-    throw Error('invalid planner fallback authorization');
-  }
+  if (!object(planner) || !Array.isArray(planner.rounds) || planner.rounds.length > 1) throw Error('invalid planner record');
   const ids = new Set(), agents = new Set();
   for (const [index, round] of planner.rounds.entries()) {
     if (!object(round) || !uuid(round.id) ||
-        !(catalogRound(round, 'Web Pro', 'planner') || (text(round.catalog_label) && catalogRound(round, round.catalog_label, 'planner_fallback')) ||
-          (round.role === undefined && ['codex/chatgpt-web/pro', 'claude/claude-fable-5-1[1m]'].includes(round.provider))) ||
+        !(catalogRound(round, 'Sol', 'planner') && round.provider.startsWith('pi/')) ||
         !['launching', 'running', 'uncertain', 'failed', 'planned'].includes(round.status)) {
       throw Error('invalid planner round');
     }
     if (ids.has(round.id)) throw Error('duplicate planner round identity');
     ids.add(round.id);
-    if (round.role === 'planner' || round.provider === 'codex/chatgpt-web/pro') {
-      if (index !== 0 || Object.hasOwn(round, 'effort')) throw Error('invalid Pro planner route');
-    } else if (index !== 1 || !efforts.includes(round.effort) ||
-        planner.rounds[0]?.status !== 'failed' || authorization?.after_round !== planner.rounds[0].id) {
-      throw Error('planner fallback requires recorded explicit owner yes after Pro failure');
-    }
+    if (index !== 0 || round.effort !== 'xhigh') throw Error('invalid Sol planner route');
     const terminal = ['failed', 'planned'].includes(round.status);
     const active = !terminal;
     if (active && index !== planner.rounds.length - 1) throw Error('only the latest planner round may be nonterminal');
@@ -123,9 +113,6 @@ function validatePlanner(planner) {
     if (round.status === 'failed' && !text(round.failure)) throw Error('failed planner round requires a reason');
     if (round.status === 'planned' && !text(round.plan)) throw Error('completed planner round requires a plan');
     if (!terminal && ['failure', 'plan'].some(key => Object.hasOwn(round, key))) throw Error('nonterminal planner round carries terminal fields');
-  }
-  if (authorization && (planner.rounds[0]?.status !== 'failed' || authorization.after_round !== planner.rounds[0].id)) {
-    throw Error('planner fallback authorization must follow the recorded Pro failure');
   }
 }
 
@@ -243,7 +230,7 @@ export function readTask(taskPath) {
   return task;
 }
 
-// ui marks UI work: Opus xhigh only, never a GPT or web lane (owner rule). It is immutable like browserReview.
+// ui marks UI work: Fable high only, never a GPT or web lane (owner rule). It is immutable like browserReview.
 export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'HEAD', delivery = 'local', browserReview = false, ui = false }) {
   canonicalPath(workingDirectory);
   canonicalPath(runDirectory);
@@ -358,10 +345,6 @@ export function updateTask(taskPath, mutator) {
     if (identity(old) !== identity(task)) throw Error('immutable task identity changed');
     for (const [lane, entry] of Object.entries(old.routes ?? {})) {
       if (JSON.stringify(entry) !== JSON.stringify(task.routes?.[lane])) throw Error(`immutable Worker route for lane ${lane} changed`);
-    }
-    if (old.planner?.fallback_authorization &&
-        JSON.stringify(old.planner.fallback_authorization) !== JSON.stringify(task.planner?.fallback_authorization)) {
-      throw Error('immutable planner fallback authorization changed');
     }
     validate(task, taskPath);
     temporary = join(dirname(taskPath), `.task-${randomUUID()}.tmp`);

@@ -423,6 +423,7 @@ class OpcDeliveryTest(unittest.TestCase):
     def test_route_from_non_ui_task_cannot_launch_ui_task_lane(self):
         root = Path(self.task).parent.parent
         catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
+        catalog.append({"id": "fleet/claude-fable-5-1", "label": "Fable", "thinkingOptions": [{"id": "high"}]})
         (root / "catalog.json").write_text(json.dumps(catalog))
         ui = self.ui_task()
         for task, kind, lane in ((self.task, "code", "code-lane"), (ui, "ui", "ui-lane")):
@@ -430,27 +431,28 @@ class OpcDeliveryTest(unittest.TestCase):
                            "--pq-file", str(root / "no-pq.json"), "--task", task, "--lane", lane)
             self.assertEqual(recorded.returncode, 0, recorded.stderr)
         own = self.launch(ui, "ui-lane", "recorded['ui-lane'].route", catalog)
-        self.assertEqual(own["request"].get("settings"), {"thinkingOptionId": "xhigh"}, own["request"])
+        self.assertEqual(own["request"].get("settings"), {"thinkingOptionId": "high"}, own["request"])
         replay = self.launch(ui, "ui-lane", "recorded['code-lane'].route", catalog, source=self.task, record_lane="ui-lane")
         for step in ("request", "brief"):
-            self.assertEqual(replay[step].get("error"), "UI task: only the ui route (Opus xhigh, Fast off) can launch (owner rule); "
+            self.assertEqual(replay[step].get("error"), "UI task: only the ui route (Fable high, Fast off) can launch (owner rule); "
                                                         "use the ui class", step)
-        self.assertEqual(replay["record"].get("error"), "UI task: only the ui route (Opus xhigh, Fast off) is recorded (owner rule); "
+        self.assertEqual(replay["record"].get("error"), "UI task: only the ui route (Fable high, Fast off) is recorded (owner rule); "
                                                         "use the ui class")
 
-    def test_recorded_ui_route_not_opus_xhigh_fast_off_is_refused(self):
-        catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "high"}, {"id": "xhigh"}]}]
+    def test_recorded_ui_route_not_fable_high_fast_off_is_refused(self):
+        catalog = [{"id": f"fleet/{model}", "label": label, "thinkingOptions": [{"id": "high"}, {"id": "xhigh"}]}
+                   for model, label in (("claude-opus-5-5", "Opus"), ("claude-fable-5-1", "Fable"))]
         ui = self.ui_task()
         for route in ({"role": "worker", "source": "owner-explicit", "model": "fleet/claude-opus-5-5", "effort": "high", "fastMode": False},
-                      {"role": "worker", "source": "owner-explicit", "model": "fleet/claude-opus-5-5", "effort": "xhigh", "fastMode": True}):
+                      {"role": "worker", "source": "owner-explicit", "model": "fleet/claude-fable-5-1", "effort": "high", "fastMode": True}):
             with self.subTest(route=route):
                 recorded = self.launch(ui, "ui-lane", json.dumps(route), catalog, record_lane="ui-lane")
-                self.assertEqual(recorded["record"].get("error"), "UI task: only the ui route (Opus xhigh, Fast off) is recorded "
+                self.assertEqual(recorded["record"].get("error"), "UI task: only the ui route (Fable high, Fast off) is recorded "
                                                                   "(owner rule); use the ui class")
                 self.write_routes(ui, {"ui-lane": route})
                 built = self.launch(ui, "ui-lane", "recorded['ui-lane'].route", catalog)
                 for step in ("request", "brief"):
-                    self.assertEqual(built[step].get("error"), "UI task: only the ui route (Opus xhigh, Fast off) can launch "
+                    self.assertEqual(built[step].get("error"), "UI task: only the ui route (Fable high, Fast off) can launch "
                                                                "(owner rule); use the ui class", step)
 
     def test_tampered_recorded_owner_explicit_gpt_code_route_is_refused(self):
@@ -488,17 +490,17 @@ class OpcDeliveryTest(unittest.TestCase):
         for step in ("request", "brief", "record"):
             self.assertEqual(built[step].get("error"), "lane code-lane already has a recorded route; repairs and resumes reuse it", step)
 
-    def test_non_opus_claude_ui_route_is_refused_without_catalog(self):
+    def test_non_fable_claude_ui_route_is_refused_without_catalog(self):
         ui = self.ui_task()
         sonnet = {"role": "worker", "source": "owner-explicit", "model": "fleet/claude-sonnet-5-5", "effort": "xhigh", "fastMode": False}
         fresh = self.launch(ui, "ui-lane", json.dumps(sonnet), None, record_lane="ui-lane")
-        self.assertEqual(fresh["record"].get("error"), "UI task: only the ui route (Opus xhigh, Fast off) is recorded (owner rule); "
+        self.assertEqual(fresh["record"].get("error"), "UI task: only the ui route (Fable high, Fast off) is recorded (owner rule); "
                                                        "use the ui class")
         self.write_routes(ui, {"ui-lane": sonnet})
         rebuilt = self.launch(ui, "ui-lane", "recorded['ui-lane'].route", None)
         for built in (fresh, rebuilt):
             for step in ("request", "brief"):
-                self.assertEqual(built[step].get("error"), "UI task: only the ui route (Opus xhigh, Fast off) can launch "
+                self.assertEqual(built[step].get("error"), "UI task: only the ui route (Fable high, Fast off) can launch "
                                                            "(owner rule); use the ui class", step)
 
     def test_tampered_code_route_with_gpt_provider_is_refused_by_request(self):

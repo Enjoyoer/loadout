@@ -1,6 +1,6 @@
 # Large Web Pro inputs
 
-Read this when a Web Pro prompt would carry more than about 90 KB, or a review spans more files than one prompt holds, such as a whole-suite simplifier pass. The PR reviewer helper stays metadata-only.
+Read this when a Web Pro prompt would carry more than about 90 KB, or a review spans more files than one prompt holds, such as an explicitly enabled browser review. The PR reviewer helper stays metadata-only.
 
 ## Limits
 

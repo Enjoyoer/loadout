@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.42"
+  version: "7.43"
 ---
 
 # OPC
@@ -21,11 +21,11 @@ Enable browser review only when the initial request explicitly asks for it; pres
 
 ## 2. Optional scouting
 
-Choose the smallest useful scouting topology, splitting only independent questions. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify the [planner](references/planner.md "branch:planning"). Initially enabled review reserves the web lane and skips planning.
+Choose the smallest useful scouting topology, splitting only independent questions. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify the [planner](references/planner.md "branch:planning"). PMs delegate browser/research/scouting to GPT lanes, never themselves on Opus.
 
 ## 3. Worker
 
-Workers run on Pi with Codemode; native Codex or Claude Code Workers need an explicit per-task owner decision. Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast (Pi GPT routes) win unadjusted. UI work (designing, building, styling, visually reviewing, or browser-checking interfaces) always runs on Opus `xhigh`, never a GPT or web model in any lane, and quota pace never lowers it. Record the route and reason; preserve them through repairs and resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks. Place and brief Workers through the execution mechanics.
+Workers run on Pi with Codemode; native Codex or Claude Code Workers need an explicit per-task owner decision. Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast (Pi GPT routes) win unadjusted. UI work (designing, building, styling, visually reviewing, or browser-checking interfaces) always runs on Fable `high`, never a GPT or web model in any lane, and quota pace never lowers it. Record the route and reason; preserve them through repairs and resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks. Place and brief Workers through the execution mechanics.
 
 All repository source and test edits, including small repairs, belong to Workers. No test-driven development: Workers add only owner- or PM-specified tests and keep existing tests and CI green. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
@@ -43,6 +43,6 @@ Independently check required behavior and final committed deliverable bytes usin
 
 ## 7. Merge and cleanup
 
-PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. Report test, integration, and PR evidence, review verdict/head or unavailability, planner fallback and Worker usage, remaining issues, and cleanup gaps separately.
+PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. Report test, integration, and PR evidence, review verdict/head or unavailability, planner outcome and Worker usage, remaining issues, and cleanup gaps separately.
 
 For package maintenance only, use [maintenance](references/maintenance.md "branch:maintenance").

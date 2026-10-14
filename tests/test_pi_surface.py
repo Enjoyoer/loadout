@@ -273,17 +273,17 @@ server.close();
         script=r"""
 import assert from 'node:assert/strict';
 const after=await import(process.argv[1]);
-// Historical rule choices before the surface change; scout now follows catalog churn.
-const baseline={scout:{model:'gpt-5.6-luna',effort:'max',fastMode:true,label:'Luna'},planner:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'},reviewer:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'},planner_fallback:{model:'claude-opus-5-5[1m]',effort:'xhigh',fastMode:false,label:'Opus'}};
+// Owner-approved fixed roles follow catalog labels.
+const baseline={scout:{model:'gpt-6.1-sol',effort:'xhigh',fastMode:true,label:'Sol'},planner:{model:'gpt-6.1-sol',effort:'xhigh',fastMode:true,label:'Sol'},reviewer:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'}};
 const source=[['gpt-6-astra','Astra'],['gpt-6.1-sol','Sol'],['gpt-6-luna','Luna'],['chatgpt-web/extra-high','Web Extra'],['chatgpt-web/pro','Web Pro'],['claude-fable-5-1[1m]','Fable'],['claude-opus-5-5[1m]','Opus']].map(([id,label])=>({id,label,thinkingOptions:['low','medium','high','xhigh','max'].map(id=>({id}))}));
 const catalog=source.map(row=>({...row,id:'route/'+row.id}));
 let count=0;
 for(const [role,before] of Object.entries(baseline)){
- const options=role==='planner_fallback'?{plannerFailure:{id:'failed',status:'failed'},fallbackAuthorization:{answer:'yes',after_round:'failed'}}:{};
+ const options={};
  const mapped=after.resolveAgentSurface(role,options,catalog);
  assert.equal(mapped.model,after.resolveCatalogLabel(catalog,before.label).id);
  assert.equal(mapped.effort,before.effort);assert.equal(mapped.fastMode,before.fastMode);
- if(role!=='scout')assert(mapped.model.endsWith('/'+before.model));else assert(mapped.model.endsWith('/gpt-6-luna'));
+ assert(mapped.model.endsWith('/'+before.model));
  assert.equal(mapped.provider,'pi/'+mapped.model);
  const built=after.resolveWorkerSurface({role,route:after.FIXED_ROLE_ROUTES[role],catalog});assert.equal(built.provider,mapped.provider);
  assert.throws(()=>after.resolveAgentSurface(role,options,[]),/catalog label/);
@@ -303,9 +303,9 @@ for(const model of ['gpt-6-astra','gpt-6.1-sol','gpt-6-luna','gpt-5.6-luna','cha
   assert.throws(()=>after.resolveAgentSurface('worker',{explicitRoute:route},catalog,'codex'),/explicit owner authorization/);
   assert.equal(after.resolveAgentSurface('worker',native,catalog,'codex').provider,'codex/'+model);count++;
  }
-assert.equal(count,88);
-assert.throws(()=>after.resolveCatalogLabel([{id:'a',label:'Luna'},{id:'b',label:'Luna'}],'Luna'),/exactly one/);
-const next=catalog.map(row=>row.label==='Luna'?{...row,id:'route/new-catalog-id'}:row);
+assert.equal(count,87);
+assert.throws(()=>after.resolveCatalogLabel([{id:'a',label:'Sol'},{id:'b',label:'Sol'}],'Sol'),/exactly one/);
+const next=catalog.map(row=>row.label==='Sol'?{...row,id:'route/new-catalog-id'}:row);
 assert.equal(after.resolveAgentSurface('scout',{},next).model,'route/new-catalog-id');
 """
         done=subprocess.run(['node','--input-type=module','-e',script,(ROOT/'skills/orchestration/opc/scripts/agent-routing.mjs').as_uri()],capture_output=True,text=True)
@@ -324,6 +324,21 @@ const workspace={workspaceId:'wks-example',cwd:'/tmp/example-worktree'};
 const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:'lane',title:'Worker',initialPrompt:'Do it',workspace,capabilities:piCaps,...extra});
 const plain=value=>JSON.parse(JSON.stringify(value));
 const unread=pool=>({pool,step:0,weekly:null,stale:'no quota reading supplied',gapPct:null,fiveHourUsedPct:null,resetSoon:null,accounts:null,staleAccounts:null,ageSeconds:null});
+// Owner-approved task routes, including all GPT lanes with Fast on.
+assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','code','plan','review','smoke','ui','watcher']);
+for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','xhigh',true],['review','Sol','xhigh',true],['smoke','Luna','low',true],['browser','Astra','medium',true],['ui','Fable','high',false],['watcher','Luna','xhigh',true]]){
+ const route=r.selectWorkerRoute({taskKind:kind,catalog});
+ assert.equal(route.model,r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
+}
+for(const [alias,kind] of Object.entries(r.WORKER_CLASS_ALIASES)){
+ const route=r.selectWorkerRoute({taskKind:alias,catalog});
+ assert.deepEqual(route,r.selectWorkerRoute({taskKind:kind,catalog}));assert.match(route.reason,new RegExp('^'+kind+' '));
+ const recorded={...route,kind:alias};
+ r.validateLaneClass(recorded,kind,catalog);
+ const task={routes:{lane:{route:recorded}}};
+ assert.equal(r.resolveWorkerSurface({route:recorded,task,lane:'lane',taskClass:alias,catalog}).provider,'pi/'+route.model);
+ assert.match(r.buildDelegatedBrief({role:'worker',route:recorded,task,lane:'lane',taskClass:alias,catalog,brief:'x'}),new RegExp('route: '+kind));
+}
 // Worker defaults are frozen.
 assert(Object.isFrozen(r.WORKER_DEFAULT_ROUTES)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.code)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.browser));
 // Code default: Opus at medium (owner rule for local lanes), Fast off, on Pi, recorded as a task default.
@@ -476,7 +491,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             # The backup is the revision the write replaced, the daemon's change included.
             self.assertEqual(json.loads((base/got['backup']).read_text())['daemon'],{'port':4321})
 
-    def test_real_planner_builder_persists_pi_route_and_authorized_fallback(self):
+    def test_real_planner_builder_persists_pi_route_and_stops_on_failure(self):
         script=r"""
 import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {execFileSync} from 'node:child_process';
 const base=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'pi-planner-')));const repo=path.join(base,'repo');const run=path.join(base,'run');fs.mkdirSync(repo);fs.mkdirSync(run);
@@ -485,14 +500,14 @@ try{
  git('init','-q','-b','main');git('config','user.name','Test');git('config','user.email','test@example.test');git('remote','add','origin','https://github.com/example/project.git');fs.writeFileSync(path.join(repo,'seed'),'seed');git('add','.');git('commit','-qm','seed');
  const state=await import(process.argv[1]);const planner=await import(process.argv[2]);const {taskPath}=state.createTask({workingDirectory:repo,runDirectory:run,owner:'test'});
  const contextPack=Object.fromEntries(['outcome','scope','constraints','exploration','ambiguities','checks'].map(k=>[k,'test '+k]));
- const capabilities={enabled:true,status:'available',modes:[],models:[{id:'fleet/web-current',label:'Web Pro'},{id:'fleet/opus-current',label:'Opus',thinkingOptions:[{id:'xhigh'}]}]};
- const prepared=planner.preparePlannerLaunch(taskPath,{contextPack,capabilities});assert.equal(prepared.request.provider,'pi/fleet/web-current');assert.equal(prepared.request.settings.modeId,undefined);
- assert.equal(state.readTask(taskPath).planner.rounds[0].catalog_label,'Web Pro');
+ const capabilities={enabled:true,status:'available',modes:[],models:[{id:'fleet/sol-current',label:'Sol',thinkingOptions:[{id:'xhigh'}]}]};
+ const prepared=planner.preparePlannerLaunch(taskPath,{contextPack,capabilities});assert.equal(prepared.request.provider,'pi/fleet/sol-current');assert.equal(prepared.request.settings.modeId,undefined);
+ assert.equal(prepared.request.settings.thinkingOptionId,'xhigh');assert.equal(prepared.request.labels['opc.service-tier'],'fast');
+ assert.match(prepared.request.initialPrompt,/Do not edit/);
+ assert.equal(state.readTask(taskPath).planner.rounds[0].catalog_label,'Sol');
  planner.recordPlannerLaunchFailure(taskPath,{roundId:prepared.round.id,error:'controlled failure',terminal:true});
- assert.throws(()=>planner.preparePlannerLaunch(taskPath,{contextPack,capabilities}),/explicit owner yes/);
- planner.authorizePlannerFallback(taskPath,{answer:'yes'});
- const fallback=planner.preparePlannerLaunch(taskPath,{contextPack,capabilities});assert.equal(fallback.request.provider,'pi/fleet/opus-current');assert.equal(fallback.request.settings.thinkingOptionId,'xhigh');
- assert.equal(state.readTask(taskPath).planner.rounds[1].role,'planner_fallback');
+ assert.throws(()=>planner.preparePlannerLaunch(taskPath,{contextPack,capabilities}),/planner failed; stop/);
+ assert.equal(state.readTask(taskPath).planner.rounds.length,1);
 }finally{fs.rmSync(base,{recursive:true,force:true});}
 """
         done=subprocess.run(['node','--input-type=module','-e',script,(ROOT/'skills/orchestration/opc/scripts/task-state.mjs').as_uri(),(ROOT/'skills/orchestration/opc/scripts/planner.mjs').as_uri()],capture_output=True,text=True)

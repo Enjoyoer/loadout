@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { isUiRoute, materializeFixedRoute, OWNER_RULE_ROUTES, recordedLaneEntry, routeReason, selectWorkerRoute,
+import { canonicalWorkerClass, isUiRoute, materializeFixedRoute, OWNER_RULE_ROUTES, recordedLaneEntry, routeReason, selectWorkerRoute,
   validateLaneClass, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
 import { defaultRoutingPath, readQuota, readRoutingSettings, ROUTING_DEFAULTS } from './quota-pace.mjs';
 import { readTask, updateTask } from './task-state.mjs';
@@ -18,6 +18,7 @@ const usage = 'usage: route.mjs --class <class> [--pq-file FILE] [--catalog FILE
 // for classes the pace may adjust, and a bad routing.json falls back to the defaults.
 export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, catalog, pqFile = null,
   settings = null, home } = {}) {
+  taskClass = canonicalWorkerClass(taskClass);
   if (ownerRoute) {
     const route = selectWorkerRoute({ ownerRoute, taskKind: taskClass, catalog });
     return Object.freeze({ route, reason: routeReason(route) });
@@ -44,9 +45,9 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
 // Worker request and brief refuse it. A new entry is checked against today's class table and against its lane's class
 // (taskClass, or a task default's own class): the owner rules, and a task default's model by its catalog row when a
 // catalog is given, else by name. That happens here, once; later reads check only its shape. A UI task records only the
-// ui route (Opus xhigh, Fast off).
+// ui route (Fable high, Fast off).
 function recordLane(task, { lane, route, reason, taskClass = null, catalog = null }) {
-  if (task.ui && !isUiRoute(route)) throw Error('UI task: only the ui route (Opus xhigh, Fast off) is recorded (owner rule); use the ui class');
+  if (task.ui && !isUiRoute(route)) throw Error('UI task: only the ui route (Fable high, Fast off) is recorded (owner rule); use the ui class');
   const recorded = recordedLaneEntry(task, lane, route);
   if (recorded) {
     if (recorded.reason !== reason) throw Error(`lane ${lane} already has a recorded route; repairs and resumes reuse it`);
@@ -76,7 +77,7 @@ function differingLaneFlags(stored, flags, ownerRoute) {
     if (ownerRoute.fastMode !== stored.fastMode) differ.push('owner-fast');
   }
   if (flags.class != null) {
-    let fits = stored.source === 'task-default' ? stored.kind === flags.class : ownerRoute != null || flags.class === 'ui';
+    let fits = stored.source === 'task-default' ? canonicalWorkerClass(stored.kind) === canonicalWorkerClass(flags.class) : ownerRoute != null || flags.class === 'ui';
     if (fits && stored.source !== 'task-default') {
       try { validateLaneClass(stored, flags.class); } catch { fits = false; }
     }
@@ -134,8 +135,8 @@ async function main(argv) {
   if (flags.class === 'planner' && !flags['owner-model']) {
     if (flags.task) throw Error('planner rounds are recorded by planner.mjs, not as a Worker lane');
     const catalog = await readCatalog(flags.catalog);
-    return { route: materializeFixedRoute('planner', catalog), fallback: materializeFixedRoute('planner_fallback', catalog),
-      reason: 'planner fixed: Web Pro; fallback only after an owner yes following a Pro failure' };
+    return { route: materializeFixedRoute('planner', catalog),
+      reason: 'planner fixed: Sol xhigh, Fast on, read-only Pi lane' };
   }
   if (!ownerRoute && !flags.class) throw Error(usage);
   const catalog = ownerRoute ? null : await readCatalog(flags.catalog);
