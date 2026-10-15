@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "bb5e346ffe6098d3210c415384d808ffb9e1a5dc",
+  "source_commit": "d99695f0458f280e821f32143c924f53448c0123",
   "skill_count": 22,
   "file_count": 129,
   "files": [
@@ -1365,8 +1365,8 @@
     {
       "path": "plugins/pi-fast-toggle/server/routing.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 5082,
-      "sha256": "d4d873d8ce8a51a7617e6e9ed980deee47caeae98b798039e2622c59967b4be1"
+      "bytes": 5746,
+      "sha256": "8eefa110624846e28258d66a3e83d21a4837abac4cdef3e97464c421728d70b0"
     },
     {
       "path": "plugins/pi-fast-toggle/server/vendor/daemon-target.ts",
