@@ -15,7 +15,7 @@ Labels resolve through the target Pi catalog; browser classes launch with native
 | Class | Use for | Default | Range | Fast |
 |---|---|---|---|---|
 | `code` | implementation, bounded edits, CI fixes, automation code, mechanical edits | Opus medium | medium..xhigh | off |
-| `ui` | design, build, style, visually review interfaces, including browser UI checks | Fable high | fixed, owner rule | off |
+| `ui` | one pass per task: design, build, style, visually review interfaces, including browser UI checks | Fable high | fixed, owner rule | off |
 | `plan` | read-only root cause, specs, implementation plans, research, scouting | Sol xhigh | fixed | on |
 | `review` | read-only simplifier review | Sol xhigh | fixed | on |
 | `browser` | routine website navigation, data entry, repetitive and high-volume browser automation, ordinary computer use | native Codex Sol medium | medium..high | on |
@@ -39,7 +39,7 @@ The `reviewer` fixed role is separate: it is the one ChatGPT web lane (Web Pro) 
 
 ## UI work
 
-UI work runs only on Fable high, Fast off. A lane that includes any UI work is the `ui` class, even when most of it is code; split the UI part into its own lane only if that is faster. The `ui` class resolves to an owner-explicit route with the reason `ui: owner rule, Fable high, no GPT`; the pace never touches it. UI work never uses a GPT or web model: no Sol, Luna, or Astra Worker, no Sol scouts, no GPT planner, and no web reviewer. Create its task with `createTask({..., ui: true})` and pass `ui: true` to `selectTopology`: the task refuses browser review, the planner refuses to launch, `recordWorkerRoute` and the Worker builders given the task refuse anything but Fable high, Fast off, with a Fable model id, and the topology runs no scouts or planner. An owner-named route for UI work other than Fable high, Fast off is refused; ask the owner to use the `ui` class instead.
+UI work runs only on Fable high, Fast off. Fable is a one-time UI pass: give each task at most one `ui` lane for the visual design and UI build, and put the surrounding code, follow-up fixes, and review rework in a separate `code` task. A second `ui` lane on the same work needs the owner's OK. The `ui` class resolves to an owner-explicit route with the reason `ui: owner rule, Fable high, no GPT`; the pace never touches it. UI work never uses a GPT or web model: no Sol, Luna, or Astra Worker, no Sol scouts, no GPT planner, and no web reviewer. Create its task with `createTask({..., ui: true})` and pass `ui: true` to `selectTopology`: the task refuses browser review, the planner refuses to launch, `recordWorkerRoute` and the Worker builders given the task refuse anything but Fable high, Fast off, with a Fable model id, and the topology runs no scouts or planner. An owner-named route for UI work other than Fable high, Fast off is refused; ask the owner to use the `ui` class instead.
 
 ## Pace
 
