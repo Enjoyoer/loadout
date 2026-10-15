@@ -69,7 +69,7 @@ class SyncTest(unittest.TestCase):
             (home / "claude-version").write_text("2.5.0\n")
         # The host programs run these fakes through their test-only hooks, as argv: never a command on PATH.
         self.env = {"PATH": os.environ["PATH"], "HOME": str(self.root / "hosts/laptop"),
-                    "FAKE_ROOT": str(self.root), "LOADOUT_RELAY_POLL_SECONDS": "0.05",
+                    "FAKE_ROOT": str(self.root), "TMPDIR": str(self.root), "LOADOUT_RELAY_POLL_SECONDS": "0.05",
                     "LOADOUT_RELAY_WAIT_SECONDS": "5", "LOADOUT_TEST_PASEO": json.dumps(self.paseo),
                     "LOADOUT_TEST_NPM": json.dumps(npm), "LOADOUT_TEST_CLAUDE": json.dumps(claude)}
         self.env.update({k: v for k, v in os.environ.items()
