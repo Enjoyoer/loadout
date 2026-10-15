@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
 type Resource = 'status' | 'profile' | 'search' | 'list'
 type Output = { write: (value: string) => void }
 
@@ -27,12 +31,43 @@ Status: --thread off|full|conversation|2-100, --userinfo off|author|all,
         --context full|thread, --replies top|recent|off
 Other:  --nocache, --help
 
-X_API_BASE (or X_MD_API_BASE) overrides https://x.pcstyle.dev.
+Set X_API_BASE (or X_MD_API_BASE), or apiBase in the user config file.
+Config: ~/.config/browse-x/config.json; Windows: %APPDATA%\\browse-x\\config.json.
 X_MD_API_KEY optionally sends a bearer key for browse requests.
 `
 
 const fail = (message: string): never => {
   throw new CliError(`browse-x: ${message}`, 2)
+}
+
+const apiBase = (env: NodeJS.ProcessEnv): string => {
+  let base: unknown = env.X_API_BASE || env.X_MD_API_BASE
+  if (!base) {
+    const root = process.platform === 'win32'
+      ? env.APPDATA || join(env.USERPROFILE || homedir(), 'AppData', 'Roaming')
+      : join(env.HOME || homedir(), '.config')
+    let content: string | undefined
+    try {
+      content = readFileSync(join(root, 'browse-x', 'config.json'), 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') fail('cannot read browse-x config.json; set X_API_BASE instead')
+    }
+    if (content !== undefined) {
+      try {
+        base = JSON.parse(content)?.apiBase
+      } catch {
+        fail('invalid browse-x config.json; set apiBase or X_API_BASE')
+      }
+    }
+  }
+  if (!base) fail('set X_API_BASE (or X_MD_API_BASE), or apiBase in the user browse-x config.json')
+  if (typeof base !== 'string') fail('apiBase must be an HTTP(S) URL')
+  try {
+    if (!/^https?:$/.test(new URL(base).protocol)) fail('apiBase must be an HTTP(S) URL')
+  } catch {
+    fail('apiBase must be an HTTP(S) URL')
+  }
+  return base.replace(/\/+$/, '')
 }
 
 const setOption = (options: Map<string, string>, name: string, value: string, option: string) => {
@@ -171,7 +206,7 @@ export const run = async (
   output: Output = { write: (value) => process.stdout.write(value) },
 ) => {
   const parsed = parse(args)
-  const { url, accept } = request(parsed, env.X_API_BASE || env.X_MD_API_BASE || 'https://x.pcstyle.dev')
+  const { url, accept } = request(parsed, apiBase(env))
   const headers: Record<string, string> = { Accept: accept }
   if (env.X_MD_API_KEY) headers.Authorization = `Bearer ${env.X_MD_API_KEY}`
   let response: Response

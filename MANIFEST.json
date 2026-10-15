@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "5022e2989bbfe7d5d08b7ee2decff845bf0762ca",
+  "source_commit": "daba59f6f8d2f324ca233938017a3d93ed5368f5",
   "skill_count": 21,
   "file_count": 125,
   "files": [
@@ -751,15 +751,15 @@
       "path": "skills/web-browser/browse-x/SKILL.md",
       "category": "web-browser",
       "skill": "browse-x",
-      "bytes": 2561,
-      "sha256": "d0a8c91f900c2b4ad60c6b310fc1dfb32798a0d644fc762ce863981f5192f99e"
+      "bytes": 3169,
+      "sha256": "86e0a5038e1fe90dfd795bf0500d5a81e64f54fdc0dd75f09b39f595a3c7bbdc"
     },
     {
       "path": "skills/web-browser/browse-x/scripts/browse-x.ts",
       "category": "web-browser",
       "skill": "browse-x",
-      "bytes": 9575,
-      "sha256": "b2650f1cceb79178dfcb83a8a02328e3ede9bd8b86ae15974d3624dc29c0d951"
+      "bytes": 10860,
+      "sha256": "df00d1d1a946cf82657ce60bf10ae312aded9e3b4883707eeeab935106b736e6"
     },
     {
       "path": "skills/web-browser/browse-x/tests/browse-x.test.ts",
