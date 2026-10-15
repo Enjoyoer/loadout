@@ -1,15 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-<<<<<<< HEAD
-  "source_commit": "02b95472b55f4f6c14de14cab5d7cde4f1427536",
-  "skill_count": 22,
-  "file_count": 127,
-=======
-  "source_commit": "227aae9f285f7cd000562cc9b5f7d750842cdf35",
+  "source_commit": "a995216e8f9646ad1a46944e12b30cd1966edd30",
   "skill_count": 23,
   "file_count": 132,
->>>>>>> b95553f (Regenerate final publication manifest)
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -117,6 +111,41 @@
       "sha256": "7adfbd5631e5d87781e636c4190b1e20353f0c3a56f062f189ee642e0de02e52"
     },
     {
+      "path": "skills/operations-integrations/project-icon/SKILL.md",
+      "category": "operations-integrations",
+      "skill": "project-icon",
+      "bytes": 4673,
+      "sha256": "7d94dfd18a012d5e55dcff729e63f71a176c7a80e8164ee258b550dd63fe1f91"
+    },
+    {
+      "path": "skills/operations-integrations/project-icon/agents/openai.yaml",
+      "category": "operations-integrations",
+      "skill": "project-icon",
+      "bytes": 304,
+      "sha256": "d6e50eade07a458e03748d2be2795cfd9bb0d9d8bac060186511f71b8be804b5"
+    },
+    {
+      "path": "skills/operations-integrations/project-icon/assets/template.svg",
+      "category": "operations-integrations",
+      "skill": "project-icon",
+      "bytes": 997,
+      "sha256": "8e2877a8bc29c3500635526c100db80ddfbaf5fd27f00e5b2825a929e06ba073"
+    },
+    {
+      "path": "skills/operations-integrations/project-icon/scripts/apply-icon.mjs",
+      "category": "operations-integrations",
+      "skill": "project-icon",
+      "bytes": 4468,
+      "sha256": "5e2d8e12fdf10227eeb028d5a78e34e0a53e84292e49595b3a5cd6e5b7b85168"
+    },
+    {
+      "path": "skills/operations-integrations/project-icon/scripts/render.py",
+      "category": "operations-integrations",
+      "skill": "project-icon",
+      "bytes": 1680,
+      "sha256": "127c45c1236f6dc4bb789feb0b6c83644e0d023a55b292d50730b03b1088124c"
+    },
+    {
       "path": "skills/operations-integrations/recover-mouse-input/SKILL.md",
       "category": "operations-integrations",
       "skill": "recover-mouse-input",
@@ -162,8 +191,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5034,
-      "sha256": "b3777abfac3242949b132aa4ce8e8d8d6ce2cf6ec81c5ddfb0e84c446ecc7995"
+      "bytes": 5147,
+      "sha256": "f0f06f3c0f0f99914319e34d4684bbb6a1b51e28824841ae19e4d68e2953692e"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -337,8 +366,8 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 8457,
-      "sha256": "0bcafafc65b56130fc3df225905b1c9230d94f120204c9c64ad4cb319a2876c5"
+      "bytes": 8597,
+      "sha256": "0e50d54e6b0404271d030eb3c33c2135f5b2ba7aa739df8adc63d9412b317bf6"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
