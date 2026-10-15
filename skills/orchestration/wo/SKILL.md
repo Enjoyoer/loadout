@@ -11,7 +11,7 @@ description: Ask the owner questions and read his answers in his preferred forma
 - One line per item, in plain words, answerable with a short reply: yes/no, a pick, or a value. State your recommendation in the line.
 - Example:
   1. Update Claude Code to 2.1.299 on all hosts? I recommend yes.
-  2. the ownerm old Codex backups on the PC (frees 7.5 GB)? I recommend yes.
+  2. Trim old Codex backups on the PC (frees 7.5 GB)? I recommend yes.
   3. Plan: Free or Teams ($6/mo)? I recommend Free.
 
 ## Reading his answers
