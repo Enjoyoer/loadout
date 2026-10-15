@@ -110,14 +110,12 @@ const BLOCKED_PATTERNS: readonly RegExp[] = [
   /\btemporarily limiting requests\b/i,
 ];
 
-// Observed Claude synthetic assistant messages: ~/.claude/projects/.../722bde14-4917-40e2-81a1-a5f1f025566f.jsonl:1070
-// and .../2a993f62-699f-4560-b860-642b13e4b6fe.jsonl:196. Codex capacity wording:
-// ~/.codex/sessions/2026/09/25/rollout-2026-09-25T17-23-02-01a0da73-438e-7550-8684-0424daa11bb1.jsonl:12.
+// Claude synthetic assistant messages use API Error prefixes; Codex reports model capacity.
 const TRANSIENT_API_PATTERN = /^API Error:\s*[\s\S]*\b(?:rate[_ -]?limit|temporarily limiting requests|overloaded|529|429)\b/i;
 // Codex capacity arrives as "[System Error] Selected model is at capacity. Please try a different model."
 const CAPACITY_PATTERN = /^(?:\[System Error\]\s*)?(?:API Error:\s*)?Selected model is at capacity\s*[.!]?(?:\s*Please try a different model\s*[.!]?)?$/i;
 // Failed-outcome error messages come from the provider, never from model prose, so a broader match is safe.
-// Observed 2026-09-28 in ~/.paseo/daemon.log: "Selected model is at capacity. Please try a different model."
+// Provider errors include "Selected model is at capacity. Please try a different model."
 // and "We’re currently experiencing high demand, which may cause temporary errors."
 const TRANSIENT_ERROR_PATTERN = /\b(?:selected model is at capacity|experiencing high demand|temporary errors?|temporarily (?:unavailable|limiting requests)|overloaded(?:_error)?|rate[_ -]?limit(?:ed|_error)?|429|529|503)\b/i;
 

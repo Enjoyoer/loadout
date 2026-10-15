@@ -32,7 +32,7 @@ Skills then appear as `/loadout-engineering:codebase-design` and so on. The mark
 | `loadout-writing` | `grilling`, `sample` |
 | `loadout-research` | `find-docs`, `liteparse` |
 | `loadout-web` | `frontend-design`, `playwright`, `browse-x`, `pake` |
-| `loadout-ops` | `wizard`, `recover-mouse-input` |
+| `loadout-ops` | `recover-mouse-input` |
 
 **Codex, or any client that reads a skills folder:** clone, verify, and copy the packages you want:
 
@@ -124,4 +124,4 @@ Issues and pull requests are welcome, and every new one is triaged within 7 days
 
 ## License
 
-Original material is licensed under [MIT](LICENSE). `frontend-design` and `playwright` retain their bundled Apache-2.0 licenses; `playwright` also retains its upstream notice. `codebase-design`, `domain-modeling`, `improve-codebase-architecture`, `grilling`, and `wizard` are adapted from Matt Pocock's MIT-licensed skills, and `find-docs` from Context7's MIT-licensed skill; each carries its upstream `LICENSE.txt`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). These package-level terms take precedence for those files.
+Original material is licensed under [MIT](LICENSE). `frontend-design` and `playwright` retain their bundled Apache-2.0 licenses; `playwright` also retains its upstream notice. `codebase-design`, `domain-modeling`, `improve-codebase-architecture`, and `grilling` are adapted from Matt Pocock's MIT-licensed skills, and `find-docs` from Context7's MIT-licensed skill; each carries its upstream `LICENSE.txt`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). These package-level terms take precedence for those files.

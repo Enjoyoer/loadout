@@ -88,14 +88,13 @@
     {
       "name": "loadout-ops",
       "source": "./",
-      "description": "Interactive bash wizards for manual steps, and Windows mouse-input recovery.",
+      "description": "Windows mouse-input recovery.",
       "version": "0.1.0",
       "license": "MIT",
       "category": "productivity",
       "repository": "https://github.com/Enjoyoer/loadout",
       "strict": false,
       "skills": [
-        "./skills/operations-integrations/wizard",
         "./skills/operations-integrations/recover-mouse-input"
       ]
     }

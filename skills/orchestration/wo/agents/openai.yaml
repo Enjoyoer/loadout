@@ -1,4 +1,4 @@
 interface:
   display_name: "wo: What's Open"
   short_description: "Ask the owner questions and list open decisions"
-  default_prompt: "Use $wo to ask Tri questions, read short answers, and list decisions still waiting on him."
+  default_prompt: "Use $wo to ask the owner questions, read short answers, and list decisions still waiting on him."
