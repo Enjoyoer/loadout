@@ -33,7 +33,21 @@ async function fetchCatalog(root: string, route: Awaited<ReturnType<typeof runti
   const { stdout } = await exec(route.spec.python ?? (process.platform === "win32" ? "python" : "python3"), [join(root, "credential.py"), join(root, "runtime.json")], { timeout: 10000, maxBuffer: 65536 });
   const headers: Record<string, string> = { Accept: "application/json", Authorization: `Bearer ${stdout.trim()}` };
   for (const name of route.spec.credentialHeaders ?? []) headers[name] = stdout.trim();
-  const response = await fetch(`${route.baseUrl.replace(/\/$/, "")}/models?client_version=0.160.0`, { headers, signal: AbortSignal.timeout(10000) });
+  let url = new URL(`${route.baseUrl.replace(/\/$/, "")}/models?client_version=0.160.0`);
+  const origin = url.origin;
+  const signal = AbortSignal.timeout(10000);
+  let response: Response;
+  for (let redirects = 0; ; redirects++) {
+    // Fetch only validated destinations so every credential header stays on this origin.
+    response = await fetch(url, { headers, redirect: "manual", signal });
+    const location = response.headers.get("location");
+    if (![301, 302, 303, 307, 308].includes(response.status) || location === null) break;
+    await response.body?.cancel();
+    const next = new URL(location, url);
+    if (next.origin !== origin) throw Error("Router catalog redirected to a different origin");
+    if (redirects >= 20) throw Error("Router catalog redirect limit exceeded");
+    url = next;
+  }
   if (!response.ok) throw Error("Router catalog unavailable");
   const value = await response.json() as { models?: unknown };
   if (!Array.isArray(value.models)) throw Error("Router catalog malformed");
