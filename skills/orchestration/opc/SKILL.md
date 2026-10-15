@@ -15,6 +15,8 @@ Follow this state machine, reading linked references only when their branch appl
 
 ## 1. Scope
 
+At first PM ownership, if the project has no custom icon and is not a scratch folder, use `$project-icon` once.
+
 Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks: observable behaviors from the owner's intent, preferably end-to-end or live. Consult root `STATUS.html` and `LESSONS.md` when resuming. Escalate scope or authority changes to the owner.
 
 Enable browser review only when the initial request explicitly asks for it; preserve that immutable choice through repairs, resumes, and reinvocation. Initialize the [execution mechanics](references/imp-execution.md "runtime") before launching lanes.

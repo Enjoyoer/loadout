@@ -5,10 +5,12 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 ## Unreleased
 
 ### Added
+- `project-icon` 1.0: generic die-cut sticker template, librsvg rendering with light/dark legibility previews, and guarded Paseo icon upload with byte-for-byte read-back. Existing custom icons and scratch projects are protected.
 - `tco-search`: interview-first shopping research across Amazon and installed marketplace sources, ranked by estimated total cost of ownership.
 - Fleet `bin/` folder: the skills sync installs private helper scripts into each host's user bin.
 
 ### Changed
+- OPC 7.50 and OPN 1.1: at first PM ownership, use `project-icon` once only when the project has no custom icon and is not a scratch folder.
 - browse-x requires an explicit API endpoint from environment variables or a user config file; no queries go to an implicit third-party proxy.
 - OPC 7.50: browser Worker briefs verify a form or composer field with a fresh snapshot before sending, and prefer the Send button over Enter.
 - OPC 7.49: remove the owner approval gate, task fields, and approval command; delivery no longer requires an owner approval step. Worker routes still reject reviewer-only web models.

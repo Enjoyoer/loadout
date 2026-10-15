@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<defs>
+<filter id="cut" x="-25%" y="-25%" width="150%" height="150%" color-interpolation-filters="sRGB">
+  <feGaussianBlur in="SourceAlpha" stdDeviation="14" result="bh"/>
+  <feComponentTransfer in="bh" result="mh"><feFuncA type="linear" slope="60" intercept="-1.7"/></feComponentTransfer>
+  <feFlood flood-color="#000" flood-opacity="0.30"/>
+  <feComposite in2="mh" operator="in" result="hair"/>
+  <feGaussianBlur in="SourceAlpha" stdDeviation="12" result="bw"/>
+  <feComponentTransfer in="bw" result="mw"><feFuncA type="linear" slope="50" intercept="-1.9"/></feComponentTransfer>
+  <feFlood flood-color="#ffffff"/>
+  <feComposite in2="mw" operator="in" result="white"/>
+  <feMerge><feMergeNode in="hair"/><feMergeNode in="white"/><feMergeNode in="SourceGraphic"/></feMerge>
+</filter>
+</defs>
+<g filter="url(#cut)">
+<!-- Add one flat motif here. Keep its silhouette clear of the canvas edge. -->
+</g>
+</svg>

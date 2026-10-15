@@ -89,13 +89,14 @@
     {
       "name": "loadout-ops",
       "source": "./",
-      "description": "Windows mouse-input recovery.",
-      "version": "0.1.0",
+      "description": "Paseo project sticker icons and Windows mouse-input recovery.",
+      "version": "0.2.0",
       "license": "MIT",
       "category": "productivity",
       "repository": "https://github.com/Enjoyoer/loadout",
       "strict": false,
       "skills": [
+        "./skills/operations-integrations/project-icon",
         "./skills/operations-integrations/recover-mouse-input"
       ]
     }

@@ -8,7 +8,7 @@ New to agent fleets? [Start here](START-HERE.md) to set up your own team.
 
 Agent skills for Claude Code and Codex, a fleet sync that keeps them identical across machines, and plugins for the [Paseo](https://paseo.sh) agent daemon.
 
-- **22 skills** for multi-agent orchestration, project memory and handoffs, architecture and domain modeling, docs lookup, PDFs, total-cost shopping research, frontend design, and browser automation.
+- **23 skills** for multi-agent orchestration, project memory and handoffs, architecture and domain modeling, docs lookup, PDFs, total-cost shopping research, frontend design, and browser automation.
 - **Fleet sync**: one command installs verified skills (every file checked against a SHA256 manifest) on every host over SSH, and never overwrites a local edit.
 - **6 Paseo plugins**: five server plugins that resume agents after usage limits, archive merged worker workspaces, compact idle agents to save prompt-cache cost, clean up orphaned projects, and keep PM workers on Pi, each only logging what it would do until you arm it; plus `pi-fast-toggle`, a per-agent Fast pill for Pi agents.
 
@@ -32,7 +32,7 @@ Skills then appear as `/loadout-engineering:codebase-design` and so on. The mark
 | `loadout-writing` | `grilling`, `sample` |
 | `loadout-research` | `find-docs`, `liteparse`, `tco-search` |
 | `loadout-web` | `frontend-design`, `playwright`, `browse-x`, `pake` |
-| `loadout-ops` | `recover-mouse-input` |
+| `loadout-ops` | `project-icon`, `recover-mouse-input` |
 
 **Codex, or any client that reads a skills folder:** clone, verify, and copy the packages you want:
 
@@ -69,7 +69,7 @@ Some packages need an external CLI, connected service, or local credential. Read
 
 ## Packages
 
-See [SKILLS_CATALOG.md](SKILLS_CATALOG.md) for all 22 active packages. There are no archived packages in this public repository.
+See [SKILLS_CATALOG.md](SKILLS_CATALOG.md) for all 23 active packages. There are no archived packages in this public repository.
 
 ## Sync a fleet
 
