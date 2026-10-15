@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "5696a7220324f3783ea14e1b3720dfc15eea1fc7",
+  "source_commit": "357d456f9f2427b7fcd7d6a708d671d37b7556f3",
   "skill_count": 21,
   "file_count": 125,
   "files": [
@@ -1067,14 +1067,14 @@
     {
       "path": "plugins/merged-worker-archiver/README.md",
       "plugin": "merged-worker-archiver",
-      "bytes": 19664,
-      "sha256": "9cad49367c5930a2185b92220afc7964005ab3e38a82b428ac10a65775e315c1"
+      "bytes": 20874,
+      "sha256": "ecebd957e725fef8ea4d7d026642ae0b9cfb3c0987c186f37a120749eec26faa"
     },
     {
       "path": "plugins/merged-worker-archiver/index.server.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 5280,
-      "sha256": "eebb98255e74b9c6fec9076ca799049367af30007884e00da1628473e6b55153"
+      "bytes": 5370,
+      "sha256": "725e41921a47d4a2f8777b436275ed7c31f4db26a2e0657e9a325b6e7dd117c9"
     },
     {
       "path": "plugins/merged-worker-archiver/package-lock.json",
@@ -1115,8 +1115,8 @@
     {
       "path": "plugins/merged-worker-archiver/server/evaluate.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 4698,
-      "sha256": "a43ba95d7e916c89ca479f93020ede67d0c42ef1d2a52b653c48603f072c020d"
+      "bytes": 6348,
+      "sha256": "ecde320050207dddc6ab71a7ef704f00abe0eb809609c38ccf01403a92b9d3d0"
     },
     {
       "path": "plugins/merged-worker-archiver/server/io.ts",
