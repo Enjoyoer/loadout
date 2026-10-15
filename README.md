@@ -8,7 +8,7 @@ New to agent fleets? [Start here](START-HERE.md) to set up your own team.
 
 Agent skills for Claude Code and Codex, a fleet sync that keeps them identical across machines, and plugins for the [Paseo](https://paseo.sh) agent daemon.
 
-- **22 skills** for multi-agent orchestration, project memory and handoffs, architecture and domain modeling, docs lookup, PDFs, frontend design, and browser automation.
+- **22 skills** for multi-agent orchestration, project memory and handoffs, architecture and domain modeling, docs lookup, PDFs, total-cost shopping research, frontend design, and browser automation.
 - **Fleet sync**: one command installs verified skills (every file checked against a SHA256 manifest) on every host over SSH, and never overwrites a local edit.
 - **6 Paseo plugins**: five server plugins that resume agents after usage limits, archive merged worker workspaces, compact idle agents to save prompt-cache cost, clean up orphaned projects, and keep PM workers on Pi, each only logging what it would do until you arm it; plus `pi-fast-toggle`, a per-agent Fast pill for Pi agents.
 
@@ -30,7 +30,7 @@ Skills then appear as `/loadout-engineering:codebase-design` and so on. The mark
 | `loadout-engineering` | `codebase-design`, `domain-modeling`, `improve-codebase-architecture`, `uv-python` |
 | `loadout-orchestration` | `opc`, `opn`, `dispatching-parallel-agents`, `handoff`, `repo-lessons`, `reassign-pm` |
 | `loadout-writing` | `grilling`, `sample` |
-| `loadout-research` | `find-docs`, `liteparse` |
+| `loadout-research` | `find-docs`, `liteparse`, `tco-search` |
 | `loadout-web` | `frontend-design`, `playwright`, `browse-x`, `pake` |
 | `loadout-ops` | `recover-mouse-input` |
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "TCO Search"
+  short_description: "Compare purchases by total cost of ownership"
+  default_prompt: "Use $tco-search to interview me and compare purchases by total cost of ownership."

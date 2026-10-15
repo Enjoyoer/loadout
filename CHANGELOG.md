@@ -5,6 +5,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 ## Unreleased
 
 ### Added
+- `tco-search`: interview-first shopping research across Amazon and installed marketplace sources, ranked by estimated total cost of ownership.
 - Fleet `bin/` folder: the skills sync installs private helper scripts into each host's user bin.
 
 ### Changed
