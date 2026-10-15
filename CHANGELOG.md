@@ -9,6 +9,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - OPC 7.45: owner approval gate for auth, data deletion or migration, and fleet-wide config changes.
 
 ### Changed
+- OPC 7.48: Fable is a one-time UI pass, at most one `ui` lane per task; surrounding code and rework go to a separate `code` task.
 - OPC 7.47: browser and computer-use lanes run on native Codex with Paseo browser tools (same models, Fast on).
 - Example global instructions gain a Secrets section.
 - `wo`: no separate prompt file; the skill is the slash entry (`/wo`, Pi `/skill:wo`).
