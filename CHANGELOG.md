@@ -8,6 +8,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - Fleet `bin/` folder: the skills sync installs private helper scripts into each host's user bin.
 
 ### Changed
+- browse-x requires an explicit API endpoint from environment variables or a user config file; no queries go to an implicit third-party proxy.
 - OPC 7.49: remove the owner approval gate, task fields, and approval command; delivery no longer requires an owner approval step. Worker routes still reject reviewer-only web models.
 - OPC 7.48: Fable is a one-time UI pass, at most one `ui` lane per task; surrounding code and rework go to a separate `code` task.
 - OPC 7.47: browser and computer-use lanes run on native Codex with Paseo browser tools (same models, Fast on).
