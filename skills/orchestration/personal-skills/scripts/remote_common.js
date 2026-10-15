@@ -26,6 +26,16 @@ function baseFor(path, home, root) {
   return rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? home : path.dirname(root);
 }
 
+// Config reads and writes must not follow linked directories or a linked/non-regular final file.
+// Recheck at each point of use, including when a previous read found the file absent.
+function checkConfigPath(fs, path, os, file) {
+  const root = path.dirname(path.resolve(file));
+  checkAncestors(fs, path, root, path.resolve(file), baseFor(path, os.homedir(), root));
+  let st;
+  try { st = fs.lstatSync(file); } catch (e) { if (e.code === "ENOENT") return; throw e; }
+  if (!st.isFile() || st.isSymbolicLink()) throw new Error("not a regular config file: " + file);
+}
+
 // Whether a path from the source names the same file on every host: "/"-separated components that are
 // not empty, "." or "..", hold no backslash, colon (a drive or an NTFS stream) or control character, and
 // neither end in a dot or space nor name a device, which Windows drops or maps.
@@ -96,4 +106,4 @@ function removeFile(fs, file, accepted) {
   throw new Error("changed since preflight, not removed: " + file + (back ? "" : "; kept at " + held));
 }
 
-if (typeof module === "object") module.exports = { checkAncestors, baseFor, portable, foldPath, checkPaths, loadoutDir, checkUnchanged, replaceFile, removeFile };
+if (typeof module === "object") module.exports = { checkAncestors, baseFor, checkConfigPath, portable, foldPath, checkPaths, loadoutDir, checkUnchanged, replaceFile, removeFile };

@@ -20,7 +20,23 @@ try {
   // The host's paseo_home from hosts.json, ~ expanded here, or the default home; never an inherited PASEO_HOME.
   const home = p.paseo_home ? p.paseo_home.replace(/^~(?=[/\\]|$)/, os.homedir()) : path.join(os.homedir(), ".paseo");
   const cfgPath = p.config_path || path.join(home, "config.json");
-  const read = () => fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, "utf8") : "{}";
+  // Standalone relay payload: mirror remote_common's home/root ancestor and regular-file checks.
+  const check = () => {
+    const root = path.dirname(path.resolve(cfgPath)), rel = path.relative(os.homedir(), root);
+    const base = rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? os.homedir() : root;
+    const dirs = path.relative(base, root).split(path.sep).filter(Boolean);
+    let cur = base;
+    for (const part of ["", ...dirs]) {
+      cur = path.join(cur, part);
+      let st;
+      try { st = fs.lstatSync(cur); } catch (e) { if (e.code === "ENOENT") return; throw e; }
+      if (!st.isDirectory() || st.isSymbolicLink()) throw Error("not a real directory: " + cur);
+    }
+    let st;
+    try { st = fs.lstatSync(cfgPath); } catch (e) { if (e.code === "ENOENT") return; throw e; }
+    if (!st.isFile() || st.isSymbolicLink()) throw Error("not a regular config file: " + cfgPath);
+  };
+  const read = () => { check(); return fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, "utf8") : "{}"; };
   const expand = value => value.replace(/^~(?=[/\\]|$)/, os.homedir())
     .replace(/%([^%]+)%/g, (_, key) => {
       // A host value lands in config.json and its backups in plain text, so never copy a secret.
@@ -103,11 +119,15 @@ try {
       if (attempt > 3) throw new Error("config.json kept changing during the merge; it was not replaced");
       const tag = p.stamp + "-" + crypto.randomBytes(4).toString("hex");
       const bak = cfgPath + ".bak-loadout-" + tag, next = cfgPath + ".loadout-next-" + tag;
+      check();
       fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+      check();
       fs.writeFileSync(bak, m.raw, { mode: 0o600, flag: "wx" });
       if (fs.readFileSync(bak, "utf8") !== m.raw) throw new Error("backup failed: " + bak);
+      check();
       fs.writeFileSync(next, m.text, { mode: 0o600, flag: "wx" });
       if (read() === m.raw) {
+        check();
         fs.renameSync(next, cfgPath);
         result.backup = path.basename(bak);
         result.wrote = published = true;
@@ -119,7 +139,7 @@ try {
   }
   result.preserved = Object.keys(m.prev).filter(k => !(k in p.providers) && !(k in p.env));
   result.changed = Boolean(result.pi?.changed?.length) || m.rows;
-  const now = published ? JSON.parse(fs.readFileSync(cfgPath, "utf8")).agents.providers : m.merged;
+  const now = published ? JSON.parse(read()).agents.providers : m.merged;
   result.verified = labelsMatch(now);
   done(result.verified ? 0 : 4);
 } catch (e) {

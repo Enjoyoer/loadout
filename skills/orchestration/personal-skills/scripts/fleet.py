@@ -317,6 +317,21 @@ def secret_sources(directory: Path) -> dict:
     return sources
 
 
+def publication_bytes(directory: Path, path: Path) -> bytes:
+    """Exclude secret paths and hard-link aliases before reading publication bytes."""
+    real = lambda value: os.path.normcase(os.path.realpath(value))
+    for what, source in secret_sources(directory).items():
+        same = real(path) == real(source)
+        if not same:
+            try:
+                same = path.samefile(source)
+            except FileNotFoundError:
+                pass
+        if same:
+            raise FleetError(f"refusing to publish {path.relative_to(directory)}: it is {what}, which stays on the source host")
+    return path.read_bytes()
+
+
 def bin_files(directory: Path) -> dict:
     """Verified private helpers, restricted to portable plain names in the four bin scopes."""
     root = directory / "bin"
@@ -337,7 +352,7 @@ def bin_files(directory: Path) -> dict:
                     or key in folded or source.is_symlink() or not source.is_file()):
                 raise FleetError(f"fleet bin name is not a portable plain file: {scope.name}/{name}")
             folded.add(key)
-            data = source.read_bytes()
+            data = publication_bytes(directory, source)
             files[f"bin/{scope.name}/{name}"] = {
                 "sha256": hashlib.sha256(data).hexdigest(), "data": base64.b64encode(data).decode()}
     common = {rel.split("/")[-1].casefold() for rel in files if rel.startswith("bin/common/")}
@@ -365,7 +380,7 @@ def fleet_files(directory: Path) -> dict:
         if any(part.is_symlink() for part in (path, *path.parents[:rel.count("/")])):
             raise FleetError(f"symlink in the source fleet directory: {rel}")
         if path.is_file():
-            data = path.read_bytes()
+            data = publication_bytes(directory, path)
             files[rel] = {"sha256": hashlib.sha256(data).hexdigest(), "data": base64.b64encode(data).decode()}
     return files
 
