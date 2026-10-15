@@ -60,6 +60,16 @@ const claudeClassOnGptModel = (rule, route) => !GPT_WEB_LABELS.includes(rule.lab
 // A catalog row serves a model named by its full id or by its id without the provider prefix.
 const namesRow = (row, model) => row.id === model || row.id?.slice(row.id.indexOf('/') + 1) === model;
 
+// Web models are reserved for the fixed reviewer, even with native authorization or an opaque catalog id.
+function requireWorkerModel(model, catalog = null) {
+  const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
+  if (/(?:^|\/)chatgpt-web\//i.test(model ?? '') ||
+      rows?.some(row => namesRow(row, model) && (/^Web(?:\s|$)/i.test(row.label ?? '') ||
+        /(?:^|\/)chatgpt-web\//i.test(row.id ?? '')))) {
+    throw Error('chatgpt-web models are reviewer-only; Workers cannot use the web lane');
+  }
+}
+
 // A model id names a catalog label as one of its tokens, as fleet/claude-opus-5-5 and claude-opus-5-5[1m] name Opus.
 const namesLabel = (model, label) => new RegExp(`(?:^|[/._-])${label.toLowerCase()}(?:$|[/._[-])`, 'i').test(model ?? '');
 // A GPT or web model by its name or, with a catalog, by its row's label; never by a class table.
@@ -166,6 +176,7 @@ const routeText = route => `model=${route.model ?? route.label}; effort=${route.
 // A recorded Worker route comes from the owner or from a task-class default with its pace inputs and reason.
 // A recorded route is checked for shape only, so a later class-table change never strands its task.
 export function validateRecordedWorkerRoute(route) {
+  requireWorkerModel(route?.model);
   const taskDefault = route?.source === 'task-default';
   const keys = ['role', 'source', 'model', 'effort', 'fastMode', ...(taskDefault ? ['kind', 'pace', 'reason'] : [])];
   if (!route || typeof route !== 'object' || Array.isArray(route) || route.role !== 'worker' ||
@@ -233,6 +244,7 @@ function validateRebuild(route, taskClass, rows) {
 // UI task's lanes are ui, and any other bound lane names its taskClass. A lane with a recorded route takes only that route
 // and rebuilds under validateRebuild; a fresh lane is checked as new and against its class.
 function validateLaunchedWorkerRoute(route, { task = null, lane = null, taskClass = null, catalog = null } = {}) {
+  requireWorkerModel(route?.model, catalog);
   if (task != null && (typeof task !== 'object' || Array.isArray(task))) throw Error('destination task must be a task record');
   if (taskClass != null && !knownClass(taskClass)) throw workerRouteUnresolved();
   if (task?.ui === true && taskClass != null && taskClass !== 'ui') throw Error('UI task: its lanes take the ui class (owner rule)');
@@ -262,6 +274,7 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog,
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   if (ownerRoute) {
     if (ownerRoute.source !== 'owner-explicit') throw Error('owner Worker route must have source owner-explicit');
+    requireWorkerModel(ownerRoute.model, rows);
     validateWorkerRoute(ownerRoute);
     if (taskKind === 'ui' && isGptOrWebRoute(ownerRoute, rows)) {
       throw Error('ui work never uses a GPT or web model (owner rule); name a Claude model or use the ui class route');
@@ -377,6 +390,7 @@ export function selectTopology({ scale, independentQuestions = 0, findingsConver
 export const NATIVE_WORKER_SURFACES = Object.freeze(['codex', 'claude']);
 export function mapRouteToPi(route, catalog, { fallbackProvider = 'codex', surface = 'pi', nativeAuthorization = null, taskClass = null } = {}) {
   if (!route || !isValidModelId(route.model)) throw Error('selected OPC route required');
+  requireWorkerModel(route.model, catalog);
   if (!Array.isArray(catalog)) throw Error('target Pi catalog required');
   const originalProvider = route.provider?.split('/')[0] ?? fallbackProvider;
   const original = { ...route, provider: route.provider ?? `${originalProvider}/${route.model}` };
@@ -432,6 +446,10 @@ const isClaudeModel = model => /(?:^|\/)claude-/i.test(model ?? '') || CLAUDE_LA
 // An explicit native provider (codex/ or claude/) selects that native surface for the mapping.
 export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'worker', route, catalog, surface = 'pi',
   nativeAuthorization = null, task = null, lane = null, taskClass = null } = {}) {
+  if (role === 'worker') {
+    requireWorkerModel(route?.model, catalog);
+    requireWorkerModel(String(provider ?? '').replace(/^(?:pi|codex|claude)\//, ''), catalog);
+  }
   const bound = role === 'worker' && task != null;
   const standingBrowser = role === 'worker' && browserClass(routeClass(route, taskClass)) && route != null;
   if (provider && !String(provider).startsWith('pi/') && role === 'worker' &&

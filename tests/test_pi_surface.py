@@ -292,6 +292,9 @@ for(const [role,before] of Object.entries(baseline)){
 for(const model of ['gpt-6-astra','gpt-6.1-sol','gpt-6-luna','gpt-5.6-luna','chatgpt-web/extra-high','chatgpt-web/pro','claude-opus-5-5[1m]'])
  for(const effort of ['low','medium','high','xhigh','max','ultra'])for(const fastMode of [true,false]){
   const route={role:'worker',source:'owner-explicit',model,effort,fastMode};
+  if(model.startsWith('chatgpt-web/')){
+   assert.throws(()=>after.resolveAgentRoute('worker',{explicitRoute:route}),/reviewer-only/);continue;
+  }
   const before=after.resolveAgentRoute('worker',{explicitRoute:route});
   const supports=catalog.find(row=>row.id==='route/'+model&&row.thinkingOptions.some(x=>x.id===effort));
   const native={explicitRoute:route,nativeAuthorization:'owner-explicit'};
@@ -303,7 +306,7 @@ for(const model of ['gpt-6-astra','gpt-6.1-sol','gpt-6-luna','gpt-5.6-luna','cha
   assert.throws(()=>after.resolveAgentSurface('worker',{explicitRoute:route},catalog,'codex'),/explicit owner authorization/);
   assert.equal(after.resolveAgentSurface('worker',native,catalog,'codex').provider,'codex/'+model);count++;
  }
-assert.equal(count,87);
+assert.equal(count,63);
 assert.throws(()=>after.resolveCatalogLabel([{id:'a',label:'Sol'},{id:'b',label:'Sol'}],'Sol'),/exactly one/);
 const next=catalog.map(row=>row.label==='Sol'?{...row,id:'route/new-catalog-id'}:row);
 assert.equal(after.resolveAgentSurface('scout',{},next).model,'route/new-catalog-id');
