@@ -38,7 +38,8 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
   }
   const quota = rule.range ? await readQuota({ settings: routing, pqFile, home }) : null;
   const route = selectWorkerRoute({ taskKind: taskClass, catalog, quota, settings: routing });
-  return Object.freeze({ route, reason: `${invalid}${routeReason(route)}` });
+  return Object.freeze({ route, reason: `${invalid}${routeReason(route)}`,
+    ...(['browser', 'browser-hard'].includes(taskClass) ? { provider: `codex/${route.model}` } : {}) });
 }
 
 // One route per lane. Repairs and resumes reuse the recorded entry; a different route for the lane is refused, as the

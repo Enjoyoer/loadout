@@ -9,6 +9,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - OPC 7.45: owner approval gate for auth, data deletion or migration, and fleet-wide config changes.
 
 ### Changed
+- OPC 7.47: browser and computer-use lanes run on native Codex with Paseo browser tools (same models, Fast on).
 - Example global instructions gain a Secrets section.
 - `wo`: no separate prompt file; the skill is the slash entry (`/wo`, Pi `/skill:wo`).
 - OPC 7.44: browser and computer use default to Sol medium; Astra is the `browser-hard` escalation.

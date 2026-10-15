@@ -94,7 +94,7 @@ const knownClass = taskClass => Object.hasOwn(WORKER_DEFAULT_ROUTES, canonicalWo
 // the class's label (the name rule of the UI check), failing closed.
 function defaultIdentityProblem(route, rows) {
   const rule = workerRule(route.kind);
-  if (rows) return resolveCatalogLabel(rows, rule.label).id === route.model ? null : `${route.model} is not the ${route.kind} class's ${rule.label} model`;
+  if (rows) return classModelId(route.kind, resolveCatalogLabel(rows, rule.label).id) === classModelId(route.kind, route.model) ? null : `${route.model} is not the ${route.kind} class's ${rule.label} model`;
   return namesLabel(route.model, rule.label) ? null : `${route.model} does not name the ${route.kind} class's ${rule.label} model`;
 }
 
@@ -129,7 +129,12 @@ function classReason(kind, rule, pace, effort) {
 // The one-line reason recorded with a Worker route and shown in its brief.
 export const routeReason = route => route.reason ?? 'owner-named, never adjusted';
 
-// Workers run on Pi. A native Worker needs this recorded owner decision for the task.
+// Browser classes have standing native Codex authorization; other native Workers need a task owner decision.
+export const BROWSER_NATIVE_AUTHORIZATION = 'owner 2026-10-14';
+const browserClass = kind => ['browser', 'browser-hard'].includes(canonicalWorkerClass(kind));
+const nativeModelId = id => id.slice(id.indexOf('/') + 1);
+const classModelId = (kind, id) => browserClass(kind) ? nativeModelId(id) : id;
+const routeClass = (route, taskClass) => taskClass ?? (route?.source === 'task-default' ? route.kind : null);
 export const NATIVE_WORKER_AUTHORIZATION = 'owner-explicit';
 
 function requireNativeAuthorization(provider, nativeAuthorization, reason) {
@@ -210,13 +215,14 @@ function validateRebuild(route, taskClass, rows) {
     if (unnamed) throw Error(`recorded ${taskClass} Worker route cannot rebuild: ${unnamed}`);
     return valid;
   }
-  const candidates = rows.filter(row => namesRow(row, route.model));
+  const candidates = rows.filter(row => namesRow(row, route.model) ||
+    (browserClass(taskClass) && nativeModelId(row.id) === nativeModelId(route.model)));
   if (!candidates.some(row => row.thinkingOptions?.some(option => option.id === route.effort))) {
     throw Error(`recorded ${route.kind} Worker route is no longer served: the Pi catalog ` +
       `${candidates.length ? `serves ${route.model} but not at ${route.effort} thinking` : `has no ${route.model}`}; ` +
       'this lane cannot relaunch on its recorded route, so resolve a route for a new lane');
   }
-  if (resolveCatalogLabel(rows, rule.label).id !== route.model) {
+  if (classModelId(taskClass, resolveCatalogLabel(rows, rule.label).id) !== classModelId(taskClass, route.model)) {
     throw Error(`recorded ${route.kind} Worker route cannot rebuild: ${route.model} is not the ${route.kind} class's ${rule.label} model`);
   }
   return valid;
@@ -278,8 +284,9 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog,
   if (!row.thinkingOptions?.some(option => option.id === effort)) {
     throw Error(`${rule.label} does not serve required thinking ${effort}; the Worker lane stops`);
   }
-  return Object.freeze({ role: 'worker', source: 'task-default', kind: taskKind, model: row.id,
-    effort, fastMode: rule.fastMode, pace, reason: classReason(taskKind, rule, pace, effort) });
+  return Object.freeze({ role: 'worker', source: 'task-default', kind: taskKind, model: classModelId(taskKind, row.id),
+    effort, fastMode: rule.fastMode, pace, reason: classReason(taskKind, rule, pace, effort) +
+      (browserClass(taskKind) ? `, native Codex authorized by ${BROWSER_NATIVE_AUTHORIZATION}` : '') });
 }
 
 function validateFixedRoute(role, route) {
@@ -368,15 +375,22 @@ export function selectTopology({ scale, independentQuestions = 0, findingsConver
 // surface, or a model/effort Pi does not serve) needs the owner's authorization. The claude surface takes only a model
 // its catalog (the target's catalog rows) serves at the route's thinking, and has no Fast setting.
 export const NATIVE_WORKER_SURFACES = Object.freeze(['codex', 'claude']);
-export function mapRouteToPi(route, catalog, { fallbackProvider = 'codex', surface = 'pi', nativeAuthorization = null } = {}) {
+export function mapRouteToPi(route, catalog, { fallbackProvider = 'codex', surface = 'pi', nativeAuthorization = null, taskClass = null } = {}) {
   if (!route || !isValidModelId(route.model)) throw Error('selected OPC route required');
   if (!Array.isArray(catalog)) throw Error('target Pi catalog required');
   const originalProvider = route.provider?.split('/')[0] ?? fallbackProvider;
   const original = { ...route, provider: route.provider ?? `${originalProvider}/${route.model}` };
   if (surface !== 'pi' && !NATIVE_WORKER_SURFACES.includes(surface)) throw Error('surface must be pi, codex, or claude');
   if (route.source === 'task-default' && (!workerRule(route.kind) ||
-      resolveCatalogLabel(catalog, workerRule(route.kind).label).id !== route.model)) {
+      classModelId(route.kind, resolveCatalogLabel(catalog, workerRule(route.kind).label).id) !== classModelId(route.kind, route.model))) {
     throw Error('task-default Worker route must match its Pi catalog label');
+  }
+  if (browserClass(routeClass(route, taskClass)) && surface !== 'claude') {
+    const id = nativeModelId(route.model);
+    const served = catalog.filter(row => nativeModelId(row.id) === id &&
+      row.thinkingOptions?.some(option => option.id === route.effort));
+    if (served.length !== 1) throw Error(`native Codex catalog must serve exactly one ${id} at ${route.effort} thinking`);
+    return { ...route, model: id, provider: `codex/${id}` };
   }
   if (surface === 'codex') {
     requireNativeAuthorization(original.provider, nativeAuthorization, 'native surface requested');
@@ -406,7 +420,7 @@ export function mapRouteToPi(route, catalog, { fallbackProvider = 'codex', surfa
 export function resolveAgentSurface(role, options = {}, catalog, surface = 'pi') {
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   const route = resolveAgentRoute(role, role === 'worker' ? { ...options, catalog: rows } : options);
-  return role === 'worker' ? mapRouteToPi(route, rows, { surface, nativeAuthorization: options.nativeAuthorization })
+  return role === 'worker' ? mapRouteToPi(route, rows, { surface, nativeAuthorization: options.nativeAuthorization, taskClass: options.taskKind })
     : materializeFixedRoute(role, catalog, surface);
 }
 
@@ -419,16 +433,18 @@ const isClaudeModel = model => /(?:^|\/)claude-/i.test(model ?? '') || CLAUDE_LA
 export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'worker', route, catalog, surface = 'pi',
   nativeAuthorization = null, task = null, lane = null, taskClass = null } = {}) {
   const bound = role === 'worker' && task != null;
-  if (provider && !String(provider).startsWith('pi/') && role === 'worker') {
+  const standingBrowser = role === 'worker' && browserClass(routeClass(route, taskClass)) && route != null;
+  if (provider && !String(provider).startsWith('pi/') && role === 'worker' &&
+      !(standingBrowser && String(provider).startsWith('codex/'))) {
     requireNativeAuthorization(String(provider), nativeAuthorization, `explicit provider ${provider}`);
   }
-  if (provider && !bound) return { provider, agentSettings };
+  if (provider && !bound && !standingBrowser) return { provider, agentSettings };
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   const selected = role === 'worker' ? validateLaunchedWorkerRoute(route, { task, lane, taskClass, catalog: rows })
     : validateRoleRoute(role, route);
   const native = String(provider ?? '').split('/')[0];
   const target = surface === 'pi' && NATIVE_WORKER_SURFACES.includes(native) ? native : surface;
-  const mapped = role === 'worker' ? mapRouteToPi(selected, rows, { surface: target, nativeAuthorization })
+  const mapped = role === 'worker' ? mapRouteToPi(selected, rows, { surface: target, nativeAuthorization, taskClass })
     : materializeFixedRoute(role, catalog, surface);
   if (role === 'worker' && mapped.provider.startsWith('codex/') && isClaudeModel(mapped.model)) {
     throw Error(`${mapped.model} is a Claude model and never runs as a native Codex Worker; an authorized native Claude ` +

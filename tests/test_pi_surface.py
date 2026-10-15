@@ -328,7 +328,7 @@ const unread=pool=>({pool,step:0,weekly:null,stale:'no quota reading supplied',g
 assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','review','smoke','ui','watcher']);
 for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','xhigh',true],['review','Sol','xhigh',true],['smoke','Luna','low',true],['browser','Sol','medium',true],['browser-hard','Astra','medium',true],['ui','Fable','high',false],['watcher','Luna','xhigh',true]]){
  const route=r.selectWorkerRoute({taskKind:kind,catalog});
- assert.equal(route.model,r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
+ assert.equal(route.model,['browser','browser-hard'].includes(kind)?r.resolveCatalogLabel(catalog,label).id.slice(6):r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
 }
 for(const [alias,kind] of Object.entries(r.WORKER_CLASS_ALIASES)){
  const route=r.selectWorkerRoute({taskKind:alias,catalog});
@@ -352,9 +352,9 @@ assert.equal(r.resolveAgentSurface('worker',{taskKind:'code'},catalog).provider,
 assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/claude-opus-5-5; effort=medium; Fast=off/);
 // Browser default: Sol at medium, Fast on.
 const browser=r.selectWorkerRoute({taskKind:'browser',catalog:{pi:catalog}});
-assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'fleet/gpt-6.1-sol',effort:'medium',fastMode:true,pace:unread('codex'),reason:'browser default medium, no adjustment, no quota reading supplied'});
-const browserReq=build({route:browser});
-assert.equal(browserReq.request.provider,'pi/fleet/gpt-6.1-sol');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'medium'});
+assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'gpt-6.1-sol',effort:'medium',fastMode:true,pace:unread('codex'),reason:'browser default medium, no adjustment, no quota reading supplied, native Codex authorized by owner 2026-10-14'});
+const browserReq=build({route:browser,capabilities:nativeCaps});
+assert.equal(browserReq.request.provider,'codex/gpt-6.1-sol');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'medium',features:{fast_mode:true},modeId:'full-access'});
 assert.equal(r.resolveAgentSurface('worker',{taskKind:'browser'},catalog).effort,'medium');
 // An owner-named route wins; its Fast is the Pi Fast toggle label, never native fast_mode.
 const owner={role:'worker',source:'owner-explicit',model:'gpt-6.1-sol',effort:'high',fastMode:true};
