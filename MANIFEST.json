@@ -1,9 +1,15 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
+<<<<<<< HEAD
   "source_commit": "02b95472b55f4f6c14de14cab5d7cde4f1427536",
   "skill_count": 22,
   "file_count": 127,
+=======
+  "source_commit": "227aae9f285f7cd000562cc9b5f7d750842cdf35",
+  "skill_count": 23,
+  "file_count": 132,
+>>>>>>> b95553f (Regenerate final publication manifest)
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",

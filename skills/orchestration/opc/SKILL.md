@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.50"
+  version: "7.51"
 ---
 
 # OPC
