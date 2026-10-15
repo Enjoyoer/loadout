@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ArchiverConfig } from "./config.ts";
 import { checkMerged, type MergeCheckDeps } from "./merge-check.ts";
 import type { AgentView, Decision, FileSystem, WorkspaceView } from "./types.ts";
@@ -6,6 +8,27 @@ export interface EvaluateDeps {
   merge: Omit<MergeCheckDeps, "timeoutMs" | "useGh">;
   fs: FileSystem;
   now: () => number;
+  /** Host-native roots; injectable for isolated verification. */
+  cleanupRoots?: readonly string[];
+}
+
+function isDescendant(root: string, directory: string): boolean {
+  const child = relative(root, directory);
+  return child !== "" && child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
+}
+
+async function isDisposableDirectory(directory: string, deps: EvaluateDeps): Promise<boolean> {
+  if (!isAbsolute(directory)) return false;
+  const roots = deps.cleanupRoots ?? [
+    join(resolve(process.env.PASEO_HOME?.trim() || join(homedir(), ".paseo")), "worktrees"),
+    join(homedir(), ".cache", "fleet-scratch"),
+  ];
+  for (const root of roots) {
+    if (!isDescendant(root, directory)) continue;
+    const [realRoot, realDirectory] = await Promise.all([deps.fs.realpath(root), deps.fs.realpath(directory)]);
+    if (realRoot && realDirectory && isDescendant(realRoot, realDirectory)) return true;
+  }
+  return false;
 }
 
 const ELIGIBLE_AGENT_STATUSES = new Set(["idle", "closed"]);
@@ -35,11 +58,12 @@ export function preGitSkipReason(
   agents: readonly AgentView[],
   config: ArchiverConfig,
   now: number,
+  emptyDisposable = false,
 ): string | null {
   if (workspace.archivingAt) return "already-archiving";
   if (!workspace.workspaceDirectory) return "no-directory";
   if (agents.some(isPmAgent)) return "pm-agent";
-  if (agents.length === 0 && !config.allowAgentlessWorkspaces) return "no-agents";
+  if (!emptyDisposable && agents.length === 0 && !config.allowAgentlessWorkspaces) return "no-agents";
 
   for (const agent of agents) {
     const short = agent.id.slice(0, 8);
@@ -94,15 +118,23 @@ export async function evaluateWorkspace(
     candidate,
   });
 
-  if (workspace.workspaceKind !== "worktree") return decision("skip", `not-worktree(${workspace.workspaceKind})`, observedBranch, null, false);
+  // Keep the existing worktree merge/cleanliness gates: its official archive may
+  // remove the worktree directory. This exception cleans up non-worktree records.
+  const emptyDisposable = workspace.workspaceKind !== "worktree"
+    && Boolean(workspace.workspaceDirectory)
+    && await isDisposableDirectory(workspace.workspaceDirectory!, deps);
+  if (workspace.workspaceKind !== "worktree" && !emptyDisposable) return decision("skip", `not-worktree(${workspace.workspaceKind})`, observedBranch, null, false);
+  if (emptyDisposable && agents.length > 0) return decision("skip", "non-archived-agents");
 
-  const preSkip = preGitSkipReason(workspace, agents, config, deps.now());
+  const preSkip = preGitSkipReason(workspace, agents, config, deps.now(), emptyDisposable);
   if (preSkip) return decision("skip", preSkip);
 
   const directory = workspace.workspaceDirectory!;
   const isDirectory = await deps.fs.isDirectory(directory);
   if (isDirectory === false) return decision("skip", "path-missing(left to Paseo)");
   if (isDirectory === null) return decision("skip", "ambiguous(path not statable)");
+
+  if (emptyDisposable) return decision("archive", "empty-disposable-workspace");
 
   const merge = await checkMerged(directory, {
     ...deps.merge,

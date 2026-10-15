@@ -34,11 +34,24 @@ seen yet. A fetch option was deliberately left out.
 
 ## Skip rules (fail closed)
 
-Every decision is `skip` unless all of these pass. Reasons appear verbatim in the log.
+Non-worktree workspaces also qualify as `empty-disposable-workspace` when their
+absolute cwd is strictly under `<PASEO_HOME>/worktrees` (default `~/.paseo/worktrees`)
+or `~/.cache/fleet-scratch` (`%USERPROFILE%\.cache\fleet-scratch` on Windows), with
+both lexical and real paths contained in the same root. The root itself, missing or
+unresolvable paths, and symlinks escaping the root do not qualify. They must have
+**no non-archived agents**, no running scripts, a non-blocking workspace status, and
+activity older than `graceMinutes`. This rule ignores `allowAgentlessWorkspaces` and
+needs no git or merge check; it archives the workspace record via Paseo, not the
+scratch folder. Other local workspaces, including project checkouts, are never touched.
+Actual `worktree` workspaces retain all existing merge and cleanliness gates.
+
+Every decision is `skip` unless its applicable gates pass. Reasons appear verbatim in the log.
 
 | Reason | Rule |
 |---|---|
-| `not-worktree(kind)` | Only `workspaceKind: "worktree"`. `local_checkout`, `checkout`, `directory` are never touched. |
+| `not-worktree(kind)` | Non-worktree outside the disposable roots (including project checkouts), or containment cannot be established. |
+| `non-archived-agents` | Disposable non-worktree still has any non-archived agent, even idle or closed. |
+| `empty-disposable-workspace` | Archive reason: non-worktree under a disposable root, no non-archived agents, no running scripts, status and grace gates passed. |
 | `already-archiving` | Paseo is already archiving it. |
 | `no-directory` | Workspace has no directory. |
 | `pm-agent` | Any agent labelled `role=pm` (case-insensitive) or titled with a standalone `PM`. |
@@ -114,7 +127,8 @@ worker agent inside a Paseo turn, so the turn end is the trigger.
   stops once the worktree stops being a pending merge, and a new event restarts it.
 - **Periodic sweep**: a slow backstop for merges made outside Paseo (GitHub web UI).
   First full sweep 30 s after load, then every `sweepIntervalMinutes` (default 60).
-- `agent.archived` is observed only to pick up the subprocess `PaseoApi`.
+- **`agent.archived`**: also schedules its workspace for a debounced evaluation, so
+  an empty disposable workspace need not wait for the periodic sweep.
 
 Each finished turn logs one `event` line; each evaluation ends with `sweep-done`
 including `trigger`, `pendingMerge`, and `latencyMs` (first coalesced event to end of
