@@ -113,8 +113,9 @@ export default function contribute(server: PluginServerContext) {
     );
     scheduler.noteEvent(workspaceId);
   });
-  const removeArchived = server.on("agent.archived", (_event, context) => {
+  const removeArchived = server.on("agent.archived", (event, context) => {
     hookApi = context.paseo;
+    if (event.agent.workspaceId && !stopped) scheduler.noteEvent(event.agent.workspaceId);
   });
 
   const target = resolveDaemonTarget();
