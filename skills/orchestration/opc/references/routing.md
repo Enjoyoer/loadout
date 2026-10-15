@@ -25,7 +25,7 @@ Labels resolve through the target Pi catalog; browser classes launch with native
 
 Owner 2026-10-14 grants standing native Codex authorization only to `browser` and `browser-hard`, without per-task `nativeAuthorization`; other classes stay on Pi unless explicitly authorized per task.
 
-Browser Worker briefs must say: "Use the Paseo MCP server's browser_* tools (discover them if deferred), not cua_repl or native Chrome computer control."
+Browser Worker briefs must say: "Use the Paseo MCP server's browser_* tools (discover them if deferred), not cua_repl or native Chrome computer control. Before pressing Enter or clicking Send or Submit in any web form or chat composer, take a fresh browser_snapshot and check the field holds exactly the text you typed; if it holds anything else, clear it, report it, and do not send. Prefer clicking the Send button over pressing Enter." Reason: the Paseo browser tab lives inside the owner's desktop app, and an agent's click can move keyboard focus into the page, so the owner's typing lands in the field.
 
 The PM picks `browser-hard` and records why for complex desktop application workflows or browser work that is fragile, ambiguous or failing repeatedly on `browser`; raise to high for difficult multi-app work or troubleshooting using `node scripts/route.mjs --class browser-hard --owner-model <Astra catalog id> --owner-effort high --owner-fast on` (the resolver has no class-effort override, so this records the owner-authorized high route).
 
