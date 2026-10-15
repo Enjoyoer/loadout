@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "357d456f9f2427b7fcd7d6a708d671d37b7556f3",
+  "source_commit": "5022e2989bbfe7d5d08b7ee2decff845bf0762ca",
   "skill_count": 21,
   "file_count": 125,
   "files": [
@@ -156,8 +156,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5359,
-      "sha256": "95c82b995b3d003f7cf6bc8bebce9a1d4bb55163a04f7a581c6b19f7a2b122fb"
+      "bytes": 5034,
+      "sha256": "d0e5c360801fde3916486fa6f29f4cbe10c8266f2b3bc1c222f696ecb17dba5b"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -184,8 +184,8 @@
       "path": "skills/orchestration/opc/references/imp-execution.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4631,
-      "sha256": "ce972208c0db1e97a9e7659ddb61593561e5703f4cf83b1f5d309292b1044b0c"
+      "bytes": 4321,
+      "sha256": "f55520d7a952536a008244da34e17d43f547292b28f09ef0be867f9708092137"
     },
     {
       "path": "skills/orchestration/opc/references/maintenance.md",
@@ -275,8 +275,8 @@
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 15947,
-      "sha256": "f339fad7861ede456850c998f988f1f32203069a60088de4588c4720693215a0"
+      "bytes": 15354,
+      "sha256": "5c569386de68d3ca28aa5a24a9d078b249c6acfeb790b75ffdc085f2a51bfb04"
     },
     {
       "path": "skills/orchestration/opc/scripts/paseo-worker.mjs",
@@ -310,8 +310,8 @@
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 21171,
-      "sha256": "a51374593c8916a2dce1e1d2e6a576590c73f8795c5bae9501d04699b5ee392f"
+      "bytes": 20540,
+      "sha256": "75e7c266c64b3fa19e7cc0a81e2c31ef8f8b8df042467abf51d643edd25c0f75"
     },
     {
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",

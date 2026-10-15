@@ -6,9 +6,9 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ### Added
 - Fleet `bin/` folder: the skills sync installs private helper scripts into each host's user bin.
-- OPC 7.45: owner approval gate for auth, data deletion or migration, and fleet-wide config changes.
 
 ### Changed
+- OPC 7.49: remove the owner approval gate, task fields, and approval command; delivery no longer requires an owner approval step. Worker routes still reject reviewer-only web models.
 - OPC 7.48: Fable is a one-time UI pass, at most one `ui` lane per task; surrounding code and rework go to a separate `code` task.
 - OPC 7.47: browser and computer-use lanes run on native Codex with Paseo browser tools (same models, Fast on).
 - Example global instructions gain a Secrets section.
@@ -30,7 +30,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - The `claude-cloud` skill is deprecated and no longer published or synced; its source is in `deprecated/claude-cloud`.
 
 ### Fixed
-- OPC 7.48.1: ordinary task updates cannot remove a required owner-approval gate; exact-head approval remains available through the owner approval path. Worker routes reject reviewer-only web models, including catalog aliases and explicit native providers.
+- OPC 7.48.1: Worker routes reject reviewer-only web models, including catalog aliases and explicit native providers.
 - OPN: worker option uses `gpt-6-luna` (was the retired `gpt-5.6-luna`).
 - OPC 7.46: Codex Sites route uses `gpt-6-luna` (was the retired `gpt-5.6-luna`).
 - OPC PR evidence is published from a detached worktree with `git push origin HEAD:pr-evidence`, instead of `git worktree add -B`, which reset a local `pr-evidence` branch and dropped evidence commits never pushed; such commits are carried over first, and a rejected push is rebased and retried before the worktree is removed.

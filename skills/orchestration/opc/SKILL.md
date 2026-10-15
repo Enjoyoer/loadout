@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.48.1"
+  version: "7.49"
 ---
 
 # OPC
@@ -42,8 +42,6 @@ Verify returned agent/workspace identity, path, branch, commits, selected-base a
 Independently check required behavior and final committed deliverable bytes using the execution mechanics. Reuse a receipt only while head, bytes, command, and evidence remain unchanged; otherwise rerun. For initially enabled review only, read [review](references/web-reviewer.md "branch:review") at the published candidate head. Review does not replace PM correctness checks. Platform or browser checks not actually run remain unverified.
 
 ## 7. Merge and cleanup
-
-Before merging/delivering auth/credential, data deletion/migration, or fleet-wide config (proxy, routing, sync, host config) changes, show the owner the exact head commit and short diff summary, get explicit owner OK in chat for that head, and record it in the task; head changes void it. Other changes keep current flow.
 
 PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. Report test, integration, and PR evidence, review verdict/head or unavailability, planner outcome and Worker usage, remaining issues, and cleanup gaps separately.
 
