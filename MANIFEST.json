@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "daba59f6f8d2f324ca233938017a3d93ed5368f5",
-  "skill_count": 21,
-  "file_count": 125,
+  "source_commit": "13bc0b8fc6ae9b65afe8fc1d2c70aa52f49d5b89",
+  "skill_count": 22,
+  "file_count": 127,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -746,6 +746,20 @@
       "skill": "liteparse",
       "bytes": 1307,
       "sha256": "dd251242877431c931408e47d26ff872739975a854a39b51734d7f800310a6ef"
+    },
+    {
+      "path": "skills/research-docs/tco-search/SKILL.md",
+      "category": "research-docs",
+      "skill": "tco-search",
+      "bytes": 4088,
+      "sha256": "b9145801f6ec88d276c51c1003e9504678d234740047a62d9495a000d4d303c7"
+    },
+    {
+      "path": "skills/research-docs/tco-search/agents/openai.yaml",
+      "category": "research-docs",
+      "skill": "tco-search",
+      "bytes": 210,
+      "sha256": "e6b888b15864e98b03640b27a83037aec65caf34f9b544cf5451ae6dcf60c24a"
     },
     {
       "path": "skills/web-browser/browse-x/SKILL.md",
