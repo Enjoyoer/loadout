@@ -260,9 +260,10 @@ class ProviderSyncTest(unittest.TestCase):
         code, out = self.run_sync("--host", "tablet")
         self.assertEqual(code, 0, out)
         self.assertIn("tablet (paseo-relay): write CHANGED", out)
-        # unset HISTFILE, then the payload.
-        self.assertEqual(self.calls().count("terminal send-keys"), 2)
+        # Each command is sent once, whether the payload fits inline or needs bounded chunks.
         calls = self.calls().splitlines()
+        sends = [line for line in calls if "terminal send-keys" in line]
+        self.assertEqual(len(sends), len(set(sends)))
         send = next(i for i, line in enumerate(calls) if "send-keys" in line)
         self.assertEqual(sum("terminal capture" in line for line in calls[:send]), 5)
 
@@ -271,7 +272,8 @@ class ProviderSyncTest(unittest.TestCase):
         code, out = self.run_sync("--host", "tablet")
         self.assertEqual(code, 0, out)
         self.assertIn("tablet (paseo-relay): write CHANGED", out)
-        self.assertEqual(self.calls().count("terminal send-keys"), 3)
+        sends = [line for line in self.calls().splitlines() if "terminal send-keys" in line]
+        self.assertEqual(len(sends), len(set(sends)) + 1)
 
     def test_relay_resend_is_bounded_to_one(self):
         (self.root / "drop-sends").write_text("5")

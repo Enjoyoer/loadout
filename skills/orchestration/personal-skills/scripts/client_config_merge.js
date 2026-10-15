@@ -249,23 +249,28 @@ function mergeToml(text, top, sections) {
 // `after`, the new text, or null when nothing changes.
 function update(p, file, merge) {
   for (let attempt = 1; ; attempt++) {
+    checkConfigPath(fs, path, os, file);
     const bytes = fs.existsSync(file) ? fs.readFileSync(file) : null;
     const r = merge(bytes);
     if (p.dry_run || r.after === null) return { ...r, after: undefined, backup: null };
     const tag = crypto.randomBytes(8).toString("hex");
     const backup = bytes === null ? null : `${file}.bak-loadout-${p.stamp}-${tag.slice(0, 8)}`;
+    checkConfigPath(fs, path, os, file);
     if (backup) {
       fs.writeFileSync(backup, bytes, { mode: 0o600, flag: "wx" });
       if (!fs.readFileSync(backup).equals(bytes)) throw new Error("backup did not verify: " + backup);
     }
+    checkConfigPath(fs, path, os, file);
     const tmp = `${file}.loadout-tmp-${tag}`, fd = fs.openSync(tmp, "wx", 0o600);
     let st;
     try { fs.writeFileSync(fd, r.after); fs.fsyncSync(fd); st = fs.fstatSync(fd); } finally { fs.closeSync(fd); }
     if (testBeforeRename) { const [interpreter, script] = JSON.parse(testBeforeRename); execFileSync(interpreter, [script, file]); }
+    checkConfigPath(fs, path, os, file);
     const now = fs.existsSync(file) ? fs.readFileSync(file) : null;
     const mine = fs.lstatSync(tmp);
     if (mine.ino !== st.ino || mine.dev !== st.dev) throw new Error("temp file is not ours: " + tmp);
     if (now === null ? bytes === null : bytes !== null && now.equals(bytes)) {
+      checkConfigPath(fs, path, os, file);
       fs.renameSync(tmp, file);
       return { ...r, after: undefined, backup: backup && path.basename(backup) };
     }
@@ -298,6 +303,7 @@ try {
   checkNames(p.codex);
 
   const codexFile = path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "config.toml");
+  checkConfigPath(fs, path, os, codexFile);
   if (!fs.existsSync(codexFile)) result.codex = { status: "absent" };
   else result.codex = update(p, codexFile, bytes => {
     if (bytes === null) throw new Error("config.toml disappeared during the merge, so nothing was written");
@@ -314,6 +320,7 @@ try {
   });
 
   const claudeFile = path.join(os.homedir(), ".claude", "settings.json");
+  checkConfigPath(fs, path, os, claudeFile);
   if (!fs.existsSync(path.dirname(claudeFile))) result.claude = { status: "absent" };
   else result.claude = update(p, claudeFile, bytes => {
     const before = bytes && bytes.toString("utf8");
