@@ -1,5 +1,7 @@
 # Loadout
 
+New to agent fleets? [Start here](START-HERE.md) to set up your own team.
+
 [![CI](https://github.com/Enjoyoer/loadout/actions/workflows/ci.yml/badge.svg)](https://github.com/Enjoyoer/loadout/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Enjoyoer/loadout)](https://github.com/Enjoyoer/loadout/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
