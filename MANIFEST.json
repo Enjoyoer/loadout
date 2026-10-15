@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "d99695f0458f280e821f32143c924f53448c0123",
+  "source_commit": "f7bf90ec6ce0c07577ea938d55e964b04e9dcabc",
   "skill_count": 22,
   "file_count": 129,
   "files": [
@@ -185,7 +185,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5357,
-      "sha256": "4931f554d8dba7626436522a54b94b1b5d1d6f9a2169df41bb7adf353d3cc7e1"
+      "sha256": "984c0cdd4c8891ad69d7acc52fc94d6a745df1431b27e25f9075cbe40fa2e0f0"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -247,8 +247,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 9994,
-      "sha256": "780923f71e6b68c56cd819d024fbfe4a7e52d3e34d90ab868a0b72882d7d5880"
+      "bytes": 9865,
+      "sha256": "452a94a5ff2268d18255e596ea766a0a72ede519df16de4f69f136f02ae768a9"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -478,15 +478,15 @@
       "path": "skills/orchestration/personal-skills/scripts/client_config_merge.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 19104,
-      "sha256": "22a0c8b5ff194e66f95287f4ce06c5fb9279ba89d80389daf7854807662f65b6"
+      "bytes": 19400,
+      "sha256": "c75c829cda3639a469f55b24a1e7ded6bfcdb053ac6443ab358b5e401b9412e0"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/fleet.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 24160,
-      "sha256": "ef6fe340ea4d4ef396e9d91f8bdb10219ab1a7285d077f21cc012f90657c1b07"
+      "bytes": 24829,
+      "sha256": "45e2c3d4571299c0e61afcc723934a2d6e4f6ac9929ddc6dfc7cb33e02589f1c"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/fleet_push_remote.js",
@@ -506,8 +506,8 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 8246,
-      "sha256": "112eb0cee7120ef777f232a639e57413f380ae3292553b6f6af63137230710bb"
+      "bytes": 9207,
+      "sha256": "3de986f5922dd3a2eb6b0c2c1adc866678afde488e6e6a910c1e81b4e0141a3b"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_reload_remote.js",
@@ -625,8 +625,8 @@
       "path": "skills/orchestration/personal-skills/scripts/remote_common.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 5931,
-      "sha256": "722e093b8c1c3cc347e7c9e656d544592a9e43edf4daca105b3303082e3fc320"
+      "bytes": 6520,
+      "sha256": "520dd9c57144290db7b6faf2a231e00599bb15205334331be146307ff0231b34"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/skills_sync.py",
@@ -1365,8 +1365,8 @@
     {
       "path": "plugins/pi-fast-toggle/server/routing.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 5746,
-      "sha256": "8eefa110624846e28258d66a3e83d21a4837abac4cdef3e97464c421728d70b0"
+      "bytes": 5082,
+      "sha256": "d4d873d8ce8a51a7617e6e9ed980deee47caeae98b798039e2622c59967b4be1"
     },
     {
       "path": "plugins/pi-fast-toggle/server/vendor/daemon-target.ts",
