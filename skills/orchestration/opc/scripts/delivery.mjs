@@ -145,18 +145,9 @@ function exact(task,state,pr,head,repo) {
     throw Error('PR repository, branch, base, or head mismatch');
   }
 }
-export function approveDelivery(taskPath,head) {
-  return updateTask(taskPath,t=>{
-    idle(t);
-    if(!t.human_approval?.required)throw Error('human approval not required');
-    if(!/^[0-9a-f]{40}$/.test(head??'') || sourceIdentity(t).head!==head)throw Error('approval must name the current exact head');
-    t.human_approval.head=head;
-  }).human_approval;
-}
 export function verifyDelivery(taskPath,{pr,query=github}={}) {
   recoverTests(taskPath);
   const task=readTask(taskPath),source=sourceIdentity(task), blockers=[];
-  if(task.human_approval?.required && task.human_approval.head!==source.head)blockers.push('owner approval required for this head');
   if(task.status==='cancelled')blockers.push('task cancelled');
   if(task.tests?.status!=='passed'||!same(task.tests,source))blockers.push('passing tests required on current bytes and head');
   // Paseo, not the task record, tracks a managed Worker's lifecycle, so this is the label managed Workers always got.
@@ -225,11 +216,10 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).hr
     const [command,path,...args]=process.argv.slice(2);
     let result;
     if(command==='test')result=await runTests(path,{argv:args});
-    else if(command==='approve')result=approveDelivery(path,args[0]);
     else if(command==='verify')result=verifyDelivery(path,{pr:Number(args[0])});
     else if(command==='merge')result=mergeDelivery(path,{pr:Number(args[0])});
     else if(command==='reconcile'){const tests=recoverTests(path);result=tests&&!readTask(path).merge?tests:reconcileMerge(path);}
-    else throw Error('usage: delivery.mjs test <task.json> <executable> [args...] | approve <task.json> <head> | verify <task.json> <PR> | merge <task.json> <PR> | reconcile <task.json> (interrupted tests, then merge)');
+    else throw Error('usage: delivery.mjs test <task.json> <executable> [args...] | verify <task.json> <PR> | merge <task.json> <PR> | reconcile <task.json> (interrupted tests, then merge)');
     console.log(JSON.stringify(result));
     if(['failed','blocked','pending'].includes(result.status))process.exitCode=1;
   } catch(error){console.error(error.message);process.exitCode=1;}

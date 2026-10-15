@@ -2,7 +2,7 @@
 
 ## Task binding
 
-Call `createTask({workingDirectory, runDirectory, owner, baseRef, delivery:'merge', browserReview, ui, humanApproval})` from `scripts/task-state.mjs`; reuse `taskPath`. Set `humanApproval` to the risk class for risky changes; otherwise omit it. For existing tasks, use `updateTask` to set `human_approval: {required:true, reason:'<class>', head:null}`. After owner OK, record it with `node skills/orchestration/opc/scripts/delivery.mjs approve <taskPath> <head>`. Use a named publication base such as `origin/main`. Keep runtime files outside the repository. Use the normal CLI home and host-native access without extra sandbox, translation, or gateway layers. Keep credentials out of prompts, logs, and commits; authentication stays user-controlled. Preserve work on cloud-hydration failures.
+Call `createTask({workingDirectory, runDirectory, owner, baseRef, delivery:'merge', browserReview, ui})` from `scripts/task-state.mjs`; reuse `taskPath`. Use a named publication base such as `origin/main`. Keep runtime files outside the repository. Use the normal CLI home and host-native access without extra sandbox, translation, or gateway layers. Keep credentials out of prompts, logs, and commits; authentication stays user-controlled. Preserve work on cloud-hydration failures.
 
 ## Agent launch
 
