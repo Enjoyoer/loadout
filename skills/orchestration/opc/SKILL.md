@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.50"
+  version: "7.51"
 ---
 
 # OPC
@@ -14,6 +14,8 @@ The PM owns scope, topology, integration, verification, and publication. OPC imp
 Follow this state machine, reading linked references only when their branch applies. Scripts enforce; task records and receipts are bookkeeping, not security boundaries.
 
 ## 1. Scope
+
+At first PM ownership, if the project has no custom icon and is not a scratch folder, use `$project-icon` once.
 
 Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks: observable behaviors from the owner's intent, preferably end-to-end or live. Consult root `STATUS.html` and `LESSONS.md` when resuming. Escalate scope or authority changes to the owner.
 

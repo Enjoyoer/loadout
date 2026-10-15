@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Icon"
+  short_description: "Add a project's first die-cut sticker icon"
+  default_prompt: "Use $project-icon to detect a missing Paseo project icon, skip scratch projects and existing custom icons, render and inspect a distinctive sticker, then upload and verify it."
