@@ -349,6 +349,9 @@ export function updateTask(taskPath, mutator) {
     const result = mutator(task);
     if (result?.then) throw Error('task mutation must be synchronous');
     if (identity(old) !== identity(task)) throw Error('immutable task identity changed');
+    if (old.human_approval?.required && task.human_approval?.required !== true) {
+      throw Error('required owner approval cannot be removed by a task update');
+    }
     for (const [lane, entry] of Object.entries(old.routes ?? {})) {
       if (JSON.stringify(entry) !== JSON.stringify(task.routes?.[lane])) throw Error(`immutable Worker route for lane ${lane} changed`);
     }

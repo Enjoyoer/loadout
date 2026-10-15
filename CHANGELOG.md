@@ -30,6 +30,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - The `claude-cloud` skill is deprecated and no longer published or synced; its source is in `deprecated/claude-cloud`.
 
 ### Fixed
+- OPC 7.48.1: ordinary task updates cannot remove a required owner-approval gate; exact-head approval remains available through the owner approval path. Worker routes reject reviewer-only web models, including catalog aliases and explicit native providers.
 - OPN: worker option uses `gpt-6-luna` (was the retired `gpt-5.6-luna`).
 - OPC 7.46: Codex Sites route uses `gpt-6-luna` (was the retired `gpt-5.6-luna`).
 - OPC PR evidence is published from a detached worktree with `git push origin HEAD:pr-evidence`, instead of `git worktree add -B`, which reset a local `pr-evidence` branch and dropped evidence commits never pushed; such commits are carried over first, and a rejected push is rebased and retried before the worktree is removed.
