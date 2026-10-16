@@ -25,6 +25,35 @@ Only the `five_hour` and `seven_day` windows count. An account is out while one 
 
 One pq reading is shared for `quotaCacheSeconds` (60), so many failing agents start one pq process. `quotaAware: false` turns the feature off.
 
+## PM quota fallback
+
+Off by default (`pmFallback: false`). When on, a live Pi agent labelled `role=pm` on a Claude model moves to an exact catalog profile while its Claude pool is out, and returns to its original profile once Claude is usable again. Workers, watchers and any agent without `role=pm` never change model. A PM labelled `nofallback=true` (`pmFallbackOptOutLabel`) stays pinned.
+
+- Swap: after a PM turn ends on a usage limit (or a sweep finds its usage record on a quota hold), pq must positively show every Claude account out and must not show the fallback pool out. Unknown, stale or missing quota never swaps. The plugin first stores the exact original model, thinking option and `opc.service-tier` label, then sends one `agent.config.apply` with `pmFallbackModel` (`fleet/gpt-6.1-sol`) and `pmFallbackThinking` (`medium`) together, sets `opc.service-tier=fast` (`pmFallbackServiceTier`), and reads the agent back. The fallback model and thinking option must be listed verbatim in the Pi catalog. The PM's resume record follows it to the new profile, so the existing resume engine continues the same session on Sol.
+- Return: the obligation lives in `<PASEO_HOME>/plugin-state/usage-limit-auto-resume/pm-return.json`, apart from resume records. Superseding, settling or pruning a record, plugin reload, daemon restart and idle periods do not remove it. The return is due once a fresh pq reading shows a Claude account with quota left in both the five-hour and the weekly window; a weekly-out account whose five-hour window reset does not count. Unknown quota keeps the current decision.
+- Applying: settings are applied whenever a swap or due return is outstanding, on `agent.turn_ended` and on the poll sweep as a backstop. A PM in the middle of a turn is changed too: Paseo applies the settings to its next turn and never interrupts the current one (verified on a scratch 0.11.1 daemon with the real Pi CLI). A mismatch on read-back or a rejected update keeps the obligation and is tried again at the next turn end or sweep; it never settles on its own. While a swap or due return is unverified, the resume engine sends nothing for that PM.
+- Only an explicit owner cancel ends a return early. A manual model change, a lost `role=pm` label or turning `pmFallback` off does not. An archived PM is never changed or resumed; its obligation waits.
+- Sol also out: no swap, ordinary quota hold. On Sol and Sol runs out: ordinary hold on Sol until Claude returns. No ping-pong.
+- Logs: `pm-swap-start`, `pm-swap-apply`, `pm-swap-verified`, `pm-restore-due`, `pm-restore-apply`, `pm-restore-verified`, `pm-*-failed`, `pm-*-mismatch`, `pm-fallback-held`, `pm-enrolled`, `pm-return-cancelled`.
+
+Limits. Paseo has no idle-only settings barrier, so a message that lands between the return becoming due and the settings write can run one more turn on Sol; the next turn runs on the original profile. Paseo labels cannot be deleted, so an originally absent `opc.service-tier` is restored as an empty value, which fleet routing treats as absent. The settings writes use the daemon client that `@getpaseo/client` wraps (`applyAgentConfig`, `updateAgent`), because the public agent handle has no setter for them.
+
+### Enroll a PM that already fell back, or cancel a return
+
+Both go through the host settings file, which the plugin re-reads every sweep. Back it up first and keep its other values. Copy the original model ID verbatim from `paseo provider models pi --thinking`; `serviceTier` is the PM's original `opc.service-tier` label, or `null` if it had none.
+
+```bash
+f="${PASEO_HOME:-$HOME/.paseo}/plugin-settings/usage-limit-auto-resume/auto-resume-config.json"
+cp "$f" "$f.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+jq --arg id "<agent-id>" --arg model "<original-model-id>" --arg thinking "<original-thinking-id>" \
+  '.values.pmFallbackEnroll += [{agentId: $id, model: $model, thinkingOptionId: $thinking, serviceTier: null}]' \
+  "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+```
+
+The entry is applied once (`pm-enrolled`, or `pm-enroll-rejected` with a reason): the agent must be a live Pi `role=pm` agent not already on that profile, and the original must be a Claude model in the catalog. The PM keeps its current profile until the return is due. To cancel one return, add its `obligationId` (from `pm-swap-start`, `pm-enrolled` or `pm-return.json`) to `pmFallbackCancel` the same way: `jq --arg id "<obligation-id>" '.values.pmFallbackCancel += [$id]'`.
+
+Follow-up seam (not in this plugin): a worker never swaps. A read-only planning companion for a parked worker would use the same quota-release signal (`restoreDue` in `server/fallback.ts`) and the worker's parked resume record, without changing the worker's model.
+
 ## Pattern evidence
 
 - Claude has emitted `API Error: Server is temporarily limiting requests (not your usage limit) · This request would exceed your account's rate limit. Please try again later.` as a synthetic assistant message with `apiErrorStatus: 429`.
