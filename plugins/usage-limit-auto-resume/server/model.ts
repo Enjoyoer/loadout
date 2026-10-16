@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
+import { quotaHold, usageResumeAt, type PoolQuota, type QuotaHold, type QuotaSettings } from "./quota.ts";
 
 export type ResumeState = "detected" | "parked" | "resuming" | "verifying" | "done" | "exhausted" | "opted-out" | "superseded" | "uncertain";
 
@@ -54,6 +55,8 @@ export type ResumeRecord = {
   createdAt: string;
   updatedAt: string;
   terminalReason: string | null;
+  // Set while the whole pq pool is out: no send before `until`, re-checked against pq on every due sweep.
+  quotaHold?: QuotaHold | null;
 };
 
 export type ResumeConfig = {
@@ -255,6 +258,27 @@ export function buildRecord(eventAgent: AgentSnapshot, failureMessage: string, c
     updatedAt: detectedAt,
     terminalReason: null,
   };
+}
+
+/**
+ * A new usage record's schedule from the pool's quota: about a buffer after the earliest real reset instead of the
+ * flat delay (only when that is sooner, while another account still has quota), and a visible hold when the whole
+ * pool is out. An unknown quota, or a pool pq shows no out account in,
+ * keeps the record as built.
+ */
+export function scheduleUsage(record: ResumeRecord, quota: PoolQuota, settings: QuotaSettings & { messageBufferSeconds: number }, now = Date.now()): ResumeRecord {
+  const reset = usageResumeAt(quota, record.resetAt, settings.messageBufferSeconds, settings, now);
+  if (reset === null) return record;
+  // While some account still has quota, a reset can bring the resume earlier but never later than the flat delay.
+  const at = quota.status === "known" && !quota.exhausted ? Math.min(reset, Date.parse(record.notBefore)) : reset;
+  const hold = quotaHold(quota, settings, now);
+  return { ...record, notBefore: new Date(at).toISOString(), ...(hold ? { quotaHold: hold } : {}) };
+}
+
+/** The pre-send quota decision: hold while the whole pool is out, otherwise send as before. */
+export function quotaDecision(record: ResumeRecord, quota: PoolQuota, settings: QuotaSettings, now = Date.now()): { hold: QuotaHold | null; changed: boolean } {
+  const hold = quotaHold(quota, settings, now);
+  return { hold, changed: (hold?.reason ?? null) !== (record.quotaHold?.reason ?? null) };
 }
 
 export function buildTransientRecord(agent: AgentSnapshot, timeline: readonly AgentTimelineItem[], config: ResumeConfig, now = Date.now(), sourceTurnId?: string | null): ResumeRecord | null {

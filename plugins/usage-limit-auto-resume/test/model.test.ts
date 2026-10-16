@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
 import { MAX_KEPT_ATTEMPTS, afterTransientFailure, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, isTransientErrorMessage, configFingerprint, continuationPrompt, failureSignature, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, shouldResume, transientDelaySeconds, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
+import { quotaDecision, scheduleUsage } from "../server/model.ts";
+import { agentPool, poolQuota, QuotaReader, runPq, type PqResult } from "../server/quota.ts";
 
 const NOW = Date.parse("2026-09-25T12:00:00.000Z");
 const config: ResumeConfig = {
@@ -326,4 +330,130 @@ describe("Pi stock daemon session identity", () => {
       assert.deepEqual(shouldResume(usage,pi,config,Date.parse(usage.notBefore)),{ok:true});
     });
   }
+});
+
+// Fixture pq documents (schemaVersion 1) shaped like Paceline's output; accounts are anonymous.
+const SEC = (ms: number) => Math.floor(ms / 1000);
+const H = 3600_000;
+type Win = { id: string; leftPct: number; resetInMs: number | null; fresh?: boolean; state?: string };
+const win = ({ id, leftPct, resetInMs, fresh = true, state = "live" }: Win) => ({
+  id, name: id, state, fresh, usedPct: 100 - leftPct, leftPct, resetAt: resetInMs === null ? null : SEC(NOW + resetInMs), resetInSeconds: resetInMs === null ? null : SEC(resetInMs),
+});
+const account = (provider: string, windows: Win[], fresh = true) => ({ provider, plan: "Max", label: "fixture", state: fresh ? "live" : "stale", fresh, windows: windows.map(win) });
+const pq = (accounts: unknown[], extra: Record<string, unknown> = {}) => ({ schemaVersion: 1, snapshotStale: false, pools: [], accounts, ...extra });
+const quotaSettings = { resetBufferSeconds: 60, maxDelaySeconds: 604800 };
+const usageSettings = { ...quotaSettings, messageBufferSeconds: 30 };
+
+describe("quota-aware timing", () => {
+  it("maps an agent to the pool OPC reads for its provider and model", () => {
+    assert.equal(agentPool("claude", "claude-opus-5-5[1m]"), "claude");
+    assert.equal(agentPool("pi", "fleet/claude-fable-5-1"), "claude");
+    assert.equal(agentPool("codex", "gpt-6.1-sol"), "codex");
+    assert.equal(agentPool("pi", "fleet/gpt-6-luna"), "codex");
+    assert.equal(agentPool("pi", "fleet/chatgpt-web/pro"), null);
+    assert.equal(agentPool("pi", "local/qwen3.8-flash"), null);
+  });
+
+  it("schedules a usage resume a minute after the pool's earliest real reset instead of five hours", () => {
+    const usage = record();
+    // One account out on its 5h window (frees in 2h), one out on 5h and weekly (frees only at the weekly reset).
+    const doc = pq([
+      account("claude", [{ id: "five_hour", leftPct: 0, resetInMs: 2 * H }, { id: "seven_day", leftPct: 40, resetInMs: 90 * H }]),
+      account("claude", [{ id: "five_hour", leftPct: 0, resetInMs: 1 * H }, { id: "seven_day", leftPct: 0, resetInMs: 30 * H }]),
+      account("codex", [{ id: "seven_day", leftPct: 0, resetInMs: 0.5 * H }]),
+    ]);
+    const next = scheduleUsage(usage, poolQuota(doc, "claude", NOW), usageSettings, NOW);
+    assert.equal(next.notBefore, new Date(SEC(NOW + 2 * H) * 1000 + 60_000).toISOString());
+    assert.equal(next.quotaHold?.reason.startsWith("quota-blocked pool=claude window=five_hour"), true);
+    // The other pool's earlier reset never applies.
+    assert.notEqual(next.notBefore, scheduleUsage(usage, poolQuota(doc, "codex", NOW), usageSettings, NOW).notBefore);
+    // With another account still holding quota, the resume still waits for the reset that frees the out account.
+    const partly = pq([account("claude", [{ id: "five_hour", leftPct: 0, resetInMs: 3 * H }]), account("claude", [{ id: "five_hour", leftPct: 50, resetInMs: 4 * H }, { id: "seven_day", leftPct: 50, resetInMs: 50 * H }])]);
+    const scheduled = scheduleUsage(usage, poolQuota(partly, "claude", NOW), usageSettings, NOW);
+    assert.equal(scheduled.notBefore, new Date(SEC(NOW + 3 * H) * 1000 + 60_000).toISOString());
+    assert.equal(scheduled.quotaHold, undefined);
+    // But an out account that frees only at its weekly reset never pushes the resume past the flat delay while another has quota.
+    const weeklyOne = pq([account("claude", [{ id: "seven_day", leftPct: 0, resetInMs: 20 * H }], false), account("claude", [{ id: "five_hour", leftPct: 50, resetInMs: 4 * H }, { id: "seven_day", leftPct: 50, resetInMs: 50 * H }])]);
+    assert.equal(scheduleUsage(usage, poolQuota(weeklyOne, "claude", NOW), usageSettings, NOW).notBefore, usage.notBefore);
+    // A pool with no out account keeps the flat delay.
+    const fresh = pq([account("claude", [{ id: "five_hour", leftPct: 50, resetInMs: 4 * H }])]);
+    assert.equal(scheduleUsage(usage, poolQuota(fresh, "claude", NOW), usageSettings, NOW).notBefore, usage.notBefore);
+  });
+
+  it("lets transient and other failures retry as today while some account has quota, and holds when the pool is out", () => {
+    const failed = buildFailedTransientRecord(agent({ status: "error" }), timeline(""), { message: "provider temporarily unavailable" }, config, NOW, "turn-f")!;
+    const some = pq([
+      account("claude", [{ id: "five_hour", leftPct: 0, resetInMs: 2 * H }]),
+      account("claude", [{ id: "five_hour", leftPct: 12, resetInMs: 2 * H }, { id: "seven_day", leftPct: 30, resetInMs: 40 * H }]),
+    ]);
+    assert.deepEqual(quotaDecision(failed, poolQuota(some, "claude", NOW), quotaSettings, NOW), { hold: null, changed: false });
+    const out = pq([
+      account("claude", [{ id: "five_hour", leftPct: 0, resetInMs: 2 * H }, { id: "seven_day", leftPct: 30, resetInMs: 40 * H }]),
+      account("claude", [{ id: "five_hour", leftPct: 0, resetInMs: 3 * H }]),
+    ]);
+    const held = quotaDecision(failed, poolQuota(out, "claude", NOW), quotaSettings, NOW);
+    assert.equal(held.hold?.until, new Date(SEC(NOW + 2 * H) * 1000 + 60_000).toISOString());
+    assert.equal(held.changed, true);
+    // The same hold is not written or logged again; once the reset passes the pool reads as unknown and sends resume.
+    assert.equal(quotaDecision({ ...failed, quotaHold: held.hold }, poolQuota(out, "claude", NOW), quotaSettings, NOW).changed, false);
+    const later = NOW + 2 * H + 61_000;
+    assert.equal(quotaDecision(failed, poolQuota(out, "claude", later), quotaSettings, later).hold, null);
+    // An account whose reading is neither out nor fresh with quota keeps the pool from reading as out.
+    const unsure = pq([account("claude", [{ id: "five_hour", leftPct: 0, resetInMs: 2 * H }]), account("claude", [{ id: "five_hour", leftPct: 80, resetInMs: 2 * H }], false)]);
+    assert.equal(quotaDecision(failed, poolQuota(unsure, "claude", NOW), quotaSettings, NOW).hold, null);
+  });
+
+  it("holds until the weekly reset with a visible quota-blocked reason when the pool is out for the week", () => {
+    const transientRecord = transient();
+    // A stale account still reads as out while its blocking weekly window has not reset.
+    const weekly = pq([
+      account("claude", [{ id: "five_hour", leftPct: 100, resetInMs: null, state: "parked" }, { id: "seven_day", leftPct: 0, resetInMs: 20 * H, fresh: false, state: "blocking" }], false),
+      account("claude", [{ id: "five_hour", leftPct: 0, resetInMs: 1 * H }, { id: "seven_day", leftPct: 0, resetInMs: 60 * H }]),
+    ]);
+    const quota = poolQuota(weekly, "claude", NOW);
+    assert.equal(quota.status === "known" && quota.weekly, true);
+    const { hold } = quotaDecision(transientRecord, quota, quotaSettings, NOW);
+    assert.equal(hold?.until, new Date(SEC(NOW + 20 * H) * 1000 + 60_000).toISOString());
+    assert.match(hold!.reason, /^quota-blocked pool=claude weekly accounts=2 until=/);
+    assert.equal(scheduleUsage(record(), quota, usageSettings, NOW).quotaHold?.reason, hold!.reason);
+  });
+
+  it("keeps today's behaviour when pq is missing, errors, or returns an unknown schema", () => {
+    const usage = record();
+    const failed = buildFailedTransientRecord(agent({ status: "error" }), timeline(""), { message: "provider temporarily unavailable" }, config, NOW, "turn-f")!;
+    const outAccounts = [account("claude", [{ id: "five_hour", leftPct: 0, resetInMs: 2 * H }])];
+    for (const doc of [pq(outAccounts, { schemaVersion: 2 }), pq(outAccounts, { snapshotStale: true }), pq(outAccounts, { accounts: "none" }), "not json", null, pq([])]) {
+      const quota = poolQuota(doc, "claude", NOW);
+      assert.equal(quota.status, "unknown");
+      assert.deepEqual(scheduleUsage(usage, quota, usageSettings, NOW), usage);
+      assert.equal(quotaDecision(failed, quota, quotaSettings, NOW).hold, null);
+    }
+    assert.equal(poolQuota(pq(outAccounts), null, NOW).status, "unknown");
+  });
+
+  it("bounds pq: a missing binary or a slow one reads as unavailable", async () => {
+    const missing = await runPq([path.join(tmpdir(), "no-such-pq-fixture"), "--json"], 5000);
+    assert.ok("error" in missing && /pq unavailable/.test(missing.error));
+    const slow = await runPq([process.execPath, "-e", "setTimeout(() => {}, 20000)"], 300);
+    assert.deepEqual(slow, { error: "pq gave no answer in 0.3s" });
+    const ok = await runPq([process.execPath, "-e", "process.stdout.write(JSON.stringify({ schemaVersion: 1 }))"], 10000);
+    assert.deepEqual(ok, { document: { schemaVersion: 1 } });
+  });
+
+  it("caches one pq reading so many failing agents start one pq process", async () => {
+    let clock = NOW, runs = 0;
+    const reader = new QuotaReader(async (): Promise<PqResult> => { runs++; return { document: pq([]) }; }, () => clock);
+    const options = { ttlMs: 60_000, timeoutMs: 5000, bufferMs: 60_000 };
+    await Promise.all(Array.from({ length: 10 }, () => reader.pool("claude", options)));
+    clock += 59_000;
+    await reader.pool("codex", options);
+    assert.equal(runs, 1);
+    clock += 2_000;
+    await reader.pool("claude", options);
+    assert.equal(runs, 2);
+    const failing = new QuotaReader(async (): Promise<PqResult> => { runs++; throw new Error("boom"); }, () => clock);
+    assert.deepEqual(await failing.pool("claude", options), { status: "unknown", pool: "claude", reason: "pq failed (boom)" });
+    assert.equal((await failing.pool("claude", options)).status, "unknown");
+    assert.equal(runs, 3);
+  });
 });
