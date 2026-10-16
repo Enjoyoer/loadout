@@ -4,7 +4,7 @@ Loadout is a set of skills and Paseo plugins for running coding agents as a smal
 
 ## 1. Get the basics working
 
-Install [Paseo](https://paseo.sh) (desktop app and daemon), at least one agent harness (Codex, Claude Code, or Pi), Git, GitHub CLI (`gh`), Python 3, and Node. Authenticate your harness and GitHub CLI yourself. Confirm you can run one agent in Paseo before adding more machines. The bundled OPC worker workflow expects Pi by default; having another harness alone does not configure that workflow.
+Install [Paseo](https://paseo.sh) (desktop app and daemon), at least one agent harness (Codex, Claude Code, or Pi), Git, GitHub CLI (`gh`), Python 3, and Node. Authenticate your harness and GitHub CLI yourself. Confirm you can run one agent in Paseo before adding more machines. The bundled OPC worker workflow expects Pi by default, plus native Codex for its browser lanes; having another harness alone does not configure that workflow.
 
 Clone this public repository using its GitHub **Code** button, open a terminal at the checkout root, and follow [README quickstart and supported versions](README.md#quickstart). Remote file sync needs working SSH aliases and Node on each target host. Start with one machine if that is easier.
 
@@ -51,7 +51,7 @@ Invoke an installed skill by asking the agent to **use its name**. Codex also ac
 | [`wo`](skills/orchestration/wo/SKILL.md) | "Use wo" or "what's open?" Lists owner decisions as short numbered questions with recommendations; replies map back in order. `/wo` works in Claude Code and Codex; Pi uses `/skill:wo`. |
 | [`repo-lessons`](skills/orchestration/repo-lessons/SKILL.md) | "Use repo-lessons to update project memory." Keeps current state in root `STATUS.html` and durable facts in `LESSONS.md`, so the team can resume without replaying a chat. |
 | [`personal-skills`](skills/orchestration/personal-skills/SKILL.md) | "Use personal-skills to sync my fleet." Reviews a dry run, then installs verified packages and opted-in configuration across hosts without overwriting unknown edits. |
-| [`handoff`](skills/orchestration/handoff/SKILL.md) / [`reassign-pm`](skills/orchestration/reassign-pm/SKILL.md) | Ask the outgoing PM to "use handoff" to update and commit its memory pair, then ask the replacement to "use reassign-pm" to take over, retain workers, and archive the previous PM after verification. |
+| [`handoff`](skills/orchestration/handoff/SKILL.md) / [`reassign-pm`](skills/orchestration/reassign-pm/SKILL.md) | Ask the outgoing PM to "use handoff" to update and commit its memory pair; handoff changes no agent. Then ask the replacement, a newer agent, to "use reassign-pm": it claims the PM role first, retains workers, and alone archives the previous PM after verification. Never run reassign-pm in the outgoing PM. |
 
 ## 4. Add plugins deliberately
 
@@ -62,11 +62,11 @@ Plugins are optional, trusted, unsandboxed daemon code. Read each linked README 
 - [`usage-limit-auto-resume`](plugins/usage-limit-auto-resume/README.md): resumes after usage limits and retries eligible provider failures in the same session; sends nothing until armed.
 - [`orphan-project-sweeper`](plugins/orphan-project-sweeper/README.md): removes orphaned Paseo project records whose root is gone and no active workspaces remain; dry-run until armed.
 - [`workspace-folder-title`](plugins/workspace-folder-title/README.md): names new workspaces after their working folder without replacing caller-supplied titles; active when installed.
-- [`pm-native-worker-guard`](plugins/pm-native-worker-guard/README.md): stops and archives PM-created native Codex/Claude workers to enforce a Pi-worker policy; dry-run until armed, and not a security boundary.
+- [`pm-native-worker-guard`](plugins/pm-native-worker-guard/README.md): stops and archives PM-created native Codex/Claude workers to enforce a Pi-worker policy; dry-run until armed, and not a security boundary. Armed, it also archives OPC's native Codex browser Workers, so decide its allowlist before arming it alongside OPC (see the [README note](README.md#paseo-plugins)).
 - [`pi-fast-toggle`](plugins/pi-fast-toggle/README.md): adds a per-agent Fast pill for eligible Pi models, affecting the next turn; hidden until its private runtime settings are configured.
 
 ## 5. Adapt, do not copy
 
-OPC's [routing classes](skills/orchestration/opc/references/routing.md) assume the original owner's models and subscriptions. Edit the classes for your own models before delegating, keeping the implementation in `skills/orchestration/opc/scripts/route.mjs` consistent with the policy. Use exact provider catalog IDs, not guessed names. An unavailable route is a reason to stop, not silently substitute a model.
+OPC's [routing classes](skills/orchestration/opc/references/routing.md) assume the original owner's models and subscriptions. Edit the classes for your own models before delegating: the class and fixed-role tables (`WORKER_DEFAULT_ROUTES`, `FIXED_ROLE_ROUTES`, `OWNER_RULE_ROUTES`) live in `skills/orchestration/opc/scripts/agent-routing.mjs`, and the routing reference must say the same. `scripts/route.mjs` is only the resolver that reads them; check a class with `node skills/orchestration/opc/scripts/route.mjs --class code`, then run `node skills/orchestration/opc/scripts/validate-opc.mjs skills/orchestration/opc`. Use exact provider catalog IDs, not guessed names. An unavailable route is a reason to stop, not silently substitute a model.
 
 Keep secrets in a secrets manager and authenticate locally. Never commit credentials, tokens, pairing offers, real fleet configuration, or private paths. The example fleet's names are illustrations, not machines to connect to. Start small, review what the PM and plugins actually do, and expand only after the loop works for you.

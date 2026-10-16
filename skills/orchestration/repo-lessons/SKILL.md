@@ -1,6 +1,8 @@
 ---
 name: repo-lessons
 description: Maintain an assigned project's or durable workstream's STATUS.html and LESSONS.md, including the comprehensive update that $handoff commits before an owner migrates or is replaced.
+metadata:
+  version: "1.1"
 ---
 
 # Project Memory
@@ -19,6 +21,8 @@ Resolve write ownership from the assigned role and root: a PM owns its project-r
 Each owner writes only its own pair autonomously. A PM reads relevant Worker files one-way when needed and maintains its own summary. Workers maintain their pair without waiting for the PM or reading/mirroring parent PM state every turn. Memory maintenance requires no callbacks, per-turn completion messages or acknowledgments, task/host registration, owner task links, or coordination gates. Explicit task instructions, shared source context, and normal task communication remain valid.
 
 Create missing files only in the explicitly assigned durable root, using an approved template or a minimal pair. Do not seed unrelated one-off projects or create additional memory trackers, handoff files, or archives. An explicitly assigned replacement resumes the existing pair; absence or staleness never authorizes taking over another owner's memory.
+
+Replacing an owner is a one-time writer cutover, the one exception to the no-gates rule above: the pair has one writer at a time. The outgoing owner writes until its `$handoff` revision (committed, or local-only where the root keeps memory local), then stops. The successor writes nothing until it holds the role (for a PM, after its `$reassign-pm` claim), then reads the latest revision and becomes the sole writer. A quota-exhausted outgoing owner needs no live handoff: the successor uses the persisted pair once it is no longer being written.
 
 ## Read once, then maintain
 
