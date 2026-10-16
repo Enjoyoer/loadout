@@ -13,6 +13,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ### Changed
 - `usage-limit-auto-resume` is quota-aware: it reads Paceline's `pq --json` for the agent's pool, resumes a usage limit about a minute after the pool's earliest real reset, and holds transient and failed-turn retries with a visible `quota-blocked` reason while every account is out (weekly included). An unknown quota keeps the old timing. The Windows-flaky transport-loss test now waits on the plugin's own log barriers instead of polling the state file during the handler's rename.
+- Plugins take the Paseo home only from the shared `paseoHome()` in `daemon-target.ts` (now also vendored into pm-native-worker-guard), and CI runs `scripts/check_daemon_env.py`, which fails when plugin code resolves the Paseo home or daemon address itself.
 - OPC 7.51 and OPN 1.1: at first PM ownership, use `project-icon` once only when the project has no custom icon and is not a scratch folder.
 - browse-x requires an explicit API endpoint from environment variables or a user config file; no queries go to an implicit third-party proxy.
 - OPC 7.50: browser Worker briefs verify a form or composer field with a fresh snapshot before sending, and prefer the Send button over Enter.

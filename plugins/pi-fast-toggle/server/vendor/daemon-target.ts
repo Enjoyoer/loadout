@@ -22,7 +22,8 @@ function hostPortToUrl(hostPort: string): string {
   return `ws://${normalized}/ws`;
 }
 
-function paseoHome(env: NodeJS.ProcessEnv): string {
+/** The Paseo home this plugin's daemon runs in: PASEO_HOME, or ~/.paseo. The only place a plugin derives it. */
+export function paseoHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.PASEO_HOME?.trim() || path.join(homedir(), ".paseo");
 }
 

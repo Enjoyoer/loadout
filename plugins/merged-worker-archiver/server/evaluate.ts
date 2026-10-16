@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ArchiverConfig } from "./config.ts";
 import { checkMerged, type MergeCheckDeps } from "./merge-check.ts";
+import { paseoHome } from "./vendor/daemon-target.ts";
 import type { AgentView, Decision, FileSystem, WorkspaceView } from "./types.ts";
 
 export interface EvaluateDeps {
@@ -20,7 +21,7 @@ function isDescendant(root: string, directory: string): boolean {
 async function isDisposableDirectory(directory: string, deps: EvaluateDeps): Promise<boolean> {
   if (!isAbsolute(directory)) return false;
   const roots = deps.cleanupRoots ?? [
-    join(resolve(process.env.PASEO_HOME?.trim() || join(homedir(), ".paseo")), "worktrees"),
+    join(resolve(paseoHome()), "worktrees"),
     join(homedir(), ".cache", "fleet-scratch"),
   ];
   for (const root of roots) {

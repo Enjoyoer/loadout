@@ -90,6 +90,9 @@ jobs:
       - name: Check raw file writes
         if: ${{ !cancelled() }}
         run: python3 scripts/check_io.py
+      - name: Check plugin daemon home and address owner
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_daemon_env.py
 
   plugins:
     # Ubuntu legs keep their original check names, which branch protection may require.

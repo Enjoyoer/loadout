@@ -1,9 +1,9 @@
 import { mkdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import { unsettledTool } from "./model.ts";
 import type { Checkpoint } from "./runtime.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
+import { paseoHome } from "./vendor/daemon-target.ts";
 
 export type StateEntry = {
   key: string;
@@ -49,9 +49,7 @@ function isTurn(value: unknown): value is Checkpoint {
 }
 
 // The same home the daemon endpoint resolver uses, so state lives with the daemon it serves.
-export function paseoHome(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PASEO_HOME?.trim() || path.join(homedir(), ".paseo");
-}
+export { paseoHome };
 
 // Writes from every StateStore for one file share one queue in this process. It lives on
 // globalThis, so a reloaded copy of this module joins it instead of starting its own.
