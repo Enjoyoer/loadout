@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "458408a5a33971ccefc1b2628dabf8e32e19f1be",
+  "source_commit": "8e3faa78bf55217abada9dc1681eadf392050048",
   "skill_count": 23,
   "file_count": 136,
   "files": [
@@ -513,8 +513,8 @@
       "path": "skills/orchestration/personal-skills/scripts/mcp_env.cjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 2506,
-      "sha256": "bc3924c6019d144159218240258a7d1f88db821f14f47662467d61fe2a222ec7"
+      "bytes": 2694,
+      "sha256": "1b0134ecfaad2b64f21c46ae0c389f125cc2753361482db860e5c8aa18bd2ac4"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/mds_bye.py",
