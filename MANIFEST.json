@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "28f3544d92a43388f4e5e11711c09e6c0b2af9eb",
+  "source_commit": "9a5fbf86a79642a4bd353678e0178a03da514582",
   "skill_count": 23,
   "file_count": 137,
   "files": [
@@ -485,8 +485,8 @@
       "path": "skills/orchestration/personal-skills/scripts/client_config_merge.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 21679,
-      "sha256": "11c000fdd11d5892b9e466dbc8ff8d979c2660fccde0e8f5536fee371ca379d2"
+      "bytes": 21773,
+      "sha256": "8fc82901893570c229bfa1be6848897be2687479d2f68880f19e6f9ee71d65fe"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/fleet.py",
@@ -541,8 +541,8 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 13908,
-      "sha256": "a5f1e3fc03114191115c24ced5989029baeddf8e47a11b52fe63a5f52592ba75"
+      "bytes": 14007,
+      "sha256": "d8400030aeba8e63b10d64355301c0e551b1e143ffd979efa917d5d36673f543"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_reload_remote.js",
