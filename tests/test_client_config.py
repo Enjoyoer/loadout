@@ -175,6 +175,47 @@ class ClientConfigTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("cannot read token_file", out)
 
+    def test_fleet_mcp_is_user_scoped_reference_only_and_dry_run_safe(self):
+        hosts = json.loads((self.fleet / 'hosts.json').read_text())
+        hosts['hosts'][0]['sync'].append('providers')
+        (self.fleet / 'hosts.json').write_text(json.dumps(hosts))
+        catalog = json.loads((self.fleet / 'client-config.json').read_text())
+        catalog['mcpServers'] = {'ebay-analyze': {'url': 'http://192.0.2.40:8766/mcp',
+            'bearerTokenEnvVar': 'EBAY_ANALYZE_MCP_TOKEN', 'hosts': {'laptop': True}}}
+        (self.fleet / 'client-config.json').write_text(json.dumps(catalog))
+        home = self.home('laptop')
+        (home / '.claude.json').write_text(json.dumps({'projects': {'kept': {}}, 'mcpServers': {'other': {'url': 'https://example.test/mcp'}}}))
+        root = home / 'pi'
+        (root / 'agent').mkdir(parents=True)
+        (root / 'agent/mcp.json').write_text(json.dumps({'mcpServers': {'paseo': {'command': 'bridge'}, 'gmail': {'exposure': 'hidden'}}}))
+        (home / '.paseo').mkdir()
+        (home / '.paseo/config.json').write_text(json.dumps({'agents': {'providers': {'pi': {'command': ['node', str(root / 'launch.mjs')]}}}}))
+        before = {p: p.read_bytes() for p in (home / '.claude.json', root / 'agent/mcp.json')}
+        code, out = self.run_sync('--host', 'laptop', '--dry-run')
+        self.assertEqual(code, 0, out)
+        self.assertTrue(all(p.read_bytes() == data for p, data in before.items()))
+        code, out = self.run_sync('--host', 'laptop')
+        self.assertEqual(code, 0, out)
+        claude = json.loads((home / '.claude.json').read_text())
+        self.assertEqual(claude['projects'], {'kept': {}})
+        self.assertIn('other', claude['mcpServers'])
+        want = {'type': 'http', 'url': 'http://192.0.2.40:8766/mcp', 'headers': {'Authorization': 'Bearer ${EBAY_ANALYZE_MCP_TOKEN}'}}
+        self.assertEqual(claude['mcpServers']['ebay-analyze'], want)
+        pi = json.loads((root / 'agent/mcp.json').read_text())['mcpServers']
+        self.assertEqual(pi['gmail'], {'exposure': 'hidden'})
+        self.assertIn('paseo', pi)
+        self.assertEqual(pi['ebay-analyze'], {k: v for k, v in {**want, 'enabled': True, 'exposure': 'codemode'}.items() if k != 'type'})
+        self.assertIn('bearer_token_env_var = "EBAY_ANALYZE_MCP_TOKEN"', (home / '.codex/config.toml').read_text())
+        code, out = self.run_sync('--host', 'laptop')
+        self.assertEqual(code, 0, out)
+        self.assertIn('claude_mcp unchanged', out)
+        catalog['mcpServers']['ebay-analyze']['hosts']['laptop'] = False
+        (self.fleet / 'client-config.json').write_text(json.dumps(catalog))
+        code, out = self.run_sync('--host', 'laptop')
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('ebay-analyze', json.loads((home / '.claude.json').read_text())['mcpServers'])
+        self.assertFalse(json.loads((root / 'agent/mcp.json').read_text())['mcpServers']['ebay-analyze']['enabled'])
+
     def test_host_selection(self):
         code, out = self.run_sync("--host", "devbox")
         self.assertEqual(code, 2)
@@ -291,6 +332,9 @@ class VersionAndCatalogTest(unittest.TestCase):
 
     def test_catalog_validation(self):
         self.check(lambda d: d.update(extra=1), "unknown keys ['extra']")
+        self.check(lambda d: d.update(mcpServers={'bad.name': {}}), 'mcpServers name')
+        self.check(lambda d: d.update(mcpServers={'example': {'url': 'https://user:pass@example.test/mcp'}}), 'without credentials')
+        self.check(lambda d: d.update(mcpServers={'example': {'url': 'https://example.test/mcp', 'bearerTokenEnvVar': 'BAD-KEY', 'hosts': {'laptop': True}}}), 'env name')
         self.check(lambda d: d["roles"].update(guest={}), "unknown keys ['guest']")
         self.check(lambda d: d["hosts"].update(devbox={}), "hosts.devbox")
         self.check(lambda d: d["hosts"].update(desktop={"role": "admin"}), "role")

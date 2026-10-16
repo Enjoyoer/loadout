@@ -21,8 +21,8 @@ try {
   const home = p.paseo_home ? p.paseo_home.replace(/^~(?=[/\\]|$)/, os.homedir()) : path.join(os.homedir(), ".paseo");
   const cfgPath = p.config_path || path.join(home, "config.json");
   // Standalone relay payload: mirror remote_common's home/root ancestor and regular-file checks.
-  const check = () => {
-    const root = path.dirname(path.resolve(cfgPath)), rel = path.relative(os.homedir(), root);
+  const check = (target = cfgPath) => {
+    const root = path.dirname(path.resolve(target)), rel = path.relative(os.homedir(), root);
     const base = rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? os.homedir() : root;
     const dirs = path.relative(base, root).split(path.sep).filter(Boolean);
     let cur = base;
@@ -33,8 +33,8 @@ try {
       if (!st.isDirectory() || st.isSymbolicLink()) throw Error("not a real directory: " + cur);
     }
     let st;
-    try { st = fs.lstatSync(cfgPath); } catch (e) { if (e.code === "ENOENT") return; throw e; }
-    if (!st.isFile() || st.isSymbolicLink()) throw Error("not a regular config file: " + cfgPath);
+    try { st = fs.lstatSync(target); } catch (e) { if (e.code === "ENOENT") return; throw e; }
+    if (!st.isFile() || st.isSymbolicLink()) throw Error("not a regular config file: " + target);
   };
   const read = () => { check(); return fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, "utf8") : "{}"; };
   const expand = value => value.replace(/^~(?=[/\\]|$)/, os.homedir())
@@ -50,6 +50,37 @@ try {
     : Array.isArray(value) ? value.map(visit) : value && typeof value === 'object'
       ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, visit(v)])) : value;
   p.providers = visit(p.providers);
+  const servers = p.mcpServers || [];
+  const envRoot = process.platform === 'win32'
+    ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData/Roaming'), 'loadout')
+    : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'loadout');
+  const launcher = path.join(envRoot, 'mcp-env.cjs');
+  const envServers = servers.filter(s => s.envFile);
+  const envPlans = [];
+  if (envServers.length) {
+    envPlans.push([launcher, p.mcp_env_launcher], [path.join(envRoot, 'mcp-env.json'), JSON.stringify(envServers, null, 2) + '\n']);
+    for (const [file] of envPlans) check(file);
+  }
+  result.mcp = [];
+  for (const s of servers) {
+    result.mcp.push(s.name + ' ' + (s.enabled ? s.url + ' bearer env ' + s.bearerTokenEnvVar : 'disabled'));
+    if (!s.enabled) continue;
+    if (s.envFile) {
+      const file = s.envFile.replace(/^~\//, os.homedir() + '/');
+      check(file);
+      const st = fs.existsSync(file) ? fs.statSync(file) : null;
+      const ready = st && st.size > s.bearerTokenEnvVar.length + 1 && (st.mode & 0o777) === 0o600 && st.uid === process.getuid();
+      result.mcp.push(s.bearerTokenEnvVar + ' envFile ' + s.envFile + (ready ? ' present, owner-only' : ' missing or unsafe'));
+      if (!ready && !p.dry_run) throw Error('MCP envFile missing or unsafe for ' + s.bearerTokenEnvVar);
+    } else {
+      // Windows user environment, not this already-running daemon's stale inherited environment.
+      const {execFileSync} = require('child_process');
+      const script = '$v=[Environment]::GetEnvironmentVariable(' + JSON.stringify(s.bearerTokenEnvVar) + ',"User"); if($null -eq $v){0}else{$v.Length}';
+      const length = Number(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim());
+      result.mcp.push(s.bearerTokenEnvVar + ' user env length=' + length + '; restart earlier daemons to inherit');
+      if (!length && !p.dry_run) throw Error('MCP user env missing for ' + s.bearerTokenEnvVar);
+    }
+  }
   // The pinned rows merged into one config revision, with the required env checked on the result. It changes
   // nothing, so it runs before the Pi runtime is touched, and again on any newer revision before publishing.
   const merge = raw => {
@@ -60,6 +91,17 @@ try {
       merged[k] = Object.assign({}, merged[k] || {});
       merged[k].env = Object.assign({}, (prev[k] || {}).env || {}, p.env[k]);
     }
+    if (envServers.length) for (const provider of ['codex', 'claude', 'pi']) {
+      if (!merged[provider] || merged[provider].enabled === false) continue;
+      const rawCommand = merged[provider].command || [provider];
+      const command = typeof rawCommand === 'string' ? [rawCommand] : rawCommand;
+      if (!Array.isArray(command) || !command.length || !command.every(arg => typeof arg === 'string'))
+        throw Error('unsupported MCP provider command for ' + provider);
+      const wasWrapped = command[1] === launcher && command[2] === '--';
+      const original = wasWrapped ? command.slice(3) : command;
+      merged[provider] = { ...merged[provider], command: envServers.some(s => s.enabled)
+        ? [process.execPath, launcher, '--', ...original] : original };
+    }
     const missing = [];
     for (const k of Object.keys(p.required_env))
       for (const key of p.required_env[k]) if (!((merged[k] || {}).env || {})[key]) missing.push(k + "." + key);
@@ -68,6 +110,31 @@ try {
              text: JSON.stringify({ ...cfg, agents: { ...agents, providers: merged } }, null, 2) };
   };
   let m = merge(read());
+  const envChanged = envPlans.filter(([file, data]) => !fs.existsSync(file) || fs.readFileSync(file, 'utf8') !== data);
+  if (!p.dry_run) for (const [file, data] of envChanged) {
+    check(file);
+    fs.mkdirSync(path.dirname(file), {recursive:true,mode:0o700});
+    check(file);
+    const before = fs.existsSync(file) ? fs.readFileSync(file) : null;
+    const tag = p.stamp + '-' + crypto.randomBytes(8).toString('hex');
+    if (before) {
+      const backup = file + '.bak-loadout-' + tag;
+      replaceFile(fs, backup, before, 0o600, undefined, () => {
+        check(backup); if (fs.existsSync(backup)) throw Error('MCP backup already exists');
+      });
+      if (!fs.readFileSync(backup).equals(before)) throw Error('MCP backup failed');
+    }
+    // An uncertain replacement also owes a reload through the existing provider debt record.
+    result.wrote = true;
+    replaceFile(fs, file, data, 0o600, fd => fs.fsyncSync(fd), () => {
+      check(file);
+      const now = fs.existsSync(file) ? fs.readFileSync(file) : null;
+      if (before === null ? now !== null : now === null || !now.equals(before))
+        throw Error('MCP launcher changed during merge, left as is');
+    });
+    if (fs.readFileSync(file, 'utf8') !== data) throw Error('MCP launcher write failed');
+  }
+  if (envChanged.length) result.mcp.push('env loader ' + envChanged.map(([file]) => path.basename(file)).join(', '));
   if (p.pi) {
     const {spawnSync} = require('child_process');
     const runtimeRoot = expand(p.pi.root);
@@ -137,8 +204,14 @@ try {
       fs.rmSync(bak, { force: true });
     }
   }
+  if (servers.length) {
+    const fields = Object.entries(m.merged).flatMap(([provider, row]) => Object.keys(row).filter(key =>
+      JSON.stringify(row[key]) !== JSON.stringify(m.prev[provider]?.[key])).map(key => provider + '.' + key));
+    result.mcp.push('provider fields: ' + (fields.join(', ') || 'unchanged'));
+    if (result.pi) result.mcp.push('Pi runtime files: ' + (result.pi.changed.join(', ') || 'unchanged'));
+  }
   result.preserved = Object.keys(m.prev).filter(k => !(k in p.providers) && !(k in p.env));
-  result.changed = Boolean(result.pi?.changed?.length) || m.rows;
+  result.changed = Boolean(result.pi?.changed?.length) || m.rows || envChanged.length > 0;
   const now = published ? JSON.parse(read()).agents.providers : m.merged;
   result.verified = labelsMatch(now);
   done(result.verified ? 0 : 4);

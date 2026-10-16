@@ -126,6 +126,10 @@ def build(spec, root):
            "command": spec.get("python", sys.executable), "args": [str(root / "mcp_bridge.py")], "exposure": "codemode",
            "env": {"LOADOUT_PI_MCP_URL": "${LOADOUT_PI_MCP_URL}", "LOADOUT_PI_PARENT_MODEL": "${LOADOUT_PI_PARENT_MODEL}", "LOADOUT_PI_PARENT_THINKING": "${LOADOUT_PI_PARENT_THINKING}"}}}}
     if "gmail" in spec: mcp["mcpServers"]["gmail"] = gmail_server(spec["gmail"])
+    for name, server in spec.get('mcpServers', {}).items():
+        if name.replace('-', '_').lower() in {'gmail', 'paseo'}:
+            raise ValueError('fleet MCP server collides with built-in server')
+        mcp['mcpServers'][name] = copy.deepcopy(server)
     return {"runtime.json": spec, "agent/models.json": model, "agent/settings.json": settings, "agent/mcp.json": mcp}
 
 def link_like(path):

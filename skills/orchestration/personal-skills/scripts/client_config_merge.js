@@ -298,9 +298,49 @@ function claudeVersion() {
   } catch (e) { return null; }
 }
 
+function mergeMcp(bytes, servers, pi = false) {
+  const cfg = bytes ? JSON.parse(bytes.toString('utf8')) : {};
+  const changes = [];
+  if (cfg.mcpServers !== undefined && (!cfg.mcpServers || typeof cfg.mcpServers !== 'object' || Array.isArray(cfg.mcpServers)))
+    throw Error('mcpServers must be an object, nothing written there');
+  for (const s of servers) {
+    if (!pi && !s.enabled) {
+      if (cfg.mcpServers && s.name in cfg.mcpServers) { delete cfg.mcpServers[s.name]; changes.push('-' + s.name); }
+      continue;
+    }
+    const want = { type: 'http', url: s.url, headers: { Authorization: 'Bearer ${' + s.bearerTokenEnvVar + '}' } };
+    if (pi) { delete want.type; want.enabled = s.enabled; want.exposure = 'codemode'; }
+    cfg.mcpServers ||= {};
+    if (JSON.stringify(cfg.mcpServers[s.name]) !== JSON.stringify(want)) {
+      cfg.mcpServers[s.name] = want; changes.push(s.name);
+    }
+  }
+  return { status: changes.length ? 'changed' : 'unchanged', changes,
+           after: changes.length ? JSON.stringify(cfg, null, 2) + '\n' : null };
+}
+
 try {
   const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toString());
   checkNames(p.codex);
+  const servers = p.mcpServers || [];
+  const mcpPlans = [];
+  if (servers.length) {
+    const claudeMcp = path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json');
+    if (fs.existsSync(path.join(os.homedir(), '.claude')))
+      mcpPlans.push(['claude_mcp', claudeMcp, false]);
+    else result.claude_mcp = { status: 'absent' };
+    const config = path.join(process.env.PASEO_HOME || path.join(os.homedir(), '.paseo'), 'config.json');
+    checkConfigPath(fs, path, os, config);
+    const providers = fs.existsSync(config) ? JSON.parse(fs.readFileSync(config, 'utf8')).agents?.providers : null;
+    const launch = providers?.pi?.command?.find(arg => path.basename(arg) === 'launch.mjs');
+    if (launch) mcpPlans.push(['pi_mcp', path.join(path.dirname(launch), 'agent/mcp.json'), true]);
+    else result.pi_mcp = { status: 'absent' };
+    // Validate new MCP destinations before any client file changes.
+    for (const [, file, pi] of mcpPlans) {
+      checkConfigPath(fs, path, os, file);
+      mergeMcp(fs.existsSync(file) ? fs.readFileSync(file) : null, servers, pi);
+    }
+  }
 
   const codexFile = path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "config.toml");
   checkConfigPath(fs, path, os, codexFile);
@@ -341,6 +381,9 @@ try {
     return { status: changes.length ? "changed" : "unchanged", changes,
              after: changes.length ? JSON.stringify(cfg, null, 2) + "\n" : null };
   });
+
+  for (const [client, file, pi] of mcpPlans)
+    result[client] = update(p, file, bytes => mergeMcp(bytes, servers, pi));
 
   if (p.claude.minVersion && result.claude.status !== "absent") {
     const have = claudeVersion();

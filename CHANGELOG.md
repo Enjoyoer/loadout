@@ -5,6 +5,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 ## Unreleased
 
 ### Added
+- personal-skills: fleet `mcpServers` declarations sync Streamable HTTP servers to Codex, Claude Code user scope and Pi, with token-name-only config and POSIX env-file launch wiring.
 - `scripts/check_io.py` (CI): plugin code may import only read-side `node:fs` functions, and the fleet sync's remote programs may not add raw fs writes outside `remote_common.js`.
 - `project-icon` 1.0: generic die-cut sticker template, librsvg rendering with light/dark legibility previews, and guarded Paseo icon upload with byte-for-byte read-back. Existing custom icons and scratch projects are protected.
 - `tco-search`: interview-first shopping research across Amazon and installed marketplace sources, ranked by estimated total cost of ownership.

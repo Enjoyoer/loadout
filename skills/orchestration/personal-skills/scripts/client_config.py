@@ -17,12 +17,13 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import fleet
+import mcp_config
 
 MERGE_JS = Path(__file__).resolve().parent / "client_config_merge.js"
 TIMEOUT_SECONDS = 300
 # --update-claude lets the host run `claude update` for up to 10 minutes.
 UPDATE_TIMEOUT_SECONDS = 900
-CATALOG_KEYS = {"token_file", "codex", "claude", "roles", "hosts"}
+CATALOG_KEYS = {"token_file", "codex", "claude", "roles", "hosts", "mcpServers"}
 CODEX_KEYS = {"top", "sections", "reportOnly"}
 CLAUDE_KEYS = {"minVersion", "settings", "env", "token_env"}
 LAYER_CODEX_KEYS = {"top", "sections"}
@@ -69,6 +70,7 @@ def load_catalog(path: Path, fleet_doc: dict) -> dict:
     except (OSError, ValueError) as error:
         raise fleet.FleetError(f"cannot read {path}: {error}") from error
     fleet._keys(data, CATALOG_KEYS, path.name)
+    mcp_config.validate(data.get('mcpServers', {}), fleet_doc)
     _layer({"codex": data.get("codex", {}), "claude": data.get("claude", {})}, "base", base=True)
     fleet._strings(data.get("codex", {}).get("reportOnly", []), "codex.reportOnly")
     if "minVersion" in data.get("claude", {}) and not isinstance(data["claude"]["minVersion"], str):
@@ -111,7 +113,15 @@ def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
         claude["env"].update(k.get("env", {}))
         if "token_env" in k:
             claude["token_env"] = k["token_env"]
-    return {"role": role, "codex": codex, "claude": claude}
+    host_doc = next(h for h in fleet_doc['hosts'] if h['name'] == host)
+    servers = mcp_config.for_host(catalog.get('mcpServers', {}), host_doc)
+    for server in servers:
+        section = 'mcp_servers.' + server['name']
+        if section in codex['sections']:
+            raise fleet.FleetError('MCP server also declared in codex.sections: ' + section)
+        codex['sections'][section] = {'url': server['url'], 'bearer_token_env_var': server['bearerTokenEnvVar'],
+                                     'enabled': server['enabled']}
+    return {"role": role, "codex": codex, "claude": claude, "mcpServers": servers}
 
 
 def describe(name: str, result: dict) -> list:
@@ -131,6 +141,11 @@ def describe(name: str, result: dict) -> list:
         state = "CHANGED " + ",".join(claude["changes"]) if claude["changes"] else "unchanged"
         backup = f" (backup {claude['backup']})" if claude.get("backup") else ""
         lines.append(f"{name}: claude {state}{backup}")
+    for client in ('claude_mcp', 'pi_mcp'):
+        if client in result:
+            entry = result[client]
+            lines.append(f"{name}: {client} {entry['status']}" +
+                         (" " + ','.join(entry.get('changes', [])) if entry.get('changes') else ''))
     cc = result.get("claude_code")
     if cc:
         if cc["updated_to"]:
@@ -143,7 +158,7 @@ def describe(name: str, result: dict) -> list:
 
 
 def status_of(result: dict, dry_run: bool) -> str:
-    changed = any(result[k]["status"] == "changed" for k in ("codex", "claude"))
+    changed = any(result.get(k, {}).get("status") == "changed" for k in ("codex", "claude", "claude_mcp", "pi_mcp"))
     if not changed:
         return "same"
     return "would update" if dry_run else "updated"
@@ -172,9 +187,11 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
     wanted = settings_for(state["catalog"], fleet_doc, name)
     payload = {"codex": wanted["codex"], "claude": wanted["claude"],
                "token": token if wanted["claude"]["token_env"] else None,
-               "stamp": state["stamp"], "dry_run": dry_run, "update_claude": update_claude}
+               "stamp": state["stamp"], "dry_run": dry_run, "update_claude": update_claude,
+               "mcpServers": wanted['mcpServers']}
     result, output = fleet.run_node(name, name == fleet_doc["source_host"], MERGE_JS, payload,
-                                    UPDATE_TIMEOUT_SECONDS if update_claude else TIMEOUT_SECONDS)
+                                    UPDATE_TIMEOUT_SECONDS if update_claude else TIMEOUT_SECONDS,
+                                    paseo_home=host.get('paseo_home'))
     if result is None or result.get("error"):
         error = output if result is None else result["error"]
         if token:

@@ -115,6 +115,38 @@ class ProviderSyncTest(unittest.TestCase):
         (self.fleet / "paseo-providers.json").write_text(json.dumps(catalog))
         return catalog
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX env-file launch wiring')
+    def test_mcp_env_file_wires_provider_launch_without_copying_credentials(self):
+        hosts = json.loads((self.fleet / 'hosts.json').read_text())
+        hosts['hosts'][0]['sync'].append('client-config')
+        (self.fleet / 'hosts.json').write_text(json.dumps(hosts))
+        (self.fleet / 'client-config.json').write_text(json.dumps({'mcpServers': {'ebay-analyze': {
+            'url': 'http://192.0.2.40:8766/mcp', 'bearerTokenEnvVar': 'EBAY_ANALYZE_MCP_TOKEN',
+            'hosts': {'laptop': True}}}}))
+        home = self.root / 'hosts/laptop'
+        env_file = home / '.config/ebay-analyze/mcp.env'
+        env_file.parent.mkdir(parents=True)
+        env_file.write_text('EBAY_ANALYZE_MCP_TOKEN=fixture-only\n')
+        env_file.chmod(0o600)
+        code, out = self.run_sync('--host', 'laptop', '--dry-run')
+        self.assertEqual(code, 0, out)
+        self.assertFalse((home / '.config/loadout/mcp-env.cjs').exists())
+        self.assertEqual(self.config('laptop'), EXISTING)
+        code, out = self.run_sync('--host', 'laptop')
+        self.assertEqual(code, 0, out)
+        command = self.config('laptop')['agents']['providers']['codex']['command']
+        self.assertEqual(command[2:], ['--', 'codex'])
+        self.assertNotIn('fixture-only', self.config_path('laptop').read_text())
+        self.assertNotIn('fixture-only', out)
+        probe = subprocess.run([*command[:3], 'node', '-e', 'console.log(process.env.EBAY_ANALYZE_MCP_TOKEN.length)'],
+                               env={**self.env, 'HOME': str(home)}, capture_output=True, text=True)
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        self.assertEqual(probe.stdout.strip(), '12')
+        code, out = self.run_sync('--host', 'laptop')
+        self.assertEqual(code, 0, out)
+        self.assertIn('write unchanged', out)
+        self.assertEqual(self.config('laptop')['agents']['providers']['codex']['command'], command)
+
     def test_long_payload_windows_cmd_uses_stdin_and_is_idempotent(self):
         hosts = json.loads((self.fleet / "hosts.json").read_text())
         hosts["hosts"][1]["os"] = "windows"
