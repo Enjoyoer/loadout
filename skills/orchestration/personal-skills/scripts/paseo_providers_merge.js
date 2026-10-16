@@ -68,7 +68,8 @@ try {
     if (s.envFile) {
       const file = s.envFile.replace(/^~\//, os.homedir() + '/');
       check(file);
-      const st = fs.existsSync(file) ? fs.statSync(file) : null;
+      // probe() from remote_common.js, not existsSync: an unreadable env file throws instead of reading as absent.
+      const st = probe(fs, file, true);
       const ready = st && st.size > s.bearerTokenEnvVar.length + 1 && (st.mode & 0o777) === 0o600 && st.uid === process.getuid();
       result.mcp.push(s.bearerTokenEnvVar + ' envFile ' + s.envFile + (ready ? ' present, owner-only' : ' missing or unsafe'));
       if (!ready && !p.dry_run) throw Error('MCP envFile missing or unsafe for ' + s.bearerTokenEnvVar);
@@ -110,17 +111,17 @@ try {
              text: JSON.stringify({ ...cfg, agents: { ...agents, providers: merged } }, null, 2) };
   };
   let m = merge(read());
-  const envChanged = envPlans.filter(([file, data]) => !fs.existsSync(file) || fs.readFileSync(file, 'utf8') !== data);
+  const envChanged = envPlans.filter(([file, data]) => !probe(fs, file, true) || fs.readFileSync(file, 'utf8') !== data);
   if (!p.dry_run) for (const [file, data] of envChanged) {
     check(file);
     fs.mkdirSync(path.dirname(file), {recursive:true,mode:0o700});
     check(file);
-    const before = fs.existsSync(file) ? fs.readFileSync(file) : null;
+    const before = probe(fs, file, true) ? fs.readFileSync(file) : null;
     const tag = p.stamp + '-' + crypto.randomBytes(8).toString('hex');
     if (before) {
       const backup = file + '.bak-loadout-' + tag;
       replaceFile(fs, backup, before, 0o600, undefined, () => {
-        check(backup); if (fs.existsSync(backup)) throw Error('MCP backup already exists');
+        check(backup); if (probe(fs, backup, true)) throw Error('MCP backup already exists');
       });
       if (!fs.readFileSync(backup).equals(before)) throw Error('MCP backup failed');
     }
@@ -128,7 +129,7 @@ try {
     result.wrote = true;
     replaceFile(fs, file, data, 0o600, fd => fs.fsyncSync(fd), () => {
       check(file);
-      const now = fs.existsSync(file) ? fs.readFileSync(file) : null;
+      const now = probe(fs, file, true) ? fs.readFileSync(file) : null;
       if (before === null ? now !== null : now === null || !now.equals(before))
         throw Error('MCP launcher changed during merge, left as is');
     });
