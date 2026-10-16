@@ -492,6 +492,17 @@ export function releaseClaim(current: ResumeRecord, before: ResumeRecord, claime
   };
 }
 
+/** A distinct turn on a newer external message replaces the old work, not its failure signature or retry attempt. */
+export function supersedeForNewUserTurn(record: ResumeRecord, agent: AgentSnapshot, turnId: string | null | undefined, timeline: readonly AgentTimelineItem[], now = Date.now()): ResumeRecord {
+  if (!isActive(record) || !turnId || turnId === record.sourceTurnId || turnId === record.resumeTurnId) return record;
+  if (!isSameAgentAndSession(record, agent) || !agent.lastUserMessageAt || agent.lastUserMessageAt === record.lastUserMessageAt) return record;
+  const user = lastUserMessage(timeline);
+  // The plugin's own send also advances lastUserMessageAt. A missing start observation must not turn its failure
+  // into an unrelated record or reset its backoff/attempt count. Incomplete evidence keeps the old recovery path.
+  if (!user || isOwnLatestMessage(record, user)) return record;
+  return { ...record, state: "superseded", terminalReason: "newer-user-message", updatedAt: new Date(now).toISOString() };
+}
+
 export function shouldResume(record: ResumeRecord, agent: AgentSnapshot, config: ResumeConfig, now = Date.now()): { ok: true } | { ok: false; reason: string } {
   if (record.state !== "parked" && record.state !== "detected") return { ok: false, reason: `state=${record.state}` };
   // Failed-turn records always resume; only the backoff (capped at its last step) limits them.

@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "f8dd3f6af2d6bf7751336db1ca275f383f2c1cee",
+  "source_commit": "07d42a337a291cab7fe571506422f3c4cdb99f69",
   "skill_count": 23,
   "file_count": 137,
   "files": [
@@ -966,7 +966,7 @@
     }
   ],
   "plugin_count": 7,
-  "plugin_file_count": 122,
+  "plugin_file_count": 123,
   "plugins": [
     {
       "id": "cache-aware-autocompact",
@@ -1589,14 +1589,14 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 13812,
-      "sha256": "d5659101e23510b64253b98cff5ba266e82e558e76fa1b7c4c1328ce749c33b4"
+      "bytes": 14064,
+      "sha256": "6026fac403333742148f78abac3a18736ede1f4819976e489c60dab4c8baf4e1"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 39088,
-      "sha256": "f96ec70980286b680eb5d569e966f69842fe5da2614e8a6a01a266f9a1c22930"
+      "bytes": 39860,
+      "sha256": "b2df772e94f5a4038e087b0b36372c7e8ce3dddecece13166d58fbd59c678307"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
@@ -1631,8 +1631,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/model.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 30733,
-      "sha256": "a4dc1e82f4ea85787c58c0e806f0de3cc90dbd96c4228891d08841c1e361bf95"
+      "bytes": 31768,
+      "sha256": "1ebb55900890f93d48767a318b006f80499b677282ac9b8bb12ac4e13f16599b"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/quota.ts",
@@ -1681,6 +1681,12 @@
       "plugin": "usage-limit-auto-resume",
       "bytes": 6160,
       "sha256": "952cbb4a75748d20890c7ea766871ab0ca115d6e5f276f1e44857024ad0d7e80"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/test/superseded-turn.test.ts",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 10842,
+      "sha256": "6f926ff8944588be8c230e59a056461a1b762e2adf894f7be82aab403c1ddc9a"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/transient-recovery.test.ts",

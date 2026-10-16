@@ -5,7 +5,7 @@ import type { FetchAgentTimelineResponseMessage } from "@getpaseo/protocol/messa
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
 import { openDaemonClient } from "./server/daemon.ts";
 import { agentPool, QuotaReader, type PoolQuota } from "./server/quota.ts";
-import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, scheduleUsage, shouldResume, transientRejectionState, turnMark, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
+import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
@@ -464,7 +464,17 @@ export default function contribute(server: PluginServerContext, openClient = ope
       if (unsent) await unsent.settled;
       const currentConfig = await config();
       if (!currentConfig) return;
-      const active = await store.activeForAgent(event.agent.id);
+      let active = await store.activeForAgent(event.agent.id);
+      if (active && event.turnId && event.turnId !== active.sourceTurnId && event.turnId !== active.resumeTurnId) {
+        const agent = await fetchAgent(context.paseo, event.agent.id);
+        if (agent) {
+          // Settle the old message before dispatching this turn. Re-verifying an old transient can supersede it,
+          // but then returning used to swallow this new failure; a not-yet-due usage record blocked it too.
+          // Decide inside the queued update so a sweep that settled the record meanwhile keeps its decision.
+          await store.update(active.recordId, (value) => supersedeForNewUserTurn(value, agent, event.turnId, event.timeline));
+          active = await store.activeForAgent(event.agent.id);
+        }
+      }
       if (active?.kind === "transient" && event.outcome.kind === "canceled") {
         await store.update(active.recordId, (value) => ({ ...value, state: "superseded", terminalReason: "retry-turn-canceled", updatedAt: new Date().toISOString() }));
         return;
