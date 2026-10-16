@@ -38,7 +38,8 @@
         "./skills/orchestration/handoff",
         "./skills/orchestration/repo-lessons",
         "./skills/orchestration/reassign-pm",
-        "./skills/orchestration/wo"
+        "./skills/orchestration/wo",
+        "./skills/orchestration/unstuck"
       ]
     },
     {

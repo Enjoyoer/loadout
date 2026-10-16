@@ -1,0 +1,4 @@
+interface:
+  display_name: "Unstuck"
+  short_description: "Review a stalled project and get it unstuck"
+  default_prompt: "Use $unstuck to review this stalled project, find why it is stuck, and list owner decisions with defaults."

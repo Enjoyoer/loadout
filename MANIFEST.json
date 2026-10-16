@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "07d42a337a291cab7fe571506422f3c4cdb99f69",
-  "skill_count": 23,
-  "file_count": 137,
+  "source_commit": "b436fa3af2f19b0f422906fa8df4d2beda7b997d",
+  "skill_count": 24,
+  "file_count": 139,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -725,6 +725,20 @@
       "skill": "repo-lessons",
       "bytes": 241,
       "sha256": "fd60fa18204967eff3b4056e85a0ea25b1139135e52cbc3ff4d188a580b4bd85"
+    },
+    {
+      "path": "skills/orchestration/unstuck/SKILL.md",
+      "category": "orchestration",
+      "skill": "unstuck",
+      "bytes": 3442,
+      "sha256": "e8b02c43736f528458e7e13cc2a4936c09eaee9c9e2f0b05822d6c026c3a8a8d"
+    },
+    {
+      "path": "skills/orchestration/unstuck/agents/openai.yaml",
+      "category": "orchestration",
+      "skill": "unstuck",
+      "bytes": 231,
+      "sha256": "469620b45233fcce9629ee38141e2f7a751859a7bd4471920f784c1ec79c3365"
     },
     {
       "path": "skills/orchestration/wo/SKILL.md",

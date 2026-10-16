@@ -52,6 +52,7 @@ Invoke an installed skill by asking the agent to **use its name**. Codex also ac
 | [`repo-lessons`](skills/orchestration/repo-lessons/SKILL.md) | "Use repo-lessons to update project memory." Keeps current state in root `STATUS.html` and durable facts in `LESSONS.md`, so the team can resume without replaying a chat. |
 | [`personal-skills`](skills/orchestration/personal-skills/SKILL.md) | "Use personal-skills to sync my fleet." Reviews a dry run, then installs verified packages and opted-in configuration across hosts without overwriting unknown edits. |
 | [`handoff`](skills/orchestration/handoff/SKILL.md) / [`reassign-pm`](skills/orchestration/reassign-pm/SKILL.md) | Ask the outgoing PM to "use handoff" to update and commit its memory pair, then ask the replacement to "use reassign-pm" to take over, retain workers, and archive the previous PM after verification. |
+| [`unstuck`](skills/orchestration/unstuck/SKILL.md) | "Why isn't this done?" or "scope explosion". A fresh PM on a strong model reviews a stalled project without touching it: numbers, scope timeline, one-line cause, minimal path, and owner decisions with defaults. |
 
 ## 4. Add plugins deliberately
 
