@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.51"
+  version: "7.52"
 ---
 
 # OPC
@@ -14,6 +14,8 @@ The PM owns scope, topology, integration, verification, and publication. OPC imp
 Follow this state machine, reading linked references only when their branch applies. Scripts enforce; task records and receipts are bookkeeping, not security boundaries.
 
 ## 1. Scope
+
+PMs run on Pi `fleet/claude-opus-5-5`, thinking `medium`, unless the owner names another model or effort. If self differs at first PM ownership, `update_agent` only self's model and thinking. Worker routes stay in [routing](references/routing.md "branch:routing").
 
 At first PM ownership, if the project has no custom icon and is not a scratch folder, use `$project-icon` once.
 
