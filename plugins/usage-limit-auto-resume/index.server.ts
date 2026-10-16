@@ -4,7 +4,8 @@ import type { PaseoApi } from "@getpaseo/client";
 import type { FetchAgentTimelineResponseMessage } from "@getpaseo/protocol/messages";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
 import { openDaemonClient } from "./server/daemon.ts";
-import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, releaseClaim, resumePrompt, shouldResume, transientRejectionState, turnMark, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
+import { agentPool, QuotaReader, type PoolQuota } from "./server/quota.ts";
+import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, scheduleUsage, shouldResume, transientRejectionState, turnMark, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
@@ -12,7 +13,7 @@ const errorMessage = (error: unknown) => error instanceof Error ? error.message 
 // Thrown before anything reaches the socket, so the message was never delivered.
 const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/.test(errorMessage(error));
 
-export default function contribute(server: PluginServerContext, openClient = openDaemonClient) {
+export default function contribute(server: PluginServerContext, openClient = openDaemonClient, quota = new QuotaReader()) {
   const settings = server.registerSettings(defineSettings({ id: SETTINGS_ID, scope: "host", version: SETTINGS_VERSION, schema: ConfigSchema }));
   const store = new ResumeStore();
   let timer: NodeJS.Timeout | null = null;
@@ -83,6 +84,29 @@ export default function contribute(server: PluginServerContext, openClient = ope
 
   const isUsageLimitError = (message: string, code?: string) => failureSignature(message, code) !== null;
 
+  // The pool's quota for a record's provider and model, from one cached pq reading. Unknown when quota awareness is
+  // off, pq is missing, slow, failing, or speaks another schema: the callers then behave exactly as without it.
+  async function poolQuotaFor(record: Pick<ResumeRecord, "provider" | "model">, currentConfig: Config): Promise<PoolQuota> {
+    if (!currentConfig.quotaAware) return { status: "unknown", pool: null, reason: "quotaAware off" };
+    return quota.pool(agentPool(record.provider, record.model), {
+      ttlMs: currentConfig.quotaCacheSeconds * 1000,
+      timeoutMs: currentConfig.pqTimeoutSeconds * 1000,
+      bufferMs: currentConfig.quotaResetBufferSeconds * 1000,
+    });
+  }
+
+  const quotaSettings = (currentConfig: Config) => ({ resetBufferSeconds: currentConfig.quotaResetBufferSeconds, maxDelaySeconds: currentConfig.maxDelaySeconds });
+
+  // A new usage record resumes about a minute after the pool's earliest real reset rather than after the flat delay.
+  async function scheduled(record: ResumeRecord, currentConfig: Config): Promise<ResumeRecord> {
+    if (record.kind === "transient") return record;
+    const pool = await poolQuotaFor(record, currentConfig);
+    const next = scheduleUsage(record, pool, { ...quotaSettings(currentConfig), messageBufferSeconds: currentConfig.resetBufferSeconds });
+    if (next.notBefore !== record.notBefore) log(`quota-scheduled agentId=${record.agentId} recordId=${record.recordId} pool=${pool.pool} notBefore=${next.notBefore}`);
+    if (next.quotaHold) log(`quota-hold agentId=${record.agentId} recordId=${record.recordId} reason=${JSON.stringify(next.quotaHold.reason)}`);
+    return next;
+  }
+
   // A long retry can fill the entire tail page. Walk back to the newest user, rather than treating a missing row
   // in 200 entries as an ambiguous send. Older pages naturally have hasNewer; anchor them to the fresh tail's epoch.
   async function transientTimeline(api: PaseoApi, agentId: string) {
@@ -148,7 +172,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
     }
     if (isUsageLimitError(failure)) {
       const usage = buildRecord(fresh, failure, undefined, currentConfig, Date.now(), final?.turnId ?? record.resumeTurnId ?? record.sourceTurnId, true);
-      if (usage) { await store.upsert(usage); await settle("superseded", "retry-to-usage"); }
+      if (usage) { await store.upsert(await scheduled(usage, currentConfig)); await settle("superseded", "retry-to-usage"); }
       return null;
     }
     if (!fresh.lastUserMessageAt) return null;
@@ -191,6 +215,19 @@ export default function contribute(server: PluginServerContext, openClient = ope
       }
       return;
     }
+    // Before any send, the pool's quota: while every account is out, hold until the earliest reset instead of burning
+    // an attempt. The hold is stored and logged once per change; an available or unknown quota sends as before.
+    const decision = quotaDecision(record, await poolQuotaFor(record, currentConfig), quotaSettings(currentConfig));
+    if (decision.hold) {
+      if (decision.changed) {
+        const hold = decision.hold;
+        await store.update(record.recordId, (value) => value.state === record.state && value.updatedAt === record.updatedAt
+          ? { ...value, quotaHold: hold, updatedAt: new Date().toISOString() } : value);
+        log(`quota-hold agentId=${record.agentId} recordId=${record.recordId} reason=${JSON.stringify(hold.reason)}`);
+      }
+      return;
+    }
+    if (record.quotaHold) log(`quota-released agentId=${record.agentId} recordId=${record.recordId} reason=${JSON.stringify(record.quotaHold.reason)}`);
     // The agent snapshot the last send check passed on; the claim is taken on its latest user message and turn.
     let gated = agent;
     if (record.kind === "transient") {
@@ -240,6 +277,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
         return {
           ...value,
           state: "resuming",
+          quotaHold: null,
           sentAt,
           verificationDeadlineAt: claim.verificationDeadlineAt,
           attempts: [...value.attempts, claim.attempt],
@@ -465,7 +503,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
               log(`retry-uncertain agentId=${event.agent.id} reason=usage-handoff-ambiguous`);
               return;
             }
-            await store.upsert(usage);
+            await store.upsert(await scheduled(usage, currentConfig));
             await store.remove(active.recordId);
             log(`retry-to-usage agentId=${event.agent.id} recordId=${usage.recordId} notBefore=${usage.notBefore}`);
             await sweep();
@@ -507,12 +545,13 @@ export default function contribute(server: PluginServerContext, openClient = ope
       const agent = await fetchAgent(context.paseo, event.agent.id);
       if (!agent) return;
       const finalText = event.outcome.kind === "completed" ? turnText(event.timeline).assistant : null;
-      const record = event.outcome.kind === "failed"
+      const built = event.outcome.kind === "failed"
         ? buildRecord(agent, event.outcome.error.message, event.outcome.error.code, currentConfig, Date.now(), event.turnId, true)
           ?? buildFailedTransientRecord(agent, event.timeline, event.outcome.error, currentConfig, Date.now(), event.turnId)
         : finalText && isUsageLimitAssistantText(finalText)
           ? buildRecord(agent, finalText, undefined, currentConfig, Date.now(), event.turnId)
           : buildTransientRecord(agent, event.timeline, currentConfig, Date.now(), event.turnId);
+      const record = built && await scheduled(built, currentConfig);
       if (!record) {
         log(`not-resumable agentId=${event.agent.id} outcome=${event.outcome.kind} reason=${event.outcome.kind === "failed" ? JSON.stringify(event.outcome.error) : "unrecognized-final"}`);
         return;

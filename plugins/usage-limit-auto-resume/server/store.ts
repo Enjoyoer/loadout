@@ -57,6 +57,9 @@ function isAttempt(value: unknown): value is ResumeAttempt {
   return isTime(attempt.at) && isString(attempt.messageId) && isOneOf(attempt.result, RESULTS);
 }
 
+const isQuotaHold = (value: unknown) => typeof value === "object" && value !== null &&
+  isTime((value as Record<string, unknown>).until) && isString((value as Record<string, unknown>).reason);
+
 // Each field a sweep or a send relies on; nullable fields may be null or absent.
 function isRecord(value: unknown): value is ResumeRecord {
   if (typeof value !== "object" || value === null) return false;
@@ -73,7 +76,8 @@ function isRecord(value: unknown): value is ResumeRecord {
     Array.isArray(record.attempts) && record.attempts.every(isAttempt) && optional(record.attemptsDropped, isCount) && isOneOf(record.state, STATES) &&
     nullable(record.sentAt, isTime) && nullable(record.resumeTurnId, isString) && nullable(record.resumeStartedAt, isTime) &&
     nullable(record.resumeFinishedAt, isTime) && nullable(record.verificationDeadlineAt, isTime) &&
-    isTime(record.createdAt) && isTime(record.updatedAt) && nullable(record.terminalReason, isString);
+    isTime(record.createdAt) && isTime(record.updatedAt) && nullable(record.terminalReason, isString) &&
+    nullable(record.quotaHold, isQuotaHold);
 }
 
 function defaultState(): State {

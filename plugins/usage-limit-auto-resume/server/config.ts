@@ -11,6 +11,11 @@ const ConfigObjectSchema = z.object({
   resetBufferSeconds: z.number().int().min(0).max(3600).default(30),
   verificationTimeoutSeconds: z.number().int().min(30).max(86400).default(180),
   excludedProviders: z.array(z.string().min(1)).default(["chatgpt-web"]),
+  // Quota awareness (pq): hold sends while the agent's whole pool is out, and time usage resumes from its resets.
+  quotaAware: z.boolean().default(true),
+  quotaResetBufferSeconds: z.number().int().min(0).max(3600).default(60),
+  quotaCacheSeconds: z.number().int().min(0).max(600).default(60),
+  pqTimeoutSeconds: z.number().int().min(1).max(15).default(5),
   excludedLabels: z.array(z.string().min(1)).default(["noresume"]),
 });
 

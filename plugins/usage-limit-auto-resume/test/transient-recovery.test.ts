@@ -6,6 +6,7 @@ import { it, mock } from "node:test";
 import type { PaseoClient } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
+import { QuotaReader } from "../server/quota.ts";
 import contribute from "../index.server.ts";
 import { ConfigSchema } from "../server/config.ts";
 import { buildFailedTransientRecord, type AgentSnapshot, type ResumeRecord } from "../server/model.ts";
@@ -91,7 +92,8 @@ async function setup() {
     registerSettings: () => ({ read: async () => ({ status: "ready", values: config }) }),
     on: (name: string, handler: (event: unknown, context?: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
   } as unknown as PluginServerContext;
-  const plugin = contribute(server, async () => api);
+  // The host's real pq never decides these quota-blind cases.
+  const plugin = contribute(server, async () => api, new QuotaReader(async () => ({ error: "pq disabled in tests" })));
   await plugin.idle();
   return {
     config, store, snapshot, sends, plugin, append,

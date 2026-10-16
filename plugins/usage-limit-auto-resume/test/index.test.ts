@@ -9,6 +9,10 @@ import contribute from "../index.server.ts";
 import { ConfigSchema } from "../server/config.ts";
 import { buildRecord, type AgentSnapshot, type ResumeRecord } from "../server/model.ts";
 import { MAX_SETTLED_RECORDS, ResumeStore } from "../server/store.ts";
+import { QuotaReader } from "../server/quota.ts";
+
+// The host's real pq never decides a test: these cases cover the quota-blind paths.
+const noQuota = () => new QuotaReader(async () => ({ error: "pq disabled in tests" }));
 
 const agent: AgentSnapshot = {
   id: "agent-1",
@@ -52,7 +56,7 @@ function pluginTracker() {
   const started: Array<ReturnType<typeof contribute>> = [];
   return {
     start(server: PluginServerContext, open: Parameters<typeof contribute>[1]) {
-      const plugin = contribute(server, open);
+      const plugin = contribute(server, open, noQuota());
       started.push(plugin);
       return plugin;
     },
@@ -188,7 +192,19 @@ it("keeps the turn identity and deadline when a turn starts during a claim and t
   process.env.PASEO_HOME = home;
   const originalLog = console.log;
   const logs: string[] = [];
-  console.log = (line: string) => { logs.push(line); };
+  // Barriers on the plugin's own log lines, not on reads of state.json: a read loop racing the handler's atomic rename
+  // made Windows refuse the rename (EPERM) past the writer's retries, so the turn was never stored and the waits ran out.
+  let turnStored!: (line: string) => void;
+  let turnFailed!: (error: Error) => void;
+  const turnWrite = new Promise<string>((resolve, reject) => { turnStored = resolve; turnFailed = reject; });
+  let sendSettled!: (line: string) => void;
+  const outcome = new Promise<string>((resolve) => { sendSettled = resolve; });
+  console.log = (line: string) => {
+    logs.push(line);
+    if (line.includes("resume-turn-started")) turnStored(line);
+    if (line.includes("turn-started-handler-failed")) turnFailed(new Error(line));
+    if (line.includes("resume-uncertain") || line.includes("send-deferred")) sendSettled(line);
+  };
   try {
     const config = ConfigSchema.parse({ armed: true });
     const record = buildRecord(agent, "out of credits", undefined, config, Date.now() - 6 * 3600_000, "turn-1")!;
@@ -196,6 +212,7 @@ it("keeps the turn identity and deadline when a turn starts during a claim and t
     await store.upsert(record);
     const handlers = new Map<string, (event: unknown) => void>();
     let claimedDeadline: string | null = null;
+    let turnStoredBeforeThrow = false;
     const open = async () => ({
       getConnectionState: () => ({ status: "connected" }),
       close: async () => undefined,
@@ -204,7 +221,9 @@ it("keeps the turn identity and deadline when a turn starts during a claim and t
         send: async () => {
           claimedDeadline = (await store.read())[0]!.verificationDeadlineAt;
           handlers.get("agent.turn_started")!({ turnId: "turn-2", agent: { id: agent.id } });
-          await poll(async () => Boolean((await store.read())[0]!.resumeTurnId));
+          // The handler's store write lands before the transport error, the interleaving this case is about.
+          await turnWrite;
+          turnStoredBeforeThrow = (await store.read())[0]!.resumeTurnId === "turn-2";
           throw new Error("Transport not connected (status: disconnected)");
         },
       }) },
@@ -214,7 +233,9 @@ it("keeps the turn identity and deadline when a turn starts during a claim and t
       on: (name: string, handler: (event: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
     } as unknown as PluginServerContext;
     const cleanup = plugins.start(server, open);
-    await until(() => logs.some((line) => line.includes("resume-uncertain") || line.includes("send-deferred")));
+    // One enclosing bound for the whole sequence; a handler write that fails rejects the turn barrier and shows here.
+    await within(Promise.race([outcome, turnWrite.then(() => outcome)]), 30_000, "the send's transport loss being settled");
+    assert.ok(turnStoredBeforeThrow, "the turn-start handler stored turn-2 before the send failed");
     (cleanup as () => void)();
     const [stored] = await store.read();
     assert.equal(stored?.state, "uncertain");
