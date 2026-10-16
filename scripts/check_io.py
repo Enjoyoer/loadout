@@ -196,9 +196,12 @@ def split_source(text: str, language: str) -> tuple[str, list[tuple[int, str]]]:
     """The code with every comment and string literal's contents blanked to spaces (quotes and newlines kept, so a
     probe's line numbers hold and `return ""` still reads as a default), and each comment with its first line.
 
-    A JS template literal is blanked whole, ${...} included. A quote that only one-line strings use ends at the line.
+    A JS template literal's text is blanked, but each ${...} in it stays code, nested templates included. A quote that
+    only one-line strings use ends at the line.
     """
     out, comments, i, n = list(text), [], 0, len(text)
+    # One entry per open ${...}: how many { inside it are still open, so its own } is the one that closes it.
+    substitutions: list[int] = []
 
     def blank(start: int, end: int) -> None:
         for k in range(start, end):
@@ -218,6 +221,24 @@ def split_source(text: str, language: str) -> tuple[str, list[tuple[int, str]]]:
                 j += 1
         return n
 
+    def template_text(start: int) -> int:
+        """Blank template text from start to the closing backtick, or to a ${ that opens a substitution; return the
+        position just past either, where code resumes."""
+        j = start
+        while j < n:
+            if text[j] == "\\":
+                j += 2
+            elif text[j] == "`" or text.startswith("${", j):
+                blank(start, j)
+                if text[j] == "`":
+                    return j + 1
+                substitutions.append(0)
+                return j + 2
+            else:
+                j += 1
+        blank(start, n)
+        return n
+
     while i < n:
         c = text[i]
         comment_end = None
@@ -232,13 +253,27 @@ def split_source(text: str, language: str) -> tuple[str, list[tuple[int, str]]]:
             blank(i, comment_end)
             i = comment_end
             continue
-        if c in "\"'" or language == "js" and c == "`":
+        if language == "js" and c == "`":
+            i = template_text(i + 1)
+            continue
+        if language == "js" and substitutions and c in "{}":
+            if c == "{":
+                substitutions[-1] += 1
+            elif substitutions[-1]:
+                substitutions[-1] -= 1
+            else:
+                substitutions.pop()
+                i = template_text(i + 1)
+                continue
+        if c in "\"'":
             quote = c * 3 if language == "py" and text.startswith(c * 3, i) else c
-            end = string_end(i, quote, len(quote) == 3 or c == "`")
+            end = string_end(i, quote, len(quote) == 3)
             closed = text.startswith(quote, end - len(quote)) and end - len(quote) > i
             blank(i + len(quote), end - len(quote) if closed else end)
             i = end
             continue
+        # A text heuristic, not a parser: a / after an operator, bracket, or keyword starts a regex literal. Rare cases
+        # such as {} / x, or a regex right after a block comment, are misread; a false positive takes a probe-ok waiver.
         if language == "js" and c == "/" and JS_REGEX_AFTER.search(text[max(0, i - 12):i]):
             j, in_class = i + 1, False
             while j < n and text[j] != "\n" and (in_class or text[j] != "/"):
