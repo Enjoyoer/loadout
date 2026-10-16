@@ -80,10 +80,11 @@ function fixture(home: string) {
     agents.set(id, { id, provider: "pi", model: OPUS, thinkingOptionId: "high", cwd: "/fixture", status: "idle", labels: { role },
       lastUserMessageAt: "2026-01-02T00:00:00.000Z", persistence: { provider: "pi", sessionId: `${id}-session` }, ...extra });
   };
-  const endTurn = async (id: string, outcome: { kind: "failed"; error: { message: string } } | { kind: "completed" }, turnId: string) => {
+  const endTurn = async (id: string, outcome: { kind: "failed"; error: { message: string } } | { kind: "completed" }, turnId: string, reply?: string) => {
     const agent = agents.get(id)!;
     Object.assign(agent, outcome.kind === "failed" ? { status: "error", lastError: outcome.error.message, requiresAttention: true, attentionReason: "error" } : { status: "idle" }, { activeTurn: null });
-    const timeline = [{ type: "user_message", text: "fixture work", messageId: `${turnId}-user` }];
+    const timeline: unknown[] = [{ type: "user_message", text: "fixture work", messageId: `${turnId}-user` }];
+    if (reply) timeline.push({ type: "assistant_message", text: reply });
     timelines.set(id, timeline);
     handlers.get("agent.turn_ended")!({ agent: { id }, turnId, outcome, timeline }, { paseo: api });
     await plugin!.idle();
@@ -322,12 +323,42 @@ it("a persisted swap intent is re-checked before it is applied; one that already
     assert.equal(await f.returns.get(id), null, `${id}: the unapplied intent is dropped`);
     assert.ok(logs.some((l) => l.includes(`pm-swap-dropped agentId=${id}`)));
   }
-  // A swap that landed before the crash is kept as a return obligation even when its swap would no longer be decided.
+}));
+
+it("a swap that partly landed before a crash is finished on stale quota: repaired, rebound, and its retry still runs", () => scenario(async (f, logs) => {
+  // The PM's usage turn failed on Opus and its record is held on the out Claude pool; the crash came after the model
+  // change but before thinking, the Fast label and the obligation's acknowledgement.
+  await f.stop();
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+  f.pq.codex = { five: "out", week: "out" };
+  await f.start();
+  await f.endTurn("pm", { kind: "failed", error: { message: USAGE } }, "pm-turn-1");
+  assert.ok((await f.records.read()).find((r) => r.agentId === "pm")?.quotaHold, "held, not swapped");
+  await f.returns.add(newObligation("pm", { model: OPUS, thinkingOptionId: "high", serviceTier: null }, { model: SOL, thinkingOptionId: "medium", serviceTier: "fast" }, "auto", "switching"));
+  Object.assign(f.agents.get("pm")!, { model: SOL });
+  f.pq.codex = { five: "ok", week: "ok" };
   f.pq.stale = true;
-  f.add("landed", "pm", { model: SOL, thinkingOptionId: "medium", labels: { role: "pm", nofallback: "true", "opc.service-tier": "fast" } });
-  await f.returns.add(newObligation("landed", original, fallback, "auto", "switching"));
+  await f.stop();
+  await f.start();
+  assert.deepEqual(f.calls.apply.at(-1), { agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }, "the partial swap is repaired");
+  assert.equal(f.agents.get("pm")!.labels?.["opc.service-tier"], "fast");
+  const ob = await f.returns.get("pm");
+  assert.equal(ob?.phase, "fallback");
+  assert.ok(logs.some((l) => l.includes("pm-swap-verified agentId=pm")));
+  const record = (await f.records.read()).find((r) => r.agentId === "pm")!;
+  assert.equal(record.model, SOL, "the resume record follows the PM to Sol");
+  assert.ok(record.state !== "exhausted" && record.terminalReason !== "identity-changed");
+  f.pq.stale = false;
   await f.tick();
-  assert.equal((await f.returns.get("landed"))?.phase, "fallback");
+  assert.deepEqual(f.calls.sends.filter((s) => s.startsWith("pm:")).map((s) => s.split(":")[1]), [SOL], "the retry resumes on Sol");
+}));
+
+it("a completed reply that only mentions a usage limit never swaps a PM", () => scenario(async (f) => {
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+  await f.endTurn("pm", { kind: "completed" }, "pm-turn-1", "The log shows usage_limit_exceeded: rate limit reached for the fixture account; nothing else failed.");
+  assert.deepEqual(f.calls.apply, []);
+  assert.equal(f.agents.get("pm")!.model, OPUS);
+  assert.deepEqual((await f.returns.read()).obligations, []);
 }));
 
 it("an earlier due reading never authorizes a restore on stale or unknown quota", () => scenario(async (f) => {

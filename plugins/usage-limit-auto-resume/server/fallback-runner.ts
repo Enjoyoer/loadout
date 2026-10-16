@@ -88,24 +88,19 @@ export function createFallbackRunner(deps: FallbackDeps) {
   const quotaText = (quota: PoolQuota) => JSON.stringify(quota.status === "known" ? { available: quota.available, capacity: quota.capacity, exhausted: quota.exhausted, weekly: quota.weekly } : quota.reason);
 
   // A persisted swap intent is re-decided before it is applied (after a crash or restart the agent, its labels or the
-  // quota may have changed): the agent must still be an eligible PM, still on its original or the fallback model, and
-  // a fresh reading must still confirm the original pool out. Only an intent whose swap never touched the agent is
-  // dropped; once the fallback model is in place, it is a return obligation like any other and is kept.
+  // quota may have changed): the agent must still be an eligible PM on its original model, and a fresh reading must
+  // still confirm the original pool out, or the intent is dropped. Once the fallback model is in place the swap has
+  // happened: it is finished as a swap (any partial setting repaired, the stored record confirmed, the resume record
+  // rebound) whatever quota reads now, and only then becomes a return.
   async function recheckSwap(obligation: ReturnObligation, agent: AgentSnapshot, config: Config): Promise<ReturnObligation | null> {
-    const fromOriginal = agent.model === obligation.original.model;
-    const landed = agent.model === obligation.fallback.model;
-    let reason = !fromOriginal && !landed ? "model-changed" : fallbackIneligible(agent, config.pmFallbackOptOutLabel, obligation.original.model);
+    if (agent.model === obligation.fallback.model) return obligation;
+    let reason = agent.model !== obligation.original.model ? "model-changed" : fallbackIneligible(agent, config.pmFallbackOptOutLabel, obligation.original.model);
     if (!reason && !config.pmFallback) reason = "pmFallback-off";
     if (!reason) {
       const decision = swapDecision(await deps.quota(agentPool("pi", obligation.original.model) ?? "claude", config, { fresh: true }), await deps.quota(agentPool("pi", obligation.fallback.model) ?? "codex", config, { fresh: true }));
       if (!decision.swap) reason = decision.reason;
     }
     if (!reason) return obligation;
-    if (landed) {
-      const kept = await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", lastError: null, updatedAt: new Date().toISOString() }));
-      log(`pm-swap-kept-as-return agentId=${agent.id} obligationId=${obligation.obligationId} reason=${JSON.stringify(reason)}`);
-      return kept;
-    }
     await returns.remove(obligation.obligationId);
     log(`pm-swap-dropped agentId=${agent.id} obligationId=${obligation.obligationId} reason=${JSON.stringify(reason)} profile=${show(profileOf(agent) ?? obligation.original)}`);
     return null;
