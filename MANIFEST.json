@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "9a5fbf86a79642a4bd353678e0178a03da514582",
+  "source_commit": "f8dd3f6af2d6bf7751336db1ca275f383f2c1cee",
   "skill_count": 23,
   "file_count": 137,
   "files": [
@@ -191,8 +191,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5147,
-      "sha256": "f0f06f3c0f0f99914319e34d4684bbb6a1b51e28824841ae19e4d68e2953692e"
+      "bytes": 5413,
+      "sha256": "837d34a0f08134d8a26a2c3c945f979ba54a4f4401a7f2c659744edbbe6fd080"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -695,8 +695,8 @@
       "path": "skills/orchestration/reassign-pm/SKILL.md",
       "category": "orchestration",
       "skill": "reassign-pm",
-      "bytes": 8435,
-      "sha256": "12a425acd977b20562a1f9f6e98abd98743408199208b421790b2ccb8b33c352"
+      "bytes": 8567,
+      "sha256": "f70ebe6a718c8fa921cfdcdbbdfe5a3c5b182b89964fa64216d81c8c477aa341"
     },
     {
       "path": "skills/orchestration/reassign-pm/agents/openai.yaml",
