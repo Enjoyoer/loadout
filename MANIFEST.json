@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "fce5200a17453e10b28e96c52560f78e607cbd47",
+  "source_commit": "6ab3efbb122cff2079572215b131fd6339647945",
   "skill_count": 24,
   "file_count": 139,
   "files": [
@@ -443,8 +443,8 @@
       "path": "skills/orchestration/personal-skills/fleet/example/global/AGENTS.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 597,
-      "sha256": "de795571307bdf64f8e74270cb09f2d62fddc8a169f0c79491a9981177043995"
+      "bytes": 982,
+      "sha256": "17ceda85ef07ca0fe41572257100a979328075cc7c6e4c8fbfdbb20e22946e97"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/hosts.json",
