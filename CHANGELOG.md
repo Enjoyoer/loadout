@@ -5,6 +5,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 ## Unreleased
 
 ### Added
+- `unstuck`: a fresh PM on the strongest available model reviews a stalled project review-only, measures it, dates the scope growth, names a one-line design or process cause, answers rewrite proposals, and returns owner decisions with defaults before a delete-down PR.
 - personal-skills: fleet `mcpServers` declarations sync Streamable HTTP servers to Codex, Claude Code user scope and Pi, with token-name-only config and POSIX env-file launch wiring.
 - `scripts/check_io.py` (CI): plugin code may import only read-side `node:fs` functions, and the fleet sync's remote programs may not add raw fs writes outside `remote_common.js`.
 - Fail-open probe guard: `probe()` and `isAbsent()` in `plugins/_shared/fs-probe.ts` (vendored into cache-aware-autocompact) and `remote_common.js`, and `personal-skills/scripts/probe.py`, read only ENOENT or ENOTDIR as absent and throw anything else; CI runs `scripts/check_io.py fail-open-probe`, which fails when a change adds an error-as-absence probe (`existsSync`, a catch or `except OSError` that only returns a default, `if not p.is_dir(): return {}`) to plugin, fleet sync, or OPC code.

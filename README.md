@@ -28,7 +28,7 @@ Skills then appear as `/loadout-engineering:codebase-design` and so on. The mark
 | Plugin | Skills |
 |---|---|
 | `loadout-engineering` | `codebase-design`, `domain-modeling`, `improve-codebase-architecture`, `uv-python` |
-| `loadout-orchestration` | `opc`, `opn`, `dispatching-parallel-agents`, `handoff`, `repo-lessons`, `reassign-pm` |
+| `loadout-orchestration` | `opc`, `opn`, `dispatching-parallel-agents`, `handoff`, `repo-lessons`, `reassign-pm`, `unstuck` |
 | `loadout-writing` | `grilling`, `sample` |
 | `loadout-research` | `find-docs`, `liteparse`, `tco-search` |
 | `loadout-web` | `frontend-design`, `playwright`, `browse-x`, `pake` |
