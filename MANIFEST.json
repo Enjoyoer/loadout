@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "93459089da3d9a5afa9808add58377f0b4cc1254",
+  "source_commit": "fce5200a17453e10b28e96c52560f78e607cbd47",
   "skill_count": 24,
   "file_count": 139,
   "files": [
@@ -1603,14 +1603,14 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 19873,
-      "sha256": "3a24800252c9fb111c053075cd81f5e5a643a868dbfab272300e0335d73f2cc6"
+      "bytes": 20171,
+      "sha256": "7411f6f1d96c7d15f070e8a30bf8eeb615a14de7b3924adcc0edca7f149df4a7"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 42526,
-      "sha256": "cf1ddeb4b06a87b05229ab81d36505f6c5ba526a3b73dc929b75ed88d6c77a05"
+      "bytes": 42232,
+      "sha256": "a906630faee81e0c15e06004221c496d08a9ef94bb69571bff90cd23999bc286"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
@@ -1645,14 +1645,14 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/fallback-runner.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 17474,
-      "sha256": "920c8affeb4a334f77c9f6633b5954809621f063857b9bf0615c2b1d528cd66a"
+      "bytes": 19574,
+      "sha256": "83822b61a90959098c1479a99c6f236bfc2ff354468df1676e8abe2dad165557"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/fallback.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 10889,
-      "sha256": "78ec7c9cecb1b7bce37874b28d3a04eeb6325d4e0a69e760b7652cf92859c4a7"
+      "bytes": 12884,
+      "sha256": "e9740cde34e069e8e3dbd3af5318e55662e70dbb177c0b25a5fbc2a610967b1c"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/model.ts",
@@ -1717,8 +1717,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/test/pm-fallback.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 23569,
-      "sha256": "8e28918d4132f744289789cb3284bf1e38625df0f5186174a73dcc8940dbadf4"
+      "bytes": 26085,
+      "sha256": "583ae0caffad8ae5c675f89484cc2db797da384890fd8be82d77d9ae21a679e3"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/store.test.ts",
