@@ -87,6 +87,9 @@ jobs:
         # Runs even when the scan fails, so both results are reported.
         if: ${{ !cancelled() }}
         run: python3 scripts/check_vendored.py
+      - name: Check raw file writes
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_io.py
 
   plugins:
     # Ubuntu legs keep their original check names, which branch protection may require.

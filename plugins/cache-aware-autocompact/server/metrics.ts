@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises"; // raw-write-ok: append-only metrics log, not state, retention still to be added; expires 2027-01-31
 import path from "node:path";
 import { paseoHome } from "./store.ts";
 
