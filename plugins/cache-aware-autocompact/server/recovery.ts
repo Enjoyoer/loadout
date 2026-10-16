@@ -1,9 +1,9 @@
-import { lstat } from "node:fs/promises";
 import type { PaseoAgent, PaseoAgentTimelineHandle } from "@getpaseo/client";
 import type { FetchAgentTimelinePayload } from "@getpaseo/client/internal/daemon-client";
 import type { AutoCompactConfig } from "./config.ts";
 import { cacheFamily, checkpointKey, providerDelayMinutes } from "./model.ts";
 import type { Checkpoint } from "./runtime.ts";
+import { probe } from "./vendor/fs-probe.ts";
 
 // Overdue but still warm timers are spread independently over a small window.
 export const REARM_JITTER_MIN_MS = 2_000;
@@ -32,14 +32,7 @@ export function rearmSkipReason(agent: PaseoAgent, extended = false): string | n
 }
 
 export async function recoveryCwdMissing(agent: PaseoAgent): Promise<boolean> {
-  try {
-    await lstat(agent.cwd);
-    return false;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return true;
-    throw error;
-  }
+  return (await probe(agent.cwd)) === null;
 }
 
 export function recoverTurn(agent: PaseoAgent, history: FetchAgentTimelinePayload, remembered: Checkpoint | null): Checkpoint | null {

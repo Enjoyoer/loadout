@@ -32,6 +32,9 @@ CONSUMERS = {
         "pm-native-worker-guard",
         "usage-limit-auto-resume",
     ),
+    "fs-probe.ts": (
+        "cache-aware-autocompact",
+    ),
 }
 
 
