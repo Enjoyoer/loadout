@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "8e3faa78bf55217abada9dc1681eadf392050048",
+  "source_commit": "38a2102576a469a0e65fe0ee324074da7ea33eaf",
   "skill_count": 23,
-  "file_count": 136,
+  "file_count": 137,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -650,6 +650,13 @@
       "sha256": "dacfbc9c4604aa2d1560e5cd0e047c29dea69d8a3fc284ad5e35f9bdeddbf358"
     },
     {
+      "path": "skills/orchestration/personal-skills/scripts/probe.py",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 964,
+      "sha256": "2d488e32ab481d3184596ed51a97896ba0f74a10754e057ea6096c37eda2c12b"
+    },
+    {
       "path": "skills/orchestration/personal-skills/scripts/publication.py",
       "category": "orchestration",
       "skill": "personal-skills",
@@ -660,8 +667,8 @@
       "path": "skills/orchestration/personal-skills/scripts/remote_common.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 6520,
-      "sha256": "520dd9c57144290db7b6faf2a231e00599bb15205334331be146307ff0231b34"
+      "bytes": 7123,
+      "sha256": "2190371b6ad0827b30a864550beddcc76c8d5b4db147afb6483083dcb71465c7"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/skills_sync.py",
@@ -959,7 +966,7 @@
     }
   ],
   "plugin_count": 7,
-  "plugin_file_count": 121,
+  "plugin_file_count": 122,
   "plugins": [
     {
       "id": "cache-aware-autocompact",
@@ -1054,8 +1061,8 @@
     {
       "path": "plugins/cache-aware-autocompact/server/recovery.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 5096,
-      "sha256": "dde1d41f1d31845d5bd673639cb5b7b674e74038c91e7108b1f2bcd65f210f6a"
+      "bytes": 4931,
+      "sha256": "719cf017a7af4e5b4c0693e341aa8d4ffb9ab8f59286e7a861b0c103fffd5d8e"
     },
     {
       "path": "plugins/cache-aware-autocompact/server/retry.ts",
@@ -1092,6 +1099,12 @@
       "plugin": "cache-aware-autocompact",
       "bytes": 2548,
       "sha256": "75deb48944f5b7cba479246550378784e7d5d056092f948e87ac784e9534bcd7"
+    },
+    {
+      "path": "plugins/cache-aware-autocompact/server/vendor/fs-probe.ts",
+      "plugin": "cache-aware-autocompact",
+      "bytes": 1000,
+      "sha256": "d2533899f9deff38dffd4a1f259e57e90b1fea6b0eba6e738ba4076aeb03e562"
     },
     {
       "path": "plugins/cache-aware-autocompact/test/compaction.test.ts",
