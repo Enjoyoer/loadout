@@ -3,9 +3,9 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config.ts";
 import type { AgentSettingsPort } from "./daemon.ts";
-import { enrollmentKey, fallbackIneligible, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
+import { enrollmentKey, fallbackIneligible, isSwapEvidence, recordSwapEvidence, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
 import { agentPool, type PoolQuota, type QuotaPool } from "./quota.ts";
-import { failureSignature, isActive, rebindRecord, type AgentSnapshot } from "./model.ts";
+import { isActive, rebindRecord, type AgentSnapshot } from "./model.ts";
 import type { ResumeStore } from "./store.ts";
 
 export type FallbackApi = PaseoApi & { agentSettings?: AgentSettingsPort };
@@ -87,13 +87,44 @@ export function createFallbackRunner(deps: FallbackDeps) {
 
   const quotaText = (quota: PoolQuota) => JSON.stringify(quota.status === "known" ? { available: quota.available, capacity: quota.capacity, exhausted: quota.exhausted, weekly: quota.weekly } : quota.reason);
 
+  async function cancel(obligationId: string) {
+    const removed = await returns.remove(obligationId);
+    if (removed) log(`pm-return-cancelled agentId=${removed.agentId} obligationId=${obligationId} by=owner-setting profile=${show(removed.original)}`);
+  }
+
+  // The write gate, ahead of every settings change, repair or completion. A cancel is carried out here, so no trigger
+  // can act on a cancelled obligation before the sweep reads the cancel list. A pinned or archived agent is left
+  // exactly as it is: an unapplied swap intent is dropped, a landed one becomes a plain return that waits, and nothing
+  // holds its resume sends.
+  async function gate(obligation: ReturnObligation, agent: AgentSnapshot, config: Config): Promise<boolean> {
+    const blocked = writeBlocked(obligation, agent, config);
+    if (!blocked) return true;
+    if (blocked === "cancelled") { await cancel(obligation.obligationId); return false; }
+    if (obligation.phase === "switching" && agent.model !== obligation.fallback.model) {
+      await returns.remove(obligation.obligationId);
+      log(`pm-swap-dropped agentId=${agent.id} obligationId=${obligation.obligationId} reason=${blocked} profile=${show(profileOf(agent) ?? obligation.original)}`);
+      return false;
+    }
+    if (obligation.phase === "switching" || obligation.restoreDueAt !== null) {
+      await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", restoreDueAt: null, updatedAt: new Date().toISOString() }));
+    }
+    once(agent.id, `pm-return-waiting agentId=${agent.id} obligationId=${obligation.obligationId} reason=${blocked}`);
+    return false;
+  }
+
   // A persisted swap intent is re-decided before it is applied (after a crash or restart the agent, its labels or the
   // quota may have changed): the agent must still be an eligible PM on its original model, and a fresh reading must
   // still confirm the original pool out, or the intent is dropped. Once the fallback model is in place the swap has
-  // happened: it is finished as a swap (any partial setting repaired, the stored record confirmed, the resume record
-  // rebound) whatever quota reads now, and only then becomes a return.
+  // happened: for a PM it is finished as a swap (any partial setting repaired, the stored record confirmed, the resume
+  // record rebound) whatever quota reads now; an agent that is no longer an eligible PM is not repaired, it only keeps
+  // the return.
   async function recheckSwap(obligation: ReturnObligation, agent: AgentSnapshot, config: Config): Promise<ReturnObligation | null> {
-    if (agent.model === obligation.fallback.model) return obligation;
+    if (agent.model === obligation.fallback.model) {
+      const ineligible = fallbackIneligible(agent, config.pmFallbackOptOutLabel, obligation.original.model);
+      if (!ineligible) return obligation;
+      log(`pm-swap-not-completed agentId=${agent.id} obligationId=${obligation.obligationId} reason=${ineligible} return=kept`);
+      return returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", updatedAt: new Date().toISOString() }));
+    }
     let reason = agent.model !== obligation.original.model ? "model-changed" : fallbackIneligible(agent, config.pmFallbackOptOutLabel, obligation.original.model);
     if (!reason && !config.pmFallback) reason = "pmFallback-off";
     if (!reason) {
@@ -114,7 +145,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const api = await deps.acquire();
     const agent = await fetchAgent(api, agentId);
     if (!agent) return once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=agent-missing`);
-    if (agent.archivedAt) return once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=archived`);
+    if (!await gate(obligation, agent, config)) return;
     if (obligation.phase === "switching") {
       obligation = await recheckSwap(obligation, agent, config);
       if (!obligation) return;
@@ -164,8 +195,9 @@ export function createFallbackRunner(deps: FallbackDeps) {
 
   // A live Pi PM on Claude whose pool pq confirms out moves to the fallback profile. The obligation, with the exact
   // original profile, is stored before any setting changes.
-  async function swapLocked(agentId: string, config: Config, why: string) {
+  async function swapLocked(agentId: string, config: Config, why: string, evidence: SwapEvidence) {
     if (await returns.get(agentId)) return reconcileLocked(agentId, config);
+    if (!config.pmFallback || !isSwapEvidence(evidence)) return;
     const api = await deps.acquire();
     const agent = await fetchAgent(api, agentId);
     if (!agent) return;
@@ -189,10 +221,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
 
   // Owner settings: enroll a PM that is already on another profile, or cancel one obligation by its id.
   async function ingest(config: Config) {
-    for (const obligationId of config.pmFallbackCancel) {
-      const removed = await returns.remove(obligationId);
-      if (removed) log(`pm-return-cancelled agentId=${removed.agentId} obligationId=${obligationId} by=owner-setting profile=${show(removed.original)}`);
-    }
+    for (const obligationId of config.pmFallbackCancel) await cancel(obligationId);
     if (!config.pmFallbackEnroll.length) return;
     const consumed = new Set((await returns.read()).consumed);
     for (const entry of config.pmFallbackEnroll) {
@@ -226,9 +255,10 @@ export function createFallbackRunner(deps: FallbackDeps) {
     },
 
     /** Returns true when the agent has an obligation afterwards, so the caller sweeps its waiting record. */
-    async afterTurnEnded(agentId: string, failure: string | null, config: Config): Promise<boolean> {
+    async afterTurnEnded(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], config: Config): Promise<boolean> {
+      const evidence = turnSwapEvidence(outcome);
       if (await returns.get(agentId)) await locked(agentId, () => reconcileLocked(agentId, config));
-      else if (config.pmFallback && failure && failureSignature(failure)) await locked(agentId, () => swapLocked(agentId, config, "usage-limit-turn"));
+      else if (config.pmFallback && isSwapEvidence(evidence)) await locked(agentId, () => swapLocked(agentId, config, "usage-limit-turn", evidence));
       else return false;
       return true;
     },
@@ -241,9 +271,10 @@ export function createFallbackRunner(deps: FallbackDeps) {
       for (const obligation of (await returns.read()).obligations) await locked(obligation.agentId, () => reconcileLocked(obligation.agentId, config));
       if (!config.pmFallback) return;
       for (const record of await records.read()) {
-        if (!isActive(record) || record.kind === "transient" || !record.quotaHold || record.provider !== "pi") continue;
+        const evidence = recordSwapEvidence(record);
+        if (!isSwapEvidence(evidence) || !record.quotaHold || record.provider !== "pi") continue;
         if (await returns.get(record.agentId)) continue;
-        await locked(record.agentId, () => swapLocked(record.agentId, config, "usage-record-held"));
+        await locked(record.agentId, () => swapLocked(record.agentId, config, "usage-record-held", evidence));
       }
     },
   };

@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { agentPool, type PoolQuota } from "./quota.ts";
-import type { AgentSnapshot } from "./model.ts";
+import { failureSignature, isActive, type AgentSnapshot, type ResumeRecord } from "./model.ts";
 import { StateUnreadableError } from "./store.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
 import { paseoHome } from "./vendor/daemon-target.ts";
@@ -68,6 +68,36 @@ export function fallbackIneligible(agent: AgentSnapshot, optOutLabel: string, or
   if (agent.labels?.[optOutLabel] === "true") return "opted-out";
   if (!agent.persistence?.sessionId) return "no-session";
   if (agentPool(agent.provider, originalModel) !== "claude") return "not-claude";
+  return null;
+}
+
+/**
+ * The only evidence that can swap a PM: a failed turn whose error the strict usage-limit classifier accepts, the same
+ * evidence a usage resume record is built from. A completed reply never swaps, whatever its text says. Every swap path
+ * builds its evidence with one of the two functions below and the swap itself checks it.
+ */
+export type SwapEvidence = { failedOutcome: boolean; usageLimit: boolean };
+export const isSwapEvidence = (evidence: SwapEvidence) => evidence.failedOutcome && evidence.usageLimit;
+
+export function turnSwapEvidence(outcome: { kind: string; error?: { message?: string; code?: string } }): SwapEvidence {
+  const failed = outcome.kind === "failed" && typeof outcome.error?.message === "string";
+  return { failedOutcome: failed, usageLimit: failed && failureSignature(outcome.error!.message!, outcome.error!.code) !== null };
+}
+
+/** A usage record counts only when it was built from a failed outcome; one built from a completed reply's text does not. */
+export function recordSwapEvidence(record: ResumeRecord): SwapEvidence {
+  return { failedOutcome: isActive(record) && record.usageFailedOutcome === true, usageLimit: record.kind !== "transient" && !!record.failureSignature };
+}
+
+/**
+ * Why the plugin must not change this agent's settings for this obligation now, or null. Checked before every write,
+ * repair or completion, on every path: an owner cancel, the owner opt-out label (a pinned agent is never touched,
+ * not even to return it), or an archived agent.
+ */
+export function writeBlocked(obligation: ReturnObligation, agent: AgentSnapshot, config: { pmFallbackCancel: readonly string[]; pmFallbackOptOutLabel: string }): "cancelled" | "opted-out" | "archived" | null {
+  if (config.pmFallbackCancel.includes(obligation.obligationId)) return "cancelled";
+  if (agent.labels?.[config.pmFallbackOptOutLabel] === "true") return "opted-out";
+  if (agent.archivedAt) return "archived";
   return null;
 }
 

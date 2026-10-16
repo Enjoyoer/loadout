@@ -394,3 +394,45 @@ it("enrolling with an unset thinking option stores the catalog default, so the r
   assert.deepEqual((await f.returns.read()).obligations, []);
   assert.ok(logs.some((l) => l.includes("pm-restore-verified agentId=manual")));
 }));
+
+// Review r3 of 002a93f.
+it("a pinned agent with a landed swap is never repaired or returned; its resume sends are not held", () => scenario(async (f, logs) => {
+  f.add("pm", "pm", { model: SOL, thinkingOptionId: "high", labels: { role: "pm", nofallback: "true" } });
+  const ob = await f.returns.add(newObligation("pm", { model: OPUS, thinkingOptionId: "high", serviceTier: null }, { model: SOL, thinkingOptionId: "medium", serviceTier: "fast" }, "auto", "switching"));
+  await f.stop();
+  f.pq.stale = true;
+  await f.start();
+  f.pq.stale = false;
+  f.pq.claude = { five: "ok", week: "ok" };
+  await f.tick();
+  assert.deepEqual(f.calls.apply, []);
+  assert.deepEqual(f.calls.labels, []);
+  assert.deepEqual(profileOf(f.agents.get("pm")!), { model: SOL, thinkingOptionId: "high", serviceTier: null });
+  const kept = await f.returns.get("pm");
+  assert.equal(kept?.obligationId, ob!.obligationId, "the return waits for the owner");
+  assert.equal(kept?.restoreDueAt, null);
+  assert.equal(kept?.phase, "fallback");
+  assert.ok(logs.some((l) => l.includes("pm-return-waiting agentId=pm") && l.includes("reason=opted-out")));
+}));
+
+it("a cancel in settings wins on the turn-end path before the sweep reads it", () => scenario(async (f, logs) => {
+  f.add("pm", "pm", { model: SOL, thinkingOptionId: "high" });
+  const ob = await f.returns.add(newObligation("pm", { model: OPUS, thinkingOptionId: "high", serviceTier: null }, { model: SOL, thinkingOptionId: "medium", serviceTier: "fast" }, "auto", "switching"));
+  f.setConfig({ pmFallbackCancel: [ob!.obligationId] });
+  await f.endTurn("pm", { kind: "completed" }, "pm-turn-2", "Work completed.");
+  assert.deepEqual(f.calls.apply, []);
+  assert.deepEqual(f.calls.labels, []);
+  assert.deepEqual((await f.returns.read()).obligations, []);
+  assert.ok(logs.some((l) => l.includes(`pm-return-cancelled agentId=pm obligationId=${ob!.obligationId}`)));
+}));
+
+it("a completed reply starting 'API Error: usage_limit_exceeded' never swaps, on the turn or from its held record", () => scenario(async (f) => {
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+  await f.endTurn("pm", { kind: "completed" }, "pm-turn-1", "API Error: usage_limit_exceeded is now handled in quota.ts; typecheck passed.");
+  await f.tick();
+  await f.tick();
+  assert.deepEqual(f.calls.apply, []);
+  assert.equal(f.agents.get("pm")!.model, OPUS);
+  assert.deepEqual((await f.returns.read()).obligations, []);
+  assert.ok(!f.calls.sends.some((s) => s.includes(SOL)));
+}));

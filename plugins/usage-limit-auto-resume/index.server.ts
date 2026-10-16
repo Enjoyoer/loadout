@@ -615,11 +615,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
       if (stopped) return;
       const currentConfig = await config();
       if (!currentConfig) return;
-      // Only a failed turn whose error is a usage limit, the evidence a usage record is built from, can swap. A completed
-      // turn never does, whatever its text says; a PM held on an out pool is still found by the sweep.
-      const usageFailure = event.outcome.kind === "failed" && isUsageLimitError(event.outcome.error.message, event.outcome.error.code)
-        ? event.outcome.error.message : null;
-      if (await fallback.afterTurnEnded(event.agent.id, usageFailure, currentConfig)) await sweep();
+      // The runner decides from the outcome itself (turnSwapEvidence): only a failed usage-limit turn can swap.
+      if (await fallback.afterTurnEnded(event.agent.id, event.outcome, currentConfig)) await sweep();
     }).catch((error) => failed("pm-fallback-turn-failed", error)));
   });
 
