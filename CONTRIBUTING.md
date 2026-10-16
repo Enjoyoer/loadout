@@ -22,6 +22,7 @@ python3 -m unittest discover -s tests          # repo tests, offline (fake ssh, 
 node skills/orchestration/opc/scripts/validate-opc.mjs skills/orchestration/opc
 (cd plugins/<id> && npm ci && npm run check)   # or npm run typecheck where there is no check
 python3 examples/fleet_demo.py                 # end-to-end fleet sync against simulated hosts
+python3 scripts/check_vendored.py && python3 scripts/check_io.py   # repo rule checks
 ```
 
 CI runs these checks on every pull request (repository tests on Ubuntu, macOS, and Windows; plugin checks on Ubuntu and Windows), except the fleet demo, which stays a local end-to-end check.
@@ -48,6 +49,14 @@ If you would rather not regenerate the manifest, say so in the pull request and 
 Code that several plugins need, such as the daemon endpoint resolver and the atomic JSON state writer, lives once in `plugins/_shared/`. It is not a plugin and is never published, staged, or installed. Each plugin is staged on its own and cannot import it at runtime, so every plugin that uses a shared file carries a byte-identical copy in `plugins/<id>/server/vendor/`. `CONSUMERS` in `scripts/check_vendored.py` names those plugins; add or remove a plugin there when it starts or stops vendoring a file. Change the file in `plugins/_shared/`, copy it over every vendored copy, and run `python3 scripts/check_vendored.py`, which fails on a missing, differing, or unlisted copy; CI runs it on every push.
 
 A new skill also needs a row in [SKILLS_CATALOG.md](SKILLS_CATALOG.md) and, if it is portable, a place in a `.claude-plugin/marketplace.json` plugin.
+
+## Rules CI enforces
+
+Each rule has a check that fails on the mistake it names. An exception goes on the offending line with a reason and an expiry date, for example `// raw-write-ok: <reason>; expires YYYY-MM-DD`; an expired exception fails the check.
+
+| Rule | Check |
+| --- | --- |
+| Plugins write state only through `plugins/_shared/atomic-json.ts`, and remote programs write and delete only through `replaceFile()` and `removeFile()` in `remote_common.js` (existing raw writes may only shrink). | `python3 scripts/check_io.py` |
 
 ## Releases
 
