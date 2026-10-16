@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "0c420e6725e2fb76e759c6a54befbfb5bc86fd8b",
+  "source_commit": "ebcf690c4da8ca4dfbb11c0d50f6fcd55a24aa03",
   "skill_count": 23,
   "file_count": 134,
   "files": [
@@ -1028,8 +1028,8 @@
     {
       "path": "plugins/cache-aware-autocompact/server/metrics.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 888,
-      "sha256": "8020ab9fd849ff2430aae71132b75b3e733eef94b8e75c284a19140bb24658aa"
+      "bytes": 989,
+      "sha256": "6109448f4c17b50a11852ca7c77f54f8d753d2bc87ee618e6244b6ae4c9576a4"
     },
     {
       "path": "plugins/cache-aware-autocompact/server/model.ts",
