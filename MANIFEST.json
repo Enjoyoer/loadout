@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "8e3faa78bf55217abada9dc1681eadf392050048",
+  "source_commit": "5eff840a59e5f333b8c317de8841a7741f11b56d",
   "skill_count": 23,
   "file_count": 136,
   "files": [
@@ -177,8 +177,8 @@
       "path": "skills/orchestration/handoff/SKILL.md",
       "category": "orchestration",
       "skill": "handoff",
-      "bytes": 1398,
-      "sha256": "c8cedf671caf792697dddf23236b3c5bf94112fd54769162ab2d2254cc8d09fa"
+      "bytes": 1964,
+      "sha256": "9b6f71f2d2e3de86dd55988a78dd323e0dc83a7d3200fa594cf618231e39a4ab"
     },
     {
       "path": "skills/orchestration/handoff/agents/openai.yaml",
@@ -408,8 +408,8 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 25754,
-      "sha256": "f9862bd1f7fd7d3c450d987ed3aeac5e61f148a1738b937e13bcdaccd7a459b2"
+      "bytes": 27386,
+      "sha256": "d837b0818157d67d05c317186fe393605534398dd76d05f5f5e942a9438c98a6"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
@@ -422,8 +422,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 40568,
-      "sha256": "6a61f22a6bf83f74a725781bb0331dc354d7168a5eb40aa6f5fb6295d36b33d7"
+      "bytes": 41375,
+      "sha256": "c11fc128ab39a44f8ecef9300e22910cbc50fa2741378431e7f5c547374fb744"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -688,8 +688,8 @@
       "path": "skills/orchestration/reassign-pm/SKILL.md",
       "category": "orchestration",
       "skill": "reassign-pm",
-      "bytes": 8435,
-      "sha256": "12a425acd977b20562a1f9f6e98abd98743408199208b421790b2ccb8b33c352"
+      "bytes": 11588,
+      "sha256": "2979a4c54635436d318136f09c0fa40596dac26a07a139fa695df96fe387a155"
     },
     {
       "path": "skills/orchestration/reassign-pm/agents/openai.yaml",
@@ -709,8 +709,8 @@
       "path": "skills/orchestration/repo-lessons/SKILL.md",
       "category": "orchestration",
       "skill": "repo-lessons",
-      "bytes": 6593,
-      "sha256": "28a3b4863263a52e0e0cfa78e4454725af432f0e3652b04c649ea3f315a7e8c7"
+      "bytes": 7168,
+      "sha256": "c9d80e591d09e4f4042f4a43ce80aef11dc881e60df175d657c3e1e14f478d5c"
     },
     {
       "path": "skills/orchestration/repo-lessons/agents/openai.yaml",
