@@ -7,7 +7,9 @@ function loadEnv(servers, env = process.env) {
   for (const s of servers.filter(s => s.enabled && s.envFile)) {
     const key = s.bearerTokenEnvVar;
     try {
-      const target = s.envFile.replace(/^~\//, os.homedir() + '/');
+      // HOME is the trusted boundary, and macOS may spell its temporary root through /var.
+      // Canonicalize that boundary, but still refuse links anywhere below it.
+      const target = s.envFile.replace(/^~\//, fs.realpathSync(os.homedir()) + '/');
       if (!path.isAbsolute(target)) throw Error();
       for (const part of [target, ...parents(path.dirname(target))]) {
         const st = fs.lstatSync(part);
