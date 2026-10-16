@@ -43,20 +43,31 @@ export function profileOf(agent: AgentSnapshot): Profile | null {
   return { model, thinkingOptionId: agent.thinkingOptionId ?? null, serviceTier: tier(agent.labels?.[SERVICE_TIER_LABEL]) };
 }
 
-/** Model, thinking and the Fast label all read back as the profile; an absent and an empty label are equal. */
-export function matchesProfile(agent: AgentSnapshot, profile: Profile): boolean {
-  const actual = profileOf(agent);
-  return !!actual && actual.model === profile.model && actual.thinkingOptionId === profile.thinkingOptionId && actual.serviceTier === tier(profile.serviceTier);
+export function sameProfile(actual: Profile | null, profile: Profile): boolean {
+  return !!actual && actual.model === profile.model && actual.thinkingOptionId === profile.thinkingOptionId && tier(actual.serviceTier) === tier(profile.serviceTier);
 }
 
-/** Why an agent may not be moved to the fallback profile, or null when it may: a live Pi PM on a Claude model. */
-export function fallbackIneligible(agent: AgentSnapshot, optOutLabel: string): string | null {
+/** Model, thinking and the Fast label all read back as the profile; an absent and an empty label are equal. */
+export function matchesProfile(agent: AgentSnapshot, profile: Profile): boolean {
+  return sameProfile(profileOf(agent), profile);
+}
+
+/** Every stored copy of the agent, which is what a reload or restart loads, holds the profile. None proves nothing. */
+export function storedMatches(stored: readonly Profile[], profile: Profile): boolean {
+  return stored.length > 0 && stored.every((copy) => sameProfile(copy, profile));
+}
+
+/**
+ * Why an agent may not be moved to the fallback profile, or null when it may: a live Pi PM whose original model
+ * (by default its current one) is a Claude model.
+ */
+export function fallbackIneligible(agent: AgentSnapshot, optOutLabel: string, originalModel = agent.model): string | null {
   if (agent.labels?.role !== "pm") return "not-pm";
   if (agent.provider !== "pi") return "not-pi";
   if (agent.archivedAt) return "archived";
   if (agent.labels?.[optOutLabel] === "true") return "opted-out";
   if (!agent.persistence?.sessionId) return "no-session";
-  if (agentPool(agent.provider, agent.model) !== "claude") return "not-claude";
+  if (agentPool(agent.provider, originalModel) !== "claude") return "not-claude";
   return null;
 }
 
@@ -70,15 +81,19 @@ export function swapDecision(claude: PoolQuota, fallback: PoolQuota): { swap: tr
 }
 
 /**
- * Whether the return is due after this reading. Due once a fresh reading shows a Claude account with quota left in
- * both the five-hour and the weekly window; a fresh reading of every account out makes it not due again. Unknown or
- * stale quota proves nothing and keeps the current decision.
+ * This reading proves the original pool usable: a fresh snapshot with an account whose five-hour and weekly windows
+ * are both fresh and both show quota left. A missing window, a stale or unknown reading proves nothing.
  */
-export function restoreDue(current: boolean, claude: PoolQuota): boolean {
-  if (!known(claude)) return current;
-  if (claude.available > 0) return true;
-  if (claude.exhausted) return false;
-  return current;
+export function hasCapacity(claude: PoolQuota): boolean {
+  return known(claude) && claude.capacity > 0;
+}
+
+/**
+ * Whether the return is due on this reading: only proven capacity. A stale, unknown or partial reading is not, so an
+ * earlier due reading never authorizes a restore on its own; the PM stays on the fallback profile and keeps working.
+ */
+export function restoreDue(claude: PoolQuota): boolean {
+  return hasCapacity(claude);
 }
 
 export function newObligation(agentId: string, original: Profile, fallback: Profile, source: ReturnObligation["source"], phase: ReturnObligation["phase"], now = Date.now()): ReturnObligation {

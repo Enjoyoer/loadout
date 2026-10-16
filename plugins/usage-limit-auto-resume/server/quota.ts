@@ -28,6 +28,8 @@ export type PoolQuota =
     earliestReset: { at: number; window: QuotaWindow } | null;
     // Every account in the pool is out for the week.
     weekly: boolean;
+    // Accounts with fresh five_hour AND seven_day readings that both show quota left. A missing window is no evidence.
+    capacity: number;
   };
 
 // Claude routes (Opus, Sonnet, Fable, Haiku) read the claude accounts, GPT routes (Sol, Luna, Astra) the codex accounts,
@@ -60,7 +62,7 @@ export function poolQuota(document: unknown, pool: QuotaPool | null, now = Date.
   const accounts = data.accounts.filter((account): account is Record<string, unknown> =>
     !!account && typeof account === "object" && (account as Record<string, unknown>).provider === pool);
   if (!accounts.length) return unknown(`pq shows no ${pool} accounts`);
-  let available = 0, unknownCount = 0, weeklyOut = 0;
+  let available = 0, unknownCount = 0, weeklyOut = 0, capacity = 0;
   const frees: Array<{ at: number; window: QuotaWindow }> = [];
   for (const account of accounts) {
     const windows = (Array.isArray(account.windows) ? account.windows : [])
@@ -73,13 +75,14 @@ export function poolQuota(document: unknown, pool: QuotaPool | null, now = Date.
       if (out.some((window) => window.id === "seven_day")) weeklyOut++;
     } else if (account.fresh === true && windows.length > 0 && windows.every((window) => window.fresh !== false && num(window.leftPct) && window.leftPct > 0)) {
       available++;
+      if (WINDOWS.every((id) => windows.some((window) => window.id === id))) capacity++;
     } else {
       unknownCount++;
     }
   }
   const earliestReset = frees.length ? frees.reduce((a, b) => b.at < a.at ? b : a) : null;
   const exhausted = available === 0 && unknownCount === 0 && earliestReset !== null;
-  return { status: "known", pool, accounts: accounts.length, available, unknown: unknownCount, exhausted, earliestReset, weekly: exhausted && weeklyOut === accounts.length };
+  return { status: "known", pool, accounts: accounts.length, available, unknown: unknownCount, exhausted, earliestReset, weekly: exhausted && weeklyOut === accounts.length, capacity };
 }
 
 export type QuotaSettings = { resetBufferSeconds: number; maxDelaySeconds: number };

@@ -8,7 +8,7 @@ import type { PaseoClient } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server.ts";
 import { ConfigSchema, type Config } from "../server/config.ts";
-import { ReturnStore } from "../server/fallback.ts";
+import { newObligation, profileOf, ReturnStore, type Profile } from "../server/fallback.ts";
 import type { AgentSnapshot } from "../server/model.ts";
 import { QuotaReader } from "../server/quota.ts";
 import { ResumeStore } from "../server/store.ts";
@@ -16,29 +16,32 @@ import { ResumeStore } from "../server/store.ts";
 const OPUS = "fleet/claude-opus-5-5";
 const SOL = "fleet/gpt-6.1-sol";
 const USAGE = "usage_limit_exceeded: fixture limit (stopReason=error, model=fleet/claude-opus-5-5)";
-type Window = "out" | "ok";
+type Window = "out" | "ok" | "missing";
 type Pool = { five: Window; week: Window };
 
 function fixture(home: string) {
   const agents = new Map<string, AgentSnapshot>();
   const timelines = new Map<string, unknown[]>();
   const calls = { apply: [] as Array<{ agentId: string; modelId: string; thinkingOptionId: string | null }>, labels: [] as Array<Record<string, string>>, sends: [] as string[], cancels: 0 };
-  const pq: { claude: Pool; codex: Pool } = { claude: { five: "out", week: "out" }, codex: { five: "ok", week: "ok" } };
+  const pq: { claude: Pool; codex: Pool; stale: boolean } = { claude: { five: "out", week: "out" }, codex: { five: "ok", week: "ok" }, stale: false };
   let failApply = 0;
+  // What the daemon's stored record holds per agent: it follows memory unless the agent's background persist fails.
+  const unpersisted = new Map<string, Profile[]>();
+  const stored = async (id: string): Promise<Profile[]> => unpersisted.get(id) ?? (agents.has(id) ? [profileOf(agents.get(id)!)!] : []);
   let config: Config = ConfigSchema.parse({ armed: true, pmFallback: true, quotaCacheSeconds: 0 });
   const handlers = new Map<string, (event: unknown, context?: unknown) => void>();
   const now = () => Math.floor(Date.now() / 1000);
   const windows = (pool: Pool) => [
-    { id: "five_hour", fresh: true, leftPct: pool.five === "out" ? 0 : 60, resetAt: now() + 3600 },
-    { id: "seven_day", fresh: true, leftPct: pool.week === "out" ? 0 : 60, resetAt: now() + 86400 },
-  ];
-  const document = () => ({ schemaVersion: 1, snapshotStale: false, accounts: [
+    { id: "five_hour", fresh: true, leftPct: pool.five === "out" ? 0 : 60, resetAt: now() + 3600, missing: pool.five === "missing" },
+    { id: "seven_day", fresh: true, leftPct: pool.week === "out" ? 0 : 60, resetAt: now() + 86400, missing: pool.week === "missing" },
+  ].filter((window) => !window.missing);
+  const document = () => ({ schemaVersion: 1, snapshotStale: pq.stale, accounts: [
     { provider: "claude", fresh: true, windows: windows(pq.claude) },
     { provider: "codex", fresh: true, windows: windows(pq.codex) },
   ] });
   const api = {
     getConnectionState: () => ({ status: "connected" }), close: async () => undefined,
-    providers: { listModels: async () => ({ models: [OPUS, SOL].map((id) => ({ id, thinkingOptions: ["low", "medium", "high"].map((t) => ({ id: t })) })) }) },
+    providers: { listModels: async () => ({ models: [OPUS, SOL].map((id) => ({ id, defaultThinkingOptionId: id === OPUS ? "medium" : "high", thinkingOptions: ["low", "medium", "high"].map((t) => ({ id: t })) })) }) },
     agents: { ref: (id: string) => ({
       refresh: async () => agents.has(id) ? { agent: structuredClone(agents.get(id)!) } : null,
       timeline: { refetch: async () => ({ entries: (timelines.get(id) ?? []).map((item) => ({ item })), hasNewer: false, hasOlder: false }) },
@@ -54,7 +57,7 @@ function fixture(home: string) {
       apply: async (agentId: string, settings: { modelId: string; thinkingOptionId: string | null }) => {
         calls.apply.push({ agentId, ...settings });
         if (failApply > 0) { failApply--; throw new Error("fixture apply rejected"); }
-        Object.assign(agents.get(agentId)!, { model: settings.modelId, thinkingOptionId: settings.thinkingOptionId });
+        Object.assign(agents.get(agentId)!, { model: settings.modelId, thinkingOptionId: settings.thinkingOptionId ?? "medium" });
       },
       setLabels: async (agentId: string, labels: Record<string, string>) => {
         calls.labels.push(labels);
@@ -69,7 +72,7 @@ function fixture(home: string) {
   } as unknown as PluginServerContext;
   let plugin: ReturnType<typeof contribute> | null = null;
   const start = async () => {
-    plugin = contribute(server, async () => api, new QuotaReader(async () => ({ document: document() })), new ReturnStore(path.join(home, "pm-return.json")));
+    plugin = contribute(server, async () => api, new QuotaReader(async () => ({ document: document() })), new ReturnStore(path.join(home, "pm-return.json")), stored);
     await plugin.idle();
   };
   const stop = async () => { plugin?.(); await plugin?.idle(); plugin = null; };
@@ -87,7 +90,7 @@ function fixture(home: string) {
   };
   const tick = async () => { mock.timers.tick(30_000); await plugin!.idle(); };
   return {
-    agents, calls, pq, start, stop, add, endTurn, tick, handlers,
+    agents, calls, pq, start, stop, add, endTurn, tick, handlers, unpersisted,
     returns: new ReturnStore(path.join(home, "pm-return.json")), records: new ResumeStore(),
     failApplies: (n: number) => { failApply = n; },
     setConfig: (patch: Partial<Config>) => { config = ConfigSchema.parse({ ...config, ...patch }); },
@@ -272,4 +275,91 @@ it("owner enrollment registers an already-fallen-back PM once and returns it on 
   f.agents.get("manual")!.archivedAt = null;
   await f.tick();
   assert.equal(f.agents.get("manual")!.model, OPUS);
+}));
+
+// Review of f244965: a restore acknowledged in memory whose stored record still holds Sol (Paseo's background persist
+// failed) is not settled; the obligation stays and the return is written again on later triggers until it is stored.
+it("a restore that is not persisted keeps the obligation across a restart and is written again until stored", () => scenario(async (f, logs) => {
+  f.add("pm", "pm", { labels: { role: "pm", "opc.service-tier": "fast" } });
+  await f.endTurn("pm", { kind: "failed", error: { message: USAGE } }, "pm-turn-1");
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  // The original Fast label equals the fallback's, so only model and thinking change on return.
+  f.unpersisted.set("pm", [{ model: SOL, thinkingOptionId: "medium", serviceTier: "fast" }]);
+  f.pq.claude = { five: "ok", week: "ok" };
+  await f.tick();
+  assert.equal(f.agents.get("pm")!.model, OPUS, "memory reads back the original");
+  assert.equal((await f.returns.read()).obligations.length, 1, "never settled on the in-memory readback");
+  assert.ok(logs.some((l) => l.includes("pm-restore-unpersisted agentId=pm")));
+  // A restart loads the stored Sol record; the obligation is still there and restores it.
+  await f.stop();
+  Object.assign(f.agents.get("pm")!, { model: SOL, thinkingOptionId: "medium" });
+  f.unpersisted.delete("pm");
+  const applies = f.calls.apply.length;
+  await f.start();
+  assert.ok(f.calls.apply.length > applies, "written again after the restart");
+  assert.equal(f.agents.get("pm")!.model, OPUS);
+  assert.deepEqual((await f.returns.read()).obligations, [], "removed once the stored record holds the original");
+}));
+
+it("a persisted swap intent is re-checked before it is applied; one that already landed stays a return", () => scenario(async (f, logs) => {
+  const original = { model: OPUS, thinkingOptionId: "high", serviceTier: null };
+  const fallback = { model: SOL, thinkingOptionId: "medium", serviceTier: "fast" };
+  const cases: Array<[string, Partial<AgentSnapshot>, () => void]> = [
+    ["pinned", { labels: { role: "pm", nofallback: "true" } }, () => undefined],
+    ["worker", { labels: { role: "worker" } }, () => undefined],
+    ["nonclaude", { model: "local/qwen3.8-27b" }, () => undefined],
+    ["freed", {}, () => { f.pq.claude = { five: "ok", week: "ok" }; }],
+    ["unknown", {}, () => { f.pq.stale = true; }],
+  ];
+  for (const [id, extra, setQuota] of cases) {
+    f.pq.claude = { five: "out", week: "out" };
+    f.pq.stale = false;
+    f.add(id, "pm", extra);
+    await f.returns.add(newObligation(id, original, fallback, "auto", "switching"));
+    setQuota();
+    await f.tick();
+    assert.ok(!f.calls.apply.some((call) => call.agentId === id), `${id} never swapped`);
+    assert.equal(await f.returns.get(id), null, `${id}: the unapplied intent is dropped`);
+    assert.ok(logs.some((l) => l.includes(`pm-swap-dropped agentId=${id}`)));
+  }
+  // A swap that landed before the crash is kept as a return obligation even when its swap would no longer be decided.
+  f.pq.stale = true;
+  f.add("landed", "pm", { model: SOL, thinkingOptionId: "medium", labels: { role: "pm", nofallback: "true", "opc.service-tier": "fast" } });
+  await f.returns.add(newObligation("landed", original, fallback, "auto", "switching"));
+  await f.tick();
+  assert.equal((await f.returns.get("landed"))?.phase, "fallback");
+}));
+
+it("an earlier due reading never authorizes a restore on stale or unknown quota", () => scenario(async (f) => {
+  await swapPm(f);
+  const [obligation] = (await f.returns.read()).obligations;
+  await f.returns.update(obligation!.obligationId, (o) => ({ ...o, restoreDueAt: "2026-01-01T00:00:00.000Z" }));
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.pq.stale = true;
+  await f.tick();
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  assert.equal((await f.returns.read()).obligations[0]!.restoreDueAt, null, "no longer due, so Sol resumes are not held");
+  f.pq.stale = false;
+  await f.tick();
+  assert.equal(f.agents.get("pm")!.model, OPUS);
+}));
+
+it("a Claude reading without a weekly window is no capacity", () => scenario(async (f) => {
+  await swapPm(f);
+  f.pq.claude = { five: "ok", week: "missing" };
+  await f.tick();
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  assert.equal((await f.returns.read()).obligations.length, 1);
+}));
+
+it("enrolling with an unset thinking option stores the catalog default, so the restore verifies", () => scenario(async (f, logs) => {
+  f.add("manual", "pm", { model: SOL, thinkingOptionId: "medium" });
+  f.setConfig({ pmFallbackEnroll: [{ agentId: "manual", model: OPUS, thinkingOptionId: null, serviceTier: null }] });
+  await f.tick();
+  assert.deepEqual((await f.returns.get("manual"))?.original, { model: OPUS, thinkingOptionId: "medium", serviceTier: null });
+  f.pq.claude = { five: "ok", week: "ok" };
+  await f.tick();
+  assert.deepEqual(f.calls.apply.at(-1), { agentId: "manual", modelId: OPUS, thinkingOptionId: "medium" });
+  assert.deepEqual((await f.returns.read()).obligations, []);
+  assert.ok(logs.some((l) => l.includes("pm-restore-verified agentId=manual")));
 }));

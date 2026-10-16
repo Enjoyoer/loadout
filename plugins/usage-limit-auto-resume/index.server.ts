@@ -4,7 +4,8 @@ import type { PaseoApi, PaseoClient } from "@getpaseo/client";
 import type { FetchAgentTimelineResponseMessage } from "@getpaseo/protocol/messages";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
 import { openDaemonClient, type AgentSettingsPort } from "./server/daemon.ts";
-import { ReturnStore } from "./server/fallback.ts";
+import { ReturnStore, type Profile } from "./server/fallback.ts";
+import { readStoredProfiles } from "./server/stored-agent.ts";
 import { createFallbackRunner } from "./server/fallback-runner.ts";
 import { agentPool, QuotaReader, type PoolQuota, type QuotaPool } from "./server/quota.ts";
 import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
@@ -17,7 +18,7 @@ const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/
 
 type OpenedClient = PaseoClient & { agentSettings?: AgentSettingsPort };
 
-export default function contribute(server: PluginServerContext, openClient: () => Promise<OpenedClient> = openDaemonClient, quota = new QuotaReader(), returns = new ReturnStore()) {
+export default function contribute(server: PluginServerContext, openClient: () => Promise<OpenedClient> = openDaemonClient, quota = new QuotaReader(), returns = new ReturnStore(), stored: (agentId: string) => Promise<Profile[]> = readStoredProfiles) {
   const settings = server.registerSettings(defineSettings({ id: SETTINGS_ID, scope: "host", version: SETTINGS_VERSION, schema: ConfigSchema }));
   const store = new ResumeStore();
   let timer: NodeJS.Timeout | null = null;
@@ -99,9 +100,10 @@ export default function contribute(server: PluginServerContext, openClient: () =
     returns,
     records: store,
     acquire,
-    quota: (pool: QuotaPool, currentConfig: Config): Promise<PoolQuota> => currentConfig.quotaAware
-      ? quota.pool(pool, quotaOptions(currentConfig))
+    quota: (pool: QuotaPool, currentConfig: Config, options?: { fresh?: boolean }): Promise<PoolQuota> => currentConfig.quotaAware
+      ? quota.pool(pool, { ...quotaOptions(currentConfig), ...(options?.fresh ? { ttlMs: 0 } : {}) })
       : Promise.resolve({ status: "unknown", pool, reason: "quotaAware off" }),
+    stored,
     sending: (agentId) => inFlight.has(agentId),
     log,
     failed,

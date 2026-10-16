@@ -34,6 +34,7 @@ CONSUMERS = {
     ),
     "fs-probe.ts": (
         "cache-aware-autocompact",
+        "usage-limit-auto-resume",
     ),
 }
 

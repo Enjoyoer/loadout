@@ -3,7 +3,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config.ts";
 import type { AgentSettingsPort } from "./daemon.ts";
-import { enrollmentKey, fallbackIneligible, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
+import { enrollmentKey, fallbackIneligible, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
 import { agentPool, type PoolQuota, type QuotaPool } from "./quota.ts";
 import { failureSignature, isActive, rebindRecord, type AgentSnapshot } from "./model.ts";
 import type { ResumeStore } from "./store.ts";
@@ -14,7 +14,12 @@ export type FallbackDeps = {
   returns: ReturnStore;
   records: ResumeStore;
   acquire: () => Promise<FallbackApi>;
-  quota: (pool: QuotaPool, config: Config) => Promise<PoolQuota>;
+  /** One pool's quota; `fresh` skips the shared cached reading and asks pq now. */
+  quota: (pool: QuotaPool, config: Config, options?: { fresh?: boolean }) => Promise<PoolQuota>;
+  /** Every stored copy of the agent's profile: what a daemon reload or restart would load. */
+  stored: (agentId: string) => Promise<Profile[]>;
+  /** How long a settled change may take to reach the stored record before the next trigger tries again. */
+  persistWaitMs?: number;
   /** A resume send is in flight for the agent: its settings are not changed under it. */
   sending: (agentId: string) => boolean;
   log: (line: string) => void;
@@ -36,14 +41,26 @@ export function createFallbackRunner(deps: FallbackDeps) {
     return result?.agent ? result.agent as AgentSnapshot : null;
   }
 
-  // Exact catalog ids only: the model must be listed verbatim with the thinking option. An unreadable catalog throws,
-  // so the caller's trigger fails visibly and the next trigger tries again.
-  async function inCatalog(api: FallbackApi, profile: Profile): Promise<boolean> {
+  // Exact catalog ids only: the profile with its thinking option made explicit (an unset one is the model's catalog
+  // default, which is what the agent runs on), or null when the model or option is not listed verbatim. An unreadable
+  // catalog throws, so the caller's trigger fails visibly and the next trigger tries again.
+  async function inCatalog(api: FallbackApi, profile: Profile): Promise<Profile | null> {
     const listed = await api.providers.listModels("pi");
     if (listed.error || !listed.models) throw new Error(`pi catalog unavailable: ${listed.error ?? "no models"}`);
     const model = listed.models.find((entry) => entry.id === profile.model);
-    if (!model) return false;
-    return profile.thinkingOptionId === null || !!model.thinkingOptions?.some((option) => option.id === profile.thinkingOptionId);
+    const thinkingOptionId = profile.thinkingOptionId ?? model?.defaultThinkingOptionId ?? null;
+    if (!model || !thinkingOptionId || !model.thinkingOptions?.some((option) => option.id === thinkingOptionId)) return null;
+    return { ...profile, thinkingOptionId };
+  }
+
+  // A change counts only once every stored copy of the agent holds it: Paseo acknowledges settings in memory and
+  // writes the record in the background, and a failed write would bring the old profile back on reload or restart.
+  async function persisted(agentId: string, target: Profile): Promise<boolean> {
+    for (let waited = 0; ; waited += 250) {
+      if (storedMatches(await deps.stored(agentId), target)) return true;
+      if (waited >= (deps.persistWaitMs ?? 5_000)) return false;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
   }
 
   async function locked(agentId: string, task: () => Promise<void>) {
@@ -68,47 +85,86 @@ export function createFallbackRunner(deps: FallbackDeps) {
     }
   }
 
+  const quotaText = (quota: PoolQuota) => JSON.stringify(quota.status === "known" ? { available: quota.available, capacity: quota.capacity, exhausted: quota.exhausted, weekly: quota.weekly } : quota.reason);
+
+  // A persisted swap intent is re-decided before it is applied (after a crash or restart the agent, its labels or the
+  // quota may have changed): the agent must still be an eligible PM, still on its original or the fallback model, and
+  // a fresh reading must still confirm the original pool out. Only an intent whose swap never touched the agent is
+  // dropped; once the fallback model is in place, it is a return obligation like any other and is kept.
+  async function recheckSwap(obligation: ReturnObligation, agent: AgentSnapshot, config: Config): Promise<ReturnObligation | null> {
+    const fromOriginal = agent.model === obligation.original.model;
+    const landed = agent.model === obligation.fallback.model;
+    let reason = !fromOriginal && !landed ? "model-changed" : fallbackIneligible(agent, config.pmFallbackOptOutLabel, obligation.original.model);
+    if (!reason && !config.pmFallback) reason = "pmFallback-off";
+    if (!reason) {
+      const decision = swapDecision(await deps.quota(agentPool("pi", obligation.original.model) ?? "claude", config, { fresh: true }), await deps.quota(agentPool("pi", obligation.fallback.model) ?? "codex", config, { fresh: true }));
+      if (!decision.swap) reason = decision.reason;
+    }
+    if (!reason) return obligation;
+    if (landed) {
+      const kept = await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", lastError: null, updatedAt: new Date().toISOString() }));
+      log(`pm-swap-kept-as-return agentId=${agent.id} obligationId=${obligation.obligationId} reason=${JSON.stringify(reason)}`);
+      return kept;
+    }
+    await returns.remove(obligation.obligationId);
+    log(`pm-swap-dropped agentId=${agent.id} obligationId=${obligation.obligationId} reason=${JSON.stringify(reason)} profile=${show(profileOf(agent) ?? obligation.original)}`);
+    return null;
+  }
+
   // One pass for one obligation: refresh whether the return is due, then move the agent to the profile it owes.
   // Running agents are changed too: Paseo applies settings to the next turn and never interrupts the current one.
   async function reconcileLocked(agentId: string, config: Config) {
-    let obligation = await returns.get(agentId);
+    let obligation: ReturnObligation | null = await returns.get(agentId);
     if (!obligation) return;
     const api = await deps.acquire();
     const agent = await fetchAgent(api, agentId);
     if (!agent) return once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=agent-missing`);
     if (agent.archivedAt) return once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=archived`);
+    if (obligation.phase === "switching") {
+      obligation = await recheckSwap(obligation, agent, config);
+      if (!obligation) return;
+    }
+    let goal: "swap" | "restore" | null = obligation.phase === "switching" ? "swap" : null;
     if (obligation.phase === "fallback") {
-      const original = await deps.quota(agentPool("pi", obligation.original.model) ?? "claude", config);
-      const due = restoreDue(obligation.restoreDueAt !== null, original);
+      const pool = agentPool("pi", obligation.original.model) ?? "claude";
+      // Due, which holds resume sends, follows the latest reading. Applying the restore needs capacity in both windows
+      // proven by a reading taken now; a stale, unknown or partial reading only waits.
+      let reading = await deps.quota(pool, config);
+      if (hasCapacity(reading)) reading = await deps.quota(pool, config, { fresh: true });
+      const due = restoreDue(reading);
       if (due !== (obligation.restoreDueAt !== null)) {
         obligation = await returns.update(obligation.obligationId, (o) => ({ ...o, restoreDueAt: due ? new Date().toISOString() : null, updatedAt: new Date().toISOString() }));
         if (!obligation) return;
-        log(`pm-restore-${due ? "due" : "deferred"} agentId=${agentId} obligationId=${obligation.obligationId} quota=${JSON.stringify(original.status === "known" ? { available: original.available, exhausted: original.exhausted, weekly: original.weekly } : original.reason)}`);
+        log(`pm-restore-${due ? "due" : "deferred"} agentId=${agentId} obligationId=${obligation.obligationId} quota=${quotaText(reading)}`);
       }
+      if (due) goal = "restore";
     }
-    const goal = obligation.phase === "switching" ? "swap" : obligation.restoreDueAt ? "restore" : null;
     if (!goal) return;
     const target = goal === "swap" ? obligation.fallback : obligation.original;
-    if (matchesProfile(agent, target)) return settle(obligation, agent, goal);
+    // Already in place in memory: settle once the stored record holds it too, else write it again so it is persisted.
+    if (matchesProfile(agent, target) && await persisted(agentId, target)) return settle(obligation, agent, goal);
     if (!config.armed) return once(agentId, `pm-would-${goal} agentId=${agentId} obligationId=${obligation.obligationId} profile=${show(target)}`);
     if (!api.agentSettings) return once(agentId, `pm-${goal}-unsupported agentId=${agentId} reason=no-agent-settings-port`);
     const attempt = await returns.update(obligation.obligationId, (o) => ({ ...o, attempts: o.attempts + 1, lastAttemptAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
     if (!attempt) return;
     log(`pm-${goal}-apply agentId=${agentId} obligationId=${obligation.obligationId} attempt=${attempt.attempts} status=${agent.status} profile=${show(target)}`);
     try {
-      // Model and thinking travel in one request; the Fast label is the only label this feature writes.
+      // Model and thinking travel in one request. The Fast label, the only label this feature writes, is always
+      // written too, so the stored record is rewritten even when memory already held it.
       await api.agentSettings.apply(agentId, { modelId: target.model, thinkingOptionId: target.thinkingOptionId });
-      if (profileOf(agent)?.serviceTier !== target.serviceTier) await api.agentSettings.setLabels(agentId, { [SERVICE_TIER_LABEL]: target.serviceTier ?? "" });
+      await api.agentSettings.setLabels(agentId, { [SERVICE_TIER_LABEL]: target.serviceTier ?? "" });
     } catch (error) {
       await returns.update(obligation.obligationId, (o) => ({ ...o, lastError: errorText(error), updatedAt: new Date().toISOString() }));
       log(`pm-${goal}-failed agentId=${agentId} obligationId=${obligation.obligationId} reason=${JSON.stringify(errorText(error))} retry=next-trigger`);
       return;
     }
     const after = await fetchAgent(api, agentId);
-    if (after && matchesProfile(after, target)) return settle(attempt, after, goal);
-    const seen = after ? profileOf(after) : null;
-    await returns.update(obligation.obligationId, (o) => ({ ...o, lastError: `readback-mismatch ${JSON.stringify(seen)}`, updatedAt: new Date().toISOString() }));
-    log(`pm-${goal}-mismatch agentId=${agentId} obligationId=${obligation.obligationId} readback=${JSON.stringify(seen)} retry=next-trigger`);
+    const inMemory = !!after && matchesProfile(after, target);
+    if (inMemory && await persisted(agentId, target)) return settle(attempt, after!, goal);
+    const seen = inMemory ? { stored: await deps.stored(agentId) } : { live: after ? profileOf(after) : null };
+    const kind = inMemory ? "unpersisted" : "mismatch";
+    await returns.update(obligation.obligationId, (o) => ({ ...o, lastError: `readback-${kind} ${JSON.stringify(seen)}`, updatedAt: new Date().toISOString() }));
+    log(`pm-${goal}-${kind} agentId=${agentId} obligationId=${obligation.obligationId} readback=${JSON.stringify(seen)} retry=next-trigger`);
   }
 
   // A live Pi PM on Claude whose pool pq confirms out moves to the fallback profile. The obligation, with the exact
@@ -123,11 +179,13 @@ export function createFallbackRunner(deps: FallbackDeps) {
       if (agent.labels?.role === "pm") once(agentId, `pm-fallback-skipped agentId=${agentId} reason=${ineligible}`);
       return;
     }
-    const original = profileOf(agent)!;
-    const fallback: Profile = { model: config.pmFallbackModel, thinkingOptionId: config.pmFallbackThinking, serviceTier: config.pmFallbackServiceTier };
-    const decision = swapDecision(await deps.quota("claude", config), await deps.quota(agentPool("pi", fallback.model) ?? "codex", config));
+    const configured: Profile = { model: config.pmFallbackModel, thinkingOptionId: config.pmFallbackThinking, serviceTier: config.pmFallbackServiceTier };
+    const decision = swapDecision(await deps.quota("claude", config), await deps.quota(agentPool("pi", configured.model) ?? "codex", config));
     if (!decision.swap) return once(agentId, `pm-fallback-held agentId=${agentId} reason=${JSON.stringify(decision.reason)} trigger=${why}`);
-    if (!await inCatalog(api, fallback)) return once(agentId, `pm-fallback-skipped agentId=${agentId} reason=fallback-not-in-catalog profile=${show(fallback)}`);
+    const fallback = await inCatalog(api, configured);
+    if (!fallback) return once(agentId, `pm-fallback-skipped agentId=${agentId} reason=fallback-not-in-catalog profile=${show(configured)}`);
+    const original = await inCatalog(api, profileOf(agent)!);
+    if (!original) return once(agentId, `pm-fallback-skipped agentId=${agentId} reason=original-not-in-catalog profile=${show(profileOf(agent)!)}`);
     const stored = await returns.add(newObligation(agentId, original, fallback, "auto", "switching"));
     if (!stored) return reconcileLocked(agentId, config);
     log(`pm-swap-start agentId=${agentId} obligationId=${stored.obligationId} trigger=${why} original=${show(original)} fallback=${show(fallback)}`);
@@ -151,9 +209,10 @@ export function createFallbackRunner(deps: FallbackDeps) {
       const agent = await fetchAgent(api, entry.agentId);
       if (!agent || agent.archivedAt) { await reject(agent ? "archived" : "agent-missing"); continue; }
       if (agent.labels?.role !== "pm" || agent.provider !== "pi") { await reject("not-a-pi-pm"); continue; }
-      const original: Profile = { model: entry.model, thinkingOptionId: entry.thinkingOptionId, serviceTier: entry.serviceTier };
-      if (agentPool("pi", original.model) !== "claude") { await reject("original-not-claude"); continue; }
-      if (!await inCatalog(api, original)) { await reject("original-not-in-catalog"); continue; }
+      if (agentPool("pi", entry.model) !== "claude") { await reject("original-not-claude"); continue; }
+      // An unset thinking option is stored as the catalog default, so the restore can be verified exactly.
+      const original = await inCatalog(api, { model: entry.model, thinkingOptionId: entry.thinkingOptionId, serviceTier: entry.serviceTier });
+      if (!original) { await reject("original-not-in-catalog"); continue; }
       if (matchesProfile(agent, original)) { await reject("already-on-original"); continue; }
       const current = profileOf(agent);
       if (!current) { await reject("current-profile-unknown"); continue; }
