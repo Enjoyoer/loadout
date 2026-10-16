@@ -1,8 +1,8 @@
 import { mkdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import { isActive, type ResumeAttempt, type ResumeRecord, type ResumeState } from "./model.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
+import { paseoHome } from "./vendor/daemon-target.ts";
 
 /** What a pruned record leaves behind: its source turn, so a repeated event for that turn still reads as a duplicate. */
 export type TurnGuard = { agentId: string; sourceTurnId: string; persistenceSessionId: string };
@@ -82,11 +82,6 @@ function isRecord(value: unknown): value is ResumeRecord {
 
 function defaultState(): State {
   return { version: 2, records: [] };
-}
-
-// The same home the daemon endpoint resolver uses, so state lives with the daemon it serves.
-function paseoHome(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PASEO_HOME?.trim() || path.join(homedir(), ".paseo");
 }
 
 export class ResumeStore {

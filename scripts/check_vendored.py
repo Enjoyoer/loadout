@@ -29,6 +29,7 @@ CONSUMERS = {
         "merged-worker-archiver",
         "orphan-project-sweeper",
         "pi-fast-toggle",
+        "pm-native-worker-guard",
         "usage-limit-auto-resume",
     ),
 }

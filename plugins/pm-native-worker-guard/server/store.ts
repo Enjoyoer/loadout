@@ -1,8 +1,8 @@
 import { mkdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import { PLUGIN_ID } from "./policy.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
+import { paseoHome } from "./vendor/daemon-target.ts";
 
 // Durable per-child decisions at $PASEO_HOME/plugin-state/pm-native-worker-guard/state.json.
 // One record per child id makes every decision idempotent across duplicate events and
@@ -45,7 +45,7 @@ function isRecord(value: unknown): value is HandledRecord {
 }
 
 export function defaultStatePath(env: NodeJS.ProcessEnv = process.env): string {
-  const home = env.PASEO_HOME?.trim() || path.join(homedir(), ".paseo");
+  const home = paseoHome(env);
   return path.join(home, "plugin-state", PLUGIN_ID, "state.json");
 }
 
