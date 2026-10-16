@@ -326,19 +326,20 @@ try {
   const mcpPlans = [];
   if (servers.length) {
     const claudeMcp = path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json');
-    if (fs.existsSync(path.join(os.homedir(), '.claude')))
+    // probe(), not existsSync: an unreadable path throws instead of reading as absent.
+    if (probe(fs, path.join(os.homedir(), '.claude'), true))
       mcpPlans.push(['claude_mcp', claudeMcp, false]);
     else result.claude_mcp = { status: 'absent' };
     const config = path.join(process.env.PASEO_HOME || path.join(os.homedir(), '.paseo'), 'config.json');
     checkConfigPath(fs, path, os, config);
-    const providers = fs.existsSync(config) ? JSON.parse(fs.readFileSync(config, 'utf8')).agents?.providers : null;
+    const providers = probe(fs, config, true) ? JSON.parse(fs.readFileSync(config, 'utf8')).agents?.providers : null;
     const launch = providers?.pi?.command?.find(arg => path.basename(arg) === 'launch.mjs');
     if (launch) mcpPlans.push(['pi_mcp', path.join(path.dirname(launch), 'agent/mcp.json'), true]);
     else result.pi_mcp = { status: 'absent' };
     // Validate new MCP destinations before any client file changes.
     for (const [, file, pi] of mcpPlans) {
       checkConfigPath(fs, path, os, file);
-      mergeMcp(fs.existsSync(file) ? fs.readFileSync(file) : null, servers, pi);
+      mergeMcp(probe(fs, file, true) ? fs.readFileSync(file) : null, servers, pi);
     }
   }
 
