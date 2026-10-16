@@ -17,14 +17,17 @@ absent, empty, or a default: a catch that only returns a default, existsSync, a 
 p.is_dir(): return {}` (or `... if p.is_file() else {}`), or an `except OSError` (or broader) that
 only returns a default. Plugin, fleet sync, and OPC code holds many such probes already, so the
 rule is a ratchet: it counts them per file and fails when a file has more than at the merge base
-of --base (default origin/main) and HEAD. A renamed file keeps its old count. The fix is a probe
+of --base (default origin/main) and HEAD. A renamed file keeps its old count. Comments and string
+literals are not code, so text there never counts. The fix is a probe
 that reads only ENOENT or ENOTDIR as absent and throws anything else: probe() and isAbsent() in
 plugins/_shared/fs-probe.ts and remote_common.js, and probe() and ABSENT in personal-skills/scripts/probe.py.
 
 An exception goes on the offending line itself, with a reason and an expiry date:
     // raw-write-ok: <reason>; expires YYYY-MM-DD
-    # probe-ok: <reason>; expires YYYY-MM-DD
-An expired exception fails the check.
+A fail-open-probe waiver is a comment on any line of the probe, a multiline catch included:
+    // probe-ok: <reason>; expires YYYY-MM-DD
+A waived probe is left out of both the current and the base count. Every probe-ok in a comment is
+checked on its own, wherever it sits. An expired or malformed exception of either kind fails the check.
 """
 
 from __future__ import annotations
@@ -63,24 +66,23 @@ BASELINE = {
     "plugins_sync_remote.js": 1,
     "skills_sync_remote.js": 7,
 }
-# What follows an exception's tag (raw-write-ok, probe-ok) on the offending line.
-EXCEPTION = r":\s*(?P<reason>[^;]*\S)\s*;\s*expires\s+(?P<date>\d{4}-\d{2}-\d{2})"
+EXCEPTION = re.compile(r"raw-write-ok:\s*(?P<reason>[^;]*\S)\s*;\s*expires\s+(?P<date>\d{4}-\d{2}-\d{2})")
 PLUGIN_FIX = ("Plugin state is written only through writeJsonAtomically in ./vendor/atomic-json.ts "
               "(copy of plugins/_shared/atomic-json.ts); add the plugin to CONSUMERS in scripts/check_vendored.py.")
 REMOTE_FIX = ("Write with replaceFile() and delete with removeFile() from remote_common.js; they re-check "
               "ancestors and recorded hashes at the point of use.")
 
 
-def excepted(line: str, rel: str, n: int, found: list[str], tag: str = "raw-write-ok") -> bool:
+def excepted(line: str, rel: str, n: int, found: list[str]) -> bool:
     """True when the line carries a current exception; an expired or malformed one is reported."""
-    if tag not in line:
+    if "raw-write-ok" not in line:
         return False
-    m = re.search(re.escape(tag) + EXCEPTION, line)
+    m = EXCEPTION.search(line)
     if not m:
-        found.append(f"{rel}:{n}: malformed exception; write `{tag}: <reason>; expires YYYY-MM-DD`.")
+        found.append(f"{rel}:{n}: malformed exception; write `raw-write-ok: <reason>; expires YYYY-MM-DD`.")
         return False
     if datetime.date.fromisoformat(m["date"]) < datetime.date.today():
-        found.append(f"{rel}:{n}: exception expired on {m['date']} ({m['reason']}). Fix the line or renew with a new reason.")
+        found.append(f"{rel}:{n}: exception expired on {m['date']} ({m['reason']}). Remove the raw write or renew with a new reason.")
         return False
     return True
 
@@ -165,6 +167,10 @@ PROBES = {
     ),
 }
 PROBE_LANGUAGE = {".ts": "js", ".js": "js", ".mjs": "js", ".cjs": "js", ".py": "py"}
+# A waiver, in a comment on any line of the probe: probe-ok: <reason>; expires YYYY-MM-DD
+PROBE_WAIVER = re.compile(r"probe-ok:[ \t]*(?P<reason>[^;\n]*\S)[ \t]*;[ \t]*expires[ \t]+(?P<date>\d{4}-\d{2}-\d{2})")
+# Where a / starts a regex literal in JS rather than a division: after an operator, an opening bracket, or a keyword.
+JS_REGEX_AFTER = re.compile(r"(?:^|[(,=:[!&|?{};+\-*%<>~^]|\b(?:return|typeof|case|do|else|in|of|void|yield|await|delete|throw))\s*$")
 PROBE_RULE = ("An error is not absence: only ENOENT or ENOTDIR (FileNotFoundError, NotADirectoryError) mean "
               "a path is absent, and any other error must propagate.")
 
@@ -186,14 +192,94 @@ def probe_files() -> list[str]:
     return out
 
 
-def probes(rel: str, text: str) -> dict[str, list[tuple[int, int]]]:
-    """Each probe kind in the text, with the first and last line of every match."""
-    found: dict[str, list[tuple[int, int]]] = {}
+def split_source(text: str, language: str) -> tuple[str, list[tuple[int, str]]]:
+    """The code with every comment and string literal's contents blanked to spaces (quotes and newlines kept, so a
+    probe's line numbers hold and `return ""` still reads as a default), and each comment with its first line.
+
+    A JS template literal is blanked whole, ${...} included. A quote that only one-line strings use ends at the line.
+    """
+    out, comments, i, n = list(text), [], 0, len(text)
+
+    def blank(start: int, end: int) -> None:
+        for k in range(start, end):
+            if out[k] != "\n":
+                out[k] = " "
+
+    def string_end(start: int, quote: str, multiline: bool) -> int:
+        j = start + len(quote)
+        while j < n:
+            if text[j] == "\\":
+                j += 2
+            elif text.startswith(quote, j):
+                return j + len(quote)
+            elif text[j] == "\n" and not multiline:
+                return j
+            else:
+                j += 1
+        return n
+
+    while i < n:
+        c = text[i]
+        comment_end = None
+        if language == "js" and text.startswith("//", i) or language == "py" and c == "#":
+            comment_end = text.find("\n", i)
+        elif language == "js" and text.startswith("/*", i):
+            comment_end = text.find("*/", i + 2)
+            comment_end = -1 if comment_end < 0 else comment_end + 2
+        if comment_end is not None:
+            comment_end = n if comment_end < 0 else comment_end
+            comments.append((text.count("\n", 0, i) + 1, text[i:comment_end]))
+            blank(i, comment_end)
+            i = comment_end
+            continue
+        if c in "\"'" or language == "js" and c == "`":
+            quote = c * 3 if language == "py" and text.startswith(c * 3, i) else c
+            end = string_end(i, quote, len(quote) == 3 or c == "`")
+            closed = text.startswith(quote, end - len(quote)) and end - len(quote) > i
+            blank(i + len(quote), end - len(quote) if closed else end)
+            i = end
+            continue
+        if language == "js" and c == "/" and JS_REGEX_AFTER.search(text[max(0, i - 12):i]):
+            j, in_class = i + 1, False
+            while j < n and text[j] != "\n" and (in_class or text[j] != "/"):
+                in_class = (in_class or text[j] == "[") and text[j] != "]"
+                j += 2 if text[j] == "\\" else 1
+            blank(i + 1, j)
+            i = j + 1
+            continue
+        i += 1
+    return "".join(out), comments
+
+
+def probes(rel: str, text: str, found: list[str] | None = None) -> dict[str, list[tuple[int, int]]]:
+    """Each probe kind in the text's code, outside comments and strings, with the first and last line of every probe
+    no waiver covers. found, when given, collects every malformed or expired waiver, probe or not."""
+    code, comments = split_source(text, PROBE_LANGUAGE[Path(rel).suffix])
+    waived: set[int] = set()
+    for line, body in comments:
+        for tag in re.finditer(r"probe-ok", body):
+            n = line + body.count("\n", 0, tag.start())
+            m = PROBE_WAIVER.match(body, tag.start())
+            try:
+                expires = datetime.date.fromisoformat(m["date"]) if m else None
+            except ValueError:
+                expires = None
+            if expires is None:
+                if found is not None:
+                    found.append(f"{rel}:{n}: malformed waiver; write `probe-ok: <reason>; expires YYYY-MM-DD` in a comment.")
+            elif expires < datetime.date.today():
+                if found is not None:
+                    found.append(f"{rel}:{n}: waiver expired on {m['date']} ({m['reason']}). Fix the probe or renew with a new reason.")
+            else:
+                waived.add(n)
+    spans: dict[str, list[tuple[int, int]]] = {}
     for kind, pattern in PROBES[PROBE_LANGUAGE[Path(rel).suffix]]:
-        for m in pattern.finditer(text):
-            first = text.count("\n", 0, m.start()) + 1
-            found.setdefault(kind, []).append((first, first + text.count("\n", m.start(), m.end())))
-    return found
+        for m in pattern.finditer(code):
+            first = code.count("\n", 0, m.start()) + 1
+            last = first + code.count("\n", m.start(), m.end())
+            if not waived.intersection(range(first, last + 1)):
+                spans.setdefault(kind, []).append((first, last))
+    return spans
 
 
 def git(*args: str) -> subprocess.CompletedProcess:
@@ -226,15 +312,12 @@ def probe_problems(base: str) -> tuple[list[str], str]:
     renamed = git("diff", "-M", "--name-status", "-z", "--diff-filter=R", base).stdout.split("\0")
     old_path = {renamed[i + 2]: renamed[i + 1] for i in range(0, len(renamed) - 2, 3) if renamed[i].startswith("R")}
     for rel in probe_files():
-        lines = (ROOT / rel).read_text(encoding="utf-8").splitlines()
-        now = probes(rel, "\n".join(lines))
-        for kind, spans in sorted(now.items()):
-            counted = [span for span in spans
-                       if not any(excepted(lines[n - 1], rel, n, found, "probe-ok") for n in range(span[0], span[1] + 1))]
-            if not counted:
-                continue
-            before = git("show", f"{base}:{old_path.get(rel, rel)}")
-            had = len(probes(rel, before.stdout).get(kind, [])) if before.returncode == 0 else 0
+        now = probes(rel, (ROOT / rel).read_text(encoding="utf-8"), found)
+        before = git("show", f"{base}:{old_path.get(rel, rel)}") if now else None
+        # Waivers count the same way on both sides: a waived probe is left out of the base count too.
+        then = probes(rel, before.stdout) if before and before.returncode == 0 else {}
+        for kind, counted in sorted(now.items()):
+            had = len(then.get(kind, []))
             if len(counted) > had:
                 # Name the probes on changed lines, which hold the new one; all of them when none is on one.
                 added = added_lines(base, rel)
