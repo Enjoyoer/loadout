@@ -1,5 +1,6 @@
 {
   "token_file": "~/.config/example-router/api-key",
+  "mcpServers": {},
   "codex": {
     "top": { "approval_policy": "on-request", "sandbox_mode": "workspace-write" },
     "reportOnly": ["model"]

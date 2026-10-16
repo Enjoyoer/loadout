@@ -156,6 +156,41 @@ Optional. `python3 scripts/client_config.py [--dry-run] [--host <name>] [--updat
 Only these keys are written. Everything else stays host-local. A missing client is skipped. Each changed file is backed up in place as `<file>.bak-loadout-<stamp>-<random>`, a new file that never overwrites an earlier backup, holding exactly the bytes the merge read. The write is an optimistic check: the result goes to an exclusive temp file, which is fsynced, then the file is read again and the temp renamed over it at once only if it still holds the bytes the merge read. If anyone else changed it, the temp and backup are removed and the read and merge run once more, merging onto the new revision; a second change fails the host and leaves the file as is. This narrows the window for a lost concurrent edit to the moment between that re-read and the rename, but cannot close it, because the daemon and editors take no lock. A second run reports `unchanged`.
 
 
+### Fleet MCP servers
+
+`client-config.json` accepts `mcpServers`, an object keyed by server name. Declare each Streamable HTTP endpoint once, for example (all addresses and host names here are made up):
+
+```json
+{
+  "mcpServers": {
+    "ebay-analyze": {
+      "url": "http://192.0.2.40:8766/mcp",
+      "bearerTokenEnvVar": "EBAY_ANALYZE_MCP_TOKEN",
+      "envFile": "~/.config/ebay-analyze-mcp/mcp.env",
+      "hosts": { "laptop": true, "desktop": true }
+    }
+  }
+}
+```
+
+- `url`: HTTP or HTTPS Streamable HTTP endpoint, without embedded credentials, query or fragment. Prefer HTTPS; use HTTP only on a trusted private network. If the server allowlists `Host`, use its allowed IP, not a DNS alias.
+- `bearerTokenEnvVar`: uppercase environment variable name, never a token value.
+- `envFile`: optional POSIX path, absolute or starting with `~/`; defaults to `~/.config/<server>/mcp.env`. The file is delivered separately, owned by the harness user, mode `0600`, with one literal `VAR=value` line. No shell expansion, quoting or `export` prefix. The sync never copies, sources, prints or puts its contents into client or daemon config. The launch wrapper reads it into the child process environment only, failing closed on missing, linked, unsafe or empty files. `envFile` is ignored on Windows, where the separately delivered user environment variable is used. A Windows daemon started before delivery must be restarted, not merely config-reloaded, to inherit it.
+- `hosts`: explicit `hosts.json` names mapped to booleans. Missing hosts are untouched. All named hosts need `client-config`; POSIX hosts also need `providers` for launch wiring. `false` disables the Codex and Pi entry, removes only that named Claude user entry, and stops loading that server's env file. Set `false` before retiring a previously enabled host; deleting the declaration alone does not retire its prior config.
+- Names allow letters, digits, `_` and `-`, must be unique case-insensitively and with `-`/`_` treated alike, and cannot be `gmail` or `paseo`. Do not also manage the same Codex table through `codex.sections` or the same Pi server through `pi.runtime`.
+
+The providers step writes the non-secret `loadout/mcp-env.cjs` launcher and `mcp-env.json` descriptors under the host config directory. It wraps the existing enabled Codex, Claude Code and Pi provider commands without changing their arguments, models, other environment keys or agent routes. The existing provider reload and reload-owed mechanism applies. The wrapper loads credentials after the daemon starts, so POSIX needs no daemon restart just to pick up a token rotation. Only enabled server env files are loaded. Windows provider commands remain unchanged. The generated Pi `agent/mcp.json` gets native HTTP entries with Codemode exposure; the scoped loopback Paseo stdio bridge and read-only Gmail configuration are unchanged, not repurposed as generic HTTP proxies.
+
+The client-config step merges:
+
+- Codex `config.toml`: `[mcp_servers.<name>]` with `url`, `bearer_token_env_var` and `enabled`.
+- Claude Code user-scope `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json` with a custom config directory): `mcpServers.<name>` with `type: "http"`, `url`, and `headers.Authorization: "Bearer ${VAR}"`. This is personal, cross-project user configuration, not project trust or machine-wide policy. `managed-mcp.json` would impose exclusive system-managed servers and displace users' own servers, so the sync deliberately does not use it. Other user servers and all unrelated user state are preserved.
+- The configured official Pi home's `agent/mcp.json`: `url`, the same unresolved Authorization header, `enabled` and `exposure: "codemode"`. It discovers that home from the daemon's Pi launch command. A missing client is reported as absent, not installed.
+
+Changed client files retain the normal unique backup and optimistic replacement protection. JSON headers and TOML contain the variable name only. The provider dry run reports each URL, credential variable, env-file presence/permissions (without reading its contents), or Windows user-env length, and any wrapper files it would write. It never connects to an MCP endpoint or runs a search. For a complete proposal, run `python3 scripts/sync.py --dry-run --only providers,client-config` against the private fleet, inspect every host, then wait for rollout approval. Pi loads the new entries when a new session starts or after `/reload`; existing sessions are not rewritten.
+
+For a standalone POSIX harness outside Paseo, use the generated loader, for example `node "${XDG_CONFIG_HOME:-$HOME/.config}/loadout/mcp-env.cjs" -- codex` (substitute `claude`, or the official Pi launch command). A raw CLI invocation bypasses the wrapper and must otherwise inherit `VAR`; the sync does not edit shell startup files, global launch services or credential stores. On Windows, start a new terminal/harness after user-env delivery. Connection smoke checks should call `tools/list` only, never perform a marketplace search as a sync verification.
+
 ### Desktop picker defaults and update guard
 
 Generate `client-preferences.js` with `pi/app-defaults.mjs` from the same catalog rows used for the host. Pass it to `picker-patch.py APP_DIST apply --preferences-script client-preferences.js`. The patch state records the script's sha256 and refuses a later apply or reapply with a different script; after reviewing a regenerated script, accept it with `--preferences-sha256 HASH` (the refusal prints the hash). The renderer carries the previous provider's catalog label and thinking onto Pi before loading saved form preferences. It keeps a localStorage backup for the rollback script emitted by `app-defaults.mjs --rollback`. Bundle rollback restores the exact original bytes; preference rollback must run in each affected client origin. The patch state, the bundle, the entry, and the backups are each replaced atomically, the old state staying until the new one is on disk, and the state remembers earlier patch generations of the same original bytes. So a write cut off partway leaves every file holding bytes the state accounts for, and check, reapply, and rollback still work; bytes it does not recognize remain a client update and are never overwritten.

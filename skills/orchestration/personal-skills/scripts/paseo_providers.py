@@ -302,6 +302,7 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
     providers = {**config["providers"], **settings.get("providers", {})}
     pi = settings.get("pi", config.get("pi"))
     generated = None
+    mcp_servers = config.get('_mcpHosts', {}).get(host, [])
     if pi:
         sys.path.insert(0, str(Path(__file__).parent / 'pi'))
         from catalog import derive
@@ -310,10 +311,15 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
             providers['pi'] = {'models': catalog['provider']['models']}
         else:
             generated = derive(providers, pi)
+            if mcp_servers:
+                import mcp_config
+                generated['runtime']['mcpServers'] = mcp_config.pi_servers(mcp_servers)
             providers['pi'] = generated['provider']
             env.setdefault('pi', {})['LOADOUT_PI_ROOT'] = pi['root']
     return {
         "pi": generated,
+        "mcpServers": mcp_servers,
+        "mcp_env_launcher": (Path(__file__).parent / 'mcp_env.cjs').read_text() if mcp_servers else None,
         "pi_files": ({f.name: f.read_text() for f in (Path(__file__).parent / 'pi').glob('*') if f.suffix in {'.py', '.mjs'}} if generated else {}),
         "host": host,
         "providers": providers,
@@ -585,6 +591,8 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
             backup = f"; backup {result['backup']}" if result["backup"] else ""
             emit(f"{name}: write {state}; labels {'verified' if result['verified'] else 'MISMATCH'}; "
                  f"preserved [{', '.join(result['preserved'])}]{backup}")
+        if result and result.get('mcp'):
+            emit(f"{name}: MCP " + '; '.join(result['mcp']))
         if runner.cleanup_warning:
             emit(f"{name}: cleanup warning: {runner.cleanup_warning}; the next run archives it")
         if result is None or result["error"] or not result["verified"]:
@@ -630,14 +638,22 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
 def merge_program() -> str:
     """The merge program packed without its whole-line comments and indentation, so a relay still sends a typical
     payload inline (RELAY_INLINE_LIMIT). The program holds no multiline string or template literal to change."""
-    lines = MERGE_JS.read_text(encoding="utf-8").splitlines()
+    lines = (fleet.COMMON_JS.read_text(encoding='utf-8') + '\n' + MERGE_JS.read_text(encoding='utf-8')).splitlines()
     return pack("\n".join(line.strip() for line in lines if not line.lstrip().startswith("//")).encode())
 
 
 def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool) -> dict:
     """Load the provider config and the merge program once per sync."""
+    config = load_config(fleet_dir / 'paseo-providers.json', fleet_doc)
+    client_path = fleet_dir / 'client-config.json'
+    if client_path.exists():
+        import client_config
+        import mcp_config
+        clients = client_config.load_catalog(client_path, fleet_doc)
+        config['_mcpHosts'] = {h['name']: mcp_config.for_host(clients.get('mcpServers', {}), h)
+                               for h in fleet_doc['hosts']}
     return {"fleet_doc": fleet_doc, "fleet_dir": fleet_dir, "dry_run": dry_run,
-            "config": load_config(fleet_dir / "paseo-providers.json", fleet_doc),
+            "config": config,
             "program": merge_program(), "stamp": datetime.now().strftime("%Y%m%d-%H%M%S")}
 
 
