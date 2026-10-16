@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    # Every pushed branch and tag gets the secret scan and the vendored helper check; the other jobs run only for main and pull requests.
+    # Every pushed branch and tag gets the secret scan and the repo rule checks; the other jobs run only for main and pull requests.
     branches: ['**']
     tags: ['**']
   pull_request:
@@ -89,7 +89,14 @@ jobs:
         run: python3 scripts/check_vendored.py
       - name: Check raw file writes
         if: ${{ !cancelled() }}
-        run: python3 scripts/check_io.py
+        run: python3 scripts/check_io.py raw-write
+      - name: Check fail-open probes
+        if: ${{ !cancelled() }}
+        env:
+          # A pull request is checked against its base, a push against the tip it replaced; the check uses
+          # origin/main for a new branch or tag (all-zero before) or a tip that was not fetched.
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: python3 scripts/check_io.py fail-open-probe --base "$BASE"
       - name: Check plugin daemon home and address owner
         if: ${{ !cancelled() }}
         run: python3 scripts/check_daemon_env.py

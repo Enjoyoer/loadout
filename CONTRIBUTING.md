@@ -58,11 +58,12 @@ A new skill also needs a row in [SKILLS_CATALOG.md](SKILLS_CATALOG.md) and, if i
 
 ## Rules CI enforces
 
-Each rule has a check that fails on the mistake it names. An exception goes on the offending line with a reason and an expiry date, for example `// raw-write-ok: <reason>; expires YYYY-MM-DD`; an expired exception fails the check.
+Each rule has a check that fails on the mistake it names. An exception goes on the offending line with a reason and an expiry date, for example `// raw-write-ok: <reason>; expires YYYY-MM-DD` or `# probe-ok: <reason>; expires YYYY-MM-DD`; an expired exception fails the check.
 
 | Rule | Check |
 | --- | --- |
-| Plugins write state only through `plugins/_shared/atomic-json.ts`, and remote programs write and delete only through `replaceFile()` and `removeFile()` in `remote_common.js` (existing raw writes may only shrink). | `python3 scripts/check_io.py` |
+| Plugins write state only through `plugins/_shared/atomic-json.ts`, and remote programs write and delete only through `replaceFile()` and `removeFile()` in `remote_common.js` (existing raw writes may only shrink). | `python3 scripts/check_io.py raw-write` |
+| An error is not absence: only ENOENT or ENOTDIR mean a path is absent, and any other error propagates. Probe with `probe()` or `isAbsent()` from `plugins/_shared/fs-probe.ts` (vendored) or `remote_common.js`, or `probe()` and `ABSENT` from `personal-skills/scripts/probe.py`, never `existsSync`, a catch or `except OSError` that only returns a default, or `if not p.is_dir(): return {}`. Existing probes are counted per file and may only shrink against the merge base. Review still covers the cases no pattern sees: incomplete pagination, a broken toggle read as its default, a fallback profile. | `python3 scripts/check_io.py fail-open-probe` (CI passes `--base`) |
 
 ## Releases
 

@@ -1,6 +1,15 @@
 // Shared by the remote programs: fleet.run_node ships it ahead of each one as a single script.
 // Callers pass fs, path and os, so no top-level name here clashes with a program's own.
 
+// Absence is only ENOENT or ENOTDIR. Any other error (EACCES, EPERM, EIO, ELOOP, ...) leaves the state unknown, so it
+// is thrown, never read as absent, empty, or a default; fs.existsSync and a bare catch read every error as absence.
+const isAbsent = e => !!e && (e.code === "ENOENT" || e.code === "ENOTDIR");
+
+// What is at file: its lstat (its stat with follow), or null when it is absent. Any other error is thrown.
+function probe(fs, file, follow = false) {
+  try { return follow ? fs.statSync(file) : fs.lstatSync(file); } catch (e) { if (isAbsent(e)) return null; throw e; }
+}
+
 // Throws unless file is strictly inside root and each existing directory from root down to the
 // file's parent is real: lstat, so a symlink (even a dangling one) or a file is refused. base, a
 // trusted directory above root (see baseFor), extends the check to every directory below base down to root.
@@ -106,4 +115,4 @@ function removeFile(fs, file, accepted) {
   throw new Error("changed since preflight, not removed: " + file + (back ? "" : "; kept at " + held));
 }
 
-if (typeof module === "object") module.exports = { checkAncestors, baseFor, checkConfigPath, portable, foldPath, checkPaths, loadoutDir, checkUnchanged, replaceFile, removeFile };
+if (typeof module === "object") module.exports = { isAbsent, probe, checkAncestors, baseFor, checkConfigPath, portable, foldPath, checkPaths, loadoutDir, checkUnchanged, replaceFile, removeFile };
