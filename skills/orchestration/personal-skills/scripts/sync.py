@@ -2,7 +2,7 @@
 """Sync the fleet with one command.
 
 Runs, in order: fleet validate, fleet push, skills, plugins, providers,
-client-config, honoring each host's `sync` list, then prints one table of
+client-config, then the read-only mds-bye check, honoring each host's `sync` list, then prints one table of
 host by scope. Each step's preflight (publication, overlay, catalog, token)
 runs once, and an error there fails that step for every host and stops their
 later scopes. The step then runs one host at a time, so an error on one host
@@ -20,11 +20,12 @@ from typing import Callable, Optional
 
 import client_config
 import fleet
+import mds_bye
 import paseo_providers
 import plugins_sync
 import skills_sync
 
-STEPS = ("fleet", "skills", "plugins", "providers", "client-config")
+STEPS = ("fleet", "skills", "plugins", "providers", "client-config", "mds-bye")
 OK = {"same", "updated", "would update", "not needed", "source", "drift", "skipped", "-"}
 STOPS = {"conflict"}
 
@@ -40,6 +41,8 @@ def preflight(step: str, doc: dict, fleet_dir, targets: list, args, emit: Callab
         module, state = plugins_sync, plugins_sync.preflight(doc, fleet_dir, args.dry_run, emit, args.migrate_path)
     elif step == "providers":
         module, state = paseo_providers, paseo_providers.preflight(doc, fleet_dir, args.dry_run)
+    elif step == "mds-bye":
+        module, state = mds_bye, mds_bye.preflight(doc, fleet_dir, args.dry_run, emit)
     else:
         module, state = client_config, client_config.preflight(doc, fleet_dir, targets, args.dry_run,
                                                                args.update_claude)

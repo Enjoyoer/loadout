@@ -93,7 +93,7 @@ class ValidateTest(unittest.TestCase):
         got = fleet.load(EXAMPLE)
         by_name = {h["name"]: h for h in got["hosts"]}
         self.assertEqual(got["schema_version"], 2)
-        self.assertEqual(by_name["laptop"]["sync"], ["skills", "plugins", "providers", "client-config"])
+        self.assertEqual(by_name["laptop"]["sync"], ["skills", "plugins", "providers", "client-config", "mds-bye"])
         self.assertEqual(by_name["desktop"]["sync"], ["skills", "plugins", "client-config"])
         self.assertEqual(by_name["devbox"]["sync"], ["skills"])
         self.assertEqual(by_name["tablet"]["transport"], "paseo-relay")

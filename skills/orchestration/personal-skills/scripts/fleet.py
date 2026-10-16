@@ -54,9 +54,11 @@ PUSH_TIMEOUT_SECONDS = 180
 RESULT = re.compile(r"@@LOADOUT-RESULT (.*?) @@END", re.S)
 SCHEMA_VERSIONS = {1, 2}
 TRANSPORTS = {"ssh", "paseo-relay"}
-SCOPES = ("skills", "plugins", "providers", "client-config")
-# Scopes that move files or secrets, so they need an ssh transport.
-SSH_SCOPES = {"skills", "plugins", "client-config"}
+SCOPES = ("skills", "plugins", "providers", "client-config", "mds-bye")
+# Scopes that move files or secrets, or run a program on the host, so they need an ssh transport.
+SSH_SCOPES = {"skills", "plugins", "client-config", "mds-bye"}
+# Scopes only a host with this os may take.
+OS_SCOPES = {"mds-bye": "macos"}
 OSES = {"macos", "windows", "linux"}
 # Paseo variables an agent session or a scratch daemon leaves in the environment. A program run on the source host
 # drops them all, so its config reads, gates, installs, reloads and confirmations address the host's own Paseo home
@@ -208,6 +210,9 @@ def validate(data: Any) -> dict:
             _strings(host.get("clients"), f"{where}.clients", CLIENTS)
         elif "clients" in host:
             _strings(host["clients"], f"{where}.clients", CLIENTS)
+        for scope, os_name in OS_SCOPES.items():
+            if scope in sync and host["os"] != os_name:
+                raise FleetError(f"{where}: sync includes {scope}, which only a {os_name} host can take")
         if "plugins" in sync and paseo is None:
             raise FleetError(f"{where}: sync includes plugins but the host has no paseo entry")
         _strings(host.get("exclude_skills", []), f"{where}.exclude_skills")

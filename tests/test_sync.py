@@ -106,9 +106,9 @@ class SyncTest(unittest.TestCase):
         code, out = self.sync("--dry-run")
         self.assertEqual(code, 0, out)
         self.assertEqual(self.row(out, "laptop"), {"fleet": "source", "skills": "would update", "plugins": "skipped",
-                                                   "providers": "would update", "client-config": "would update"})
+                                                   "providers": "would update", "client-config": "would update", "mds-bye": "skipped"})
         self.assertEqual(self.row(out, "tablet"), {"fleet": "not needed", "skills": "skipped", "plugins": "skipped",
-                                                   "providers": "would update", "client-config": "skipped"})
+                                                   "providers": "would update", "client-config": "skipped", "mds-bye": "skipped"})
         self.assertIn("fleet valid: schema_version 2, 4 hosts (dry run)", out)
         self.assertFalse((self.root / "hosts/desktop/.config/loadout/fleet").exists())
         self.assertFalse((self.root / "hosts/desktop/.claude/skills").exists())
@@ -116,9 +116,9 @@ class SyncTest(unittest.TestCase):
         code, out = self.sync()
         self.assertEqual(code, 0, out)
         self.assertEqual(self.row(out, "desktop"), {"fleet": "updated", "skills": "updated", "plugins": "updated",
-                                                    "providers": "updated", "client-config": "updated"})
+                                                    "providers": "updated", "client-config": "updated", "mds-bye": "skipped"})
         self.assertEqual(self.row(out, "tablet"), {"fleet": "not needed", "skills": "skipped", "plugins": "skipped",
-                                                   "providers": "updated", "client-config": "skipped"})
+                                                   "providers": "updated", "client-config": "skipped", "mds-bye": "skipped"})
         self.assertTrue((self.root / "hosts/desktop/.config/loadout/fleet/hosts.json").exists())
         self.assertTrue((self.root / "hosts/desktop/plugins/orphan-project-sweeper/node_modules").exists())
         self.assertFalse((self.root / "hosts/laptop/.claude/skills/sample").exists())
@@ -134,7 +134,7 @@ class SyncTest(unittest.TestCase):
         code, out = self.sync()
         self.assertEqual(code, 1, out)
         self.assertEqual(self.row(out, "devbox"), {"fleet": "conflict", "skills": "stopped", "plugins": "skipped",
-                                                   "providers": "skipped", "client-config": "stopped"})
+                                                   "providers": "skipped", "client-config": "stopped", "mds-bye": "skipped"})
         self.assertEqual(self.row(out, "desktop")["client-config"], "updated")
         self.assertIn("stopped after a conflict, a fleet failure, or a failed shared preflight: devbox", out)
         self.assertFalse((self.root / "hosts/devbox/.codex/skills").exists())

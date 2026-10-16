@@ -8,6 +8,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - `project-icon` 1.0: generic die-cut sticker template, librsvg rendering with light/dark legibility previews, and guarded Paseo icon upload with byte-for-byte read-back. Existing custom icons and scratch projects are protected.
 - `tco-search`: interview-first shopping research across Amazon and installed marketplace sources, ranked by estimated total cost of ownership.
 - Fleet `bin/` folder: the skills sync installs private helper scripts into each host's user bin.
+- `hosts/macos/mds-bye`: rayhanadev/mds-bye (MIT) vendored unmodified at 18a3ada, and an opt-in, macOS-only `mds-bye` sync scope that only verifies the four installed files (bytes, mode, owner) against the committed blobs and reports `same` or `drift`; it never installs, writes, or uses sudo.
 
 ### Changed
 - OPC 7.51 and OPN 1.1: at first PM ownership, use `project-icon` once only when the project has no custom icon and is not a scratch folder.
