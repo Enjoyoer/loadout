@@ -17,6 +17,21 @@ const ConfigObjectSchema = z.object({
   quotaCacheSeconds: z.number().int().min(0).max(600).default(60),
   pqTimeoutSeconds: z.number().int().min(1).max(15).default(5),
   excludedLabels: z.array(z.string().min(1)).default(["noresume"]),
+  // PM quota fallback: a Pi PM on Claude moves to this exact catalog profile while pq shows Claude out, and is moved
+  // back once pq shows Claude usable. Off by default; turning it off stops new swaps, never a pending return.
+  pmFallback: z.boolean().default(false),
+  pmFallbackModel: z.string().min(1).default("fleet/gpt-6.1-sol"),
+  pmFallbackThinking: z.string().min(1).default("medium"),
+  pmFallbackServiceTier: z.string().min(1).default("fast"),
+  pmFallbackOptOutLabel: z.string().min(1).default("nofallback"),
+  // Owner surface: register the original profile of a PM that is already elsewhere, or cancel one return by its id.
+  pmFallbackEnroll: z.array(z.object({
+    agentId: z.string().min(1),
+    model: z.string().min(1),
+    thinkingOptionId: z.string().min(1).nullable(),
+    serviceTier: z.string().min(1).nullable(),
+  }).strict()).max(50).default([]),
+  pmFallbackCancel: z.array(z.string().min(1)).max(50).default([]),
 });
 
 export const ConfigSchema = ConfigObjectSchema.strict();

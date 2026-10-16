@@ -1,10 +1,13 @@
 import { defineSettings } from "@getpaseo/plugin";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import type { PaseoApi } from "@getpaseo/client";
+import type { PaseoApi, PaseoClient } from "@getpaseo/client";
 import type { FetchAgentTimelineResponseMessage } from "@getpaseo/protocol/messages";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
-import { openDaemonClient } from "./server/daemon.ts";
-import { agentPool, QuotaReader, type PoolQuota } from "./server/quota.ts";
+import { openDaemonClient, type AgentSettingsPort } from "./server/daemon.ts";
+import { ReturnStore, type Profile } from "./server/fallback.ts";
+import { readStoredProfiles } from "./server/stored-agent.ts";
+import { createFallbackRunner } from "./server/fallback-runner.ts";
+import { agentPool, QuotaReader, type PoolQuota, type QuotaPool } from "./server/quota.ts";
 import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
@@ -13,7 +16,9 @@ const errorMessage = (error: unknown) => error instanceof Error ? error.message 
 // Thrown before anything reaches the socket, so the message was never delivered.
 const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/.test(errorMessage(error));
 
-export default function contribute(server: PluginServerContext, openClient = openDaemonClient, quota = new QuotaReader()) {
+type OpenedClient = PaseoClient & { agentSettings?: AgentSettingsPort };
+
+export default function contribute(server: PluginServerContext, openClient: () => Promise<OpenedClient> = openDaemonClient, quota = new QuotaReader(), returns = new ReturnStore(), stored: (agentId: string) => Promise<Profile[]> = readStoredProfiles) {
   const settings = server.registerSettings(defineSettings({ id: SETTINGS_ID, scope: "host", version: SETTINGS_VERSION, schema: ConfigSchema }));
   const store = new ResumeStore();
   let timer: NodeJS.Timeout | null = null;
@@ -21,7 +26,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
   // Set by cleanup. From then on nothing schedules or starts a sweep: not the startup chain, an interval tick, or a
   // hook handler that is still finishing.
   let stopped = false;
-  let client: Awaited<ReturnType<typeof openDaemonClient>> | null = null;
+  let client: OpenedClient | null = null;
   let stateErrorLogged = false;
   // One entry per agent with a send in flight; see processRecord.
   const inFlight = new Map<string, InFlightClaim>();
@@ -84,15 +89,31 @@ export default function contribute(server: PluginServerContext, openClient = ope
 
   const isUsageLimitError = (message: string, code?: string) => failureSignature(message, code) !== null;
 
+  const quotaOptions = (currentConfig: Config) => ({
+    ttlMs: currentConfig.quotaCacheSeconds * 1000,
+    timeoutMs: currentConfig.pqTimeoutSeconds * 1000,
+    bufferMs: currentConfig.quotaResetBufferSeconds * 1000,
+  });
+
+  // PM quota fallback. It shares this plugin's client, quota reading, triggers and send claims; it has no loop of its own.
+  const fallback = createFallbackRunner({
+    returns,
+    records: store,
+    acquire,
+    quota: (pool: QuotaPool, currentConfig: Config, options?: { fresh?: boolean }): Promise<PoolQuota> => currentConfig.quotaAware
+      ? quota.pool(pool, { ...quotaOptions(currentConfig), ...(options?.fresh ? { ttlMs: 0 } : {}) })
+      : Promise.resolve({ status: "unknown", pool, reason: "quotaAware off" }),
+    stored,
+    sending: (agentId) => inFlight.has(agentId),
+    log,
+    failed,
+  });
+
   // The pool's quota for a record's provider and model, from one cached pq reading. Unknown when quota awareness is
   // off, pq is missing, slow, failing, or speaks another schema: the callers then behave exactly as without it.
   async function poolQuotaFor(record: Pick<ResumeRecord, "provider" | "model">, currentConfig: Config): Promise<PoolQuota> {
     if (!currentConfig.quotaAware) return { status: "unknown", pool: null, reason: "quotaAware off" };
-    return quota.pool(agentPool(record.provider, record.model), {
-      ttlMs: currentConfig.quotaCacheSeconds * 1000,
-      timeoutMs: currentConfig.pqTimeoutSeconds * 1000,
-      bufferMs: currentConfig.quotaResetBufferSeconds * 1000,
-    });
+    return quota.pool(agentPool(record.provider, record.model), quotaOptions(currentConfig));
   }
 
   const quotaSettings = (currentConfig: Config) => ({ resetBufferSeconds: currentConfig.quotaResetBufferSeconds, maxDelaySeconds: currentConfig.maxDelaySeconds });
@@ -194,6 +215,12 @@ export default function contribute(server: PluginServerContext, openClient = ope
   async function processRecord(record: ResumeRecord, currentConfig: Config) {
     if (!currentConfig.armed) {
       log(`would-resume agentId=${record.agentId} reason=${record.failureSignature} recordId=${record.recordId}`);
+      return;
+    }
+    // A PM whose fallback swap or due restore is not verified yet gets no send: never another turn on the profile
+    // it is leaving. The record waits and follows the agent once the profile is in place.
+    if (fallback.isBusy(record.agentId) || await fallback.blocksSend(record.agentId)) {
+      log(`send-deferred agentId=${record.agentId} recordId=${record.recordId} reason=pm-profile-change-pending`);
       return;
     }
     const api = await acquire();
@@ -388,10 +415,12 @@ export default function contribute(server: PluginServerContext, openClient = ope
     try {
       const currentConfig = await config();
       if (!currentConfig) return;
+      // PM fallback first, so a record acts on the profile its agent has after this pass.
+      await fallback.sweep(currentConfig).catch((error) => failed("pm-fallback-sweep-failed", error));
       // One snapshot per sweep. A terminal record never acts again, so only an actionable one is read afresh: work on
       // an earlier record may have changed it.
       for (const record of await store.read()) {
-        if (!isActive(record)) continue;
+        if (!isActive(record) || fallback.isBusy(record.agentId)) continue;
         if (record.state === "detected") {
           await store.update(record.recordId, (value) => value.state === "detected" ? { ...value, state: "parked", updatedAt: new Date().toISOString() } : value);
         }
@@ -459,7 +488,7 @@ export default function contribute(server: PluginServerContext, openClient = ope
     const pending = inFlight.get(event.agent.id);
     const unsent = pending && !pending.sendStarted ? pending : null;
     if (unsent) unsent.cancelled ??= { state: "superseded", reason: "turn-ended-before-send" };
-    track((async () => {
+    const handled = (async () => {
       // The cancelled claim stores its decision first, so this turn is handled as the agent's newest.
       if (unsent) await unsent.settled;
       const currentConfig = await config();
@@ -579,7 +608,16 @@ export default function contribute(server: PluginServerContext, openClient = ope
       await store.upsert(record);
       log(`detected kind=${record.kind ?? "usage"} agentId=${record.agentId} recordId=${record.recordId} sourceTurnId=${record.sourceTurnId} notBefore=${record.notBefore}`);
       await sweep();
-    })().catch((error) => failed("turn-handler-failed", error)));
+    })().catch((error) => failed("turn-handler-failed", error));
+    // After the resume decision for this turn is stored: a PM fallback swap or a due restore, then a sweep so a
+    // waiting record resumes on the profile now in place.
+    track(handled.then(async () => {
+      if (stopped) return;
+      const currentConfig = await config();
+      if (!currentConfig) return;
+      // The runner decides from the outcome itself (turnSwapEvidence): only a failed usage-limit turn can swap.
+      if (await fallback.afterTurnEnded(event.agent.id, event.outcome, currentConfig)) await sweep();
+    }).catch((error) => failed("pm-fallback-turn-failed", error)));
   });
 
   // Synchronous, before any await: a send claimed for this agent but not started yet must not go out. The handler's own

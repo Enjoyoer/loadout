@@ -91,6 +91,7 @@ export type AgentSnapshot = {
   updatedAt?: string | null;
   persistence?: { provider: string; sessionId: string; nativeHandle?: string; metadata?: Record<string, unknown> } | null;
   labels?: Record<string, string>;
+  runtimeInfo?: { model?: string | null } | null;
 };
 
 const FAILURE_PATTERNS: readonly RegExp[] = [
@@ -501,6 +502,28 @@ export function supersedeForNewUserTurn(record: ResumeRecord, agent: AgentSnapsh
   // into an unrelated record or reset its backoff/attempt count. Incomplete evidence keeps the old recovery path.
   if (!user || isOwnLatestMessage(record, user)) return record;
   return { ...record, state: "superseded", terminalReason: "newer-user-message", updatedAt: new Date(now).toISOString() };
+}
+
+/**
+ * After a verified PM fallback swap or restore, the agent's active record follows it to the new profile in the same
+ * session, so the existing resume engine continues the work there instead of reading the change as a new identity.
+ * The quota hold belonged to the old pool and a usage resume is due now; transient backoff is kept.
+ */
+export function rebindRecord(record: ResumeRecord, agent: AgentSnapshot, now = Date.now()): ResumeRecord {
+  if (!isActive(record) || record.agentId !== agent.id || agent.persistence?.sessionId !== record.persistenceSessionId || agent.provider !== record.provider) return record;
+  const model = agent.model ?? agent.persistence?.metadata?.model;
+  if (typeof model !== "string" || !model) return record;
+  return {
+    ...record,
+    model,
+    modeId: agent.currentModeId ?? null,
+    thinkingOptionId: agent.thinkingOptionId ?? null,
+    nativeHandle: agent.persistence.nativeHandle ?? null,
+    configFingerprint: configFingerprint(agent),
+    quotaHold: null,
+    notBefore: record.kind === "transient" ? record.notBefore : new Date(Math.min(Date.parse(record.notBefore), now)).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+  };
 }
 
 export function shouldResume(record: ResumeRecord, agent: AgentSnapshot, config: ResumeConfig, now = Date.now()): { ok: true } | { ok: false; reason: string } {
