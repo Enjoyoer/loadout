@@ -11,13 +11,13 @@ Use the repository root `README.md` for the current manifest format, installatio
 
 To sync the fleet, run `python3 scripts/sync.py --dry-run` beside this `SKILL.md`, show the user its table, then run `python3 scripts/sync.py` once they agree. That is the only sync path.
 
-- It runs, in order: fleet validate, fleet push, skills, plugins, providers, client-config. Each host takes only the scopes in its `sync` list.
+- It runs, in order: fleet validate, fleet push, skills, plugins, providers, client-config, mds-bye. Each host takes only the scopes in its `sync` list. `mds-bye` is a read-only check of a hand-installed macOS component and never writes (see `fleet/README.md`).
 - It ends with one table of host by scope: `same`, `updated`, `would update`, `conflict`, `blocked`, `drift`, `skipped`, `stopped`, `not needed`, `source`, or `FAILED`.
 - A conflict, or a fleet push failure, stops the later scopes for that host only. Report those hosts and their files; never force past a conflict.
 - Any other error, or a host that stops answering (SSH keepalives, then a per-step time limit: 3 minutes for the fleet push, 5 for skills, providers, and client-config, 15 for client-config with `--update-claude`, 20 for plugins), is `FAILED` for that host and step; the next host still runs. An error that is not a fleet error also prints its traceback. Each step's shared setup (publication, overlay, catalog, token) runs once, and an error there is one message that fails the step for every host and stops the later scopes for those hosts.
 - `--host <name>` narrows it to one host, and `--only fleet,skills,...` to some steps. `--update-claude` lets client-config run `claude update` below `minVersion`.
 - Exit status is 0 only when no host is `conflict`, `blocked`, or `FAILED`.
-- The sections below define what each step does. The per-step scripts (`fleet.py`, `skills_sync.py`, `plugins_sync.py`, `paseo_providers.py`, `client_config.py`) are its building blocks, for diagnosing one step.
+- The sections below define what each step does. The per-step scripts (`fleet.py`, `skills_sync.py`, `plugins_sync.py`, `paseo_providers.py`, `client_config.py`, `mds_bye.py`) are its building blocks, for diagnosing one step.
 
 ## Source and selection
 

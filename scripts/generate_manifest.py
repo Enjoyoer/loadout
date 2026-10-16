@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a publication manifest from the committed skill and plugin trees at HEAD."""
+"""Generate a publication manifest from the committed skill, plugin and host component trees at HEAD."""
 
 from __future__ import annotations
 
@@ -74,6 +74,16 @@ def build(source: str) -> dict:
             plugins.append({"id": parts[1], "paseo": spec["requirements"]["paseo"]})
     if {entry["plugin"] for entry in plugin_files} != {plugin["id"] for plugin in plugins}:
         raise SystemExit("Every plugin directory needs a paseo-plugin.json")
+    # Host components (hosts/<os>/<component>/...) are never installed by the sync; steps verify against them.
+    host_files = []
+    for path, parts in committed(source, "host", 4):
+        blob = git("cat-file", "blob", f"{source}:{path}")
+        host_files.append({
+            "path": path,
+            "component": f"{parts[1]}/{parts[2]}",
+            "bytes": len(blob),
+            "sha256": hashlib.sha256(blob).hexdigest(),
+        })
     return {
         "schema_version": 2,
         "hash_basis": "git-blob",
@@ -85,6 +95,8 @@ def build(source: str) -> dict:
         "plugin_file_count": len(plugin_files),
         "plugins": plugins,
         "plugin_files": plugin_files,
+        "host_file_count": len(host_files),
+        "host_files": host_files,
     }
 
 
@@ -92,7 +104,8 @@ def main() -> None:
     source = git("rev-parse", "HEAD").decode().strip()
     manifest = build(source)
     (ROOT / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print(f"Wrote {manifest['file_count']} skill files and {manifest['plugin_file_count']} plugin files from {source}")
+    print(f"Wrote {manifest['file_count']} skill files, {manifest['plugin_file_count']} plugin files and "
+          f"{manifest['host_file_count']} host component files from {source}")
 
 
 if __name__ == "__main__":

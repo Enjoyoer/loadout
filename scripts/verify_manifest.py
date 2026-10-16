@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the public skill and plugin manifest against committed Git blobs."""
+"""Verify the public skill, plugin and host component manifest against committed Git blobs."""
 
 from __future__ import annotations
 
@@ -40,12 +40,16 @@ def main() -> None:
         raise SystemExit("Committed skills tree changed after the manifest source")
     if git("rev-parse", f"{source}:plugins") != git("rev-parse", f"{head}:plugins"):
         raise SystemExit("Committed plugins tree changed after the manifest source")
+    # ls-tree, not rev-parse: a commit without hosts/ prints nothing instead of failing.
+    if git("ls-tree", source, "hosts") != git("ls-tree", head, "hosts"):
+        raise SystemExit("Committed hosts tree changed after the manifest source")
 
     detail = difference(manifest, build(source))
     if detail:
         raise SystemExit(f"Manifest differs from the committed trees at {source}: {detail}")
     print(f"Verified {manifest['skill_count']} skills, {manifest['plugin_count']} plugins, and "
-          f"{manifest['file_count'] + manifest['plugin_file_count']} committed files at {source}")
+          f"{manifest['file_count'] + manifest['plugin_file_count'] + manifest['host_file_count']} committed files "
+          f"at {source}")
 
 
 if __name__ == "__main__":

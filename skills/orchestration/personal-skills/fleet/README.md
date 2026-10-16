@@ -63,7 +63,7 @@ Put skills that must stay private (personal, account-bound, or holding credentia
     - `paseo-relay`: the host is reached only through its Paseo daemon via a pairing offer. There is no file transport, so it cannot take `skills` or `plugins`, and it needs an explicit `sync`.
   - `paseo_offer`: path to a file holding the host's Paseo pairing offer. Required for `paseo-relay`; optional for `ssh`, where it lets daemon commands go over the relay. A relative path resolves inside the fleet directory. Keep offers private: the fleet push never copies an offer to other hosts, and refuses to run while an offer resolves to one of the files it publishes.
   - `paseo_home`: optional Paseo home for this host's daemon, a path that is absolute on that host or starts with `~`, which the host expands. The plugins and providers steps use it for that host only: plugin config reads, settings backups, installs, reloads and `plugin ls` confirmations, and the provider config merge and reload. The skills step still finds a Pi runtime from the default `~/.paseo/config.json`. A `PASEO_HOME`, `PASEO_HOST`, `PASEO_AGENT_ID` or `PASEO_AGENT_CWD` the sync inherits (from an agent session, a scratch daemon, or a host's shell profile) is always cleared first, so without `paseo_home` the default `~/.paseo` and the daemon it names are used. A `paseo-relay` host's reload goes through its offer whatever this says.
-  - `sync`: optional list of scopes from `skills`, `plugins`, `providers`, `client-config`. Default: `skills`, plus `plugins` when `paseo` is present. Each sync skips a host outside its scope and reports it as skipped, not failed. `providers` (Paseo provider pickers) and `client-config` (managed Codex and Claude Code settings) are opt-in. `paseo-relay` hosts can take only `providers`.
+  - `sync`: optional list of scopes from `skills`, `plugins`, `providers`, `client-config`, `mds-bye`. Default: `skills`, plus `plugins` when `paseo` is present. Each sync skips a host outside its scope and reports it as skipped, not failed. `providers` (Paseo provider pickers), `client-config` (managed Codex and Claude Code settings) and `mds-bye` (a read-only check, `macos` hosts only; see below) are opt-in. `paseo-relay` hosts can take only `providers`.
   - `exclude_skills`: optional skill names the skills sync leaves alone on this host, such as a package you keep a private version of.
   - `checkout`: path to a local Git checkout of this repository, or `null` (the default). A host without a checkout receives verified bytes from the source host and reverifies them.
   - `clients`: clients to sync, from `codex`, `claude`, `opencode`. Required when `sync` includes `skills`. Absent clients are skipped and reported.
@@ -79,6 +79,21 @@ Put skills that must stay private (personal, account-bound, or holding credentia
 Omit `global` or `global/AGENTS.md` to skip global instructions. Global instructions follow the same preflight: never overwrite a changed target that matches no known prior version. For `managed-settings:claudeMd` the preflight compares the field's value, a missing file or field is added, and unparseable JSON or a non-object is a conflict.
 
 Plugin settings, plugin state, and the daemon's `pluginsEnabled` switch are host-local. The sync never writes them. See the `Paseo plugins` section of `SKILL.md`.
+
+## mds-bye (macOS, verify only)
+
+[`hosts/macos/mds-bye/`](../../../../hosts/macos/mds-bye/PROVENANCE.md) vendors [mds-bye](https://github.com/rayhanadev/mds-bye) (MIT) unmodified at upstream commit `18a3ada`. It keeps Spotlight, Siri and Apple Intelligence indexers disabled with a user LaunchAgent and a root LaunchDaemon. The sync never installs it: an owner runs its `install.sh` on a Mac by hand, with `sudo`, and updates the vendored copy only after Config review, since the daemon runs as root.
+
+Add `mds-bye` to a `macos` host's `sync` list to have every sync check that install. `fleet.py validate` rejects the scope on any other OS, and the host program also refuses to run off macOS. The step (`scripts/mds_bye.py`, run last) reads the four installed files and compares them with the committed blobs at the synced `source_commit`:
+
+| Installed file | Committed source | Mode | Owner |
+|---|---|---|---|
+| `~/.local/sbin/disable-indexers.sh` | `scripts/disable-indexers.sh` | `0755` | the user |
+| `/usr/local/libexec/disable-indexers-system.sh` | `scripts/disable-indexers-system.sh` | `0755` | `root:wheel` |
+| `~/Library/LaunchAgents/com.rayhanadev.disable-indexers.plist` | `launchd/com.rayhanadev.disable-indexers.agent.plist`, `__HOME__` replaced by the host's home as `install.sh` does | `0644` | the user |
+| `/Library/LaunchDaemons/com.rayhanadev.disable-indexers.plist` | `launchd/com.rayhanadev.disable-indexers.daemon.plist` | `0644` | `root:wheel` |
+
+Each file reports `same <file>` or `DRIFT <file>: <reason>` (missing, different bytes, mode, owner, symlink). The table shows `same` or `drift`; drift does not fail the sync or stop other scopes. The step never writes, never runs `install.sh`, and never uses `sudo`, so `--dry-run` runs the same check. To fix drift, review it and rerun `install.sh` by hand. `LOADOUT_MDS_BYE_ROOT`, set in the host's environment, prefixes every installed path for tests against a scratch fake root.
 
 ## paseo-providers.json
 
