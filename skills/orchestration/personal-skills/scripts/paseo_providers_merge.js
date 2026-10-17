@@ -1,22 +1,30 @@
 // Merge pinned Paseo provider fields into this host's Paseo config.
 // Shipped gzip+base64 by paseo_providers.py; argv[2] is the gzip+base64 JSON payload:
-// {host, providers, env, required_env, stamp, dry_run, config_path, paseo_home}.
+// {host, providers, disabled, env, required_env, stamp, dry_run, config_path, paseo_home}.
 // It ships without whole-line comments and indentation (merge_program), so it holds no multiline string.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toString());
 // wrote: this run changed, or may have changed, the host (its config or its Pi runtime), so a reload is owed.
-const result = { host: p.host, changed: false, wrote: false, backup: null, preserved: [], verified: false, error: null };
+const disabled = p.disabled || [];
+const result = { host: p.host, changed: false, wrote: false, backup: null, preserved: [], disabled, verified: false, error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
   process.exit(code);
 }
+// A disabled provider reads back as enabled:false with no models key, so its picker shows nothing.
 function labelsMatch(providers) {
+  if (!disabled.every(k => providers[k] && providers[k].enabled === false && !('models' in providers[k]))) return false;
   return Object.keys(p.providers).every(k => {
     const want = p.providers[k].models, got = (providers[k] || {}).models || [];
     return !want || want.length === got.length && want.every((m, i) => got[i].id === m.id && got[i].label === m.label);
   });
 }
 try {
+  // paseo_providers.py refuses these first; the merge never trusts its payload alone.
+  for (const k of disabled) {
+    if (['pi', 'claude', 'codex'].includes(k)) throw Error('refusing to disable protected provider ' + k);
+    if (k in p.providers) throw Error('provider ' + k + ' is both pinned and disabled');
+  }
   // The host's paseo_home from hosts.json, ~ expanded here, or the default home; never an inherited PASEO_HOME.
   const home = p.paseo_home ? p.paseo_home.replace(/^~(?=[/\\]|$)/, os.homedir()) : path.join(os.homedir(), ".paseo");
   const cfgPath = p.config_path || path.join(home, "config.json");
@@ -91,6 +99,11 @@ try {
     for (const k of Object.keys(p.env)) {
       merged[k] = Object.assign({}, merged[k] || {});
       merged[k].env = Object.assign({}, (prev[k] || {}).env || {}, p.env[k]);
+    }
+    // Turned off: keep every other existing field, drop the models.
+    for (const k of disabled) {
+      const { models, ...rest } = merged[k] || {};
+      merged[k] = { ...rest, enabled: false };
     }
     if (envServers.length) for (const provider of ['codex', 'claude', 'pi']) {
       if (!merged[provider] || merged[provider].enabled === false) continue;
@@ -211,7 +224,7 @@ try {
     result.mcp.push('provider fields: ' + (fields.join(', ') || 'unchanged'));
     if (result.pi) result.mcp.push('Pi runtime files: ' + (result.pi.changed.join(', ') || 'unchanged'));
   }
-  result.preserved = Object.keys(m.prev).filter(k => !(k in p.providers) && !(k in p.env));
+  result.preserved = Object.keys(m.prev).filter(k => !(k in p.providers) && !(k in p.env) && !disabled.includes(k));
   result.changed = Boolean(result.pi?.changed?.length) || m.rows || envChanged.length > 0;
   const now = published ? JSON.parse(read()).agents.providers : m.merged;
   result.verified = labelsMatch(now);

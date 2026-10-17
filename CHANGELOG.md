@@ -6,6 +6,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ### Added
 - `bw-login`: an agent signs in to a website with the `bw-login --list` and `bw-paste` helpers without ever seeing the values, pasting from the OS clipboard, or in Codex Browser Use through a no-output bridge into the tab clipboard; CAPTCHA, 2FA, and a locked vault go to the owner.
+- personal-skills: an optional `disabledProviders` list in `paseo-providers.json`, top level or per host (a host list replaces the top-level one), turns Paseo agent providers off: each id gets `enabled: false` and loses its `models` key, other fields kept. An id also pinned in the host's effective `providers`, and `pi`, `claude` or `codex`, are refused. The dry run and the result line name the ids disabled.
 - `unstuck`: a fresh PM on the strongest available model reviews a stalled project review-only, measures it, dates the scope growth, names a one-line design or process cause, answers rewrite proposals, and returns owner decisions with defaults before a delete-down PR.
 - personal-skills: fleet `mcpServers` declarations sync Streamable HTTP servers to Codex, Claude Code user scope and Pi, with token-name-only config and POSIX env-file launch wiring.
 - `scripts/check_io.py` (CI): plugin code may import only read-side `node:fs` functions, and the fleet sync's remote programs may not add raw fs writes outside `remote_common.js`.

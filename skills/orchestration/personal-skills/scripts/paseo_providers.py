@@ -43,8 +43,10 @@ RELOAD_JS = Path(__file__).resolve().parent / "paseo_reload_remote.js"
 BOOT = "eval(require('zlib').gunzipSync(Buffer.from(process.argv[1],'base64')).toString())"
 pack = fleet.pack
 parse_result = fleet.parse_result
-CONFIG_KEYS = {"providers", "env", "hosts", "pi"}
-HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi"}
+CONFIG_KEYS = {"providers", "env", "hosts", "pi", "disabledProviders"}
+HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi", "disabledProviders"}
+# Providers the fleet itself runs on; disabledProviders never turns these off.
+PROTECTED_PROVIDERS = {"pi", "claude", "codex"}
 RELAY_TITLE = "loadout-provider-sync"
 # argv prefix for every paseo call made here; tests replace it with their fake (production always runs bare "paseo").
 # An ssh host reloads through RELOAD_JS instead, which runs that host's own paseo.
@@ -248,6 +250,24 @@ def _providers(providers, where):
                 raise fleet.FleetError(f"providers.{name}.{model_id}: label {label!r} must be a name only")
 
 
+def _disabled(value, where):
+    """disabledProviders: distinct non-empty provider ids, none of them protected."""
+    fleet._strings(value, where)
+    if not all(value):
+        raise fleet.FleetError(f"{where} must hold non-empty provider ids")
+    protected = sorted(PROTECTED_PROVIDERS & set(value))
+    if protected:
+        raise fleet.FleetError(f"{where} cannot disable {protected}")
+    return value
+
+
+def effective(config: dict, host: str) -> tuple[dict, list]:
+    """A host's provider blocks and disabled ids: host providers overlay the default, a host list replaces it."""
+    settings = config.get("hosts", {}).get(host, {})
+    return ({**config["providers"], **settings.get("providers", {})},
+            list(settings.get("disabledProviders", config.get("disabledProviders", []))))
+
+
 def _pi(value, where):
     if not isinstance(value, dict): raise fleet.FleetError(f"{where} must be an object")
     fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly", "claudeApiKeyRoute", "labelOrder", "contextWindows"}, where)
@@ -275,6 +295,7 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
         raise fleet.FleetError("providers must be a non-empty object")
     _providers(providers, "providers")
     if "pi" in data: _pi(data["pi"], "pi")
+    if "disabledProviders" in data: _disabled(data["disabledProviders"], "disabledProviders")
     _env_map(data.get("env", {}), "env")
     scoped = {host["name"] for host in fleet.hosts_for(fleet_doc, "providers")}
     for name, settings in data.get("hosts", {}).items():
@@ -282,6 +303,8 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
             raise fleet.FleetError(f"hosts.{name} is not a fleet host with the providers scope")
         fleet._keys(settings, HOST_KEYS, f"hosts.{name}")
         if "pi" in settings: _pi(settings["pi"], f"hosts.{name}.pi")
+        if "disabledProviders" in settings:
+            _disabled(settings["disabledProviders"], f"hosts.{name}.disabledProviders")
         _providers(settings.get("providers", {}), f"hosts.{name}.providers")
         _env_map(settings.get("env", {}), f"hosts.{name}.env")
         if not isinstance(settings.get("inherit_env", True), bool):
@@ -291,6 +314,11 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
             isinstance(keys, list) and all(isinstance(k, str) for k in keys) for keys in required.values()
         ):
             raise fleet.FleetError(f"hosts.{name}.required_env must map providers to lists of env names")
+    for name in sorted(scoped):
+        providers, disabled = effective(data, name)
+        both = sorted(set(providers) & set(disabled))
+        if both:
+            raise fleet.FleetError(f"{name}: {both} both pinned in providers and listed in disabledProviders")
     return data
 
 
@@ -299,7 +327,7 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
     env = {k: dict(v) for k, v in config.get("env", {}).items()} if settings.get("inherit_env", True) else {}
     for provider, values in settings.get("env", {}).items():
         env.setdefault(provider, {}).update(values)
-    providers = {**config["providers"], **settings.get("providers", {})}
+    providers, disabled = effective(config, host)
     pi = settings.get("pi", config.get("pi"))
     generated = None
     mcp_servers = config.get('_mcpHosts', {}).get(host, [])
@@ -323,6 +351,7 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
         "pi_files": ({f.name: f.read_text() for f in (Path(__file__).parent / 'pi').glob('*') if f.suffix in {'.py', '.mjs'}} if generated else {}),
         "host": host,
         "providers": providers,
+        "disabled": disabled,
         "env": env,
         "required_env": settings.get("required_env", {}),
         "stamp": stamp,
@@ -589,8 +618,10 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
             if dry_run and result["changed"]:
                 state = "would change (dry run)"
             backup = f"; backup {result['backup']}" if result["backup"] else ""
+            disabled = result.get("disabled") or []
+            off = (f"; {'would disable' if dry_run else 'disabled'} [{', '.join(disabled)}]" if disabled else "")
             emit(f"{name}: write {state}; labels {'verified' if result['verified'] else 'MISMATCH'}; "
-                 f"preserved [{', '.join(result['preserved'])}]{backup}")
+                 f"preserved [{', '.join(result['preserved'])}]{off}{backup}")
         if result and result.get('mcp'):
             emit(f"{name}: MCP " + '; '.join(result['mcp']))
         if runner.cleanup_warning:
