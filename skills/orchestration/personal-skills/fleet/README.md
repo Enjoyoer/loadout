@@ -101,7 +101,9 @@ Optional. The Paseo provider-picker sync (`python3 scripts/paseo_providers.py`) 
 
 - `providers`: pinned blocks keyed by Paseo provider, such as `claude` or `codex`. Each block's fields replace the same fields in the host's `agents.providers.<provider>`; other fields there are kept. `models[]` rows need a unique `id` and a `label` that is a name only: no digits and not the model ID.
 - `env`: optional default environment per provider, merged into `agents.providers.<provider>.env` on every host. A value's `%VAR%` is expanded from the host environment and written in plain text to `config.json` and its backups, so `%VAR%` must never name a secret; names containing KEY, TOKEN, SECRET, PASSWORD, CREDENTIAL or AUTH are refused with nothing written.
+- `disabledProviders`: optional list of provider ids to turn off, such as `["example-retired"]`. Each listed id gets `enabled: false` in `agents.providers.<id>`, keeps its other fields, and loses its `models` key, so its picker shows none. Removing a block from `providers` alone leaves the host's old block as it was. An id may not also be in the host's effective `providers`, and `pi`, `claude` and `codex` are refused. The dry run and the result line name the ids disabled.
 - `hosts`: optional settings by host name, each for a host with the `providers` scope.
+  - `disabledProviders`: replaces the top-level list for this host; `[]` disables none.
   - `env`: per-provider values layered over the default.
   - `inherit_env`: `false` skips the default `env`, so the host keeps its own values.
   - `required_env`: per-provider variable names that must be set after the merge, or the host fails without a write.

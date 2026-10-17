@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "c2ec2d71187b3c622355b120325541ccb1a213fa",
+  "source_commit": "1e8edc4601a0e1c19d74a67b483365551f5f1183",
   "skill_count": 25,
   "file_count": 141,
   "files": [
@@ -436,8 +436,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 41082,
-      "sha256": "9e49b0084918824c9209888b4da6681e952edfecfcba4de5968781443caa4816"
+      "bytes": 41647,
+      "sha256": "de9ffc8490c01495d342f8cef942cca56f5b1f95a593e6e8f3aa9d1b5cd67f9f"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -478,8 +478,8 @@
       "path": "skills/orchestration/personal-skills/fleet/example/paseo-providers.json",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 1506,
-      "sha256": "7b8253a75822f0d88696faf46e39a61ba45cc51fb54a46986133a7d89f854c29"
+      "bytes": 1647,
+      "sha256": "098ebe041e1c53a0017869c45227b10abbeba9918e62abf0499ff129b82b9fdf"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/pi-provider-overlay.json",
@@ -548,15 +548,15 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 35814,
-      "sha256": "7d6709c83dc791aae6c24aab5c8c42464c9fc38164709bd53183de4df0c561ba"
+      "bytes": 37454,
+      "sha256": "21b5f5d7dc1ebd565871eec18923d3ea1c08e719ed315efa4dc079c1fbdf5e56"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 14007,
-      "sha256": "d8400030aeba8e63b10d64355301c0e551b1e143ffd979efa917d5d36673f543"
+      "bytes": 14830,
+      "sha256": "ce55ee6f2f94b97919322f07dcad0b815b069a552aa824a843f9db038fb89cdf"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_reload_remote.js",

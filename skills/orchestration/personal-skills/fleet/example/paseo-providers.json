@@ -52,6 +52,9 @@
       ]
     }
   },
+  "disabledProviders": [
+    "example-retired"
+  ],
   "env": {
     "claude": {
       "ANTHROPIC_BASE_URL": "https://router.example.test"
@@ -71,7 +74,11 @@
         "claude": [
           "ANTHROPIC_BASE_URL"
         ]
-      }
+      },
+      "disabledProviders": [
+        "example-retired",
+        "example-trial"
+      ]
     }
   }
 }
