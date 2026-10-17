@@ -208,14 +208,15 @@ export function validateRecordedWorkerRoute(route) {
         typeof route.reason !== 'string' || !route.reason.trim() || /[\r\n]/.test(route.reason)))) {
     throw Error('recorded owner or task-default route required for worker');
   }
-  requireFableRule(route);
   return Object.freeze({ model: route.model, effort: route.effort, fastMode: route.fastMode, source: route.source,
     ...(taskDefault ? { kind: route.kind, pace: route.pace, reason: route.reason } : {}) });
 }
 
 // A route being recorded or launched must also match today's class table: class, Fast, pace pool, and level.
+// Fable at high with Fast off is checked on every new and launched route, not on reads, so a record stays readable.
 function validateWorkerRoute(route) {
   const valid = validateRecordedWorkerRoute(route);
+  requireFableRule(route);
   const rule = workerRule(route.kind);
   if (route.source === 'task-default' && (!rule || route.fastMode !== rule.fastMode ||
       (rule.range ? route.pace?.pool !== LABEL_POOLS[rule.label] : route.pace !== null) ||
@@ -271,10 +272,10 @@ function validateLaunchedWorkerRoute(route, { task = null, lane = null, taskClas
   const laneClass = uiTaskLaneClass(task, taskClass);
   if (task != null && task.ui !== true && taskClass == null) throw Error('a Worker bound to a task record needs its lane class (taskClass)');
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
-  requireFableRule(route, rows);
   if (task?.ui === true && !isUiRoute(route, rows)) {
     throw Error(`UI task: a ${laneClass} lane launches only Fable high, Fast off (owner rule); the build goes to a code task`);
   }
+  requireFableRule(route, rows);
   if (recordedLaneEntry(task, lane, route)) return validateRebuild(route, laneClass, rows);
   const valid = validateWorkerRoute(route);
   if (laneClass != null) validateLaneClass(route, laneClass, rows);
