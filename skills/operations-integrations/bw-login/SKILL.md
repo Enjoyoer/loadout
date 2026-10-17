@@ -22,8 +22,9 @@ Run `bw-paste <id> username` or `bw-paste <id> password`. This copies the value 
 a. Normal desktop browser, or a browser tool that sends real OS keys: click the field, press Cmd+V on Mac or Ctrl+V elsewhere.
 
 b. Codex app Browser Use, which has its own virtual clipboard (error `Browser Use virtual clipboard has no data to paste`): bridge the OS clipboard into the tab clipboard inside the node REPL. Never print, log, return or screenshot the value.
-   - Probe first with no secret: set the clipboard to `probe123`. In one REPL call, read it with `execFileSync` from `node:child_process` (Windows: `powershell -NoProfile -Command Get-Clipboard -Raw`; Mac: `pbpaste`), strip the trailing newline, run `tab.clipboard.writeText(v)`, and output only whether `readText()` equals `probe123`.
-   - Then for real: run `bw-paste`, then in one REPL call bridge, click the field, `pressKey` `Control_L+v` (`Meta+v` on Mac), run `tab.clipboard.writeText('')`, and output only `pasted`.
+   - Read the OS clipboard exactly, with nothing added or stripped: `execFileSync` from `node:child_process` running, on Windows, `powershell -NoProfile -Command "[Console]::Out.Write((Get-Clipboard -Raw))"`, or on Mac, `pbpaste`.
+   - Probe first with no secret: set the clipboard to `probe123`. In one REPL call, read it as above into `v`, run `tab.clipboard.writeText(v)`, and output only whether `readText()` equals `probe123`.
+   - Then for real: run `bw-paste`, then in one REPL call bridge, click the field, `pressKey` `Control_L+v` (`Meta+v` on Mac), and output only `pasted`. Wrap the bridge, click and paste in `try` with `tab.clipboard.writeText('')` in `finally`, so the tab clipboard is cleared even if a step throws.
    - The owner verified this live on Windows on 2026-10-17.
 
 c. Any other environment where paste comes up empty: stop and report the exact error line. Do not improvise another path.
