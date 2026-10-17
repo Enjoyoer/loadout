@@ -2,7 +2,7 @@
 
 ## Task binding
 
-Call `createTask({workingDirectory, runDirectory, owner, baseRef, delivery:'merge', browserReview, ui})` from `scripts/task-state.mjs`; reuse `taskPath`. Use a named publication base such as `origin/main`. Keep runtime files outside the repository. Use the normal CLI home and host-native access without extra sandbox, translation, or gateway layers. Keep credentials out of prompts, logs, and commits; authentication stays user-controlled. Preserve work on cloud-hydration failures.
+Call `createTask({workingDirectory, runDirectory, owner, baseRef, delivery:'merge', browserReview, ui})` from `scripts/task-state.mjs` (`ui: true` only for a task of read-only `ui-design` and `ui-check` lanes; the build is a `code` task); reuse `taskPath`. Use a named publication base such as `origin/main`. Keep runtime files outside the repository. Use the normal CLI home and host-native access without extra sandbox, translation, or gateway layers. Keep credentials out of prompts, logs, and commits; authentication stays user-controlled. Preserve work on cloud-hydration failures.
 
 ## Agent launch
 

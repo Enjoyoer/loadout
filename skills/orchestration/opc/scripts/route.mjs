@@ -7,14 +7,14 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { canonicalWorkerClass, isUiRoute, materializeFixedRoute, OWNER_RULE_ROUTES, recordedLaneEntry, routeReason, selectWorkerRoute,
-  validateLaneClass, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
+  uiTaskLaneClass, validateLaneClass, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
 import { defaultRoutingPath, readQuota, readRoutingSettings, ROUTING_DEFAULTS } from './quota-pace.mjs';
 import { readTask, updateTask } from './task-state.mjs';
 
 const usage = 'usage: route.mjs --class <class> [--pq-file FILE] [--catalog FILE] ' +
   '[--owner-model ID --owner-effort LEVEL [--owner-fast on|off]] [--task TASK_JSON --lane SLUG]';
 
-// An owner route is returned unchanged; owner-rule classes (ui) skip the pace; routing.json and quota are read only
+// An owner route is returned unchanged; owner-rule classes (ui-design, ui-check) skip the pace; routing.json and quota are read only
 // for classes the pace may adjust, and a bad routing.json falls back to the defaults.
 export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, catalog, pqFile = null,
   settings = null, home } = {}) {
@@ -45,10 +45,13 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
 // One route per lane. Repairs and resumes reuse the recorded entry; a different route for the lane is refused, as the
 // Worker request and brief refuse it. A new entry is checked against today's class table and against its lane's class
 // (taskClass, or a task default's own class): the owner rules, and a task default's model by its catalog row when a
-// catalog is given, else by name. That happens here, once; later reads check only its shape. A UI task records only the
-// ui route (Fable high, Fast off).
+// catalog is given, else by name. That happens here, once; later reads check only its shape. A UI task records only its
+// ui-design and ui-check lanes, on Fable high, Fast off.
 function recordLane(task, { lane, route, reason, taskClass = null, catalog = null }) {
-  if (task.ui && !isUiRoute(route)) throw Error('UI task: only the ui route (Fable high, Fast off) is recorded (owner rule); use the ui class');
+  if (task.ui) {
+    taskClass = uiTaskLaneClass(task, taskClass);
+    if (!isUiRoute(route)) throw Error(`UI task: a ${taskClass} lane records only Fable high, Fast off (owner rule); the build goes to a code task`);
+  }
   const recorded = recordedLaneEntry(task, lane, route);
   if (recorded) {
     if (recorded.reason !== reason) throw Error(`lane ${lane} already has a recorded route; repairs and resumes reuse it`);
@@ -69,7 +72,7 @@ export function recordWorkerRoute(taskPath, { lane, route, reason, taskClass = n
 
 // The route-selection flags (--class, --owner-model, --owner-effort, --owner-fast) given for a lane that already has a
 // recorded route that they would not select. A task default records its class; an owner-named route must keep the named
-// class's owner rules, and a class alone selects an owner-named route only for ui.
+// class's owner rules, and a class alone selects an owner-named route only for ui-design and ui-check.
 function differingLaneFlags(stored, flags, ownerRoute) {
   const differ = [];
   if (ownerRoute) {
@@ -78,7 +81,7 @@ function differingLaneFlags(stored, flags, ownerRoute) {
     if (ownerRoute.fastMode !== stored.fastMode) differ.push('owner-fast');
   }
   if (flags.class != null) {
-    let fits = stored.source === 'task-default' ? canonicalWorkerClass(stored.kind) === canonicalWorkerClass(flags.class) : ownerRoute != null || flags.class === 'ui';
+    let fits = stored.source === 'task-default' ? canonicalWorkerClass(stored.kind) === canonicalWorkerClass(flags.class) : ownerRoute != null || Object.hasOwn(OWNER_RULE_ROUTES, canonicalWorkerClass(flags.class));
     if (fits && stored.source !== 'task-default') {
       try { validateLaneClass(stored, flags.class); } catch { fits = false; }
     }
