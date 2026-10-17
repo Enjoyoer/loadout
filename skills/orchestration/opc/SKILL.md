@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.53"
+  version: "7.53.1"
 ---
 
 # OPC
@@ -15,13 +15,13 @@ Follow this state machine, reading linked references only when their branch appl
 
 ## 1. Scope
 
-PMs run on Pi `fleet/claude-opus-5-5`, thinking `medium`, unless the owner names another model or effort. If self differs at first PM ownership, `update_agent` only self's model and thinking. Worker routes stay in [routing](references/routing.md "branch:routing").
+PMs run on Pi `fleet/claude-opus-5-5`, thinking `medium`, unless the owner names another model or effort. If self differs at first PM ownership, `update_agent` only self's model and thinking.
 
 At first PM ownership, if the project has no custom icon and is not a scratch folder, use `$project-icon` once.
 
 Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks: observable behaviors from the owner's intent, preferably end-to-end or live. Consult root `STATUS.html` and `LESSONS.md` when resuming. Escalate scope or authority changes to the owner.
 
-Enable browser review only when the initial request explicitly asks for it; preserve that immutable choice through repairs, resumes, and reinvocation. Initialize the [execution mechanics](references/imp-execution.md "runtime") before launching lanes.
+Enable browser review only when the initial request explicitly asks; the choice is immutable through repairs, resumes, and reinvocation. Initialize the [execution mechanics](references/imp-execution.md "runtime") before launching lanes.
 
 ## 2. Optional scouting
 
@@ -29,7 +29,13 @@ Choose minimal useful scouting topology, splitting only independent questions. T
 
 ## 3. Worker
 
-Workers use Pi/Codemode except browser classes on native Codex; other native lanes require per-task owner authorization. Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast (Pi GPT routes) win unadjusted. Visual design (new screen, layout, component) gets one read-only Fable `high` `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`. UI lanes never use GPT/web or quota reductions. Record the route and reason; preserve them through repairs and resumes. Retry network or proxy errors on the same route. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks. Place and brief Workers through the execution mechanics.
+Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted.
+
+- On Pi, Fast (GPT routes only) is not a catalog model or thinking level: it is the agent label `opc.service-tier=fast`, which pi-fast-toggle applies and the composer's Fast pill shows.
+- New agent: `create_agent({..., labels:{"opc.service-tier":"fast"}})` or the Worker builder via `--owner-fast on`; existing: `update_agent({agentId, labels:{"opc.service-tier":"fast"}})`.
+- Verify the label (`get_agent_status` or the Fast pill) before reporting a route.
+
+Visual design (new screen, layout, component) gets one read-only Fable `high` `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks.
 
 All repository source and test edits, including small repairs, belong to Workers. No test-driven development: Workers add only owner- or PM-specified tests and keep existing tests and CI green. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
