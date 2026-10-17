@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "3ac311f48dc64f7aa59163fbe1b4c45f2ea963a1",
+  "source_commit": "8d30b6f8d297e3b01db45b31b5d3736c927df4e9",
   "skill_count": 24,
   "file_count": 139,
   "files": [
@@ -303,8 +303,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 33816,
-      "sha256": "afadcc70d2d47a7dfeb28ed399192bfaca9b3c2866b2bd7c030ffd330f243a49"
+      "bytes": 34376,
+      "sha256": "a687eb273d954fb5373d95c9cdb27cb10b041ccdada7a6966ae485de966c4920"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -422,8 +422,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 40568,
-      "sha256": "6a61f22a6bf83f74a725781bb0331dc354d7168a5eb40aa6f5fb6295d36b33d7"
+      "bytes": 41082,
+      "sha256": "9e49b0084918824c9209888b4da6681e952edfecfcba4de5968781443caa4816"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
