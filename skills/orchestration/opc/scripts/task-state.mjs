@@ -230,7 +230,7 @@ export function readTask(taskPath) {
   return task;
 }
 
-// ui marks UI work: Fable high only, never a GPT or web lane (owner rule). It is immutable like browserReview.
+// ui marks UI work: only read-only ui-design and ui-check lanes on Fable high, never a GPT or web lane (owner rule). It is immutable like browserReview.
 export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'HEAD', delivery = 'local', browserReview = false, ui = false }) {
   canonicalPath(workingDirectory);
   canonicalPath(runDirectory);
