@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "d5e948c70ffba503d523ee37c70a4b1d7e70ad11",
-  "skill_count": 24,
-  "file_count": 139,
+  "source_commit": "a57752218fa9507d58cc2d91afeb5a4a7a666a23",
+  "skill_count": 25,
+  "file_count": 141,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -109,6 +109,20 @@
       "skill": "uv-python",
       "bytes": 231,
       "sha256": "7adfbd5631e5d87781e636c4190b1e20353f0c3a56f062f189ee642e0de02e52"
+    },
+    {
+      "path": "skills/operations-integrations/bw-login/SKILL.md",
+      "category": "operations-integrations",
+      "skill": "bw-login",
+      "bytes": 2164,
+      "sha256": "019472f3bec18ad186877091a3d2a127853cecc1a4a74c88f2dc0be4cf311502"
+    },
+    {
+      "path": "skills/operations-integrations/bw-login/agents/openai.yaml",
+      "category": "operations-integrations",
+      "skill": "bw-login",
+      "bytes": 199,
+      "sha256": "2443e21bc940b65e36ca38665da403f990d5557f6efe8fd00dab52cc0a2b1fb3"
     },
     {
       "path": "skills/operations-integrations/project-icon/SKILL.md",
