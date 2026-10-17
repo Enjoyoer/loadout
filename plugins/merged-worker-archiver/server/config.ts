@@ -23,6 +23,12 @@ export const ConfigSchema = z
     /** Re-checks for clean, idle, not-yet-merged worktrees after an event evaluation. */
     followUpDelaysSeconds: z.array(z.number().min(1).max(3600)).max(5).default([15, 60, 180]),
     allowAgentlessWorkspaces: z.boolean().default(false),
+    /**
+     * Also archive a finished worktree that has no PR: clean, pushed (or exactly its base), no open
+     * PR for its branch, no `noarchive` label, and idle for at least finishedGraceMinutes.
+     */
+    archiveFinishedWithoutPr: z.boolean().default(true),
+    finishedGraceMinutes: z.number().min(0).max(7 * 24 * 60).default(120),
     logNonCandidates: z.boolean().default(false),
   })
   .strict();

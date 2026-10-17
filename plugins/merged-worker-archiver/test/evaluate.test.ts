@@ -20,7 +20,8 @@ async function decide(
   const decision = await evaluateWorkspace(
     workspace(options.ws),
     options.agents ?? [agent()],
-    defaultConfig(options.config),
+    // These cases cover the merged path; the no-PR path is off so its extra git calls stay out of them.
+    defaultConfig({ archiveFinishedWithoutPr: false, ...options.config }),
     { merge: { run: fakeRunner(s, calls), fs }, fs, now: () => NOW },
   );
   return { decision, calls };

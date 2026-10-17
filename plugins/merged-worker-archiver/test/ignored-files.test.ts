@@ -33,7 +33,7 @@ it("a merged worktree whose only change is a git-ignored file is not archived: d
     await writeFile(path.join(wt, ".env"), "TOKEN=local\n");
 
     const decide = () =>
-      evaluateWorkspace(workspace({ workspaceDirectory: wt }), [agent()], defaultConfig({ useGh: false }), {
+      evaluateWorkspace(workspace({ workspaceDirectory: wt }), [agent()], defaultConfig({ useGh: false, archiveFinishedWithoutPr: false }), {
         merge: { run: runCommand, fs: nodeFileSystem },
         fs: nodeFileSystem,
         now: () => NOW,
