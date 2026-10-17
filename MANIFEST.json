@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "8d30b6f8d297e3b01db45b31b5d3736c927df4e9",
+  "source_commit": "d5e948c70ffba503d523ee37c70a4b1d7e70ad11",
   "skill_count": 24,
   "file_count": 139,
   "files": [
@@ -303,8 +303,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 34376,
-      "sha256": "a687eb273d954fb5373d95c9cdb27cb10b041ccdada7a6966ae485de966c4920"
+      "bytes": 34493,
+      "sha256": "34aca928149143af2e1ff9b9f4fe6ae2af3d7d9725279a610c03ff12d6262ad9"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
