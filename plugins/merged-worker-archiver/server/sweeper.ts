@@ -15,6 +15,9 @@ export interface ArchiverApi {
   agents: {
     list(options?: { page?: { limit: number; cursor?: string } }): Promise<Page<{ agent: AgentView }>>;
   };
+  projects: {
+    list(): Promise<{ projects: ReadonlyArray<{ projectRootPath?: string | null }> }>;
+  };
 }
 
 export interface ApiLease {
@@ -83,7 +86,20 @@ async function listAll<T>(fetchPage: (cursor?: string) => Promise<Page<T>>, labe
   throw new Error(`${label} exceeded ${MAX_PAGES} pages`);
 }
 
-async function snapshot(api: ArchiverApi): Promise<{ workspaces: WorkspaceView[]; agentsByWorkspace: Map<string, AgentView[]> }> {
+/**
+ * Every project's root path. A missing project API, a failed call, or any project without a root path
+ * throws, which aborts the sweep (nothing is archived), like an incomplete agent list.
+ */
+async function projectRoots(api: ArchiverApi): Promise<string[]> {
+  if (typeof api.projects?.list !== "function") throw new Error("project list unavailable");
+  const result = await api.projects.list();
+  if (!result || !Array.isArray(result.projects)) throw new Error("project list malformed");
+  const roots = result.projects.map((project) => project.projectRootPath);
+  if (!roots.every((root): root is string => typeof root === "string" && root.length > 0)) throw new Error("project without a root path");
+  return roots;
+}
+
+async function snapshot(api: ArchiverApi): Promise<{ workspaces: WorkspaceView[]; agentsByWorkspace: Map<string, AgentView[]>; projectRoots: string[] }> {
   const workspaces = await listAll((cursor) => api.workspaces.list({ page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) } }), "workspaces");
   const agentEntries = await listAll((cursor) => api.agents.list({ page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) } }), "agents");
   const agentsByWorkspace = new Map<string, AgentView[]>();
@@ -93,7 +109,7 @@ async function snapshot(api: ArchiverApi): Promise<{ workspaces: WorkspaceView[]
     list.push(agent);
     agentsByWorkspace.set(agent.workspaceId, list);
   }
-  return { workspaces, agentsByWorkspace };
+  return { workspaces, agentsByWorkspace, projectRoots: await projectRoots(api) };
 }
 
 export function formatDecision(decision: Decision, action: string): string {
@@ -205,7 +221,7 @@ export class Sweeper {
         const waitingSince = this.waitingSince.get(workspace.id);
         if (!dryRun) this.waitingSince.delete(workspace.id);
         const agents = state.agentsByWorkspace.get(workspace.id) ?? [];
-        const decision = await evaluateWorkspace(workspace, agents, config, this.deps);
+        const decision = await evaluateWorkspace(workspace, agents, config, this.deps, state.projectRoots);
         decisions.push(decision);
         if (!decision.candidate) {
           nonCandidates += 1;
@@ -242,7 +258,7 @@ export class Sweeper {
           log(formatDecision({ ...decision, reason: "recheck: workspace gone" }, "skip"));
           continue;
         }
-        const recheck = await evaluateWorkspace(freshWorkspace, fresh.agentsByWorkspace.get(workspace.id) ?? [], config, this.deps);
+        const recheck = await evaluateWorkspace(freshWorkspace, fresh.agentsByWorkspace.get(workspace.id) ?? [], config, this.deps, fresh.projectRoots);
         if (recheck.action !== "archive") {
           log(formatDecision({ ...recheck, reason: `recheck: ${recheck.reason}` }, "skip"));
           continue;

@@ -32,6 +32,52 @@ No fetch is performed. Refs are only as fresh as the last fetch made by the work
 PM, or Paseo's own git service; the PR path covers remote merges the local refs have not
 seen yet. A fetch option was deliberately left out.
 
+## Finished workspaces without a PR
+
+Review agents and abandoned lanes never merge, so they would linger. With
+`archiveFinishedWithoutPr` (default `true`) a worktree that is not merged is still
+archived when all of these hold:
+
+1. It is a Paseo `worktree` workspace whose real path is strictly inside Paseo's managed
+   worktrees directory (`<PASEO_HOME>/worktrees`, compared case-insensitively on Windows),
+   and it is not the root of any Paseo project. Local checkouts and directory workspaces
+   never qualify.
+2. It passes every agent and workspace gate below (all agents `idle` or `closed`, nothing
+   running, no pending permission or attention), and its latest activity is at least
+   `finishedGraceMinutes` ago (default 120, and never less than `graceMinutes`).
+3. No agent is a PM, and no agent has the label `noarchive` (any value), which opts the
+   workspace out of this path.
+4. It passes the merged path's cleanliness gates, with one difference: no operation in
+   progress, no changed or untracked file, no non-empty submodule directory, and no ignored
+   file except clearly regenerable output. An ignored path counts as regenerable when any
+   segment is `node_modules`, `__pycache__`, `.pytest_cache`, `.venv`, `.turbo`, `.next`,
+   `.cache`, or `coverage`, or the file name ends in `.tsbuildinfo`. `dist` and `build`
+   do not count. An ignored file whose name matches `.env*`, `*.pem`, `*.key`, `id_rsa*`,
+   `id_ed25519*`, or `id_ecdsa*` (any case) blocks it even inside a regenerable directory
+   (`git ls-files --others --ignored` lists those files). So does any other ignored
+   file, and any path git prints quoted. The merged path still counts every ignored file
+   as dirty.
+5. It has no unpushed commits, checked live: `git ls-remote --heads` must succeed for every
+   remote, and `HEAD` must be contained in (or equal to) one of the listed head commits
+   that is also present locally. Remote-tracking refs are not trusted, and an offline or
+   failing remote is a skip.
+6. Every remote is a `github.com` remote, and `gh pr list -R github.com/<owner/repo> --head
+   <branch> --state open` returns no PR for each of their repositories. Every gh call runs
+   without `GH_HOST` and `GH_ENTERPRISE_TOKEN`, so it cannot query another host. It needs
+   `useGh`. A remote on any other host, or gh being disabled, missing, or failing for any
+   repository, is a skip.
+
+Only a merge-check result of "clean but not merged", or "dirty with ignored files only",
+falls through to this path (`dirty(ignored=N)`, `not-merged(...)`, `no-branch-commits`, `no-base(...)`, `branch-is-base`,
+`unmerged-commits(...)`, `pr-head-mismatch`, `pr-base-mismatch`). Every error, dirty, or
+ambiguous result stays a skip. A skip keeps the merge reason first and appends the no-PR
+reason, for example `not-merged(ahead=2 of refs/heads/main; no PR); no-pr: unpushed-commits(...)`.
+The archive reason is `finished-no-pr(pushed(live <remote>))`. Archiving never deletes
+the branch, so the commits stay reachable locally too.
+
+Archiving is the same `paseo.workspaces.archive` call as the merged path, with the same
+cap, back-off, and armed re-check. Dry-run logs a `would-archive` line for each.
+
 ## Skip rules (fail closed)
 
 Non-worktree workspaces also qualify as `empty-disposable-workspace` when their
@@ -76,11 +122,13 @@ Every decision is `skip` unless its applicable gates pass. Reasons appear verbat
 | `unmerged-commits(...)` | Local commits after the merged PR head. |
 | `pr-head-mismatch` / `pr-base-mismatch` | The PR found is not this branch into this base. |
 | `git-error(...)` / `git-timeout(...)` / `git-not-found` / `gh-error(...)` / `gh-timeout` | Any command failure. |
+| `...; no-pr: <reason>` | Not merged, and the no-PR path also skipped it: `noarchive-label`, a grace or agent gate, a cleanliness gate, `project-root`, `outside-paseo-worktrees`, `dirty(sensitive-ignored=n:path)`, `unpushed-commits(...)`, `pr-open(owner/repo#n)`, `pr-unknown(...)` (gh disabled or unavailable, or a non-GitHub remote), `gh-error(...)`, `gh-timeout(...)`, or a failed `ls-remote` as `git-error(...)`. |
 | `recheck: ...` | Armed only: live state is re-read and every gate re-run immediately before archiving. |
 
 A sweep is aborted with no decisions if the daemon is unreachable or the workspace or
 agent list is incomplete (pagination without a cursor), because a hidden agent could be
-running. Invalid settings also abort the sweep.
+running, or if the project list is unavailable, fails, or has a project without a root path.
+That abort applies to both paths: nothing is archived. Invalid settings also abort the sweep.
 
 ## What archiving does
 
@@ -215,6 +263,8 @@ every sweep, so edits take effect on the next sweep without a reload.
 | `useGh` | `true` | Use `gh pr view` for squash-merged PRs. |
 | `allowAgentlessWorkspaces` | `false` | Also consider worktrees with no live agents. |
 | `logNonCandidates` | `false` | Also log a line for non-worktree workspaces. |
+| `archiveFinishedWithoutPr` | `true` | Also archive finished worktrees with no open PR that are clean and pushed (see Finished workspaces without a PR). |
+| `finishedGraceMinutes` | `120` | Minimum idle time for that path (0 to 10080). The larger of this and `graceMinutes` applies. |
 
 ## Logs
 

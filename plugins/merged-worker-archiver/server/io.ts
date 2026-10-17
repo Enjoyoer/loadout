@@ -18,8 +18,11 @@ const COMMAND_ENV: NodeJS.ProcessEnv = {
 // An inherited pathspec mode changes what git lists: GIT_LITERAL_PATHSPECS=1 makes `:/` match nothing. Windows
 // matches environment names in any case.
 const PATHSPEC_MODES = new Set(["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"]);
+// gh must query github.com only: an inherited GH_HOST or enterprise token could point it at another host.
+const GH_HOST_OVERRIDES = new Set(["GH_HOST", "GH_ENTERPRISE_TOKEN"]);
 for (const name of Object.keys(COMMAND_ENV)) {
-  if (PATHSPEC_MODES.has(name.toUpperCase())) delete COMMAND_ENV[name];
+  const upper = name.toUpperCase();
+  if (PATHSPEC_MODES.has(upper) || GH_HOST_OVERRIDES.has(upper)) delete COMMAND_ENV[name];
 }
 
 export const runCommand: CommandRunner = (command, args, cwd, timeoutMs) =>

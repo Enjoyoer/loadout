@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ArchiverConfig } from "./config.ts";
-import { checkMerged, type MergeCheckDeps } from "./merge-check.ts";
+import { checkFinishedWithoutPr, checkMerged, type MergeCheckDeps } from "./merge-check.ts";
 import { paseoHome } from "./vendor/daemon-target.ts";
 import type { AgentView, Decision, FileSystem, WorkspaceView } from "./types.ts";
 
@@ -11,6 +11,27 @@ export interface EvaluateDeps {
   now: () => number;
   /** Host-native roots; injectable for isolated verification. */
   cleanupRoots?: readonly string[];
+  /** Paseo's managed worktrees directory; injectable for isolated verification. */
+  managedWorktreesRoot?: string;
+}
+
+const comparable = (path: string) => (process.platform === "win32" ? path.toLowerCase() : path);
+
+/**
+ * The no-PR path archives only inside Paseo's own worktrees directory (real paths, case-insensitive on Windows),
+ * and never a Paseo project's root. Unknown project roots or unresolvable paths are a skip.
+ */
+async function noPrLocationSkip(directory: string, projectRoots: readonly string[] | null, deps: EvaluateDeps): Promise<string | null> {
+  if (!projectRoots) return "project-roots-unknown";
+  const root = deps.managedWorktreesRoot ?? join(resolve(paseoHome()), "worktrees");
+  const [realRoot, realDirectory] = await Promise.all([deps.fs.realpath(root), deps.fs.realpath(directory)]);
+  if (!realRoot || !realDirectory) return "ambiguous(worktree path not resolvable)";
+  if (!isDescendant(comparable(realRoot), comparable(realDirectory))) return "outside-paseo-worktrees";
+  for (const projectRoot of projectRoots) {
+    const realProject = (await deps.fs.realpath(projectRoot)) ?? resolve(projectRoot);
+    if (comparable(realProject) === comparable(realDirectory) || comparable(resolve(projectRoot)) === comparable(resolve(directory))) return "project-root";
+  }
+  return null;
 }
 
 function isDescendant(root: string, directory: string): boolean {
@@ -36,6 +57,16 @@ const ELIGIBLE_AGENT_STATUSES = new Set(["idle", "closed"]);
 const BLOCKING_WORKSPACE_STATUSES = new Set(["running", "needs_input", "failed"]);
 const PM_TITLE = /(^|[^A-Za-z])PM([^A-Za-z]|$)/;
 
+/** Opt-out for the no-PR path: an agent labelled `noarchive` (any value). */
+export function hasNoArchiveLabel(agent: AgentView): boolean {
+  return Object.keys(agent.labels ?? {}).some((key) => key.trim().toLowerCase() === "noarchive");
+}
+
+// Merge-check skips that mean "clean, but not merged", plus "only ignored files" (the no-PR path re-checks
+// those and discards only regenerable output). Only these may fall through; every error, changed or untracked
+// file, or ambiguous result stays a skip.
+const NO_PR_FALLTHROUGH = ["dirty(ignored=", "not-merged(", "no-branch-commits", "no-base(", "branch-is-base", "unmerged-commits(", "pr-head-mismatch(", "pr-base-mismatch("];
+
 export function isPmAgent(agent: AgentView): boolean {
   const role = agent.labels?.role?.trim().toLowerCase();
   if (role === "pm") return true;
@@ -60,6 +91,7 @@ export function preGitSkipReason(
   config: ArchiverConfig,
   now: number,
   emptyDisposable = false,
+  graceMinutes = config.graceMinutes,
 ): string | null {
   if (workspace.archivingAt) return "already-archiving";
   if (!workspace.workspaceDirectory) return "no-directory";
@@ -86,7 +118,7 @@ export function preGitSkipReason(
     ...agents.flatMap((agent) => [agent.updatedAt, agent.lastUserMessageAt, agent.attentionTimestamp]),
   ]);
   if (lastActivity === null) return "ambiguous(no activity timestamp)";
-  const graceMs = config.graceMinutes * 60_000;
+  const graceMs = graceMinutes * 60_000;
   const idleMs = now - lastActivity;
   if (idleMs < graceMs) {
     const remaining = Math.ceil((graceMs - idleMs) / 60_000);
@@ -104,6 +136,8 @@ export async function evaluateWorkspace(
   agents: readonly AgentView[],
   config: ArchiverConfig,
   deps: EvaluateDeps,
+  /** Root paths of every Paseo project, for the no-PR path; null when unknown (that path then skips). */
+  projectRoots: readonly string[] | null = null,
 ): Promise<Decision> {
   // Pre-git skips report the branch Paseo last observed; git-checked decisions report
   // the branch git itself resolved.
@@ -142,6 +176,24 @@ export async function evaluateWorkspace(
     timeoutMs: config.commandTimeoutSeconds * 1000,
     useGh: config.useGh,
   });
-  if (!merge.merged) return decision("skip", merge.reason, merge.branch ?? observedBranch, merge.base);
-  return decision("archive", merge.reason, merge.branch, merge.base);
+  if (merge.merged) return decision("archive", merge.reason, merge.branch, merge.base);
+
+  // No-PR path. The skip keeps the merge reason first, so follow-ups still see a pending merge.
+  const skipUnmerged = (detail?: string) =>
+    decision("skip", detail ? `${merge.reason}; no-pr: ${detail}` : merge.reason, merge.branch ?? observedBranch, merge.base);
+  if (!config.archiveFinishedWithoutPr || !NO_PR_FALLTHROUGH.some((prefix) => merge.reason.startsWith(prefix))) return skipUnmerged();
+  if (agents.some(hasNoArchiveLabel)) return skipUnmerged("noarchive-label");
+  const locationSkip = await noPrLocationSkip(directory, projectRoots, deps);
+  if (locationSkip) return skipUnmerged(locationSkip);
+  const finishedGrace = Math.max(config.graceMinutes, config.finishedGraceMinutes);
+  const graceSkip = preGitSkipReason(workspace, agents, config, deps.now(), false, finishedGrace);
+  if (graceSkip) return skipUnmerged(graceSkip);
+  const finished = await checkFinishedWithoutPr(directory, {
+    ...deps.merge,
+    timeoutMs: config.commandTimeoutSeconds * 1000,
+    useGh: config.useGh,
+  });
+  if (!finished.finished) return skipUnmerged(finished.reason);
+  return decision("archive", finished.reason, finished.branch, finished.base ?? merge.base);
 }
+

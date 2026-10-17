@@ -20,6 +20,7 @@ it("with the default cap, one sweep over 7 eligible candidates archives 5 and re
       },
     },
     agents: { list: async () => page(live().map((ws) => ({ agent: agent({ id: `agent-${ws.id}`, workspaceId: ws.id }) }))) },
+    projects: { list: async () => ({ projects: [] }) },
   };
   const s = scenario({ ancestors: { "refs/heads/main": 0 } });
   const fs = fakeFs(s);
@@ -82,6 +83,7 @@ function armedSweeps(workspaces: WorkspaceView[], failure: (workspaceId: string)
       },
     },
     agents: { list: async () => page(live().map((ws) => ({ agent: agent({ id: `agent-${ws.id}`, workspaceId: ws.id }) }))) },
+    projects: { list: async () => ({ projects: [] }) },
   };
   const s = scenario({ ancestors: { "refs/heads/main": 0 } });
   const fs = fakeFs(s);
