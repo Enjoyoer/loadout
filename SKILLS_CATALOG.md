@@ -5,7 +5,7 @@ Install packages flat under the target client's `skills` directory. Each name be
 | Category | Packages |
 | --- | --- |
 | Engineering | `codebase-design`, `domain-modeling`, `improve-codebase-architecture`, `uv-python` |
-| Operations and integrations | `project-icon`, `recover-mouse-input` |
+| Operations and integrations | `bw-login`, `project-icon`, `recover-mouse-input` |
 | Orchestration | `dispatching-parallel-agents`, `handoff`, `opc`, `opn`, `personal-skills`, `reassign-pm`, `repo-lessons`, `unstuck` |
 | Planning and writing | `grilling`, `sample` |
 | Research and documentation | `find-docs`, `liteparse`, `tco-search` |

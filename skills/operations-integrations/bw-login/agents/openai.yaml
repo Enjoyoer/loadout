@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bitwarden Login"
+  short_description: "Sign in to websites with Bitwarden without seeing values"
+  default_prompt: "Use $bw-login to sign in to this site with Bitwarden."

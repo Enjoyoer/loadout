@@ -32,7 +32,7 @@ Skills then appear as `/loadout-engineering:codebase-design` and so on. The mark
 | `loadout-writing` | `grilling`, `sample` |
 | `loadout-research` | `find-docs`, `liteparse`, `tco-search` |
 | `loadout-web` | `frontend-design`, `playwright`, `browse-x`, `pake` |
-| `loadout-ops` | `project-icon`, `recover-mouse-input` |
+| `loadout-ops` | `bw-login`, `project-icon`, `recover-mouse-input` |
 
 **Codex, or any client that reads a skills folder:** clone, verify, and copy the packages you want:
 
