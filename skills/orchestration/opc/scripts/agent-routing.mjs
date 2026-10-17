@@ -34,10 +34,12 @@ export const WORKER_DEFAULT_ROUTES = Object.freeze({
 });
 export const WORKER_CLASS_ALIASES = Object.freeze({
   'code-bounded': 'code', 'test-fix': 'code', automation: 'code', mechanical: 'code',
-  research: 'plan', 'review-critical': 'review', 'review-general': 'review', ui: 'ui-design',
+  research: 'plan', 'review-critical': 'review', 'review-general': 'review',
 });
-export const canonicalWorkerClass = kind => Object.hasOwn(WORKER_CLASS_ALIASES, kind ?? '')
-  ? WORKER_CLASS_ALIASES[kind] : kind;
+// The pre-7.53 ui class name, kept as a compatibility alias of ui-design.
+const OWNER_RULE_ALIASES = Object.freeze({ ui: 'ui-design' });
+export const canonicalWorkerClass = kind => Object.hasOwn(WORKER_CLASS_ALIASES, kind ?? '') ? WORKER_CLASS_ALIASES[kind]
+  : Object.hasOwn(OWNER_RULE_ALIASES, kind ?? '') ? OWNER_RULE_ALIASES[kind] : kind;
 const workerRule = kind => WORKER_DEFAULT_ROUTES[canonicalWorkerClass(kind)];
 // Each label draws on one provider's quota pool.
 export const LABEL_POOLS = Object.freeze({ Opus: 'claude', Sonnet: 'claude', Fable: 'claude', Sol: 'codex', Luna: 'codex', Astra: 'codex' });

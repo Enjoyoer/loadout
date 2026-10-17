@@ -328,8 +328,8 @@ const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:
 const plain=value=>JSON.parse(JSON.stringify(value));
 const unread=pool=>({pool,step:0,weekly:null,stale:'no quota reading supplied',gapPct:null,fiveHourUsedPct:null,resetSoon:null,accounts:null,staleAccounts:null,ageSeconds:null});
 // Owner-approved task routes, including all GPT lanes with Fast on.
-assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','review','smoke','ui','watcher']);
-for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','xhigh',true],['review','Sol','xhigh',true],['smoke','Luna','low',true],['browser','Sol','medium',true],['browser-hard','Astra','medium',true],['ui','Fable','high',false],['watcher','Luna','xhigh',true]]){
+assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','review','smoke','ui-check','ui-design','watcher']);
+for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','xhigh',true],['review','Sol','xhigh',true],['smoke','Luna','low',true],['browser','Sol','medium',true],['browser-hard','Astra','medium',true],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Luna','xhigh',true]]){
  const route=r.selectWorkerRoute({taskKind:kind,catalog});
  assert.equal(route.model,['browser','browser-hard'].includes(kind)?r.resolveCatalogLabel(catalog,label).id.slice(6):r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
 }
