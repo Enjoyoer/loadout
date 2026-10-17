@@ -92,9 +92,15 @@ export function isUiRoute(route, catalog = null) {
     (rows ? namesRow(resolveCatalogLabel(rows, rule.label), route.model) : namesLabel(route.model, rule.label));
 }
 
-// Fable runs only at high with Fast off, in any lane (owner rule).
+// Fable runs only at high with Fast off, in any lane and for any route, classless or not (owner rule).
 const isFableModel = (model, rows) => rows?.find(row => namesRow(row, model))?.label === FABLE_RULE.label ||
   namesLabel(model, FABLE_RULE.label);
+const fableProblem = (route, rows = null) => isFableModel(route?.model, rows) &&
+  !(route.effort === FABLE_RULE.effort && route.fastMode === FABLE_RULE.fastMode) ? 'Fable runs only at high with Fast off' : null;
+function requireFableRule(route, rows = null) {
+  const problem = fableProblem(route, rows);
+  if (problem) throw Error(`${problem} (owner rule)`);
+}
 
 // The owner's hard rules for a lane class bind every route, whatever its source says: ui-design and ui-check are exactly
 // Fable high, Fast off, these classes never run a GPT or web model, Fable never runs at another level, and no route runs
@@ -104,9 +110,8 @@ function laneProblem(route, taskClass, rows) {
   taskClass = canonicalWorkerClass(taskClass);
   if (route.source === 'task-default' && canonicalWorkerClass(route.kind) !== taskClass) return `it is a ${route.kind} route`;
   if (uiClass(taskClass)) return isUiRoute(route, rows) ? null : `a ${taskClass} lane runs only Fable high, Fast off`;
-  if (isFableModel(route.model, rows) && !(route.effort === FABLE_RULE.effort && route.fastMode === FABLE_RULE.fastMode)) {
-    return 'Fable runs only at high with Fast off';
-  }
+  const fable = fableProblem(route, rows);
+  if (fable) return fable;
   const rule = WORKER_DEFAULT_ROUTES[taskClass];
   if (CLAUDE_ONLY_CLASSES.includes(taskClass) && isGptOrWebModel(route.model, rows)) {
     return `${route.model} is a GPT or web model and the ${taskClass} class runs ${rule.label}`;
@@ -203,6 +208,7 @@ export function validateRecordedWorkerRoute(route) {
         typeof route.reason !== 'string' || !route.reason.trim() || /[\r\n]/.test(route.reason)))) {
     throw Error('recorded owner or task-default route required for worker');
   }
+  requireFableRule(route);
   return Object.freeze({ model: route.model, effort: route.effort, fastMode: route.fastMode, source: route.source,
     ...(taskDefault ? { kind: route.kind, pace: route.pace, reason: route.reason } : {}) });
 }
@@ -265,6 +271,7 @@ function validateLaunchedWorkerRoute(route, { task = null, lane = null, taskClas
   const laneClass = uiTaskLaneClass(task, taskClass);
   if (task != null && task.ui !== true && taskClass == null) throw Error('a Worker bound to a task record needs its lane class (taskClass)');
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
+  requireFableRule(route, rows);
   if (task?.ui === true && !isUiRoute(route, rows)) {
     throw Error(`UI task: a ${laneClass} lane launches only Fable high, Fast off (owner rule); the build goes to a code task`);
   }
@@ -300,6 +307,7 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog,
     if (ownerRoute.source !== 'owner-explicit') throw Error('owner Worker route must have source owner-explicit');
     requireWorkerModel(ownerRoute.model, rows);
     validateWorkerRoute(ownerRoute);
+    requireFableRule(ownerRoute, rows);
     if (uiClass(taskKind) && isGptOrWebRoute(ownerRoute, rows)) {
       throw Error(`${taskKind} work never uses a GPT or web model (owner rule); name a Claude model or use the ${taskKind} class route`);
     }
@@ -380,7 +388,8 @@ export function buildDelegatedBrief({ role, route, brief, reason = null, task = 
   if (reason != null && (typeof reason !== 'string' || !reason.trim() || /[\r\n]/.test(reason))) throw Error('route reason must be one line');
   const resolved = route == null ? resolveAgentRoute(role)
     : role === 'worker' ? validateLaunchedWorkerRoute(route, { task, lane, taskClass, catalog }) : validateRoleRoute(role, route);
-  const kind = canonicalWorkerClass(taskClass ?? route?.kind);
+  // A UI task's lane is ui-design or ui-check even when the caller names no class and the route carries no kind.
+  const kind = canonicalWorkerClass((role === 'worker' ? uiTaskLaneClass(task, taskClass) : taskClass) ?? route?.kind);
   if (role === 'worker' && ['plan', 'review', ...UI_CLASSES].includes(kind)) {
     brief = `Read-only lane: do not edit, implement, or publish. ${kind === 'review'
       ? 'Review the exact PR head using references/simplifier-review.md as the brief. ' : UI_LANE_BRIEFS[kind] ?? ''}\n\n${brief}`;
