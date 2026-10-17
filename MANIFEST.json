@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "6a21829c1bcf5f754f4e348aca5fd6f264aeece7",
+  "source_commit": "1121e1ae5b957fa36ffdf7dbdd275778897db1cc",
   "skill_count": 24,
   "file_count": 139,
   "files": [
@@ -191,8 +191,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5413,
-      "sha256": "837d34a0f08134d8a26a2c3c945f979ba54a4f4401a7f2c659744edbbe6fd080"
+      "bytes": 5498,
+      "sha256": "c0730435fe95ff3f7169bdaa64d67c310e49fca5085e708111116e1e7c060268"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -219,8 +219,8 @@
       "path": "skills/orchestration/opc/references/imp-execution.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4321,
-      "sha256": "f55520d7a952536a008244da34e17d43f547292b28f09ef0be867f9708092137"
+      "bytes": 4424,
+      "sha256": "6aa94b50b0f01e5e6d1e305ed1666b272439f253713e1505fde1b67d15f1bc63"
     },
     {
       "path": "skills/orchestration/opc/references/maintenance.md",
@@ -233,8 +233,8 @@
       "path": "skills/orchestration/opc/references/planner.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 1614,
-      "sha256": "2feaa9e3cf490370b130a38f3db1e07d3a0599c0ac36aaaf2103750667b34163"
+      "bytes": 1641,
+      "sha256": "e22374e43c528311d5d1517ef4d05f8839fb6c6628c994e9d076b3143f4d7bba"
     },
     {
       "path": "skills/orchestration/opc/references/pr-evidence.md",
@@ -254,8 +254,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 10449,
-      "sha256": "8a9386e91c4b52e06de3accc393a77d91859d56a1459a1367af62fcae7baa303"
+      "bytes": 11864,
+      "sha256": "6992eed3c55f80ab61ca2aec417996f036c7f5963d0f2cff721e14a94bbc6f73"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -289,8 +289,8 @@
       "path": "skills/orchestration/opc/references/web-reviewer.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 3792,
-      "sha256": "db56e7f03a70cfee24fd1a5dc635b8a66bc7e48930960661beda23b76e50ae7c"
+      "bytes": 3803,
+      "sha256": "a89a79cbb3f3591f2fda189a377d53bd8df09ae4aa061034f33cc96bcea752f1"
     },
     {
       "path": "skills/orchestration/opc/references/worktree-lifecycle.md",
@@ -303,8 +303,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 31757,
-      "sha256": "6cb037b6c0aba28fd43236f06124da5ded5bf4289727b9f7a79526dd15d291d0"
+      "bytes": 33620,
+      "sha256": "142f87a90f22287c8d2df0045c6f84f9bfbce885fb3439fe27ef805d340c91e8"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -338,15 +338,15 @@
       "path": "skills/orchestration/opc/scripts/route.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 9258,
-      "sha256": "2624f865a4f24f9cf85a2b880250351b9dc8d3d7b5b54740f8a1520252292953"
+      "bytes": 9457,
+      "sha256": "29e9527390f2dcf6f09ca4c2ef4060105c06fd04bb07fada338a6fc4ed01d344"
     },
     {
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 20540,
-      "sha256": "75e7c266c64b3fa19e7cc0a81e2c31ef8f8b8df042467abf51d643edd25c0f75"
+      "bytes": 20582,
+      "sha256": "5a0ee8288dacdb4708ba8c3840580ab17981b41f273a7ca160dae3d9edbd034e"
     },
     {
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
