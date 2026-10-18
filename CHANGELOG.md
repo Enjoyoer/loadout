@@ -7,6 +7,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 ### Changed
 
 - bw-login skill and the example global AGENTS.md look up logins with `bw-paste <site>` instead of `bw-login --list <site>`.
+- bw-login Browser Use bridge: run `bw-paste` from the shell tool, not the REPL, and read the clipboard with the `Get-Clipboard -Raw` form re-verified live.
 
 ### Added
 - `bw-login`: an agent signs in to a website with the `bw-paste` helper without ever seeing the values, pasting from the OS clipboard, or in Codex Browser Use through a no-output bridge into the tab clipboard; CAPTCHA, 2FA, and a locked vault go to the owner.
