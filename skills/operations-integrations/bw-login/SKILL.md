@@ -5,11 +5,11 @@ description: Log in to a website with Bitwarden without ever seeing the values. 
 
 # bw-login
 
-Sign in with the `bw-login` and `bw-paste` helpers. Values never appear in output, logs, screenshots or tool arguments.
+Sign in with the `bw-paste` helper. Values never appear in output, logs, screenshots or tool arguments.
 
 ## 1. Pick the login
 
-- Run `bw-login --list <site>` and choose the item matching the account the owner named or the task implies. If more than one fits, ask.
+- Run `bw-paste <site>`, which prints one JSON line per matching login (`id`, `name`, `uris`, `username`; never passwords), and choose the item matching the account the owner named or the task implies. If more than one fits, ask.
 - Get only that site's login. Never look up any other item.
 - Never use the raw `bw` CLI or `bw-paste --raw`, and never type a password into any tool.
 
