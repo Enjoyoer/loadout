@@ -13,7 +13,6 @@ updates:
       - /plugins/merged-worker-archiver
       - /plugins/orphan-project-sweeper
       - /plugins/pi-fast-toggle
-      - /plugins/pm-native-worker-guard
       - /plugins/usage-limit-auto-resume
     schedule:
       interval: monthly
