@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "07084e3798407a3e42f1e3a8b86ddde223a15a14",
+  "source_commit": "2c129b27b83a945d9c0f3ee5ae8d7e2902678539",
   "skill_count": 25,
   "file_count": 141,
   "files": [
@@ -114,8 +114,8 @@
       "path": "skills/operations-integrations/bw-login/SKILL.md",
       "category": "operations-integrations",
       "skill": "bw-login",
-      "bytes": 2371,
-      "sha256": "464b251debf24e25b7f0194f2734529f1a719b8c1f39afde50bee20c1d968627"
+      "bytes": 2448,
+      "sha256": "6651ddcb9149eb303f6b30b3d74b1d6600fd26b6e649d559c4281b06c316c1f6"
     },
     {
       "path": "skills/operations-integrations/bw-login/agents/openai.yaml",
@@ -457,8 +457,8 @@
       "path": "skills/orchestration/personal-skills/fleet/example/global/AGENTS.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 982,
-      "sha256": "17ceda85ef07ca0fe41572257100a979328075cc7c6e4c8fbfdbb20e22946e97"
+      "bytes": 975,
+      "sha256": "291be8f35913cd68265a6cc1c97875c97b34cd9efb4367ec2de0bea3ea1e7e16"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/hosts.json",
