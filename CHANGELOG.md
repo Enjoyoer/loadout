@@ -4,6 +4,10 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ## Unreleased
 
+### Removed
+
+- `pm-native-worker-guard` plugin, with its CI, Dependabot, vendoring and docs entries. PMs legitimately launch native Codex workers (OPC routes browser work to native Codex), and in dry-run the guard only logged false would-archive decisions. The fleet sync does not uninstall it from hosts; remove it there by hand.
+
 ### Changed
 
 - bw-login skill and the example global AGENTS.md look up logins with `bw-paste <site>` instead of `bw-login --list <site>`.

@@ -63,7 +63,6 @@ Plugins are optional, trusted, unsandboxed daemon code. Read each linked README 
 - [`usage-limit-auto-resume`](plugins/usage-limit-auto-resume/README.md): resumes after usage limits and retries eligible provider failures in the same session; sends nothing until armed.
 - [`orphan-project-sweeper`](plugins/orphan-project-sweeper/README.md): removes orphaned Paseo project records whose root is gone and no active workspaces remain; dry-run until armed.
 - [`workspace-folder-title`](plugins/workspace-folder-title/README.md): names new workspaces after their working folder without replacing caller-supplied titles; active when installed.
-- [`pm-native-worker-guard`](plugins/pm-native-worker-guard/README.md): stops and archives PM-created native Codex/Claude workers to enforce a Pi-worker policy; dry-run until armed, and not a security boundary.
 - [`pi-fast-toggle`](plugins/pi-fast-toggle/README.md): adds a per-agent Fast pill for eligible Pi models, affecting the next turn; hidden until its private runtime settings are configured.
 
 ## 5. Adapt, do not copy
