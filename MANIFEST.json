@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "044152281e07781d03f8204a7ea2ef8c8810b91b",
+  "source_commit": "5506e71b89e9a1bd74c7584d4b341879afafa736",
   "skill_count": 25,
   "file_count": 141,
   "files": [
@@ -1025,8 +1025,8 @@
     {
       "path": "plugins/cache-aware-autocompact/README.md",
       "plugin": "cache-aware-autocompact",
-      "bytes": 15826,
-      "sha256": "70bff998feb006d57708e2353ab62559eba951abfbaa4da2fe44e79da5d2059a"
+      "bytes": 16280,
+      "sha256": "0f9a18a72be3a56b97b96608c3e6f9d22738e6e6179d5385ff773014f1cd3c10"
     },
     {
       "path": "plugins/cache-aware-autocompact/index.server.ts",
@@ -1038,13 +1038,13 @@
       "path": "plugins/cache-aware-autocompact/package-lock.json",
       "plugin": "cache-aware-autocompact",
       "bytes": 21229,
-      "sha256": "ca63a941877aab5969d07c1555c1b41ae7f7db3c75bc94439cab8ec9082aa1c2"
+      "sha256": "cf57e1d3920b4e3435719e5eaba78b69d04bfee0fe2075be306d3a669ba78f66"
     },
     {
       "path": "plugins/cache-aware-autocompact/package.json",
       "plugin": "cache-aware-autocompact",
       "bytes": 900,
-      "sha256": "423be62bbe778f1ad5f9de61f7d59ede4ec938fc56990f95381fd245222bdd35"
+      "sha256": "15565975c8b90920842e4a40862680674be42aad6955c5da8ace8ee99995cd2e"
     },
     {
       "path": "plugins/cache-aware-autocompact/paseo-plugin.json",
@@ -1061,8 +1061,8 @@
     {
       "path": "plugins/cache-aware-autocompact/server/config.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 1833,
-      "sha256": "39693b15dac7375af1388ec6d8463467d607a0c306492c6552c6cb7ed22f7086"
+      "bytes": 1942,
+      "sha256": "dd35e120bb5ca07bdbcd2bb295f12f4984609a0e48818735ff84406bda98f394"
     },
     {
       "path": "plugins/cache-aware-autocompact/server/daemon.ts",
@@ -1079,8 +1079,8 @@
     {
       "path": "plugins/cache-aware-autocompact/server/model.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 6218,
-      "sha256": "b2a86b655e26235b9348902dc6eb5762ed0902bba9976814639dd7b1326660fe"
+      "bytes": 6607,
+      "sha256": "b37a4439a33945f289e9713df267983dcefcc884dc6f802674311441b453b1d8"
     },
     {
       "path": "plugins/cache-aware-autocompact/server/recovery.ts",
@@ -1097,8 +1097,8 @@
     {
       "path": "plugins/cache-aware-autocompact/server/runtime.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 27641,
-      "sha256": "cfbd8ded3c89637b460c7b1335262e88f9dfad44f84913a46d7c550d2c1ad728"
+      "bytes": 27583,
+      "sha256": "7951abfe2f315fe42ef9e71d48c1d04809756015e337b0390bf87b319a1b94cf"
     },
     {
       "path": "plugins/cache-aware-autocompact/server/store.ts",
@@ -1145,14 +1145,14 @@
     {
       "path": "plugins/cache-aware-autocompact/test/model.test.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 9748,
-      "sha256": "99a12ad6ec350a48adfe49a28b38fb0b6f30f07ae1811e20dca5f0fb82fa0514"
+      "bytes": 9810,
+      "sha256": "7be547a43389b82b520d72ed33e70d053261c64eb7036dee772e4e89682f23fc"
     },
     {
       "path": "plugins/cache-aware-autocompact/test/recovery.test.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 44589,
-      "sha256": "91f290a9d26c821f3ff3df7338337d8a25089bcf2c587cab82deb738eab55253"
+      "bytes": 44660,
+      "sha256": "76851b3e10352595e7da0908774d9fe5f9bc3a9bdb2cf5d302c7c66b6a64ccda"
     },
     {
       "path": "plugins/cache-aware-autocompact/test/retry.test.ts",
