@@ -25,7 +25,7 @@ function agent(overrides: Partial<AgentSnapshot> = {}): AgentSnapshot {
 describe("provider delays", () => {
   it("uses cache-aware defaults and skips other providers", () => {
     assert.equal(providerDelayMinutes("claude", config), 50);
-    assert.equal(providerDelayMinutes("codex", config), 22);
+    assert.equal(providerDelayMinutes("codex", defaultConfig({ codexEnabled: true })), 22);
     assert.equal(providerDelayMinutes("opencode", config), null);
     assert.equal(config.thresholdTokens, 100_000);
   });
@@ -81,7 +81,7 @@ describe("all compaction guards", () => {
   });
   it("allows an idle eligible Claude or Codex agent", () => {
     assert.deepEqual(guardDecision(agent(), timeline, config, "2026-09-26T00:00:00.000Z"), { ok: true, reason: "safe-boundary" });
-    assert.deepEqual(guardDecision(agent({ provider: "codex" }), timeline, config, "2026-09-26T00:00:00.000Z"), { ok: true, reason: "safe-boundary" });
+    assert.deepEqual(guardDecision(agent({ provider: "codex" }), timeline, defaultConfig({ codexEnabled: true }), "2026-09-26T00:00:00.000Z"), { ok: true, reason: "safe-boundary" });
   });
   it("scales boundary strictness with context size", () => {
     const config = defaultConfig();

@@ -6,7 +6,9 @@ export const ConfigSchema = z.object({
   /** Delay after a completed turn. Defaults are cache TTL minus a safety margin. */
   claudeDelayMinutes: z.number().min(1).max(120).default(50),
   codexDelayMinutes: z.number().min(1).max(120).default(22),
-  /** Pi GPT idle compaction is opt-in pending cache-cost measurements. Native Codex is unchanged. */
+  /** Native Codex idle compaction is opt-in, matching Pi GPT. Skips log codex-disabled. */
+  codexEnabled: z.boolean().default(false),
+  /** Pi GPT idle compaction is opt-in pending cache-cost measurements. */
   piGptEnabled: z.boolean().default(false),
   /**
    * End every Claude-family idle gap of at least claudeDelayMinutes in one compaction: recovery compacts

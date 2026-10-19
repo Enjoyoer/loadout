@@ -131,7 +131,7 @@ function harness() {
     start(store: StateStore | undefined, armed = true, piGptEnabled = false, extendIdleCompaction = true) {
       if (store) stores.add(store);
       cleanup = startScheduler(server, { store, writeJson, timerApi: timers, metrics: { append: async (record) => { metrics.push(record); } },
-        now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed, piGptEnabled, extendIdleCompaction }),
+        now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed, codexEnabled: true, piGptEnabled, extendIdleCompaction }),
         openApi: async () => { if (bootstrapFails) throw new Error("Unavailable"); return api; },
         log: (action, data) => { logs.push({ action, data }); } });
       stops.push(cleanup);
@@ -688,7 +688,7 @@ describe("restart recovery", () => {
 describe("elapsed-delay math", () => {
   it("subtracts idle time for both providers and clamps future end times", () => {
     assert.deepEqual(recoveryDelay("claude", endedAt, config, endedMs + 20 * 60_000), { remainingMs: 1_800_000, delayMs: 1_800_000, jitterApplied: false });
-    assert.equal(recoveryDelay("codex", endedAt, config, endedMs + 20 * 60_000).delayMs, 120_000);
+    assert.equal(recoveryDelay("codex", endedAt, defaultConfig({ codexEnabled: true }), endedMs + 20 * 60_000).delayMs, 120_000);
     assert.equal(recoveryDelay("pi", endedAt, defaultConfig({ piGptEnabled: true }), endedMs + 20 * 60_000, () => 0, "fleet/gpt-6.1-sol").delayMs, 120_000);
     assert.equal(recoveryDelay("pi", endedAt, config, endedMs + 20 * 60_000, () => 0, "fleet/claude-opus-5-5").delayMs, 1_800_000);
     assert.equal(recoveryDelay("pi", endedAt, defaultConfig({ claudeDelayMinutes: 120 }), endedMs + 55 * 60_000, () => 0, "fleet/claude-opus-5-5").jitterApplied, false);
@@ -711,7 +711,7 @@ describe("elapsed-delay math", () => {
     assert.equal(delay.delayMs, 65 * 60_000);
   });
   it("uses configured delays", () => {
-    assert.equal(recoveryDelay("codex", endedAt, defaultConfig({ codexDelayMinutes: 10 }), endedMs + 60_000).delayMs, 9 * 60_000);
+    assert.equal(recoveryDelay("codex", endedAt, defaultConfig({ codexEnabled: true, codexDelayMinutes: 10 }), endedMs + 60_000).delayMs, 9 * 60_000);
   });
 });
 

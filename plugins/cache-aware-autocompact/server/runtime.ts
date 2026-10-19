@@ -2,7 +2,7 @@ import type { PaseoApi, PaseoClient } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { AutoCompactConfig } from "./config.ts";
-import { cacheExpired, cacheExpiredSkip, checkpointKey, guardDecision, providerDelayMinutes, strictnessTier, withFreshToolState } from "./model.ts";
+import { cacheExpired, cacheExpiredSkip, checkpointKey, disabledReason, guardDecision, providerDelayMinutes, strictnessTier, withFreshToolState } from "./model.ts";
 import { StateStore, type StateEntry, type WriteJson } from "./store.ts";
 import { AgentTimers, realTimers, type TimerApi } from "./timer.ts";
 import { MetricsLog } from "./metrics.ts";
@@ -279,7 +279,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     }
     const minutes = providerDelayMinutes(refreshed.agent.provider, config, refreshed.agent.model);
     if (minutes === null) {
-      log("skip", { agentId: event.agent.id, reason: refreshed.agent.provider === "pi" && refreshed.agent.model?.startsWith("fleet/gpt-") ? "pi-gpt-disabled" : refreshed.agent.provider === "pi" ? "unsupported-pi-model" : `provider-${refreshed.agent.provider}` });
+      log("skip", { agentId: event.agent.id, reason: disabledReason(refreshed.agent.provider, config, refreshed.agent.model) ?? (refreshed.agent.provider === "pi" ? "unsupported-pi-model" : `provider-${refreshed.agent.provider}`) });
       return;
     }
     const checkpoint: Checkpoint = {
@@ -329,7 +329,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         const page = await api.agents.list({ page: { limit: 200, cursor }, signal: lifetime.signal });
         for (const { agent } of page.entries) {
           if (stopped) return;
-          const reason = rearmSkipReason(agent, config.extendIdleCompaction) ?? (providerDelayMinutes(agent.provider, config, agent.model) === null ? "pi-gpt-disabled" : null);
+          const reason = rearmSkipReason(agent, config.extendIdleCompaction) ?? disabledReason(agent.provider, config, agent.model);
           if (reason) { skip(reason); continue; }
           if (timers.has(agent.id) || inFlightHasAgent(agent.id)) { skip("already-pending"); continue; }
           expectedUserMessage.set(agent.id, agent.lastUserMessageAt ?? null);
