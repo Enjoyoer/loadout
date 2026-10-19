@@ -14,6 +14,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ### Changed
 
+- Repo root keeps only README, CHANGELOG and THIRD_PARTY_NOTICES as Markdown: START-HERE.md is merged into the README as "Set up your own agent fleet", SKILLS_CATALOG.md becomes the README "Skills" table (now listing all 25 packages, including `wo`), and CONTRIBUTING.md, SECURITY.md and CODE_OF_CONDUCT.md move to `.github/`.
 - bw-login skill and the example global AGENTS.md look up logins with `bw-paste <site>` instead of `bw-login --list <site>`.
 - bw-login Browser Use bridge: run `bw-paste` from the shell tool, not the REPL, and read the clipboard with the `Get-Clipboard -Raw` form re-verified live.
 - bw-login and the example global AGENTS.md: the agent solves a CAPTCHA itself (checkbox, image grid, audio, slider) and asks the owner only after 3 real attempts fail or when it needs a phone call or hardware key; 2FA and a locked vault still go to the owner.

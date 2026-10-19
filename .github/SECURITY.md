@@ -4,7 +4,7 @@
 
 Report privately through GitHub: open the repository's **Security** tab and choose **Report a vulnerability**. Do not open a public issue for a security problem.
 
-You will get an acknowledgement within 7 days. Fixes are released as a new version and noted in [CHANGELOG.md](CHANGELOG.md).
+You will get an acknowledgement within 7 days. Fixes are released as a new version and noted in [CHANGELOG.md](../CHANGELOG.md).
 
 ## Scope
 

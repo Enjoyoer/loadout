@@ -10,7 +10,7 @@ The maintainer triages every new issue and pull request within 7 days: it gets a
 
 - Portable agent skills, the fleet sync tool, and Paseo plugins that work for anyone.
 - No credentials, tokens, account IDs, private host names, IP addresses, personal paths, or personal voice samples. Host-specific settings go in an ignored `references/local.md` or your private fleet directory.
-- Skills adapted from other projects need a compatible license, the upstream `LICENSE.txt` in the package directory, and an entry in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- Skills adapted from other projects need a compatible license, the upstream `LICENSE.txt` in the package directory, and an entry in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 - One change per pull request, with tests and docs for behavior changes.
 
 ## Set up and test
@@ -54,7 +54,7 @@ Rules that a check enforces, run locally exactly as CI runs them. A line that mu
 | --- | --- |
 | Plugin code gets the Paseo home and daemon address only from `paseoHome()` and `resolveDaemonTarget()` in `plugins/_shared/daemon-target.ts`, so state and calls follow the daemon the plugin runs in. | `python3 scripts/check_daemon_env.py` |
 
-A new skill also needs a row in [SKILLS_CATALOG.md](SKILLS_CATALOG.md) and, if it is portable, a place in a `.claude-plugin/marketplace.json` plugin.
+A new skill also needs a row in the [README Skills table](../README.md#skills) and, if it is portable, a place in a `.claude-plugin/marketplace.json` plugin.
 
 ## Rules CI enforces
 
@@ -67,7 +67,7 @@ Each rule has a check that fails on the mistake it names. An exception goes on t
 
 ## Releases
 
-Loadout uses [semantic versioning](https://semver.org). Changes are listed under "Unreleased" in [CHANGELOG.md](CHANGELOG.md) and move to a version heading at release, which also bumps the marketplace plugin versions and tags `vX.Y.Z`.
+Loadout uses [semantic versioning](https://semver.org). Changes are listed under "Unreleased" in [CHANGELOG.md](../CHANGELOG.md) and move to a version heading at release, which also bumps the marketplace plugin versions and tags `vX.Y.Z`.
 
 ## Conduct
 
