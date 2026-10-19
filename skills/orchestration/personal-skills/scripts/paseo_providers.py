@@ -43,8 +43,10 @@ RELOAD_JS = Path(__file__).resolve().parent / "paseo_reload_remote.js"
 BOOT = "eval(require('zlib').gunzipSync(Buffer.from(process.argv[1],'base64')).toString())"
 pack = fleet.pack
 parse_result = fleet.parse_result
-CONFIG_KEYS = {"providers", "env", "hosts", "pi", "disabledProviders"}
-HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi", "disabledProviders"}
+CONFIG_KEYS = {"providers", "env", "hosts", "pi", "disabledProviders", "launch"}
+HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi", "disabledProviders", "launch"}
+# Providers the launcher wraps; only these take launch settings.
+LAUNCH_PROVIDERS = {"claude", "codex", "pi"}
 # Providers the fleet itself runs on; disabledProviders never turns these off.
 PROTECTED_PROVIDERS = {"pi", "claude", "codex"}
 RELAY_TITLE = "loadout-provider-sync"
@@ -261,6 +263,37 @@ def _disabled(value, where):
     return value
 
 
+def _launch(value, where):
+    """launch: per provider `tokenFiles` (env name to an owner-only file on the host) and `args` (leading flags)."""
+    if not isinstance(value, dict):
+        raise fleet.FleetError(f"{where} must be an object")
+    fleet._keys(value, LAUNCH_PROVIDERS, where)
+    for provider, settings in value.items():
+        at = f"{where}.{provider}"
+        if not isinstance(settings, dict):
+            raise fleet.FleetError(f"{at} must be an object")
+        fleet._keys(settings, {"tokenFiles", "args"}, at)
+        token_files = settings.get("tokenFiles", {})
+        if not isinstance(token_files, dict):
+            raise fleet.FleetError(f"{at}.tokenFiles must map env names to files")
+        for key, path in token_files.items():
+            if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", key):
+                raise fleet.FleetError(f"{at}.tokenFiles: {key!r} must be an env name")
+            if not isinstance(path, str) or not path.startswith(("~/", "/")) or re.search(r"[\x00-\x1f]", path):
+                raise fleet.FleetError(f"{at}.tokenFiles.{key} must be an absolute or ~/ POSIX path")
+        args = settings.get("args", [])
+        if not isinstance(args, list) or not all(isinstance(a, str) and a and not re.search(r"[\x00-\x1f]", a)
+                                                 for a in args):
+            raise fleet.FleetError(f"{at}.args must be a list of non-empty strings")
+
+
+def launch_for(config: dict, host: str) -> dict:
+    """A host's launch settings: a host provider entry replaces the default one; empty entries are dropped."""
+    merged = {**config.get("launch", {}), **config.get("hosts", {}).get(host, {}).get("launch", {})}
+    return {provider: {k: v for k, v in settings.items() if v} for provider, settings in merged.items()
+            if any(settings.values())}
+
+
 def effective(config: dict, host: str) -> tuple[dict, list]:
     """A host's provider blocks and disabled ids: host providers overlay the default, a host list replaces it."""
     settings = config.get("hosts", {}).get(host, {})
@@ -299,6 +332,7 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
     if "pi" in data: _pi(data["pi"], "pi")
     if "disabledProviders" in data: _disabled(data["disabledProviders"], "disabledProviders")
     _env_map(data.get("env", {}), "env")
+    if "launch" in data: _launch(data["launch"], "launch")
     scoped = {host["name"] for host in fleet.hosts_for(fleet_doc, "providers")}
     for name, settings in data.get("hosts", {}).items():
         if name not in scoped:
@@ -309,6 +343,7 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
             _disabled(settings["disabledProviders"], f"hosts.{name}.disabledProviders")
         _providers(settings.get("providers", {}), f"hosts.{name}.providers")
         _env_map(settings.get("env", {}), f"hosts.{name}.env")
+        if "launch" in settings: _launch(settings["launch"], f"hosts.{name}.launch")
         if not isinstance(settings.get("inherit_env", True), bool):
             raise fleet.FleetError(f"hosts.{name}.inherit_env must be true or false")
         required = settings.get("required_env", {})
@@ -321,6 +356,8 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
         both = sorted(set(providers) & set(disabled))
         if both:
             raise fleet.FleetError(f"{name}: {both} both pinned in providers and listed in disabledProviders")
+        if launch_for(data, name) and next(h for h in fleet_doc["hosts"] if h["name"] == name)["os"] == "windows":
+            raise fleet.FleetError(f"{name}: launch settings need the POSIX launcher; Windows commands stay unchanged")
     return data
 
 
@@ -333,6 +370,7 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
     pi = settings.get("pi", config.get("pi"))
     generated = None
     mcp_servers = config.get('_mcpHosts', {}).get(host, [])
+    launch = launch_for(config, host)
     if pi:
         sys.path.insert(0, str(Path(__file__).parent / 'pi'))
         from catalog import derive
@@ -350,7 +388,8 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
     return {
         "pi": generated,
         "mcpServers": mcp_servers,
-        "mcp_env_launcher": (Path(__file__).parent / 'mcp_env.cjs').read_text() if mcp_servers else None,
+        "mcp_env_launcher": (Path(__file__).parent / 'mcp_env.cjs').read_text() if mcp_servers or launch else None,
+        "launch": launch,
         "pi_files": ({f.name: f.read_text() for f in (Path(__file__).parent / 'pi').glob('*') if f.suffix in {'.py', '.mjs'}} if generated else {}),
         "host": host,
         "providers": providers,
@@ -627,6 +666,8 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
                  f"preserved [{', '.join(result['preserved'])}]{off}{backup}")
         if result and result.get('mcp'):
             emit(f"{name}: MCP " + '; '.join(result['mcp']))
+        if result and result.get('launch'):
+            emit(f"{name}: launch " + '; '.join(result['launch']))
         if runner.cleanup_warning:
             emit(f"{name}: cleanup warning: {runner.cleanup_warning}; the next run archives it")
         if result is None or result["error"] or not result["verified"]:

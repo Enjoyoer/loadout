@@ -1,6 +1,6 @@
 // Merge pinned Paseo provider fields into this host's Paseo config.
 // Shipped gzip+base64 by paseo_providers.py; argv[2] is the gzip+base64 JSON payload:
-// {host, providers, disabled, env, required_env, stamp, dry_run, config_path, paseo_home}.
+// {host, providers, disabled, env, required_env, launch, stamp, dry_run, config_path, paseo_home}.
 // It ships without whole-line comments and indentation (merge_program), so it holds no multiline string.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toString());
@@ -64,10 +64,33 @@ try {
     : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'loadout');
   const launcher = path.join(envRoot, 'mcp-env.cjs');
   const envServers = servers.filter(s => s.envFile);
+  // Per provider launch settings, read by the launcher for the harness it names: token files and leading args.
+  const launch = p.launch || {};
+  if (Object.keys(launch).length && process.platform === 'win32') throw Error('provider launch settings need a POSIX host');
+  const providerWrapped = raw => Object.values((JSON.parse(raw).agents || {}).providers || {}).some(row =>
+    Array.isArray(row.command) && row.command[1] === launcher && row.command[2] === '--provider');
+  // Wiring stays managed while a provider still launches with --provider, so dropping its settings unwraps it.
+  const manageLaunch = envServers.length > 0 || Object.keys(launch).length > 0 || providerWrapped(read());
   const envPlans = [];
-  if (envServers.length) {
-    envPlans.push([launcher, p.mcp_env_launcher], [path.join(envRoot, 'mcp-env.json'), JSON.stringify(envServers, null, 2) + '\n']);
+  if (manageLaunch) {
+    // Without MCP servers or launch settings the payload carries no launcher; the one on the host stays.
+    if (p.mcp_env_launcher) envPlans.push([launcher, p.mcp_env_launcher]);
+    envPlans.push([path.join(envRoot, 'mcp-env.json'), JSON.stringify({ servers: envServers, providers: launch }, null, 2) + '\n']);
     for (const [file] of envPlans) check(file);
+  }
+  // Reported only when set, so a result without launch settings keeps its earlier shape.
+  if (Object.keys(launch).length) result.launch = [];
+  for (const [id, settings] of Object.entries(launch)) {
+    if (settings.args) result.launch.push(id + ' args ' + settings.args.join(' '));
+    for (const [key, tokenFile] of Object.entries(settings.tokenFiles || {})) {
+      const file = tokenFile.replace(/^~\//, os.homedir() + '/');
+      check(file);
+      // Size and mode only; the launcher reads the value at launch time.
+      const st = probe(fs, file, true);
+      const ready = st && st.size > 0 && (st.mode & 0o777) === 0o600 && st.uid === process.getuid();
+      result.launch.push(id + ' ' + key + ' tokenFile ' + tokenFile + (ready ? ' present, owner-only' : ' missing or unsafe'));
+      if (!ready && !p.dry_run) throw Error('token file missing or unsafe for ' + id + ' ' + key);
+    }
   }
   result.mcp = [];
   for (const s of servers) {
@@ -105,16 +128,20 @@ try {
       const { models, ...rest } = merged[k] || {};
       merged[k] = { ...rest, enabled: false };
     }
-    if (envServers.length) for (const provider of ['codex', 'claude', 'pi']) {
+    if (manageLaunch) for (const provider of ['codex', 'claude', 'pi']) {
       if (!merged[provider] || merged[provider].enabled === false) continue;
       const rawCommand = merged[provider].command || [provider];
       const command = typeof rawCommand === 'string' ? [rawCommand] : rawCommand;
       if (!Array.isArray(command) || !command.length || !command.every(arg => typeof arg === 'string'))
         throw Error('unsupported MCP provider command for ' + provider);
-      const wasWrapped = command[1] === launcher && command[2] === '--';
-      const original = wasWrapped ? command.slice(3) : command;
-      merged[provider] = { ...merged[provider], command: envServers.some(s => s.enabled)
-        ? [process.execPath, launcher, '--', ...original] : original };
+      const named = command[1] === launcher && command[2] === '--provider' && command[4] === '--';
+      const wasWrapped = named || command[1] === launcher && command[2] === '--';
+      const original = wasWrapped ? command.slice(named ? 5 : 3) : command;
+      const own = launch[provider];
+      if (own && own.args && original.length !== 1)
+        throw Error('launch args for ' + provider + ' need a command that is the executable alone');
+      merged[provider] = { ...merged[provider], command: own || envServers.some(s => s.enabled)
+        ? [process.execPath, launcher, ...(own ? ['--provider', provider] : []), '--', ...original] : original };
     }
     const missing = [];
     for (const k of Object.keys(p.required_env))
@@ -218,10 +245,10 @@ try {
       fs.rmSync(bak, { force: true });
     }
   }
-  if (servers.length) {
+  if (servers.length || Object.keys(launch).length) {
     const fields = Object.entries(m.merged).flatMap(([provider, row]) => Object.keys(row).filter(key =>
       JSON.stringify(row[key]) !== JSON.stringify(m.prev[provider]?.[key])).map(key => provider + '.' + key));
-    result.mcp.push('provider fields: ' + (fields.join(', ') || 'unchanged'));
+    (servers.length ? result.mcp : result.launch).push('provider fields: ' + (fields.join(', ') || 'unchanged'));
     if (result.pi) result.mcp.push('Pi runtime files: ' + (result.pi.changed.join(', ') || 'unchanged'));
   }
   result.preserved = Object.keys(m.prev).filter(k => !(k in p.providers) && !(k in p.env) && !disabled.includes(k));

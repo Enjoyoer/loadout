@@ -1,8 +1,9 @@
 // Merge managed Codex and Claude Code settings into this host's client config.
 // Shipped by client_config.py through fleet.run_node in a digest-checked stdin envelope; process.argv[2] is the gzip+base64 JSON payload
-// {codex: {top, sections, reportOnly}, claude: {settings, env, token_env, minVersion},
+// {codex: {top, sections, reportOnly, removeTop}, claude: {settings, env, token_env, removeEnv, minVersion},
 //  token, stamp, dry_run, update_claude}. The token arrives only on stdin and is
-// never printed. Only managed keys are written; everything else stays host-local.
+// never printed. Only managed keys are written, and only listed keys an earlier sync managed are removed;
+// everything else stays host-local.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execSync, execFileSync } = require("child_process");
 // Test-only hook: LOADOUT_TEST_CLAUDE is a JSON [interpreter, fake script] run as argv, without a shell.
@@ -25,7 +26,7 @@ function done(code) {
 // keys, optionally dotted, only.
 const TOML_NAME = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/;
 function checkNames(codex) {
-  const names = [...Object.keys(codex.top), ...codex.reportOnly];
+  const names = [...Object.keys(codex.top), ...codex.reportOnly, ...(codex.removeTop || [])];
   for (const [name, keys] of Object.entries(codex.sections)) names.push(name, ...Object.keys(keys));
   const bad = names.filter(n => typeof n !== "string" || !TOML_NAME.test(n));
   if (bad.length) throw new Error("refused, nothing written: managed Codex names must be bare TOML keys: " + JSON.stringify(bad));
@@ -195,12 +196,24 @@ function managedCheck(lines, top, sections) {
   }
 }
 
-// Line-based merge on the scan: keeps CRLF, comments, other keys and other sections.
-function mergeToml(text, top, sections) {
+// Line-based merge on the scan: keeps CRLF, comments, other keys and other sections. A removeTop key is
+// deleted, with any continuation lines, where it is set before the first table header.
+function mergeToml(text, top, sections, removeTop = []) {
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
   const lines = text.length ? text.split(/\r?\n/) : [];
   const changes = [];
   tomlUnsupported(tomlScan(lines), top, sections);
+  for (const k of removeTop) {
+    const kinds = tomlScan(lines);
+    let first = kinds.findIndex(l => l.kind === "header");
+    if (first < 0) first = lines.length;
+    const i = kinds.findIndex((l, n) => n < first && l.kind === "key" && samePath(l.keys, k));
+    if (i < 0) continue;
+    let n = 1;
+    while (kinds[i + n] && kinds[i + n].kind === "more") n++;
+    lines.splice(i, n);
+    changes.push("-" + k);
+  }
   // Set a key at line i, replacing its whole value (with any continuation lines), or insert it at `at`, above
   // the blank lines that precede the next header but not above floor.
   const put = (kinds, i, at, floor, want, label) => {
@@ -348,7 +361,7 @@ try {
   if (!fs.existsSync(codexFile)) result.codex = { status: "absent" };
   else result.codex = update(p, codexFile, bytes => {
     if (bytes === null) throw new Error("config.toml disappeared during the merge, so nothing was written");
-    const before = bytes.toString("utf8"), r = mergeToml(before, p.codex.top, p.codex.sections);
+    const before = bytes.toString("utf8"), r = mergeToml(before, p.codex.top, p.codex.sections, p.codex.removeTop);
     const report = {}, lines = before.split(/\r?\n/), kinds = tomlScan(lines);
     let first = kinds.findIndex(l => l.kind === "header");
     if (first < 0) first = lines.length;
@@ -378,6 +391,9 @@ try {
     if (Object.keys(env).length) cfg.env = cfg.env || {};
     for (const [k, v] of Object.entries(env)) {
       if (cfg.env[k] !== v) { cfg.env[k] = v; changes.push("env." + k); }
+    }
+    for (const k of p.claude.removeEnv || []) {
+      if (cfg.env && typeof cfg.env === "object" && Object.hasOwn(cfg.env, k)) { delete cfg.env[k]; changes.push("-env." + k); }
     }
     return { status: changes.length ? "changed" : "unchanged", changes,
              after: changes.length ? JSON.stringify(cfg, null, 2) + "\n" : null };

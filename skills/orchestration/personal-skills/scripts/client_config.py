@@ -24,10 +24,10 @@ TIMEOUT_SECONDS = 300
 # --update-claude lets the host run `claude update` for up to 10 minutes.
 UPDATE_TIMEOUT_SECONDS = 900
 CATALOG_KEYS = {"token_file", "codex", "claude", "roles", "hosts", "mcpServers"}
-CODEX_KEYS = {"top", "sections", "reportOnly"}
-CLAUDE_KEYS = {"minVersion", "settings", "env", "token_env"}
-LAYER_CODEX_KEYS = {"top", "sections"}
-LAYER_CLAUDE_KEYS = {"settings", "env", "token_env"}
+CODEX_KEYS = {"top", "sections", "reportOnly", "removeTop"}
+CLAUDE_KEYS = {"minVersion", "settings", "env", "token_env", "removeEnv"}
+LAYER_CODEX_KEYS = {"top", "sections", "removeTop"}
+LAYER_CLAUDE_KEYS = {"settings", "env", "token_env", "removeEnv"}
 ROLES = ("local", "remote")
 
 
@@ -62,6 +62,9 @@ def _layer(layer, where, base=False):
     token_env = claude.get("token_env")
     if token_env is not None and not isinstance(token_env, str):
         raise fleet.FleetError(f"{where}.claude.token_env must be an env name or null")
+    # Keys an earlier sync managed and this one drops: removed from the host file, never ones we did not manage.
+    fleet._strings(codex.get("removeTop", []), f"{where}.codex.removeTop")
+    fleet._strings(claude.get("removeEnv", []), f"{where}.claude.removeEnv")
 
 
 def load_catalog(path: Path, fleet_doc: dict) -> dict:
@@ -88,6 +91,8 @@ def load_catalog(path: Path, fleet_doc: dict) -> dict:
         _layer(layer, f"hosts.{name}")
         if layer.get("role", "remote") not in ROLES:
             raise fleet.FleetError(f"hosts.{name}.role must be one of {list(ROLES)}")
+    for name in sorted(scoped):
+        settings_for(data, fleet_doc, name)  # refuses a key both managed and listed for removal
     return data
 
 
@@ -98,8 +103,9 @@ def role_of(catalog: dict, fleet_doc: dict, host: str) -> str:
 
 def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
     """Base, then role, then host overrides. Top-level Claude settings replace whole values."""
-    codex = {"top": {}, "sections": {}, "reportOnly": list(catalog.get("codex", {}).get("reportOnly", []))}
-    claude = {"settings": {}, "env": {}, "token_env": None,
+    codex = {"top": {}, "sections": {}, "removeTop": [],
+             "reportOnly": list(catalog.get("codex", {}).get("reportOnly", []))}
+    claude = {"settings": {}, "env": {}, "token_env": None, "removeEnv": [],
               "minVersion": catalog.get("claude", {}).get("minVersion")}
     role = role_of(catalog, fleet_doc, host)
     layers = [catalog, catalog.get("roles", {}).get(role, {}), catalog.get("hosts", {}).get(host, {})]
@@ -108,11 +114,17 @@ def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
         codex["top"].update(c.get("top", {}))
         for name, keys in c.get("sections", {}).items():
             codex["sections"].setdefault(name, {}).update(keys)
+        codex["removeTop"] += [key for key in c.get("removeTop", []) if key not in codex["removeTop"]]
         k = layer.get("claude", {})
         claude["settings"].update(k.get("settings", {}))
         claude["env"].update(k.get("env", {}))
         if "token_env" in k:
             claude["token_env"] = k["token_env"]
+        claude["removeEnv"] += [key for key in k.get("removeEnv", []) if key not in claude["removeEnv"]]
+    both = sorted(set(codex["removeTop"]) & set(codex["top"]))
+    both += sorted(set(claude["removeEnv"]) & (set(claude["env"]) | {claude["token_env"]}))
+    if both:
+        raise fleet.FleetError(f"{host}: {both} both managed and listed for removal")
     host_doc = next(h for h in fleet_doc['hosts'] if h['name'] == host)
     servers = mcp_config.for_host(catalog.get('mcpServers', {}), host_doc)
     for server in servers:
