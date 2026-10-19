@@ -53,7 +53,7 @@ The Fable lanes run in a UI task, created with `createTask({..., ui: true})`; pa
 The pace reads Paceline's `pq --json` (schemaVersion 1) for the class's pool: Claude routes (Opus, Fable) read the claude accounts, GPT routes (Sol, Luna, Astra) the codex accounts.
 
 - Weekly gap is the pool's `pools[].pace.gapPct`: positive means behind (quota going unused), negative means ahead.
-- 5-hour use is the mean `five_hour` `usedPct` over the pool's fresh accounts.
+- 5-hour use is the mean `five_hour` `usedPct` over the pool's fresh accounts. When no fresh pool account reports a `five_hour` window at all (weekly-only plans), the 5-hour window is unconstrained: step 2 is skipped and the reason says "no 5h window".
 - Reset-soon means a fresh pool account's `seven_day` window resets within `resetSoonHours` with more than `resetSoonLeftPct` left.
 
 Steps:
@@ -68,7 +68,7 @@ There is no adjustment, and the reason says why, when:
 - `snapshotStale` is true;
 - the pool is missing, counts no accounts, or has no pace;
 - more than half the pool's accounts are stale;
-- the pool has no fresh 5-hour reading.
+- the pool reports a `five_hour` window but none of it is fresh.
 
 Some stale accounts still adjust, and the reason shows "N of M stale".
 

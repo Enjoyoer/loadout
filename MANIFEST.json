@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "847e54b7a3458841c72a147b6a4dc64773e274f9",
+  "source_commit": "2cf2edf4a427de0b29735279eefbc9b9c5ab30e8",
   "skill_count": 25,
   "file_count": 141,
   "files": [
@@ -206,7 +206,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5510,
-      "sha256": "e2613e6044b5369634b0490001f31ca1dc7b70177c2d1224b41112b2fbcf32a2"
+      "sha256": "7777e156191a88758015b2343043323944f7ca3958b590ea5a987d783f4e67a7"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -268,8 +268,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 12278,
-      "sha256": "6d5ce9c538bbd3f96b260fb2a8c07a79e557cfcab39ae10cb2cf18efdafad3d3"
+      "bytes": 12477,
+      "sha256": "c49670968a389317cf06676728c6ae77985ddd4faf7bdaef80db0d6866f6909b"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -345,8 +345,8 @@
       "path": "skills/orchestration/opc/scripts/quota-pace.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 10626,
-      "sha256": "4316de739adcca62e41c08d099fdb67aa111dda09ee57d50c667e7f10b71f7e7"
+      "bytes": 10965,
+      "sha256": "3ae6fd3a587838b3406678996280d8dbf29016ed4a00b0b5e12483b10c8f9b00"
     },
     {
       "path": "skills/orchestration/opc/scripts/route.mjs",
