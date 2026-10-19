@@ -25,7 +25,7 @@ declare const window: {
   innerWidth: number; innerHeight: number;
   addEventListener(name: string, listener: (event: KeyEvent) => void, capture: boolean): void;
   removeEventListener(name: string, listener: (event: KeyEvent) => void, capture: boolean): void;
-  getComputedStyle(element: ElementRef): { display: string; visibility: string; opacity: string };
+  getComputedStyle(element: ElementRef): { display: string; visibility: string; opacity: string; overflowX: string; overflowY: string };
   requestAnimationFrame(callback: () => void): number; cancelAnimationFrame(id: number): void;
 };
 declare const navigator: { platform: string; userAgent: string };
@@ -45,18 +45,26 @@ const same = (a: Target, b: Target) => a.hostId === b.hostId && a.workspaceId ==
 const element = (value: unknown): ElementRef | null => value && typeof (value as ElementRef).closest === "function" ? value as ElementRef : null;
 function visible(node: ElementRef | null): node is ElementRef {
   if (!node?.isConnected || node.closest('[inert], [hidden], [aria-hidden="true"]')) return false;
+  const bounds = node.getBoundingClientRect();
+  if (bounds.width <= 0 || bounds.height <= 0) return false;
+  let left = Math.max(0, bounds.left), right = Math.min(window.innerWidth, bounds.right);
+  let top = Math.max(0, bounds.top), bottom = Math.min(window.innerHeight, bounds.bottom);
   for (let parent: ElementRef | null = node; parent; parent = parent.parentElement) {
     const style = window.getComputedStyle(parent);
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" || style.opacity === "0") return false;
+    if (parent !== node) {
+      const clip = parent.getBoundingClientRect();
+      if (["hidden", "clip", "auto", "scroll"].includes(style.overflowX)) { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
+      if (["hidden", "clip", "auto", "scroll"].includes(style.overflowY)) { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
+    }
   }
-  const bounds = node.getBoundingClientRect();
-  return bounds.width > 0 && bounds.height > 0 && bounds.bottom > 0 && bounds.right > 0 && bounds.top < window.innerHeight && bounds.left < window.innerWidth;
+  return right > left && bottom > top;
 }
 function associate(instance: Instance): Association | null {
   // The icon wrapper is aria-hidden by Paseo. Check the actual pressable instead.
   const trigger = instance.icon.closest('[role="button"], button');
   const pane = trigger?.closest('[data-testid^="workspace-pane-"]');
-  if (!trigger || !pane || !visible(trigger) || trigger.getAttribute("aria-disabled") === "true") return null;
+  if (!trigger || !pane || !visible(pane) || !visible(trigger) || trigger.getAttribute("aria-disabled") === "true") return null;
   for (let parent = trigger.parentElement; parent && pane.contains(parent); parent = parent.parentElement) {
     const composers = Array.from(parent.querySelectorAll('[data-testid="message-input-root"]')).filter(visible);
     if (composers.length > 1) return null;
@@ -87,7 +95,7 @@ function owned(association: Association, node: unknown) {
     !target.closest('[role="dialog"], [role="menu"], [data-testid="terminal-surface"], .xterm');
 }
 function modifier(event: KeyEvent) {
-  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+  const mac = /Mac|iPhone|iPad|iPod/i.test(navigator.platform) || /Macintosh|Mac OS|iPhone|iPad|iPod/i.test(navigator.userAgent);
   return event.shiftKey && !event.altKey && (mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey);
 }
 function consume(event: KeyEvent) { event.preventDefault(); event.stopPropagation(); }
@@ -203,7 +211,8 @@ export function bindMenu(target: Target, ref: unknown, dismiss: () => void, key:
   const ownedMenu: Menu = { root, target, instance: captured?.instance ?? candidates[0] ?? null, capture: captured, dismiss, key, restore: !!captured };
   menu = ownedMenu;
   return {
-    valid: () => menu === ownedMenu && (!captured || valid(captured)),
+    valid: () => menu === ownedMenu && (!captured || valid(captured)) && (!ownedMenu.instance ||
+      instances.has(ownedMenu.instance) && visible(ownedMenu.instance.icon.closest('[role="button"], button'))),
     close(shouldRestore) { ownedMenu.restore = shouldRestore && !!captured; dismiss(); },
     release() {
       if (menu !== ownedMenu) return;
