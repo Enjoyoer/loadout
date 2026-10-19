@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "2f97e73f13a86c15d62c370e3a18210f234a00dc",
+  "source_commit": "c7556979a0098d4636046e910106000d8494cfc8",
   "skill_count": 25,
   "file_count": 141,
   "files": [
@@ -1415,8 +1415,8 @@
     {
       "path": "plugins/pi-fast-toggle/client/effort.tsx",
       "plugin": "pi-fast-toggle",
-      "bytes": 12492,
-      "sha256": "88954cda37cf4fb6c082cbe98e8b97a0d9987cd4eb36cee5bc87bb138ddceaf2"
+      "bytes": 12484,
+      "sha256": "3af1173b961447fb22cc1c0823416c49567ba742284700a9cd2a8b3b60c64b8a"
     },
     {
       "path": "plugins/pi-fast-toggle/client/pills.ts",
@@ -1452,13 +1452,13 @@
       "path": "plugins/pi-fast-toggle/package-lock.json",
       "plugin": "pi-fast-toggle",
       "bytes": 162275,
-      "sha256": "1d538b2bcfdbd6669fc04f30ccdb2585a8ae8e5454f37a383149c358c711389f"
+      "sha256": "a0514f8597d6963187a38f26d3eea08c28099fad4eefb7ca585c9635388985de"
     },
     {
       "path": "plugins/pi-fast-toggle/package.json",
       "plugin": "pi-fast-toggle",
       "bytes": 719,
-      "sha256": "4ae5bd30d272b4398e14f7f7a38ced32a1bc2fb94550bb5e133c42b3f1446c26"
+      "sha256": "0e3de79278f4ec26509fb8c4d7cca4d2efbd017c53daca4141bce20523f08ee6"
     },
     {
       "path": "plugins/pi-fast-toggle/paseo-plugin.json",
