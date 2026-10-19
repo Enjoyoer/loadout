@@ -34,8 +34,15 @@ export function cacheExpiredSkip(provider: string, model: string | null | undefi
   return cacheExpired(provider, model, endedAt, now);
 }
 
+/** Skip reason for a known cache family whose idle compaction is turned off in config, or null. */
+export function disabledReason(provider: string, config: AutoCompactConfig, model?: string | null): string | null {
+  if (provider === "codex" && !config.codexEnabled) return "codex-disabled";
+  if (provider === "pi" && cacheFamily(provider, model) === "codex" && !config.piGptEnabled) return "pi-gpt-disabled";
+  return null;
+}
+
 export function providerDelayMinutes(provider: string, config: AutoCompactConfig, model?: string | null): number | null {
-  if (provider === "pi" && cacheFamily(provider, model) === "codex" && !config.piGptEnabled) return null;
+  if (disabledReason(provider, config, model)) return null;
   const family = cacheFamily(provider, model);
   if (family === "claude") return config.claudeDelayMinutes;
   if (family === "codex") return config.codexDelayMinutes;
@@ -87,7 +94,8 @@ export function guardDecision(
   expectedLastUserMessageAt: string | null,
 ): Decision {
   if (!cacheFamily(agent.provider, agent.model)) return { ok: false, reason: agent.provider === "pi" ? "unsupported-pi-model" : `provider-${agent.provider}` };
-  if (providerDelayMinutes(agent.provider, config, agent.model) === null) return { ok: false, reason: "pi-gpt-disabled" };
+  const disabled = disabledReason(agent.provider, config, agent.model);
+  if (disabled) return { ok: false, reason: disabled };
   if (agent.status !== "idle" || agent.activeTurn) return { ok: false, reason: "not-idle" };
   if (agent.archivedAt) return { ok: false, reason: "archived" };
   if ((agent.pendingPermissions?.length ?? 0) > 0) return { ok: false, reason: "pending-permission" };
