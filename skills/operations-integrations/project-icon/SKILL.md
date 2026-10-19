@@ -1,13 +1,13 @@
 ---
 name: project-icon
-description: Give a Paseo project its first custom icon in a consistent die-cut sticker style. Use when a PM first takes ownership of a project with no custom icon.
+description: Give a Paseo project its first custom icon in a consistent die-cut sticker style. Use whenever a PM owns a project with no custom icon.
 metadata:
   version: "1.0"
 ---
 
 # Project icon
 
-Run once at first PM ownership, only for a project with no custom icon. Do not redesign existing icons. Skip roots at or below `~/.cache/fleet-scratch` (Windows: `%USERPROFILE%\.cache\fleet-scratch`). Keep drafts, renders, and previews in scratch, not the project or public skill package.
+Whenever you own a project, run `--check` (cheap, read-only); continue only if it reports no custom icon. This covers projects owned before this skill existed. Do not redesign existing icons. Skip roots at or below `~/.cache/fleet-scratch` (Windows: `%USERPROFILE%\.cache\fleet-scratch`). Keep drafts, renders, and previews in scratch, not the project or public skill package.
 
 ## Spec sheet
 
@@ -49,6 +49,6 @@ Rendering uses **librsvg's `rsvg-convert`**, not CairoSVG or a browser fallback.
 node <skill>/scripts/apply-icon.mjs <cli-dist> <project-id> <icon.png>
 ```
 
-The helper rechecks the project immediately before writing, refuses scratch roots, refuses an existing custom icon without `--force`, uploads through `setProjectIcon`, then compares `getProjectIcon().icon.data` byte-for-byte and confirms the custom revision. It reports `verified: true` only on success. Serialize icon writers for a project: the daemon has no compare-and-set icon RPC, so the recheck cannot exclude a simultaneous writer. If upload returns an uncertain error, inspect state before retrying; do not blindly force.
+The helper rechecks the project immediately before writing, refuses scratch roots, refuses an existing custom icon without `--force`, uploads through `setProjectIcon`, then polls `getProjectIcon().icon.data` briefly (up to 10 reads, 300 ms apart) until it matches byte-for-byte and the custom revision is set. It reports `verified: true` only on success. Serialize icon writers for a project: the daemon has no compare-and-set icon RPC, so the recheck cannot exclude a simultaneous writer. If upload returns an uncertain error, inspect state before retrying; do not blindly force.
 
 `--force` is only for an explicitly requested replacement, never routine PM intake. `--allow-scratch` independently overrides the scratch skip only for an explicitly requested throwaway verification. Neither implies the other. A second normal apply must refuse after a successful upload. Finish with `--check` and report the verified result or concrete blocker; never clear an existing icon to make intake run again.
