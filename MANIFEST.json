@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "685276b3684a1110941aafc7b97b1ee42b2aee03",
+  "source_commit": "2f4607e421c034f95760271edf02ba31558c5455",
   "skill_count": 25,
   "file_count": 141,
   "files": [
@@ -1433,8 +1433,8 @@
     {
       "path": "plugins/pi-fast-toggle/client/web.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 12422,
-      "sha256": "f42e65394ec68c7b0c0516fe18ca7e1c20ad2bc91877f0cdf89023b93810a6bc"
+      "bytes": 13193,
+      "sha256": "420652c7838be4ba61906193afa73f705d655015e63e931c814fadb8ef17c91e"
     },
     {
       "path": "plugins/pi-fast-toggle/index.client.tsx",
