@@ -106,7 +106,8 @@ function runPq(file, args) {
 }
 
 // Pool values for one provider. Weekly gap is pq's plan-weighted pool pace; 5-hour use and reset-soon
-// come from the pool's fresh accounts, since the pool field carries only the weekly pace.
+// come from the pool's fresh accounts, since the pool field carries only the weekly pace. A pool whose fresh
+// accounts report no five_hour window at all (weekly-only plans) has no 5-hour limit: fiveHourUsedPct stays null.
 export function poolPace(quota, pool, settings = ROUTING_DEFAULTS) {
   const name = POOL_NAMES[pool];
   if (!name) throw Error(`unknown quota pool ${pool}`);
@@ -126,16 +127,18 @@ export function poolPace(quota, pool, settings = ROUTING_DEFAULTS) {
   const fresh = snapshot.accounts.filter(account => account?.provider === pool && account.fresh === true &&
     Array.isArray(account.windows));
   const windows = id => fresh.flatMap(account => account.windows.filter(window => window?.id === id && window.fresh !== false));
+  const hasFiveHour = fresh.some(account => account.windows.some(window => window?.id === 'five_hour'));
   const fiveHour = windows('five_hour').map(window => window.usedPct).filter(num);
-  if (!fiveHour.length) return stale(`${name} pool has no fresh 5h reading`);
+  if (hasFiveHour && !fiveHour.length) return stale(`${name} pool has no fresh 5h reading`);
   const ages = fresh.map(account => account.ageSeconds).filter(num);
   const gapPct = entry.pace.gapPct;
-  const fiveHourUsedPct = Math.round(fiveHour.reduce((sum, value) => sum + value, 0) / fiveHour.length * 10) / 10;
+  const fiveHourUsedPct = fiveHour.length
+    ? Math.round(fiveHour.reduce((sum, value) => sum + value, 0) / fiveHour.length * 10) / 10 : null;
   const resetSoon = windows('seven_day').some(window => num(window.resetInSeconds) && num(window.leftPct) &&
     window.resetInSeconds <= settings.resetSoonHours * 3600 && window.leftPct > settings.resetSoonLeftPct);
   // Weekly first (ahead wins over behind or reset-soon), then the 5-hour window can only hold or lower it.
   const weekly = gapPct <= -settings.aheadPoints ? -1 : gapPct >= settings.behindPoints || resetSoon ? 1 : 0;
-  const step = fiveHourUsedPct >= settings.fiveHourDownPct ? -1
+  const step = fiveHourUsedPct === null ? weekly : fiveHourUsedPct >= settings.fiveHourDownPct ? -1
     : fiveHourUsedPct >= settings.fiveHourNoUpPct && weekly === 1 ? 0 : weekly;
   return Object.freeze({ ...pace, step, weekly, gapPct, fiveHourUsedPct, resetSoon,
     ageSeconds: ages.length ? Math.max(...ages) : null });
@@ -151,7 +154,7 @@ export function describePace(pace) {
   if (pace.stale) return `no adjustment, ${pace.stale}`;
   const gap = pace.gapPct > 0 ? `${shown(pace.gapPct)} behind` : pace.gapPct < 0 ? `${shown(-pace.gapPct)} ahead` : 'on pace';
   return [`${POOL_NAMES[pace.pool]} pool ${gap} weekly`, ...(pace.staleAccounts ? [`${pace.staleAccounts} of ${pace.accounts} stale`] : []),
-    ...(pace.resetSoon ? ['weekly reset soon'] : []), `5h ${shown(pace.fiveHourUsedPct)}% used`].join(', ');
+    ...(pace.resetSoon ? ['weekly reset soon'] : []), pace.fiveHourUsedPct === null ? 'no 5h window' : `5h ${shown(pace.fiveHourUsedPct)}% used`].join(', ');
 }
 
 export function validPace(pace, pool) {
@@ -161,7 +164,7 @@ export function validPace(pace, pool) {
     keys.every(key => Object.hasOwn(pace, key)) && pace.pool === pool && [-1, 0, 1].includes(pace.step) &&
     nullable(pace.weekly, value => [-1, 0, 1].includes(value)) &&
     nullable(pace.stale, value => typeof value === 'string' && value.trim() && !/[\r\n]/.test(value)) &&
-    (pace.stale === null ? num(pace.gapPct) && num(pace.fiveHourUsedPct) && typeof pace.resetSoon === 'boolean' && pace.weekly !== null
+    (pace.stale === null ? num(pace.gapPct) && typeof pace.resetSoon === 'boolean' && pace.weekly !== null
       : pace.step === 0) &&
     ['gapPct', 'fiveHourUsedPct', 'ageSeconds'].every(key => nullable(pace[key], num)) &&
     nullable(pace.resetSoon, value => typeof value === 'boolean') &&

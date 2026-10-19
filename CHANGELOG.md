@@ -61,6 +61,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - The `claude-cloud` skill is deprecated and no longer published or synced; its source is in `deprecated/claude-cloud`.
 
 ### Fixed
+- OPC 7.53.2: quota pace treats a pool whose fresh accounts report no `five_hour` window at all (weekly-only Codex plans) as having no 5-hour limit and paces it on the weekly reading alone, with "no 5h window" in the route reason, instead of skipping the adjustment as stale. A `five_hour` window that exists but is not fresh still means no adjustment.
 - OPC 7.48.1: Worker routes reject reviewer-only web models, including catalog aliases and explicit native providers.
 - OPN: worker option uses `gpt-6-luna` (was the retired `gpt-5.6-luna`).
 - OPC 7.46: Codex Sites route uses `gpt-6-luna` (was the retired `gpt-5.6-luna`).
