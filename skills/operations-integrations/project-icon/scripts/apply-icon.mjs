@@ -65,9 +65,17 @@ try {
     if (current.hasCustomIcon && !values.force) throw new Error("Refusing to overwrite custom icon without --force");
     const data = bytes.toString("base64");
     await client.setProjectIcon(projectId, { type: "upload", data });
-    const got = await client.getProjectIcon(projectId);
-    if (got?.icon?.data !== data) throw new Error("Icon read-back differs from upload");
-    const after = await inspect();
+    // The daemon acknowledges the upload before the icon is readable, so an immediate
+    // read-back can lag. Poll briefly; fail closed if bytes or revision never settle.
+    let after, same = false;
+    for (let tries = 0; tries < 10; tries++) {
+      if (tries) await new Promise((r) => setTimeout(r, 300));
+      const got = await client.getProjectIcon(projectId);
+      same = got?.icon?.data === data;
+      after = await inspect();
+      if (same && after.hasCustomIcon) break;
+    }
+    if (!same) throw new Error("Icon read-back differs from upload");
     if (!after.hasCustomIcon) throw new Error("Custom icon revision missing after upload");
     console.log(JSON.stringify({ ...after, bytes: bytes.length, verified: true }));
   }

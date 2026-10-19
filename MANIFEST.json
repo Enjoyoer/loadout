@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "5506e71b89e9a1bd74c7584d4b341879afafa736",
+  "source_commit": "d7e6ca90420117dd24ff828c4fd50a338ca754ff",
   "skill_count": 25,
   "file_count": 141,
   "files": [
@@ -128,8 +128,8 @@
       "path": "skills/operations-integrations/project-icon/SKILL.md",
       "category": "operations-integrations",
       "skill": "project-icon",
-      "bytes": 4673,
-      "sha256": "7d94dfd18a012d5e55dcff729e63f71a176c7a80e8164ee258b550dd63fe1f91"
+      "bytes": 4796,
+      "sha256": "26c159de3404a0f490da5db89619ef4f21487dc2e84090511bb40cd8e1733e3e"
     },
     {
       "path": "skills/operations-integrations/project-icon/agents/openai.yaml",
@@ -149,8 +149,8 @@
       "path": "skills/operations-integrations/project-icon/scripts/apply-icon.mjs",
       "category": "operations-integrations",
       "skill": "project-icon",
-      "bytes": 4468,
-      "sha256": "5e2d8e12fdf10227eeb028d5a78e34e0a53e84292e49595b3a5cd6e5b7b85168"
+      "bytes": 4851,
+      "sha256": "068fc4107c5312ee68f64b1b355ddcb5c09b140be90a3ac3d13501190dd3fb62"
     },
     {
       "path": "skills/operations-integrations/project-icon/scripts/render.py",
@@ -205,8 +205,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5510,
-      "sha256": "7777e156191a88758015b2343043323944f7ca3958b590ea5a987d783f4e67a7"
+      "bytes": 5496,
+      "sha256": "777e7ea7c4286450c9390e737a055e8bc60eb2c02c62251a09a81a6224300918"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -380,8 +380,8 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 8597,
-      "sha256": "0e50d54e6b0404271d030eb3c33c2135f5b2ba7aa739df8adc63d9412b317bf6"
+      "bytes": 8585,
+      "sha256": "94aa22a471323295c663243358357e4060c5ef2872749e3f8572e1ec15f759ac"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
