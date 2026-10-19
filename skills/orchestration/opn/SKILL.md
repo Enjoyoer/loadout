@@ -2,7 +2,7 @@
 name: opn
 description: Own and coordinate durable non-code workstreams. Use for explicit OPN workflows or durable folder-owner coordination.
 metadata:
-  version: "1.1"
+  version: "1.1.1"
 ---
 
 # OPN Non-Code Orchestrator
@@ -24,7 +24,7 @@ Keep the brief small and point to source files instead of copying playbooks. The
 
 ## Ownership and reuse
 
-At first PM ownership, if the project has no custom icon and is not a scratch folder, use `$project-icon` once.
+Whenever you own a project with no custom icon that is not a scratch folder, use `$project-icon`.
 
 - One durable folder has one owner across objectives and sessions.
 - Reuse the existing owner for the exact folder when it is ready, paused, completed, idle, or archived. Reverify identity, scope, and the recorded Worker model choice before reuse; do not create a sibling merely because the current objective changed.

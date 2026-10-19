@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.53.2"
+  version: "7.53.3"
 ---
 
 # OPC
@@ -17,7 +17,7 @@ Follow this state machine, reading linked references only when their branch appl
 
 PMs run on Pi `fleet/claude-opus-5-5`, thinking `medium`, unless the owner names another model or effort. If self differs at first PM ownership, `update_agent` only self's model and thinking.
 
-At first PM ownership, if the project has no custom icon and is not a scratch folder, use `$project-icon` once.
+Whenever you own a project with no custom icon that is not a scratch folder, use `$project-icon`.
 
 Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks: observable behaviors from the owner's intent, preferably end-to-end or live. Consult root `STATUS.html` and `LESSONS.md` when resuming. Escalate scope or authority changes to the owner.
 
