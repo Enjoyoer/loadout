@@ -105,6 +105,13 @@ function keyboard(event: KeyEvent) {
     if (!menu.root.contains(event.target) || !menu.root.contains(document.activeElement) || overlays(menu.root)) return;
     if (modifier(event) && event.key.toLowerCase() === "m") { consume(event); return; }
     if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && ["ArrowUp", "ArrowDown", "Home", "End", "Enter", "Escape"].includes(event.key)) {
+      const root = menu.root;
+      const ownsChoices = (node: unknown) => {
+        const target = element(node);
+        return target === root || !!target && root.contains(target.closest('[role="menuitemradio"]'));
+      };
+      // Retry and other interactive controls keep their native key activation.
+      if (event.key !== "Escape" && (!ownsChoices(event.target) || !ownsChoices(document.activeElement))) return;
       consume(event);
       if (!event.repeat) menu.key(event.key);
     }

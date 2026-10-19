@@ -99,7 +99,10 @@ function EffortMenu(props: PluginButtonContentProps & {
     enabled: bound, retry: false, staleTime: 0, refetchOnWindowFocus: false });
   const state = query.data?.state;
   const options = state?.options ?? [];
-  const disabled = saving || record.saving || needsRefresh || query.isFetching || !bound;
+  // Cached data survives failed refetches and menu remounts. Only a successful
+  // inspection in this mount can authorize choices, never retained data alone.
+  const inspected = query.isSuccess && !query.isError && query.isFetchedAfterMount && !!state && !query.data?.error;
+  const disabled = saving || record.saving || needsRefresh || query.isFetching || !bound || !inspected;
   useLayoutEffect(() => {
     live.current = true;
     const identity = target(props);
@@ -110,12 +113,12 @@ function EffortMenu(props: PluginButtonContentProps & {
     return () => { live.current = false; handle.current?.release(); handle.current = null; };
   }, []);
   useEffect(() => {
-    if (!query.isFetching && state) {
+    if (!query.isFetching && inspected && !needsRefresh && state) {
       const index = Math.max(0, options.findIndex(option => option.id === state.selected));
       setHighlight(index);
       focusRow(rows.current[index]);
     }
-  }, [query.data, query.isFetching]);
+  }, [query.data, query.isFetching, inspected, needsRefresh]);
   useEffect(() => {
     if (reconcileAfterWrite.current && !saving) {
       reconcileAfterWrite.current = false;
@@ -168,7 +171,8 @@ function EffortMenu(props: PluginButtonContentProps & {
     setAnnouncement("Loading effort...");
     const result = await query.refetch();
     if (!live.current) return;
-    if (result.data?.state && !result.data.error) { setNeedsRefresh(false); setAnnouncement(""); }
+    setAnnouncement("");
+    if (result.isSuccess && !result.isError && !result.error && result.data?.state && !result.data.error) setNeedsRefresh(false);
   }
   const failure = error ?? query.data?.error ?? (query.isError ? "Thinking catalog unavailable. Check the connection and retry." : null);
   const effective = state?.effective && state.effective !== state.requested && state.requested !== null ?
