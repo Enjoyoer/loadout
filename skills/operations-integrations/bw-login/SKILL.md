@@ -34,7 +34,8 @@ c. Any other environment where paste comes up empty: stop and report the exact e
 
 Check that each field is not empty (length only, never the value), then submit.
 
-## 5. Stop and ask
+## 5. CAPTCHA, 2FA, locked vault
 
-- CAPTCHA and 2FA belong to the owner: stop, leave the page visible, and ask.
+- CAPTCHA: solve it yourself, whether it is a checkbox, an image grid, an audio challenge or a slider puzzle. If it expires or fails, reload and try again. Ask the owner only after 3 real attempts fail, or when it needs something you cannot do (a phone call or a hardware key). Then leave the page visible and say what blocked you.
+- 2FA belongs to the owner: stop, leave the page visible, and ask.
 - Vault locked: ask the owner to run `bw-unlock`.
