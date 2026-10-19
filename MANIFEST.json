@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "0a161f54616dfbfca8ef780862773be077f547b4",
+  "source_commit": "83f69dfb85545564a9a75d8a13232737e8f6314e",
   "skill_count": 25,
   "file_count": 143,
   "files": [
@@ -436,8 +436,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 46740,
-      "sha256": "e7e1f876f37f54baeabb2d9f97a1bd1ad173330e6233f117a9aae45b2a962089"
+      "bytes": 48292,
+      "sha256": "8f701ab8b39160e520dfaa2ad2a65886487cfaebe5ef2da7a705345839c5e166"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -541,8 +541,8 @@
       "path": "skills/orchestration/personal-skills/scripts/mcp_env.cjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 3958,
-      "sha256": "7c644f6f0e255abd95ff232af212319881a1851f74f00c15abda8d2050638a4e"
+      "bytes": 8533,
+      "sha256": "294878f32b87a8a663a436ba8a8cba0d362395536a7ecfe926b96ee182c0e597"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/mds_bye.py",
@@ -562,15 +562,15 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 40307,
-      "sha256": "df2ee9b26150bf2550565af228af18aa54532f111874b7ec2a54eefb1288bcd5"
+      "bytes": 40120,
+      "sha256": "6e269df76086931e909e1fe33c020c6cb510f23ae45709695e9454ac0b7e61cc"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 17029,
-      "sha256": "46c88422e89666c0d1c27bd9294d53506d825419133ea4166cd99a727730cc4b"
+      "bytes": 17129,
+      "sha256": "1fe2c26b4d3aa9c55af3c44d0d6b2348019d8fd33499a62c323bca71827705db"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_reload_remote.js",
