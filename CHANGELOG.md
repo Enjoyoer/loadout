@@ -4,6 +4,10 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ## Unreleased
 
+### Added
+
+- `pi-fast-toggle` 0.1.0: desktop/web composer-scoped Ctrl/Cmd+Shift+F for Fast and Ctrl/Cmd+Shift+M for a catalog-driven, plugin-owned Thinking level menu. Fast clicks and keys share fresh inspection and serialized writes; effort validates the same-daemon model/options and confirms settings-only updates. Rebind Toggle focus mode before using F. Documented 0.11.1 host-shell sizing, Tab focus trapping and duplicate-agent pane limitations fail closed rather than using private APIs.
+
 ### Removed
 
 - `pm-native-worker-guard` plugin, with its CI, Dependabot, vendoring and docs entries. PMs legitimately launch native Codex workers (OPC routes browser work to native Codex), and in dry-run the guard only logged false would-archive decisions. The fleet sync does not uninstall it from hosts; remove it there by hand.

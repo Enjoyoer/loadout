@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "2cf2edf4a427de0b29735279eefbc9b9c5ab30e8",
+  "source_commit": "3e21d9e0b1899b23f6537a976eeade6c8e3764bc",
   "skill_count": 25,
   "file_count": 141,
   "files": [
@@ -994,7 +994,7 @@
     }
   ],
   "plugin_count": 6,
-  "plugin_file_count": 110,
+  "plugin_file_count": 114,
   "plugins": [
     {
       "id": "cache-aware-autocompact",
@@ -1010,7 +1010,7 @@
     },
     {
       "id": "pi-fast-toggle",
-      "paseo": ">=0.10.3 <0.12.0"
+      "paseo": ">=0.11.1 <0.12.0"
     },
     {
       "id": "usage-limit-auto-resume",
@@ -1409,44 +1409,68 @@
     {
       "path": "plugins/pi-fast-toggle/README.md",
       "plugin": "pi-fast-toggle",
-      "bytes": 7891,
-      "sha256": "c11e89d8e267dc422a3315709a6c1b62e376e6a4c1e0111b81e41761535491bf"
+      "bytes": 15154,
+      "sha256": "1c0a0931903145f13868f4f8b55ae98d6835e8d939bd746868583d132b3c0976"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/client/effort.tsx",
+      "plugin": "pi-fast-toggle",
+      "bytes": 12492,
+      "sha256": "88954cda37cf4fb6c082cbe98e8b97a0d9987cd4eb36cee5bc87bb138ddceaf2"
     },
     {
       "path": "plugins/pi-fast-toggle/client/pills.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 3816,
-      "sha256": "ca679c67a37546e291fac73daf5a9a683404475cd8b1efc97c341579dea0517f"
+      "bytes": 5558,
+      "sha256": "fb5b1c0641b28df4517f3e7dc4821927f00616b03325be3932deed0b92fd9a04"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/client/tsconfig.json",
+      "plugin": "pi-fast-toggle",
+      "bytes": 122,
+      "sha256": "98d8b1f8a0774de76f74ff6ddc8c058b7bad97e3295962cacf574f9f95e9024c"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/client/web.ts",
+      "plugin": "pi-fast-toggle",
+      "bytes": 13614,
+      "sha256": "6e8ae54683f117fabc038fac410944c0672a129a04f6f06549e9738101e6764b"
     },
     {
       "path": "plugins/pi-fast-toggle/index.client.tsx",
       "plugin": "pi-fast-toggle",
-      "bytes": 218,
-      "sha256": "c7f27c684f75fa945c7232fa745fb46b24a2fb7722920e18b518d7c63fdc2633"
+      "bytes": 403,
+      "sha256": "1e550ca8e7a6722b264e98fd2d8edb73913584376c7acc135eb00af1aed0d59e"
     },
     {
       "path": "plugins/pi-fast-toggle/index.server.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 2341,
-      "sha256": "81330c62c20564fabd27b6a149f30bfe40f56ebb85fbed5451ae35541325fbed"
+      "bytes": 2593,
+      "sha256": "0cde7e78af92fc20b4811226a78eef1fb2f506f37b0867fc99cf2fd264b0a281"
     },
     {
       "path": "plugins/pi-fast-toggle/package-lock.json",
       "plugin": "pi-fast-toggle",
-      "bytes": 24188,
-      "sha256": "c78e361552dc07f881a18581afc817d6fdac5e5918541a358257e13e2decd59e"
+      "bytes": 162275,
+      "sha256": "1d538b2bcfdbd6669fc04f30ccdb2585a8ae8e5454f37a383149c358c711389f"
     },
     {
       "path": "plugins/pi-fast-toggle/package.json",
       "plugin": "pi-fast-toggle",
-      "bytes": 649,
-      "sha256": "f7705cac41248daf705753d18d34f20addf5ef5c9ccd123c9f92e41f2e9920c1"
+      "bytes": 719,
+      "sha256": "4ae5bd30d272b4398e14f7f7a38ced32a1bc2fb94550bb5e133c42b3f1446c26"
     },
     {
       "path": "plugins/pi-fast-toggle/paseo-plugin.json",
       "plugin": "pi-fast-toggle",
-      "bytes": 163,
-      "sha256": "c2c3c3c947ee98cfa16b921497680f323a93e5beb40a4b478d27cd9267c28f68"
+      "bytes": 164,
+      "sha256": "b28cea9c4144b553d80ba88b071ab5fdac656c60f8ccf3537a8f934362831302"
+    },
+    {
+      "path": "plugins/pi-fast-toggle/server/effort.ts",
+      "plugin": "pi-fast-toggle",
+      "bytes": 6834,
+      "sha256": "82581833ad9560a9546ae3741a681b94f99c37209a4f3611ecfa8b310706d845"
     },
     {
       "path": "plugins/pi-fast-toggle/server/routing.ts",
@@ -1463,8 +1487,8 @@
     {
       "path": "plugins/pi-fast-toggle/shared/contracts.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 595,
-      "sha256": "e2f017c5f3b0900ce7369b1e4bdadd10e2322648dc4deb46237844812a00ffff"
+      "bytes": 1521,
+      "sha256": "2f8d4425cd1df7f5948aca6a5d2cfe4b776bf7eb029b2171c734b09952827455"
     },
     {
       "path": "plugins/pi-fast-toggle/shared/model.ts",
@@ -1499,8 +1523,8 @@
     {
       "path": "plugins/pi-fast-toggle/tsconfig.json",
       "plugin": "pi-fast-toggle",
-      "bytes": 403,
-      "sha256": "1ebd881bd817d11247010016d182294c858febe29459b219a7d085400fa65803"
+      "bytes": 482,
+      "sha256": "0fba3130cc24097aae01df58238fedfaaddb0e9a1c621cec1584c725f4610f93"
     },
     {
       "path": "plugins/usage-limit-auto-resume/README.md",

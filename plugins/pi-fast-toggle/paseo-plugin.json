@@ -1,7 +1,7 @@
 {
   "id": "pi-fast-toggle",
-  "description": "Per-agent Fast request toggle for tier-capable Pi models",
+  "description": "Composer Fast shortcuts and per-agent thinking level menu",
   "requirements": {
-    "paseo": ">=0.10.3 <0.12.0"
+    "paseo": ">=0.11.1 <0.12.0"
   }
 }

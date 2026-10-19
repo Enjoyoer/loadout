@@ -1,8 +1,11 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { config, inspect, toggle } from "./shared/contracts";
+import { config, inspect, toggle, effortInspect, effortSet } from "./shared/contracts";
+import { inspectEffort, setEffort } from "./server/effort";
 import { runtime, catalog, requestedState, tierCapable, writeTier } from "./server/routing";
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(config);
+  server.handle(effortInspect, ({ agentId }, { paseo }) => inspectEffort(paseo, agentId));
+  server.handle(effortSet, (input, { paseo }) => setEffort(paseo, input));
   server.handle(inspect, async ({ agentId }, { paseo }) => {
     const agent = (await paseo.agents.ref(agentId).refresh())?.agent;
     const state = requestedState(agent?.labels);
