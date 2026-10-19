@@ -8,7 +8,7 @@ Agent skills for Claude Code and Codex, a fleet sync that keeps them identical a
 
 - **25 skills** for multi-agent orchestration, project memory and handoffs, architecture and domain modeling, docs lookup, PDFs, total-cost shopping research, frontend design, and browser automation.
 - **Fleet sync**: one command installs verified skills (every file checked against a SHA256 manifest) on every host over SSH, and never overwrites a local edit.
-- **6 Paseo plugins**: four server plugins that resume agents after usage limits, archive merged worker workspaces, compact idle agents to save prompt-cache cost, and clean up orphaned projects, each only logging what it would do until you arm it; plus `workspace-folder-title`, which titles new workspaces with their folder name, and `pi-fast-toggle`, a per-agent Fast pill for Pi agents.
+- **6 Paseo plugins**: four server plugins that resume agents after usage limits, archive merged worker workspaces, compact idle agents to save prompt-cache cost, and clean up orphaned projects, each only logging what it would do until you arm it; plus `workspace-folder-title`, which titles new workspaces with their folder name, and `pi-fast-toggle`, composer Fast shortcuts and a per-agent thinking level menu.
 
 Each skill lives at `skills/<category>/<name>` and installs flat as `<client skills directory>/<name>`. The repository contains no credentials or private host configuration.
 
@@ -39,7 +39,7 @@ cp -R skills/planning-writing/grilling "${CODEX_HOME:-$HOME/.codex}/skills/"
 |---|---|
 | Claude Code | Current release with plugin marketplaces |
 | Codex | Current release with a `skills` folder |
-| Paseo plugins | Paseo `>=0.10.3 <0.12.0` (pinned in each `paseo-plugin.json`) |
+| Paseo plugins | Paseo `>=0.10.3 <0.12.0`, and `>=0.11.1 <0.12.0` for `pi-fast-toggle` (pinned in each `paseo-plugin.json`) |
 | Fleet sync and tests | Python 3 and Node on each host; CI runs Python 3.12 and Node 24 on Ubuntu, macOS and Windows |
 
 ## Set up your own agent fleet
@@ -140,7 +140,7 @@ A package may read an optional private `references/local.md` for host-specific s
 
 ## Paseo plugins
 
-`plugins/<id>` holds [Paseo](https://paseo.sh) plugins. Five are server-only; `pi-fast-toggle` also adds a composer pill in the client. Each is trusted, unsandboxed code that runs inside a daemon, so read its README before installing it.
+`plugins/<id>` holds [Paseo](https://paseo.sh) plugins. Five are server-only; `pi-fast-toggle` also adds composer controls in the client. Each is trusted, unsandboxed code that runs inside a daemon, so read its README before installing it.
 
 | Plugin | Does | Default on a fresh install |
 |---|---|---|
@@ -149,7 +149,7 @@ A package may read an optional private `references/local.md` for host-specific s
 | [`usage-limit-auto-resume`](plugins/usage-limit-auto-resume/README.md) | Resumes an agent after a usage limit or a transient provider error, in the same session | Dry-run until `armed` |
 | [`orphan-project-sweeper`](plugins/orphan-project-sweeper/README.md) | Deletes Paseo project rows with no active workspace and a missing root path | Dry-run until `armed` |
 | [`workspace-folder-title`](plugins/workspace-folder-title/README.md) | Titles new workspaces with their folder name instead of a bare git branch name, without replacing caller-supplied titles | Active when installed |
-| [`pi-fast-toggle`](plugins/pi-fast-toggle/README.md) | Adds a per-agent Fast pill to Pi agents on tier-capable models; pressing it sets the agent's service-tier label for the next turn | Inactive until its `routing.json` setting exists |
+| [`pi-fast-toggle`](plugins/pi-fast-toggle/README.md) | Composer Fast shortcuts and per-agent thinking level menu (Paseo `>=0.11.1 <0.12.0`): Ctrl/Cmd+Shift+F toggles Fast for tier-capable Pi agents and Ctrl/Cmd+Shift+M opens the thinking level menu | Fast inactive until its `routing.json` setting exists |
 
 `plugins/_shared` is not a plugin. It holds the canonical source of code that several plugins vendor into their own folders, such as the fail-closed daemon endpoint resolver and the atomic JSON state writer; see [CONTRIBUTING.md](.github/CONTRIBUTING.md).
 
