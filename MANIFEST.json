@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "c7556979a0098d4636046e910106000d8494cfc8",
+  "source_commit": "cbf223d276741712562f587cce3deb677f6641e5",
   "skill_count": 25,
-  "file_count": 141,
+  "file_count": 142,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -436,8 +436,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 41647,
-      "sha256": "de9ffc8490c01495d342f8cef942cca56f5b1f95a593e6e8f3aa9d1b5cd67f9f"
+      "bytes": 42917,
+      "sha256": "981619dc4fcde348b7b524fb71eba8c7d61fbd141230d2497dce4921ee1703f4"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -468,6 +468,13 @@
       "sha256": "46758af6cdb633a3dadb7956b23586bf99e9cc27bd77f79faac7c0e6bd4fe7fc"
     },
     {
+      "path": "skills/orchestration/personal-skills/fleet/example/mcp-servers-overlay.json",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 221,
+      "sha256": "e6d20882a7b82c6f3d11cdfc4c05d5ad52f12c03f9c55ccb055687e4e06f5173"
+    },
+    {
       "path": "skills/orchestration/personal-skills/fleet/example/opencode-free-overlay.json",
       "category": "orchestration",
       "skill": "personal-skills",
@@ -492,8 +499,8 @@
       "path": "skills/orchestration/personal-skills/scripts/client_config.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 11716,
-      "sha256": "fd299c7ceebd720c88433a21b1ba61ff7da4dc5953b95f67f5e12244fdca04df"
+      "bytes": 11754,
+      "sha256": "ce713e28fb59d7406f31d7609b914ed1421a8654c3f5492620eb4f13ca7611e1"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/client_config_merge.js",
@@ -520,8 +527,8 @@
       "path": "skills/orchestration/personal-skills/scripts/mcp_config.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 3074,
-      "sha256": "9bd02c709ada587c7e89eb9d576124c3278ad31bc044884f0999c5bf882a3620"
+      "bytes": 4929,
+      "sha256": "209587ba57fd510643f273c133b76260fb3e74553028476945c424d95fa6eb5c"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/mcp_env.cjs",
@@ -597,8 +604,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/configure.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 13176,
-      "sha256": "1240288a5f0169ebd102c11b53178bf99623b854da9810ea6ac3434cdd0dd907"
+      "bytes": 13194,
+      "sha256": "d4edff7a303c334b4ef530a1daa3e6a5b9ff8122d65e88f36095da56d5eb4d18"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/credential.py",
