@@ -14,6 +14,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ### Changed
 
+- `repo-lessons` and `handoff`: `STATUS.html` is a fixed browser-openable dashboard of at most 25,000 bytes with five sections in order (Waiting on you, In flight, Blocked, Done last 7 days, Health line), and `LESSONS.md` is capped at 8,192 UTF-8 bytes, keeping the highest-risk actionable lessons first (owner decision 2026-10-19, memory eval arm D).
 - Repo root keeps only README, CHANGELOG and THIRD_PARTY_NOTICES as Markdown: START-HERE.md is merged into the README as "Set up your own agent fleet", SKILLS_CATALOG.md becomes the README "Skills" table (now listing all 25 packages, including `wo`), and CONTRIBUTING.md, SECURITY.md and CODE_OF_CONDUCT.md move to `.github/`.
 - `cache-aware-autocompact` 0.3.0: native Codex idle compaction is off by default, matching Pi GPT. New `codexEnabled` setting (default `false`); while off, native Codex agents are never scheduled, compacted, or re-armed on recovery, and the skip is logged as `codex-disabled`. Set `codexEnabled: true` to restore the previous Codex behavior (`codexDelayMinutes`, 30-minute TTL, `cache-expired` skip). Pi GPT stays governed by `piGptEnabled`; Claude and Pi Claude are unchanged.
 - bw-login skill and the example global AGENTS.md look up logins with `bw-paste <site>` instead of `bw-login --list <site>`.

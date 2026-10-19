@@ -7,7 +7,7 @@ description: Maintain an assigned project's or durable workstream's STATUS.html 
 
 Each owner maintains exactly two memory files in its assigned root:
 
-- `STATUS.html` is the concise current-state board.
+- `STATUS.html` is the fixed current-state dashboard.
 - `LESSONS.md` is the concise record of durable, non-obvious facts.
 
 Edit both in place. Never write backup copies of them (`.bak`, dated copies, or archives); Git or the platform's file history is the recovery path.
@@ -26,13 +26,21 @@ When resuming a workstream or relying on earlier decisions, read the relevant ow
 
 ## STATUS.html
 
-Keep `STATUS.html` browser-openable and small enough to scan. It is the current-state summary, subordinate to source evidence. Rewrite facts in place after a material milestone, blocker or ownership change, closeout, or maintenance correction. Keep only the project name, current state, active work, blockers, next action, and (for a workstream) lifecycle, role owner, last material action, and reopening condition. Do not put raw logs, secrets, historical narrative, or model-policy notes here.
+`STATUS.html` is a fixed visual dashboard, subordinate to source evidence: browser-openable, restrained CSS, at most 25,000 bytes. Under the project name it has exactly these five sections, in this order:
 
-Retain the existing layout when no current fact changes. No design skill is required to maintain this operational file.
+1. **Waiting on you**: owner decisions, oldest first, each with recommendation and deadline if known.
+2. **In flight**: each item with its exact known agent, workspace, branch, PR, session, and schedule IDs, its state, and its next action or trigger.
+3. **Blocked**: each blocker with its dependency and the party it waits on.
+4. **Done last 7 days**.
+5. **Health line**: last evidenced check, known gaps, and as-of time.
+
+Rewrite facts in place after a material milestone, blocker or ownership change, closeout, or maintenance correction. Do not put raw logs, secrets, historical narrative, archives, or model-policy notes here. No design skill is required to maintain this operational file.
 
 ## LESSONS.md
 
 Keep only facts whose loss would likely cause a future mistake or wasted investigation. Add or edit an entry after a non-obvious project-specific discovery, proven workaround, ownership rule, path, tooling fact, or behavior. Do not copy current status, progress, worker profiles, global policy, secrets, or facts already clear in source documentation.
+
+Cap `LESSONS.md` at 8,192 UTF-8 bytes. Keep the highest-risk actionable lessons first, especially ownership and safety boundaries and demonstrated recurring pitfalls; merge duplicate advice, point to evidence, and drop lower-risk history instead of exceeding the cap.
 
 Durable entries carry `Status`, `Verified`, `Evidence`, and `Review when`. Put newest entries first. Remove stale, duplicate, or superseded material when it no longer prevents a likely regression. `Verified` is the last evidence-backed verification date: advance it only when a current check confirms the fact. Failed or unavailable checks leave the recorded date unchanged and set `Status` to `needs-review`. Use `not verified` only for a fact with no established verification; never invent dates.
 
@@ -51,8 +59,8 @@ Durable entries carry `Status`, `Verified`, `Evidence`, and `Review when`. Put n
 
 A handoff is a full, detailed update of this pair, never a separate file. `$handoff` runs it and commits the pair; do the same update before the owner migrates or is replaced (new session, model, host, or agent).
 
-- `STATUS.html`: rewrite current state, every in-flight item with its identifiers (agents, workspaces, branches, PRs, sessions, schedules), blockers, owner gates, and the exact next action, so a successor can continue from this file alone.
-- `LESSONS.md`: record every durable, non-obvious fact from the session that is not already there.
+- `STATUS.html`: rewrite the facts in all five sections, preserving every active identifier and owner gate, so a successor can continue from this file alone.
+- `LESSONS.md`: record every durable, non-obvious fact from the session that is not already there, within the cap.
 - Point to source paths, commits, and PRs instead of copying their content. Then say in one line that the pair is ready for the successor.
 
 A successor resumes by reading the pair as in "Read once, then maintain". There is nothing to consume, fold, or mark.
