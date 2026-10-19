@@ -22,37 +22,46 @@ const ACL_SCRIPT = [
   "$allow=@($acl.GetAccessRules($true,$true,$sid) | Where-Object { $_.AccessControlType -eq 'Allow' })",
   '$bad=@($allow | Where-Object { $ok -notcontains $_.IdentityReference.Value })',
   '$mine=@($allow | Where-Object { $_.IdentityReference.Value -eq $me })',
-  "if($acl.AreAccessRulesProtected -and $ok -contains $acl.GetOwner($sid).Value -and $bad.Count -eq 0 -and $mine.Count -gt 0){'owner-only'}else{'open'}",
+  "$why=@()",
+  "if(-not $acl.AreAccessRulesProtected){$why+='inheritance on'}",
+  "if($ok -notcontains $acl.GetOwner($sid).Value){$why+='owned by another account'}",
+  "if($bad.Count){$why+='other accounts allowed'}",
+  "if(-not $mine.Count){$why+='no rule for the current user'}",
+  "if($why.Count){$why -join ', '}else{'owner-only'}",
 ].join(';');
-function ownerOnlyAcl(target) {
+// Null when owner-only, else the reasons it is not.
+function aclProblem(target) {
   const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ACL_SCRIPT], {
     env: { ...process.env, LOADOUT_OWNER_FILE: target }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
     timeout: 30000, windowsHide: true });
-  return out.trim() === 'owner-only';
+  return out.trim() === 'owner-only' ? null : 'ACL: ' + out.trim();
 }
 // HOME is the trusted boundary, and macOS may spell its temporary root through /var. Canonicalize that boundary,
 // but still refuse links anywhere below it. The file must be owner-only: mode 0600 and our uid on POSIX, the ACL
 // above on Windows. Returns the file's text when read is set, else true; throws when unsafe.
 function ownerFile(name, read) {
   const target = name.replace(/^~(?=[\\/])/, fs.realpathSync(os.homedir()));
-  if (!path.isAbsolute(target)) throw new Unsafe();
+  if (!path.isAbsolute(target)) throw new Unsafe('not an absolute path');
   for (const part of [target, ...parents(path.dirname(target))]) {
     const st = fs.lstatSync(part);
-    if (st.isSymbolicLink() || (part === target ? !st.isFile() : !st.isDirectory())) throw new Unsafe();
+    if (st.isSymbolicLink() || (part === target ? !st.isFile() : !st.isDirectory()))
+      throw new Unsafe('a link or wrong file type at ' + part);
   }
-  if (windows && !ownerOnlyAcl(target)) throw new Unsafe();
+  const acl = windows && aclProblem(target);
+  if (acl) throw new Unsafe(acl);
   const fd = fs.openSync(target, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
   try {
     const st = fs.fstatSync(fd);
-    if (!st.isFile() || !st.size || st.size > 65536) throw new Unsafe();
-    if (!windows && ((st.mode & 0o777) !== 0o600 || st.uid !== process.getuid())) throw new Unsafe();
+    if (!st.isFile() || !st.size || st.size > 65536) throw new Unsafe('empty or over 64 KiB');
+    if (!windows && ((st.mode & 0o777) !== 0o600 || st.uid !== process.getuid())) throw new Unsafe('not mode 0600 and ours');
     return read ? fs.readFileSync(fd, 'utf8') : true;
   } finally { fs.closeSync(fd); }
 }
-// For the providers step: whether a token file is present and owner-only, without reading its value. Absent or
-// unsafe is false; any other error, such as a denied directory or a failed ACL read, propagates.
-function tokenFileReady(name) {
-  try { return ownerFile(name, false); } catch (e) { if (e instanceof Unsafe || absent(e)) return false; throw e; }
+// For the providers step: null when a token file is present and owner-only, else why not, without reading its
+// value. Any other error, such as a denied directory or a failed ACL read, propagates.
+function tokenFileProblem(name) {
+  try { ownerFile(name, false); return null; }
+  catch (e) { if (e instanceof Unsafe) return e.message; if (absent(e)) return 'missing'; throw e; }
 }
 const safeValue = value => value && !/[\x00-\x1f\x7f]/.test(value);
 function loadEnv(servers, env = process.env, provider = {}) {
@@ -73,8 +82,8 @@ function loadEnv(servers, env = process.env, provider = {}) {
       const value = ownerFile(tokenFile, true).trim();
       if (!safeValue(value)) throw Error();
       out[key] = value;
-    } catch {
-      throw Error('token file unavailable or unsafe for ' + key + (windows
+    } catch (e) {
+      throw Error('token file unavailable or unsafe for ' + key + (e instanceof Unsafe ? ': ' + e.message : '') + (windows
         ? ' (requires one line in a file only the current user, SYSTEM and Administrators can access, inheritance off)'
         : ' (requires an owner-only 0600 file holding one line)'));
     }
@@ -119,7 +128,7 @@ function launch(command, args, env) {
     return spawn([resolved, ...args].map(cmdQuote).join(' '), { ...options, shell: true });
   return spawn(resolved, args, options);
 }
-module.exports = { loadEnv, tokenFileReady };
+module.exports = { loadEnv, tokenFileProblem };
 if (require.main === module) {
   try {
     const args = process.argv.slice(2);

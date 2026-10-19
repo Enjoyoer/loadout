@@ -91,9 +91,9 @@ try {
     for (const [key, tokenFile] of Object.entries(settings.tokenFiles || {})) {
       check(tokenFile.replace(/^~(?=[\\/])/, os.homedir()));
       // The launcher's own owner-only check (mode and uid, or the Windows ACL); it reads the value only at launch.
-      const ready = launcherModule().tokenFileReady(tokenFile);
-      result.launch.push(id + ' ' + key + ' tokenFile ' + tokenFile + (ready ? ' present, owner-only' : ' missing or unsafe'));
-      if (!ready && !p.dry_run) throw Error('token file missing or unsafe for ' + id + ' ' + key);
+      const problem = launcherModule().tokenFileProblem(tokenFile);
+      result.launch.push(id + ' ' + key + ' tokenFile ' + tokenFile + (problem ? ' missing or unsafe (' + problem + ')' : ' present, owner-only'));
+      if (problem && !p.dry_run) throw Error('token file missing or unsafe for ' + id + ' ' + key);
     }
   }
   result.mcp = [];
