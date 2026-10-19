@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "2f4607e421c034f95760271edf02ba31558c5455",
+  "source_commit": "3e21d9e0b1899b23f6537a976eeade6c8e3764bc",
   "skill_count": 25,
   "file_count": 141,
   "files": [
@@ -1415,8 +1415,8 @@
     {
       "path": "plugins/pi-fast-toggle/client/effort.tsx",
       "plugin": "pi-fast-toggle",
-      "bytes": 12090,
-      "sha256": "ed32582f5319897891e6b3cb073e81b3cb7721de4c9a151f8f3647ad5b212c34"
+      "bytes": 12492,
+      "sha256": "88954cda37cf4fb6c082cbe98e8b97a0d9987cd4eb36cee5bc87bb138ddceaf2"
     },
     {
       "path": "plugins/pi-fast-toggle/client/pills.ts",
@@ -1433,8 +1433,8 @@
     {
       "path": "plugins/pi-fast-toggle/client/web.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 13193,
-      "sha256": "420652c7838be4ba61906193afa73f705d655015e63e931c814fadb8ef17c91e"
+      "bytes": 13614,
+      "sha256": "6e8ae54683f117fabc038fac410944c0672a129a04f6f06549e9738101e6764b"
     },
     {
       "path": "plugins/pi-fast-toggle/index.client.tsx",
