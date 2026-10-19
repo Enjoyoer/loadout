@@ -279,8 +279,9 @@ def _launch(value, where):
         for key, path in token_files.items():
             if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", key):
                 raise fleet.FleetError(f"{at}.tokenFiles: {key!r} must be an env name")
-            if not isinstance(path, str) or not path.startswith(("~/", "/")) or re.search(r"[\x00-\x1f]", path):
-                raise fleet.FleetError(f"{at}.tokenFiles.{key} must be an absolute or ~/ POSIX path")
+            if not isinstance(path, str) or not re.match(r"~[\\/]|/|[A-Za-z]:[\\/]", path) \
+                    or re.search(r"[\x00-\x1f]", path):
+                raise fleet.FleetError(f"{at}.tokenFiles.{key} must be an absolute path or start with ~/ or ~\\")
         args = settings.get("args", [])
         if not isinstance(args, list) or not all(isinstance(a, str) and a and not re.search(r"[\x00-\x1f]", a)
                                                  for a in args):
@@ -356,8 +357,6 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
         both = sorted(set(providers) & set(disabled))
         if both:
             raise fleet.FleetError(f"{name}: {both} both pinned in providers and listed in disabledProviders")
-        if launch_for(data, name) and next(h for h in fleet_doc["hosts"] if h["name"] == name)["os"] == "windows":
-            raise fleet.FleetError(f"{name}: launch settings need the POSIX launcher; Windows commands stay unchanged")
     return data
 
 

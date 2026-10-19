@@ -66,7 +66,13 @@ try {
   const envServers = servers.filter(s => s.envFile);
   // Per provider launch settings, read by the launcher for the harness it names: token files and leading args.
   const launch = p.launch || {};
-  if (Object.keys(launch).length && process.platform === 'win32') throw Error('provider launch settings need a POSIX host');
+  // The shipped launcher, loaded from the payload without running its launch.
+  const launcherModule = () => {
+    const Module = require('module'), mod = new Module(launcher);
+    mod.filename = launcher;
+    mod._compile(p.mcp_env_launcher, launcher);
+    return mod.exports;
+  };
   const providerWrapped = raw => Object.values((JSON.parse(raw).agents || {}).providers || {}).some(row =>
     Array.isArray(row.command) && row.command[1] === launcher && row.command[2] === '--provider');
   // Wiring stays managed while a provider still launches with --provider, so dropping its settings unwraps it.
@@ -83,11 +89,9 @@ try {
   for (const [id, settings] of Object.entries(launch)) {
     if (settings.args) result.launch.push(id + ' args ' + settings.args.join(' '));
     for (const [key, tokenFile] of Object.entries(settings.tokenFiles || {})) {
-      const file = tokenFile.replace(/^~\//, os.homedir() + '/');
-      check(file);
-      // Size and mode only; the launcher reads the value at launch time.
-      const st = probe(fs, file, true);
-      const ready = st && st.size > 0 && (st.mode & 0o777) === 0o600 && st.uid === process.getuid();
+      check(tokenFile.replace(/^~(?=[\\/])/, os.homedir()));
+      // The launcher's own owner-only check (mode and uid, or the Windows ACL); it reads the value only at launch.
+      const ready = launcherModule().tokenFileReady(tokenFile);
       result.launch.push(id + ' ' + key + ' tokenFile ' + tokenFile + (ready ? ' present, owner-only' : ' missing or unsafe'));
       if (!ready && !p.dry_run) throw Error('token file missing or unsafe for ' + id + ' ' + key);
     }
