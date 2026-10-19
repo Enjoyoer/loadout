@@ -26,7 +26,8 @@ const ACL_SCRIPT = [
   "$why=@()",
   "if(-not $acl.AreAccessRulesProtected){$why+='inheritance on'}",
   "if($ok -notcontains $acl.GetOwner($sid).Value){$why+='owned by another account'}",
-  "if($bad.Count){$why+='other accounts allowed'}",
+  "$name={param($r) try{$r.IdentityReference.Translate([Security.Principal.NTAccount]).Value}catch{$r.IdentityReference.Value}}",
+  "if($bad.Count){$why+='other accounts allowed: '+(@($bad.ForEach({& $name $_})) -join ' and ')}",
   "if(-not $mine.Count){$why+='no rule for the current user'}",
   "if($why.Count){$why -join ', '}else{'owner-only'}",
 ].join(';');
