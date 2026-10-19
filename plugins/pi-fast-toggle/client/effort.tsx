@@ -47,10 +47,10 @@ export function createEffortExtension(client: PluginClientContext): ComposerExte
         const expected = record.agent.runtimeInfo?.model ?? record.agent.model ?? null;
         const result = await client.rpc(effortInspect, { agentId: agent.id });
         if (result.state && (result.state.provider !== record.agent.provider || result.state.selection !== expected)) {
-          if (record.active) record.pill.update({ label: "Effort: Reopen v" });
+          if (record.active) record.pill.update({ label: "Effort: Reopen" });
           return { state: null, error: "Agent or model changed. Close and reopen Thinking level." };
         }
-        if (record.active && generation === inspection && result.state) record.pill.update({ label: `Effort: ${levelLabel(result.state)} v` });
+        if (record.active && generation === inspection && result.state) record.pill.update({ label: `Effort: ${levelLabel(result.state)}` });
         return result;
       };
       record.refresh = () => { void inspect().catch(() => {}); };
@@ -69,7 +69,7 @@ export function createEffortExtension(client: PluginClientContext): ComposerExte
         return <EffortMenu {...props} record={record} inspect={inspect} client={client} />;
       }
       record.pill = client.addComposerPill({ id: "effort", agentId: agent.id, workspaceId: agent.workspaceId,
-        button: { title: "Thinking level", label: "Effort v", icon: Icon, behavior: { kind: "popover", Content } } });
+        button: { title: "Thinking level", label: "Effort", icon: Icon, behavior: { kind: "popover", Content } } });
       records.set(agent.id, record);
     },
     remove,
@@ -146,7 +146,7 @@ function EffortMenu(props: PluginButtonContentProps & {
         setAnnouncement("Update unconfirmed");
         return;
       }
-      record.pill.update({ label: `Effort: ${levelLabel(result.state)} v`, title: "Thinking level saved for subsequent turns" });
+      record.pill.update({ label: `Effort: ${levelLabel(result.state)}`, title: "Thinking level saved for subsequent turns" });
       setAnnouncement("Thinking level saved for subsequent turns");
       close();
     } catch {
