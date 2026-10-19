@@ -11,7 +11,7 @@ const absent = e => e && (e.code === 'ENOENT' || e.code === 'ENOTDIR');
 // A file that is present but not owner-only, or not a single safe value.
 class Unsafe extends Error {}
 // Owner-only on Windows, read through PowerShell's .NET: inheritance off, the owner and every allow rule the current
-// user, SYSTEM or Administrators, and one allow rule for the current user. SIDs, so a localized name cannot slip through.
+// user, SYSTEM, Administrators or OWNER RIGHTS, and one allow rule for the current user. SIDs, so a localized name cannot slip through.
 // The path arrives in the environment, never in the script text.
 const ACL_SCRIPT = [
   "$ErrorActionPreference='Stop'",
@@ -21,7 +21,8 @@ const ACL_SCRIPT = [
   '$me=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
   "$ok=@($me,'S-1-5-18','S-1-5-32-544')",
   "$allow=@(@($acl.GetAccessRules($true,$true,$sid)).Where({ $_.AccessControlType -eq 'Allow' }))",
-  '$bad=@($allow.Where({ $ok -notcontains $_.IdentityReference.Value }))',
+  // OWNER RIGHTS (S-1-3-4) grants only the owner, which must itself be one of $ok.
+  "$bad=@($allow.Where({ ($ok+'S-1-3-4') -notcontains $_.IdentityReference.Value }))",
   '$mine=@($allow.Where({ $_.IdentityReference.Value -eq $me }))',
   "$why=@()",
   "if(-not $acl.AreAccessRulesProtected){$why+='inheritance on'}",
