@@ -70,7 +70,7 @@ def load_catalog(path: Path, fleet_doc: dict) -> dict:
     except (OSError, ValueError) as error:
         raise fleet.FleetError(f"cannot read {path}: {error}") from error
     fleet._keys(data, CATALOG_KEYS, path.name)
-    mcp_config.validate(data.get('mcpServers', {}), fleet_doc)
+    mcp_config.validate(data.get('mcpServers', {}), fleet_doc, path.parent / 'paseo-providers.json')
     _layer({"codex": data.get("codex", {}), "claude": data.get("claude", {})}, "base", base=True)
     fleet._strings(data.get("codex", {}).get("reportOnly", []), "codex.reportOnly")
     if "minVersion" in data.get("claude", {}) and not isinstance(data["claude"]["minVersion"], str):

@@ -127,7 +127,7 @@ def build(spec, root):
            "env": {"LOADOUT_PI_MCP_URL": "${LOADOUT_PI_MCP_URL}", "LOADOUT_PI_PARENT_MODEL": "${LOADOUT_PI_PARENT_MODEL}", "LOADOUT_PI_PARENT_THINKING": "${LOADOUT_PI_PARENT_THINKING}"}}}}
     if "gmail" in spec: mcp["mcpServers"]["gmail"] = gmail_server(spec["gmail"])
     for name, server in spec.get('mcpServers', {}).items():
-        if name.replace('-', '_').lower() in {'gmail', 'paseo'}:
+        if name.replace('-', '_').lower() in mcp['mcpServers'].keys() | {'paseo'}:
             raise ValueError('fleet MCP server collides with built-in server')
         mcp['mcpServers'][name] = copy.deepcopy(server)
     return {"runtime.json": spec, "agent/models.json": model, "agent/settings.json": settings, "agent/mcp.json": mcp}
