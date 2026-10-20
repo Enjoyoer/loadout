@@ -1,6 +1,6 @@
 ---
 name: bw-login
-description: Log in to a website with Bitwarden without ever seeing the values. Use when an owner task reaches a sign-in page, or the owner says "use bw" or "sign into X".
+description: Log in to a website with Bitwarden without ever seeing the values, and save or update that site's login. Use when an owner task reaches a sign-in or sign-up page, or the owner says "use bw" or "sign into X".
 ---
 
 # bw-login
@@ -121,4 +121,25 @@ On every path, the section 2 length check comes after the submit, never between 
 
 - CAPTCHA: solve it yourself, whether it is a checkbox, an image grid, an audio challenge or a slider puzzle. If it expires or fails, reload and try again. Ask the owner only after 3 real attempts fail, or when it needs something you cannot do (a phone call or a hardware key). Then leave the page visible and say what blocked you.
 - 2FA belongs to the owner: stop, leave the page visible, and ask.
-- Vault locked (exit 3): ask the owner to run `bw-unlock`.
+- Vault locked (exit 3): ask the owner to run `bw-unlock`. Never run `bw-unlock` or `bw-lock` yourself, not even with `--help`.
+
+## 6. Save or update a login
+
+Only for the site of the current task. `bw-paste` enforces this: the item's saved URIs must match the site or page. Never touch any other item, and never delete one.
+
+- **New account (sign-up):** use `bw-paste add <site-url> --username <u> [--name <n>]`. It generates a strong password inside the helper and saves the login in the Bitwarden folder `Agents`. It prints `saved <name> (<id>)`.
+  - Path c browser: fill every other sign-up field first, click the new-password field, then add `--cdp-profile <dir>`. It writes the password into that field and its confirmation, submits, and prints `filled password for <name>; submitted`.
+  - Paths a and b: run `add` without a browser flag, then paste `bw-paste <id> password` into each password field as in section 3.
+  - If the sign-up then fails, the vault entry stays: say so in your report.
+  - `--no-symbols` or `--length <12-64>` only when the site rejects the default.
+- **Change non-secret fields:** use `bw-paste update <id> --site <url> [--username <u>] [--uri-add <url>] [--notes-append <text>]`. A new URI must be on the same site. It prints the changed field names.
+- **Change the password:** not available yet. `bw-paste rotate` refuses (`rotate is not available yet`, exit 2) and changes nothing. If the owner asks for a password change, tell him and stop.
+- **Exit 8 (`saved remotely, local sync failed`):** the change is in Bitwarden, but the local copy is stale for up to 10 minutes, so a fill right away may use the old values. Do not save again; report it as saved, with that warning.
+- **Never save a password a website shows you** (a temporary or generated one): it is already in the transcript. Stop and tell the owner.
+- **Run each command once.** Never retry in a loop. Wait at least 5 seconds between vault commands. On `rate-limiting`, stop and report.
+- **Refusals (exit 5):**
+  - existing login for that username (use `update`);
+  - site or page not on the item;
+  - wrong field focused or more than one form;
+  - an item `bw-paste` cannot change safely: tell the owner.
+- **Report every add and update in your reply:** item name, site and which fields changed (for example `password`, `username, uris`). Never include values.
