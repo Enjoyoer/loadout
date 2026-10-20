@@ -4,6 +4,8 @@
 [![Release](https://img.shields.io/github/v/release/Enjoyoer/loadout)](https://github.com/Enjoyoer/loadout/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+New here and want to copy a few skills? Read [START-HERE.md](START-HERE.md) first: one screen on the layers, how the owner works, and the minimum to copy.
+
 Agent skills for Claude Code and Codex, a fleet sync that keeps them identical across machines, and plugins for the [Paseo](https://paseo.sh) agent daemon. Together they run coding agents as a small team: you give a project manager (PM) agent an outcome; it delegates bounded work to workers, reviews their changes, lands approved work, and syncs the fleet. You remain the owner who sets scope and approves decisions.
 
 - **25 skills** for multi-agent orchestration, project memory and handoffs, architecture and domain modeling, docs lookup, PDFs, total-cost shopping research, frontend design, and browser automation.
