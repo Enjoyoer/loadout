@@ -127,13 +127,23 @@ On every path, the section 2 length check comes after the submit, never between 
 
 Only for the site of the current task. `bw-paste` enforces this: the item's saved URIs must match the site or page. Never touch any other item, and never delete one.
 
-- **New account (sign-up):** use `bw-paste add <site-url> --username <u> [--name <n>]`. It generates a strong password inside the helper and saves the login in the Bitwarden folder `Agents`. It prints `saved <name> (<id>)`.
-  - Path c browser: fill every other sign-up field first, click the new-password field, then add `--cdp-profile <dir>`. It writes the password into that field and its confirmation, submits, and prints `filled password for <name>; submitted`.
-  - Paths a and b: run `add` without a browser flag, then paste `bw-paste <id> password` into each password field as in section 3.
-  - If the sign-up then fails, the vault entry stays: say so in your report.
-  - `--no-symbols` or `--length <12-64>` only when the site rejects the default.
+- **New account (sign-up):** use `bw-paste add <site-url> --username <u> [--name <n>]`. It generates a strong password inside the helper; the login goes into the Bitwarden folder `Agents`.
+  - Path c browser (preferred): fill every other sign-up field first, click the new-password field, then add `--cdp-profile <dir>`. It fits the password to the field's `minlength`/`maxlength` and `pattern`, writes it into that field and its confirmation, and submits. Nothing is saved yet: it prints `submitted the sign-up ...; nothing is saved yet (pending <pending-id>)`. Then, within 10 minutes:
+    1. If the site shows the sign-up form again with an error, run `bw-paste add <pending-id> --discard --cdp-profile <dir>` (same browser). Nothing is saved. Fix the cause and start again.
+    2. Otherwise open the site's sign-in page in a fresh browser session (a new `--profile` folder and a new `playwright-cli` session), type the username (it is not secret, and the login is not in the vault yet), click the password field, and run `bw-paste add <pending-id> --signin --cdp-profile <new dir>`.
+    3. Then run `bw-paste add <pending-id> --commit --cdp-profile <new dir>`. Signed in: `saved <name> (<id>)`. Not signed in (for example the site wants an e-mail confirmation first): it still saves, prints `... marked unconfirmed` and exits 9, with the notes `unconfirmed: verify by sign-in`.
+    If you do neither within 10 minutes, it is saved marked unconfirmed. Never run `add` again for the same account.
+  - Paths a and b: run `add` without a browser flag, then paste `bw-paste <id> password` into each password field as in section 3. This saves at once, marked unconfirmed (exit 9), because no site has accepted the password yet. Use `--length <n>` when the field has a `maxlength`.
+  - `--no-symbols` or `--length <12-64>` only when the site rejects the default (exit 5 with `pattern`, or an error page).
 - **Change non-secret fields:** use `bw-paste update <id> --site <url> [--username <u>] [--uri-add <url>] [--notes-append <text>]`. A new URI must be on the same site. It prints the changed field names.
-- **Change the password:** not available yet. `bw-paste rotate` refuses (`rotate is not available yet`, exit 2) and changes nothing. If the owner asks for a password change, tell him and stop.
+- **Change the password (rotate):** only when the owner asked for a password change in this task. Never on your own initiative, never because a site suggests it. It is two-phase, and the vault changes only after you sign in with the new password:
+  1. Path c only. Open the site's change-password page, click the new-password field, and run `bw-paste rotate <id> --cdp-profile <dir>`. It fills the current password (if the form has that field), the new one and its confirmation, and submits. The vault is not updated yet. It prints `submitted the password change ...; the vault is NOT updated`.
+  2. Within 10 minutes, open the site's sign-in page in a fresh browser session (new profile folder, new session), fill the username, click the password field, and run `bw-paste rotate <id> --signin --cdp-profile <new dir>`.
+  3. Look at the page (section 2 rules first). If the site shows you signed in, run `bw-paste rotate <id> --commit --cdp-profile <new dir>`: `rotated password for <name>; saved to the vault (old password kept in its history)`. If not, run `bw-paste rotate <id> --discard`; the vault keeps the old password.
+  - `--commit` on a page that still has a password field, or is off the site, discards the new password (exit 5, `rotate not confirmed`). If the site did take the new password anyway, tell the owner: the account needs a reset.
+  - Exit 7 (`VAULT NOT UPDATED`): the site took the new password but saving failed. Tell the owner at once.
+  - One pending change per item; `--signin` in the browser that made the change is refused.
+- **Exit 9 (`marked unconfirmed`):** the login is saved with the note `unconfirmed: verify by sign-in`. Report it as saved but unconfirmed.
 - **Exit 8 (`saved remotely, local sync failed`):** the change is in Bitwarden, but the local copy is stale for up to 10 minutes, so a fill right away may use the old values. Do not save again; report it as saved, with that warning.
 - **Never save a password a website shows you** (a temporary or generated one): it is already in the transcript. Stop and tell the owner.
 - **Run each command once.** Never retry in a loop. Wait at least 5 seconds between vault commands. On `rate-limiting`, stop and report.
@@ -141,5 +151,7 @@ Only for the site of the current task. `bw-paste` enforces this: the item's save
   - existing login for that username (use `update`);
   - site or page not on the item;
   - wrong field focused or more than one form;
+  - the field's length limits leave no room for a 12-64 character password (`length limits`): tell the owner;
+  - nothing pending under that id (discarded, or past its 10 minutes);
   - an item `bw-paste` cannot change safely: tell the owner.
-- **Report every add and update in your reply:** item name, site and which fields changed (for example `password`, `username, uris`). Never include values.
+- **Report every add, update and rotate in your reply:** item name, site, which fields changed (for example `password`, `username, uris`), and for add whether it was saved confirmed, saved unconfirmed or discarded. Never include values.
