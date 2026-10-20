@@ -749,8 +749,9 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
             settle()
             if not result["changed"] and not others:
                 # Nothing was written and no other debt waits on a reload, so the daemon's config is current.
+                # An unchanged file is no proof of what the daemon loaded, so no activation is recorded: an
+                # earlier one for these settings stands, and without one routing removal stays held.
                 emit(f"{name}: reload warning (config unchanged, not a failure): {error}")
-                record_activation(runner.name, digest)
                 return "same"
             emit(f"{name}: reload{retry} FAILED: {error}; the next run retries it")
             return "FAILED"
