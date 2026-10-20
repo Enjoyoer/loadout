@@ -12,10 +12,10 @@ import { ConfigSchema } from "../server/config.ts";
 import type { AgentSnapshot } from "../server/model.ts";
 import { ResumeStore } from "../server/store.ts";
 
-// The QBO PM incident, 2026-10-20: Pi compacts in its prompt preflight for longer than Paseo's 60 s prompt RPC timeout.
-const START = Date.parse("2026-10-20T18:09:24.360Z");
+// Pi compacts in its prompt preflight for longer than Paseo's 60 s prompt RPC timeout.
+const START = Date.parse("2026-01-05T10:00:00.000Z");
 const TIMEOUT = "Pi RPC request timed out phase=prompt elapsedMs=60003 timeoutMs=60000";
-const ORIGINAL = "Cash PM: please pull the FSB check image for check 2843";
+const ORIGINAL = "Please summarize the open review comments";
 
 async function lane(run: (lane: Awaited<ReturnType<typeof setup>>) => Promise<void>) {
   const scratch = path.join(homedir(), ".cache", "fleet-scratch", "loadout", "autoresume-regression");
@@ -48,10 +48,10 @@ async function setup() {
   const config = ConfigSchema.parse({ armed: true });
   const store = new ResumeStore();
   const snapshot: AgentSnapshot = {
-    id: "qbo-pm", provider: "pi", model: "fleet/claude-opus-5-5", thinkingOptionId: "medium", cwd: "/qbo",
+    id: "example-agent", provider: "pi", model: "fleet/example-model", thinkingOptionId: "medium", cwd: "/repo",
     status: "running", activeTurn: { turnId: "source-turn" },
     lastUserMessageAt: new Date(START).toISOString(), updatedAt: new Date(START).toISOString(),
-    persistence: { provider: "pi", sessionId: "qbo-session", nativeHandle: "qbo-session.jsonl" },
+    persistence: { provider: "pi", sessionId: "example-session", nativeHandle: "example-session.jsonl" },
   };
   type Entry = { item: AgentTimelineItem; timestamp: string; turnId: string | undefined; seqStart: number; seqEnd: number };
   const entries: Entry[] = [];
@@ -60,12 +60,14 @@ async function setup() {
   };
   const sends: Array<{ prompt: string; messageId: string }> = [];
   const handlers = new Map<string, (event: unknown, context?: unknown) => void>();
+  let onRead: (() => Promise<void>) | null = null;
   const api = {
     getConnectionState: () => ({ status: "connected" }),
     close: async () => undefined,
     agents: { ref: () => ({
       refresh: async () => ({ agent: { ...snapshot } }),
       timeline: { refetch: async (options: { cursor?: { seq: number }; limit: number }) => {
+        await onRead?.();
         const end = options.cursor ? options.cursor.seq - 1 : entries.length;
         const start = Math.max(0, end - options.limit);
         return { entries: entries.slice(start, end), epoch: "epoch-1", hasOlder: start > 0, hasNewer: !!options.cursor,
@@ -99,6 +101,7 @@ async function setup() {
   };
   return {
     store, snapshot, sends, plugin, append, end,
+    onRead: (action: (() => Promise<void>) | null) => { onRead = action; },
     async started(turnId: string) {
       handlers.get("agent.turn_started")!({ agent: { id: snapshot.id }, turnId });
       await plugin.idle();
@@ -188,5 +191,56 @@ it("a wait that never settles gives up after 30 minutes with a recorded reason",
     const record = await lane.record();
     assert.equal(record.state, "exhausted");
     assert.equal(record.terminalReason, "rpc-timeout-wait-expired");
+  });
+});
+
+it("the final timeline read before the send re-checks compaction and self-resume", async () => {
+  for (const late of ["compaction", "execution"]) {
+    await lane(async (lane) => {
+      await lane.timeout();
+      mock.timers.setTime(START + 82_000);
+      lane.append({ type: "compaction", status: "completed", trigger: "auto" });
+      // The row lands after the send was claimed, on the last read before send(); the agent snapshot does not change.
+      let landed = false;
+      lane.onRead(async () => {
+        if (landed || (await lane.store.read())[0]?.state !== "resuming") return;
+        landed = true;
+        if (late === "compaction") lane.append({ type: "compaction", status: "loading", trigger: "auto" });
+        else lane.append({ type: "reasoning", text: "Pi runs the pending prompt" }, "autonomous-1");
+      });
+      await lane.sweep(START + 150_000);
+      assert.ok(landed, late);
+      assert.equal(lane.sends.length, 0, late);
+      const record = await lane.record();
+      assert.equal(record.attempts.length, 0, late);
+      if (late === "compaction") {
+        assert.equal(record.state, "parked");
+        assert.equal(record.rpcTimeout?.waiting, "compaction-in-progress");
+      } else {
+        assert.equal(record.state, "superseded");
+        assert.equal(record.terminalReason, "agent-resumed-itself");
+      }
+    });
+  }
+});
+
+it("a repeated end of the failed resend never makes a new record or a second send", async () => {
+  await lane(async (lane) => {
+    await lane.timeout();
+    mock.timers.setTime(START + 82_000);
+    lane.append({ type: "compaction", status: "completed", trigger: "auto" });
+    await lane.sweep(START + 150_000);
+    assert.equal(lane.sends.length, 1);
+    lane.append({ type: "assistant_message", text: `[System Error] ${TIMEOUT}` });
+    const failed = { kind: "failed", error: { message: TIMEOUT } };
+    await lane.end(START + 210_000, "resend-turn-1", failed);
+    await lane.end(START + 220_000, "resend-turn-1", failed);
+    await lane.end(START + 230_000, "resend-turn-1", failed);
+    await lane.sweep(START + 20 * 60_000);
+    await lane.sweep(START + 40 * 60_000);
+    assert.equal(lane.sends.length, 1);
+    const records = await lane.store.read();
+    assert.equal(records.length, 1, "no record for the plugin's own resend turn");
+    assert.equal(records[0]!.state, "exhausted");
   });
 });

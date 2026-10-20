@@ -348,9 +348,24 @@ export default function contribute(server: PluginServerContext, openClient: () =
           throw error;
         }
       }
-      const cancelled = claim.cancelled ?? presendCancel(record, taken, fresh, currentConfig);
+      // A prompt-timeout record decides again on the final timeline read: compaction and execution rows do not move the
+      // agent's updatedAt, so the agent re-read above cannot see them.
+      let timeoutCancel: ClaimCancel | null = null;
+      if (record.rpcTimeout && fresh && !claim.cancelled && !presendCancel(record, taken, fresh, currentConfig)) {
+        let entries: Awaited<ReturnType<typeof transientTimeline>> | null = null;
+        try { entries = await transientTimeline(api, record.agentId); } catch { entries = null; }
+        const decision = rpcTimeoutDecision(record, fresh, entries);
+        if (decision.act === "stop") timeoutCancel = { state: decision.state, reason: decision.reason };
+        else if (decision.act === "wait") timeoutCancel = { state: record.state, reason: decision.reason };
+      }
+      const cancelled = claim.cancelled ?? presendCancel(record, taken, fresh, currentConfig) ?? timeoutCancel;
       if (cancelled) {
-        await store.update(record.recordId, (value) => cancelClaim(value, record, claim, cancelled));
+        await store.update(record.recordId, (value) => {
+          const next = cancelClaim(value, record, claim, cancelled);
+          // A wait goes back to the record's state as it was, noting what it waits for.
+          return cancelled === timeoutCancel && next !== value && next.state === record.state && next.rpcTimeout
+            ? { ...next, terminalReason: record.terminalReason, rpcTimeout: { ...next.rpcTimeout, waiting: cancelled.reason } } : next;
+        });
         log(`send-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${cancelled.reason}`);
         return;
       }
@@ -501,6 +516,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
       if (claim) {
         // Claim-aware: attach the turn while the claim stands, or bring the claim back if its rollback already landed.
         const next = await store.update(claim.recordId, (value) => applyClaimTurn(value, claim));
+        if (next?.resumeTurnId === turnId) await store.markHandled({ agentId: event.agent.id, sourceTurnId: turnId, persistenceSessionId: next.persistenceSessionId });
         if (next?.resumeTurnId === turnId) log(`resume-turn-started agentId=${event.agent.id} turnId=${turnId}`);
         return;
       }
@@ -517,6 +533,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
         ? { ...value, resumeTurnId: turnId, resumeStartedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
         : value);
       if (next?.resumeTurnId !== turnId) return;
+      await store.markHandled({ agentId: event.agent.id, sourceTurnId: turnId, persistenceSessionId: next.persistenceSessionId });
       log(`resume-turn-started agentId=${event.agent.id} turnId=${turnId}`);
     })().catch((error) => failed("turn-started-handler-failed", error)));
   });
@@ -552,6 +569,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
         return;
       }
       if (active?.state === "verifying" && active.resumeTurnId === event.turnId) {
+        if (active.resumeTurnId) await store.markHandled({ agentId: event.agent.id, sourceTurnId: active.resumeTurnId, persistenceSessionId: active.persistenceSessionId });
         if (active.kind === "transient") {
           const failedTransient = event.outcome.kind === "failed" && !isUsageLimitError(event.outcome.error.message, event.outcome.error.code);
           const { assistant, user } = event.outcome.kind === "failed"
@@ -646,7 +664,9 @@ export default function contribute(server: PluginServerContext, openClient: () =
         return;
       }
       // A record for this turn, or the guard a pruned one left, means the event was handled already.
-      if (await store.hasTurn(record)) {
+      // A turn the plugin started is its record's to settle, never a new failure, however often its end is delivered.
+      const sentBy = lastUserMessage(event.timeline);
+      if (await store.hasTurn(record) || await store.isOwnSend(record.agentId, sentBy?.messageId ?? sentBy?.clientMessageId)) {
         log(`duplicate-turn agentId=${record.agentId} sourceTurnId=${record.sourceTurnId}`);
         return;
       }

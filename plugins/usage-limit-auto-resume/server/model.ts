@@ -315,15 +315,16 @@ export function buildTransientRecord(agent: AgentSnapshot, timeline: readonly Ag
 
 // Paseo's Pi provider fails a turn when Pi does not acknowledge the prompt RPC within rpcTimeoutMs. Pi acknowledges only
 // after its prompt preflight, which runs Pi's own threshold compaction first, so the prompt is still pending in Pi and
-// usually runs on its own once compaction ends. Seen on the QBO PM on 2026-10-20.
-export const RPC_PROMPT_TIMEOUT_PATTERN = /RPC request timed out phase=prompt\b/;
+// usually runs on its own once compaction ends. Only Pi's own diagnostic counts; other providers (OMP emits a similar
+// one) keep the ordinary failed-turn path.
+export const RPC_PROMPT_TIMEOUT_PATTERN = /^(?:\[System Error\]\s*)?Pi RPC request timed out phase=prompt\b/;
 // The longest a prompt-timeout record waits for the agent to settle before it gives up without sending.
 export const RPC_TIMEOUT_MAX_WAIT_MS = 30 * 60_000;
 // The quiet time after the failure and after compaction completes, so a prompt Pi runs on its own shows up first.
 export const RPC_TIMEOUT_QUIET_MS = 60_000;
 
-export function isRpcPromptTimeout(message: string): boolean {
-  return RPC_PROMPT_TIMEOUT_PATTERN.test(message);
+export function isRpcPromptTimeout(message: string, provider = "pi"): boolean {
+  return provider === "pi" && RPC_PROMPT_TIMEOUT_PATTERN.test(message);
 }
 
 export function buildFailedTransientRecord(agent: AgentSnapshot, timeline: readonly AgentTimelineItem[], error: { message: string; code?: string }, config: ResumeConfig, now = Date.now(), sourceTurnId?: string | null): ResumeRecord | null {
@@ -331,8 +332,8 @@ export function buildFailedTransientRecord(agent: AgentSnapshot, timeline: reado
   if (failureSignature(error.message, error.code)) return null;
   const user = lastUserMessage(timeline);
   if (!user) return null;
-  const rpcTimeout = isRpcPromptTimeout(error.message);
-  // Nothing to resend: the timed-out prompt's text is not in the timeline.
+  const rpcTimeout = isRpcPromptTimeout(error.message, agent.provider);
+  // Nothing to resend: the timeline keeps only a user message's text, so an attachment-only message is not replayed.
   if (rpcTimeout && !user.text.trim()) return null;
   const model = agent.model ?? agent.persistence.metadata?.model;
   if (typeof model !== "string" || !model) return null;
@@ -382,12 +383,18 @@ const isRpcTimeoutRow = (item: AgentTimelineItem) =>
   (item.type === "assistant_message" && /^\[System Error\]/.test(item.text) && isRpcPromptTimeout(item.text)) ||
   (item.type === "error" && isRpcPromptTimeout(item.message));
 
+// Positive proof the model ran: its reasoning, a tool call, or a real answer (not a System Error row).
+const isExecutionRow = (item: AgentTimelineItem) => item.type === "reasoning" || item.type === "tool_call" ||
+  (item.type === "assistant_message" && !/^\[System Error\]/.test(item.text));
+
 /**
  * What a prompt-timeout record does now. The signal is the agent's own timeline since the original message: Pi's
- * compaction rows (a `loading` row with no later `completed` row means compaction is still running) and any other row,
- * which means Pi ran the prompt or another turn on its own. Paseo's agent status cannot show this compaction: the
- * timed-out turn is already failed while Pi is still compacting. The send waits for an idle agent, no compaction, and
- * RPC_TIMEOUT_QUIET_MS without new rows; anything else that happens first ends the record without a send.
+ * compaction rows (a `loading` row with no later `completed` row means compaction is still running) and execution rows
+ * (reasoning, a tool call, an answer), which mean Pi ran the prompt or another turn on its own. Any other row (a
+ * notification, an error, a todo) proves nothing either way: the record waits, and expires if nothing else decides it.
+ * Paseo's agent status cannot show this compaction: the timed-out turn is already failed while Pi is still compacting.
+ * The send needs an idle agent, no compaction, and RPC_TIMEOUT_QUIET_MS without new rows. Callers run this again on
+ * the final timeline read right before the send.
  */
 export function rpcTimeoutDecision(record: ResumeRecord, agent: AgentSnapshot, timeline: readonly TimelineEntry[] | null, now = Date.now()):
   { act: "send" } | { act: "wait"; reason: string } | { act: "stop"; state: ResumeState; reason: string } {
@@ -402,7 +409,8 @@ export function rpcTimeoutDecision(record: ResumeRecord, agent: AgentSnapshot, t
     return { act: "stop", state: "superseded", reason: "newer-user-message" };
   }
   const after = timeline.slice(start + 1).filter((entry) => entry.item.type !== "plugin");
-  if (after.some((entry) => entry.item.type !== "compaction" && !isRpcTimeoutRow(entry.item))) return { act: "stop", state: "superseded", reason: "agent-resumed-itself" };
+  if (after.some((entry) => isExecutionRow(entry.item))) return { act: "stop", state: "superseded", reason: "agent-resumed-itself" };
+  if (after.some((entry) => entry.item.type !== "compaction" && !isRpcTimeoutRow(entry.item))) return { act: "wait", reason: "unproven-activity" };
   const compaction = after.findLast((entry) => entry.item.type === "compaction");
   if (compaction?.item.type === "compaction" && compaction.item.status === "loading") return { act: "wait", reason: "compaction-in-progress" };
   const lastActivity = Math.max(Date.parse(record.detectedAt), ...after.map((entry) => Date.parse(entry.timestamp)).filter(Number.isFinite));
