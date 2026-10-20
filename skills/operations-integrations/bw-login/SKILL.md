@@ -7,6 +7,26 @@ description: Log in to a website with Bitwarden without ever seeing the values. 
 
 Sign in with the `bw-paste` helper. Values never appear in output, logs, files, screenshots or tool arguments.
 
+## Pick the path
+
+| Browser | Method |
+| --- | --- |
+| Paseo `browser_*` tools | Check where it runs first (below). Path a only from the same interactive desktop session; otherwise use a Playwright browser on your host with path c, or stop. |
+| Codex app Browser Use | Path b |
+| Desktop browser (Chrome, Edge, Safari) | Path a, only in the same interactive desktop session; otherwise stop |
+| Playwright, `playwright-cli` or another Chromium this task launched | Path c |
+| Firefox or WebKit automation | Stop |
+
+A Paseo tab runs in the owner's Paseo desktop app, which may be on another machine than your shell, and its paste reads that desktop's clipboard. `bw-paste` copies to the clipboard of the session it runs in: on Linux, to the Mac's clipboard; over SSH on Windows, to that SSH logon's clipboard, not the desktop's. So before any paste into a Paseo tab:
+
+1. Run `browser_evaluate` with `navigator.platform` (`Win32`, `MacIntel`, `Linux x86_64`). It tells you which host, and so which desktop clipboard, the tab uses.
+2. Paste only if your shell runs on that same host, in the desktop session the owner is logged into (not over SSH). Example: an agent on a Linux host while the Paseo app shows the tab on a Windows desktop must not paste.
+3. If the hosts or sessions differ, or you are unsure, do not paste: open the site in a Playwright browser on your own host and use path c.
+
+## Hard stop: never submit an unproven fill
+
+Never click submit or press Enter on a login form unless every credential field's length is above 0 and grew by your paste. A prefilled field (the browser remembered the email) proves nothing. Measure each field's length (a number only) before and after its paste. If any field did not grow: clear it, stop and report. Path c does this itself: its exit 0 is the proof.
+
 ## 1. Pick the login
 
 - Run `bw-paste <site>`, which prints one JSON line per matching login (`id`, `name`, `uris`, `username`; never passwords), and choose the item matching the account the owner named or the task implies. If more than one fits, ask.
@@ -18,7 +38,7 @@ Sign in with the `bw-paste` helper. Values never appear in output, logs, files, 
 Browser snapshots can contain field values: Playwright's aria snapshot, `playwright-cli` snapshots (printed and saved as `.playwright-cli/*.yml`), Paseo `browser_snapshot` for a field without a label or placeholder, and Codex Browser Use's `domSnapshot`/`ariaSnapshot`. So, on every path below:
 
 - Snapshot the sign-in form once, before filling, and take the field and submit refs from it.
-- From the password fill until the submit, nothing else touches the browser: no snapshot, screenshot, eval, console or network listing (`requests`, `request-body`), tracing or video. The only exceptions are the checks inside `bw-paste` itself (path c) and the length-only check inside the single paste-and-submit REPL call (path b). Do not start tracing or video at all during sign-in.
+- From the password fill until the submit, nothing else touches the browser: no snapshot, screenshot, eval, console or network listing (`requests`, `request-body`), tracing or video. The only exceptions are the length-only checks of the hard stop, the checks inside `bw-paste` itself (path c) and the length check inside the single paste-and-submit REPL call (path b). Do not start tracing or video at all during sign-in.
 - After submitting, and after any failure, run one length check before anything else reads the page: an expression that returns only the number of password inputs with a non-empty value, never a value. Path c does this check itself.
   - If it returns 0, or the sign-in page is gone, you may take a fresh snapshot.
   - If it is above 0, set each password input to an empty string (an empty `fill`, never a value) and check again.
@@ -31,9 +51,11 @@ Use only these paths. For anything else, stop and report the exact error line.
 
 ### a. Desktop browser, or a tool that sends real OS keys
 
-Run `bw-paste <id> username` or `bw-paste <id> password`. It copies the value to the OS clipboard and clears it after 20 seconds. Click the field and press Cmd+V on Mac or Ctrl+V elsewhere within 20 seconds. After pasting the password, submit right away with no check in between (Enter, or the submit ref from your pre-fill snapshot). Then run the section 2 length check.
+Only in the same interactive desktop session as the browser (see Pick the path). If unsure, probe first with no secret: put `probe123` on the clipboard with the OS command, paste it into the username field, check the length is 8, then clear the field.
 
-Paseo `browser_*` tools expose no DevTools endpoint, so they can only use this path. If the paste fills nothing, stop and report.
+For each field: clear a prefilled value with an empty fill and check its length is 0. Run `bw-paste <id> username` or `bw-paste <id> password`. It copies the value to the OS clipboard and clears it after 20 seconds. Click the field and press Cmd+V on Mac or Ctrl+V elsewhere within 20 seconds, then check its length is above 0 (hard stop). Then submit (Enter, or the submit ref from your pre-fill snapshot) and run the section 2 length check.
+
+Paseo `browser_*` tools expose no DevTools endpoint, so path c does not apply to them. If a paste fills nothing, clear the field, stop and report.
 
 ### b. Codex app Browser Use (its own virtual clipboard)
 
@@ -42,8 +64,8 @@ The error `Browser Use virtual clipboard has no data to paste` means this path. 
 - Run `bw-paste` with the agent's shell tool (`exec_command`), never inside the REPL: the REPL may not be able to start it.
 - Read the OS clipboard in the REPL with `execFileSync` from `node:child_process`: on Windows `execFileSync('powershell',['-NoProfile','-Command','Get-Clipboard -Raw']).toString().replace(/\r?\n$/,'')`, on Mac `pbpaste`.
 - Probe first with no secret: set the clipboard to `probe123`. In one REPL call, read it as above into `v`, run `tab.clipboard.writeText(v)`, and output only whether `readText()` equals `probe123`.
-- Then for real: run `bw-paste`, then in one REPL call bridge, click the field, `pressKey` `Control_L+v` (`Meta+v` on Mac), and output only `pasted`.
-- For the password, do the whole sequence in that one call, so no other call sees the filled field: bridge, click, paste, check that the field's length is above 0 (a number only), then press Enter or click the submit locator.
+- Then for real: run `bw-paste`, then in one REPL call bridge, clear the field and check length 0, click it, `pressKey` `Control_L+v` (`Meta+v` on Mac), check its length is above 0, and output only `pasted` or `empty` (on `empty`, stop and report).
+- For the password, do the whole sequence in that one call, so no other call sees the filled field: bridge, clear the field and check length 0, click, paste, check that the password and username lengths are above 0 and the password grew (numbers only), then press Enter or click the submit locator.
 - Wrap all of it in `try`, and in `finally` do two things. First, `tab.clipboard.writeText('')`. Second, if the submit did not happen, set the password field to `''` and confirm its length is 0; if that fails, close the tab.
 - Output only `submitted`, `cleared` or `closed`. Then run the section 2 length check before any snapshot.
 - Verified live on Windows on 2026-10-17 and again on 2026-10-18 (lengths matched, clipboard empty after 20 seconds).
@@ -85,7 +107,7 @@ Remote debugging lets any local process drive that browser while it runs. Keep t
 
 ## 4. Submit
 
-- Path a: submit right after the paste.
+- Path a: submit right after the hard-stop length check.
 - Path b: submit inside the paste call.
 - Path c: `--submit` submits for you.
 
