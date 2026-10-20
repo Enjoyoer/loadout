@@ -86,7 +86,9 @@ export function tierDecision(intent, model, catalogTiers) {
   if (intent?.error) return { status: 'invalid', error: intent.error };
   if (!intent || intent.tier === 'inherit') return { status: 'inherited', header: codexRoute ? 'inherit' : undefined };
   if (zenFree && intent.tier === 'standard') return { status: 'explicit-untiered' };
-  if (!codexRoute) return { status: 'unsupported', error: `service tier "${intent.tier}" is not supported for ${model?.id}: this route has no service tier` };
+  if (zenFree) return { status: 'unsupported', error: `service tier "${intent.tier}" is not supported for ${model?.id}: this route has no service tier` };
+  // A tier label left over from a GPT route must not break a later swap to an untiered route.
+  if (!codexRoute) return { status: 'ignored-untiered' };
   if (intent.tier === 'standard') return { status: 'explicit', wire: TIER_WIRE.standard, header: 'standard' };
   if (catalogTiers && !catalogTiers.includes(CATALOG_TIER[intent.tier]))
     return { status: 'unsupported', error: `service tier "${intent.tier}" is not supported for ${model.id}: the fleet catalog lists [${catalogTiers.join(', ')}]` };

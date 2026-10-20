@@ -26,6 +26,10 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - bw-login Browser Use bridge: run `bw-paste` from the shell tool, not the REPL, and read the clipboard with the `Get-Clipboard -Raw` form re-verified live.
 - bw-login and the example global AGENTS.md: the agent solves a CAPTCHA itself (checkbox, image grid, audio, slider) and asks the owner only after 3 real attempts fail or when it needs a phone call or hardware key; 2FA and a locked vault still go to the owner.
 
+### Fixed
+
+- Pi fleet routing: an explicit `opc.service-tier` (standard, fast, ultrafast) left on an agent swapped from a GPT route to a route without service tiers (Claude, any non-Codex route) is ignored instead of refusing every turn. The request carries no `service_tier` and no `X-Fleet-Service-Tier` header, and route evidence records `tierStatus: ignored-untiered`. Codex routes still fail closed on lookup failure and catalog-unsupported tiers, invalid label values still error everywhere, and free Zen IDs still refuse explicit Fast/Ultrafast.
+
 ### Added
 - `bw-login`: an agent signs in to a website with the `bw-paste` helper without ever seeing the values, pasting from the OS clipboard, or in Codex Browser Use through a no-output bridge into the tab clipboard; it solves a CAPTCHA itself, while 2FA and a locked vault go to the owner.
 - personal-skills: an optional `disabledProviders` list in `paseo-providers.json`, top level or per host (a host list replaces the top-level one), turns Paseo agent providers off: each id gets `enabled: false` and loses its `models` key, other fields kept. An id also pinned in the host's effective `providers`, and `pi`, `claude` or `codex`, are refused. The dry run and the result line name the ids disabled.
