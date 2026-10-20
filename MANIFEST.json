@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "8cffa099e6c4d53b35da830abc60de8170eb0991",
+  "source_commit": "bb511d813a90a2cd348ef2a6c6e3eb8cd49cafba",
   "skill_count": 25,
   "file_count": 142,
   "files": [
@@ -436,8 +436,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 43083,
-      "sha256": "f5822c2c08b0dd55b5a20ceda3c467b937a887099bc9a1af905a841eb95a97bc"
+      "bytes": 43797,
+      "sha256": "1db4c739536d7b0f11dc50ddb77f3f1125de1fbede0f9ec4dba6becb45ca686b"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -555,8 +555,8 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 37454,
-      "sha256": "21b5f5d7dc1ebd565871eec18923d3ea1c08e719ed315efa4dc079c1fbdf5e56"
+      "bytes": 37782,
+      "sha256": "63710d5551c27448be8d692760a8ab24ac2075a26b9428753be29fb4bb2aea18"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",
@@ -1001,7 +1001,7 @@
     }
   ],
   "plugin_count": 6,
-  "plugin_file_count": 114,
+  "plugin_file_count": 115,
   "plugins": [
     {
       "id": "cache-aware-autocompact",
@@ -1536,26 +1536,26 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 20171,
-      "sha256": "7411f6f1d96c7d15f070e8a30bf8eeb615a14de7b3924adcc0edca7f149df4a7"
+      "bytes": 22696,
+      "sha256": "14adaf02362b568e63a173045333bd6332356ee83c5ee829ccd0631dbd1330de"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 42232,
-      "sha256": "a906630faee81e0c15e06004221c496d08a9ef94bb69571bff90cd23999bc286"
+      "bytes": 46405,
+      "sha256": "b1d3c34b000a493bdcced090752f88e639d59f578749693f0e33d26eca5b1420"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 21229,
-      "sha256": "c396489bd3b1e11310a16f919392114b79e102cc9f2094d56f284fc8cda931ab"
+      "sha256": "56461db7c1246947828e3fc7ee82c012730d1844b5b4830ecd4b4c18feeaf956"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 890,
-      "sha256": "8658b193bed8b2afc6a46119c565a68ff0aefcb155bdf78dd7fee1fa098ca9f8"
+      "sha256": "a52703ed7a3ef2b918bd32af5f03022d95cfc156abae12f2ba0ec13513d8e66c"
     },
     {
       "path": "plugins/usage-limit-auto-resume/paseo-plugin.json",
@@ -1590,8 +1590,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/model.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 33010,
-      "sha256": "c35881ee82ac448aa9c1246ca93541ee701d096e0f3d5b0c2efcc4df2fa53777"
+      "bytes": 37751,
+      "sha256": "64fe9a492f73ac8eb1209353a8b1481bf6ba4d44bd38a69c34018c7d9d4af405"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/quota.ts",
@@ -1602,8 +1602,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/store.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 9723,
-      "sha256": "39e8038a4ba846eb5618f8eb0af9fdcd9cd81e15ded271acb3613615919ffdf2"
+      "bytes": 9978,
+      "sha256": "e3ad642152a7648fc83ae0fafdace36cadba4e90ff3c29c25d6f52773c22bfc4"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/stored-agent.ts",
@@ -1652,6 +1652,12 @@
       "plugin": "usage-limit-auto-resume",
       "bytes": 26085,
       "sha256": "583ae0caffad8ae5c675f89484cc2db797da384890fd8be82d77d9ae21a679e3"
+    },
+    {
+      "path": "plugins/usage-limit-auto-resume/test/rpc-timeout.test.ts",
+      "plugin": "usage-limit-auto-resume",
+      "bytes": 9257,
+      "sha256": "66f5be3a9480158959f598f390f33d189b422bf215fb2c3b5458c715bfcd2fbb"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/store.test.ts",
