@@ -5,37 +5,120 @@ description: Log in to a website with Bitwarden without ever seeing the values. 
 
 # bw-login
 
-Sign in with the `bw-paste` helper. Values never appear in output, logs, screenshots or tool arguments.
+Sign in with the `bw-paste` helper. Values never appear in output, logs, files, screenshots or tool arguments.
+
+## Pick the path
+
+| Browser | Method |
+| --- | --- |
+| Paseo `browser_*` tools | Path a only when the checks below pass; otherwise a Playwright browser on your host with path c, or stop |
+| Codex app Browser Use | Path b |
+| Desktop browser (Chrome, Edge, Safari) | Path a only when the checks below pass; otherwise stop |
+| Playwright, `playwright-cli` or another Chromium this task launched | Path c |
+| Firefox or WebKit automation | Stop |
+
+A browser's paste reads the clipboard of the desktop it runs on; a Paseo tab runs in the owner's Paseo desktop app, which may be another machine. `bw-paste` copies elsewhere in two cases: on Linux it always copies to the Mac's clipboard, and over SSH on Windows to that SSH logon's clipboard, not the desktop's. Path a is allowed only when all of these hold:
+
+1. Your shell is on Mac or Windows. On Linux, never use path a, even for a browser on the same Linux host: use path c or stop.
+2. You know independently that your shell runs on the browser's machine, in the desktop session the owner is logged into, not over SSH (for example, the owner told you, or the app and your shell share the hostname and `SSH_CONNECTION` is unset).
+3. For a Paseo tab, `browser_evaluate` of `navigator.platform` matches your OS (`MacIntel` for Mac, `Win32` for Windows). This only filters out a mismatch; it never proves the same machine, since every Windows PC says `Win32`.
+
+If any check fails or you are unsure, do not paste: open the site in a Playwright browser on your own host and use path c, or stop.
+
+## Hard stop: never submit an unproven fill
+
+Never click submit or press Enter on a login form unless every credential field's length is above 0 and grew by your paste. A prefilled field (the browser remembered the email) never counts. Measure each field's length (a number only) before and after its paste. If any field did not grow: clear it, stop and report.
+
+On path c, a successful `bw-paste` call for each credential field replaces the growth check: run it for the username too, even when it looks prefilled. The password call's exit 0 alone does not vouch for the username.
 
 ## 1. Pick the login
 
 - Run `bw-paste <site>`, which prints one JSON line per matching login (`id`, `name`, `uris`, `username`; never passwords), and choose the item matching the account the owner named or the task implies. If more than one fits, ask.
 - Get only that site's login. Never look up any other item.
-- Never use the raw `bw` CLI or `bw-paste --raw`, and never type a password into any tool.
+- Never use the raw `bw` CLI or `bw-paste --raw`, and never type a password into any tool (no `fill`, `type` or `eval` with a value).
 
-## 2. Fill
+## 2. Never look at the page while it holds a password
 
-Run `bw-paste <id> username` or `bw-paste <id> password`. This copies the value to the OS clipboard and clears it after 20 seconds, so paste within 20 seconds.
+Browser snapshots can contain field values: Playwright's aria snapshot, `playwright-cli` snapshots (printed and saved as `.playwright-cli/*.yml`), Paseo `browser_snapshot` for a field without a label or placeholder, and Codex Browser Use's `domSnapshot`/`ariaSnapshot`. So, on every path below:
 
-## 3. Paste, by environment
+- Snapshot the sign-in form once, before filling, and take the field and submit refs from it.
+- From the password fill until the submit, nothing else touches the browser: no snapshot, screenshot, eval, console or network listing (`requests`, `request-body`), tracing or video. The only exceptions are the length-only checks of the hard stop, the checks inside `bw-paste` itself (path c) and the length check inside the single paste-and-submit REPL call (path b). Do not start tracing or video at all during sign-in.
+- After submitting, and after any failure, run one length check before anything else reads the page: an expression that returns only the number of password inputs with a non-empty value, never a value. Path c does this check itself.
+  - If it returns 0, or the sign-in page is gone, you may take a fresh snapshot.
+  - If it is above 0, set each password input to an empty string (an empty `fill`, never a value) and check again.
+  - If it still is not 0, or the check fails, close that tab without a snapshot or screenshot, then report.
+- Never snapshot a page whose password fields you have not just verified empty.
 
-a. Normal desktop browser, or a browser tool that sends real OS keys: click the field, press Cmd+V on Mac or Ctrl+V elsewhere.
+## 3. Fill, by environment
 
-b. Codex app Browser Use, which has its own virtual clipboard (error `Browser Use virtual clipboard has no data to paste`): bridge the OS clipboard into the tab clipboard inside the node REPL. Never print, log, return or screenshot the value.
-   - Run `bw-paste` with the agent's shell tool (`exec_command`), never inside the REPL: the REPL may not be able to start it.
-   - Read the OS clipboard in the REPL with `execFileSync` from `node:child_process`: on Windows `execFileSync('powershell',['-NoProfile','-Command','Get-Clipboard -Raw']).toString().replace(/\r?\n$/,'')`, on Mac `pbpaste`.
-   - Probe first with no secret: set the clipboard to `probe123`. In one REPL call, read it as above into `v`, run `tab.clipboard.writeText(v)`, and output only whether `readText()` equals `probe123`.
-   - Then for real: run `bw-paste`, then in one REPL call bridge, click the field, `pressKey` `Control_L+v` (`Meta+v` on Mac), and output only `pasted`. Wrap the bridge, click and paste in `try` with `tab.clipboard.writeText('')` in `finally`, so the tab clipboard is cleared even if a step throws.
-   - Verified live on Windows on 2026-10-17 and again on 2026-10-18 (lengths matched, clipboard empty after 20 seconds).
+Use only these paths. For anything else, stop and report the exact error line.
 
-c. Any other environment where paste comes up empty: stop and report the exact error line. Do not improvise another path.
+### a. Desktop browser, or a tool that sends real OS keys
+
+Only when the Pick the path checks pass. Before the first real paste, probe with no secret: clear the username field and check its length is 0; put `probe123` on the clipboard with the OS command; paste it into that field; return only whether its value equals `probe123` (`field.value === 'probe123'`); then clear it and check its length is 0 again. If the probe returns false, stop and use path c. A passing probe shows the clipboard reaches the field; it does not replace the checks above.
+
+For each field: clear a prefilled value with an empty fill and check its length is 0. Run `bw-paste <id> username` or `bw-paste <id> password`. It copies the value to the OS clipboard and clears it after 20 seconds. Click the field and press Cmd+V on Mac or Ctrl+V elsewhere within 20 seconds, then check its length is above 0 (hard stop). Then submit (Enter, or the submit ref from your pre-fill snapshot) and run the section 2 length check.
+
+Paseo `browser_*` tools expose no DevTools endpoint, so path c does not apply to them. If a paste fills nothing, clear the field, stop and report.
+
+### b. Codex app Browser Use (its own virtual clipboard)
+
+The error `Browser Use virtual clipboard has no data to paste` means this path. Bridge the OS clipboard into the tab clipboard inside the node REPL, and never print, log, return or screenshot the value.
+
+- Run `bw-paste` with the agent's shell tool (`exec_command`), never inside the REPL: the REPL may not be able to start it.
+- Read the OS clipboard in the REPL with `execFileSync` from `node:child_process`: on Windows `execFileSync('powershell',['-NoProfile','-Command','Get-Clipboard -Raw']).toString().replace(/\r?\n$/,'')`, on Mac `pbpaste`.
+- Probe first with no secret: set the clipboard to `probe123`. In one REPL call, read it as above into `v`, run `tab.clipboard.writeText(v)`, and output only whether `readText()` equals `probe123`.
+- Then for real: run `bw-paste`, then in one REPL call bridge, clear the field and check length 0, click it, `pressKey` `Control_L+v` (`Meta+v` on Mac), check its length is above 0, and output only `pasted` or `empty` (on `empty`, stop and report).
+- For the password, do the whole sequence in that one call, so no other call sees the filled field: bridge, clear the field and check length 0, click, paste, check that the password and username lengths are above 0 and the password grew (numbers only), then press Enter or click the submit locator.
+- Wrap all of it in `try`, and in `finally` do two things. First, `tab.clipboard.writeText('')`. Second, if the submit did not happen, set the password field to `''` and confirm its length is 0; if that fails, close the tab.
+- Output only `submitted`, `cleared` or `closed`. Then run the section 2 length check before any snapshot.
+- Verified live on Windows on 2026-10-17 and again on 2026-10-18 (lengths matched, clipboard empty after 20 seconds).
+
+### c. Playwright and other automation-owned Chromium browsers (CDP fill)
+
+Use this path for headless or automation browsers: `playwright-cli` sessions, plain Playwright scripts, and any Chromium, Chrome or Edge that this task launched itself. The clipboard does not reach these browsers. `bw-paste` writes the value over the browser's loopback DevTools protocol (CDP) into the exact field it checked, verifies it, and for a password submits the form itself.
+
+1. Enable remote debugging when the session starts. It cannot be added to a running session, so close and reopen one that started without it.
+   - `playwright-cli`: in a scratch folder, write `cli.config.json` containing `{"browser":{"launchOptions":{"headless":true,"args":["--remote-debugging-port=0"]}}}` and keep any other settings you need in it. Open with `"$PWCLI" open <login-url> --config <dir>/cli.config.json --profile <dir>/profile`. The browser then writes `<dir>/profile/DevToolsActivePort`, and the endpoint flag is `--cdp-profile <dir>/profile`.
+   - Plain Playwright script: `chromium.launchPersistentContext('<dir>/profile', { args: ['--remote-debugging-port=0'] })`, then use `--cdp-profile <dir>/profile`. With a fixed `--remote-debugging-port=<port>`, use `--cdp http://127.0.0.1:<port>` instead (IPv4 loopback only; `[::1]` is refused).
+   - A Chrome or Edge you launch yourself: start it with `--remote-debugging-port=0` and its own `--user-data-dir=<dir>/profile`. Never relaunch the owner's own browser for this; use path a there.
+2. Snapshot the form once and note the username, password and submit refs.
+3. Click the username field, then run `bw-paste <id> username --cdp-profile <dir>/profile`, even if the field looks prefilled. When the username is on its own page (two-step sign-in), add `--submit`.
+4. Click the password field, then run `bw-paste <id> password --cdp-profile <dir>/profile --submit`. `--submit` is required for passwords.
+5. Expect `filled username for <name>`, then `filled password for <name>; submitted`. Exit 0 after `--submit` means `bw-paste` already verified that no password field in the page still holds a value, so a fresh snapshot is allowed.
+
+What `bw-paste` does:
+- Tab: it needs exactly one open http(s) tab. Pass `--target-url-prefix <login-url-prefix>` or close the other tabs; it never guesses by focus.
+- Origin: the page URL must match one of the item's saved URIs under that URI's Bitwarden match mode.
+  - Domain (the default) matches the same site, including subdomains.
+  - Host matches host and port.
+  - Starts with and Exact compare the full URL, including port, path and the `#` route of single-page apps.
+  - Regular expression and Never never authorize.
+- Field: the focused field in the page's main frame must fit (a password needs a password input; a username a text-like input or textarea). That field and the full page URL, `#` route included, are pinned. The value is written into the pinned field itself, never into whatever has focus, and the field is checked again in the same step.
+- Submit: it uses the pinned field's own form. It clicks that form's default submit button, as Enter does. If the form has no button, it submits the form; if there is no form, it sends Enter to the field. It then waits up to 10 seconds until no password field in the page holds a value.
+
+Exit codes:
+- 5, one fixed line, value not in the page:
+  - before writing: wrong origin, not exactly one tab, no focused field in the main frame (a field inside an iframe counts), wrong field type, page or field changed;
+  - after writing: fill not verified, disabled submit button, or still filled 10 seconds after submit.
+  On the after-writing refusals, it cleared the fields and verified them empty. Read the page if needed, then report.
+- 6, `UNSAFE STATE`, page state unknown: it could not verify the page is free of the value (a page that refills the field, a hung tab, or a lost connection).
+  - Normally it has closed that tab: do not snapshot, and reopen the page if needed.
+  - If the line says it could not close the tab, close the whole browser session now without a snapshot, then report.
+- Firefox and WebKit have no CDP fill: stop and report.
+
+Remote debugging lets any local process drive that browser while it runs. Keep the profile in your own scratch folder, and close the session when the task is done.
 
 ## 4. Submit
 
-Check that each field is not empty (length only, never the value), then submit.
+- Path a: submit right after the hard-stop length check.
+- Path b: submit inside the paste call.
+- Path c: `--submit` submits for you.
+
+On every path, the section 2 length check comes after the submit, never between the fill and the submit.
 
 ## 5. CAPTCHA, 2FA, locked vault
 
 - CAPTCHA: solve it yourself, whether it is a checkbox, an image grid, an audio challenge or a slider puzzle. If it expires or fails, reload and try again. Ask the owner only after 3 real attempts fail, or when it needs something you cannot do (a phone call or a hardware key). Then leave the page visible and say what blocked you.
 - 2FA belongs to the owner: stop, leave the page visible, and ask.
-- Vault locked: ask the owner to run `bw-unlock`.
+- Vault locked (exit 3): ask the owner to run `bw-unlock`.
