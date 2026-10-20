@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "cbf223d276741712562f587cce3deb677f6641e5",
+  "source_commit": "4e7b99012d83576b07a870cb694a913314754eb7",
   "skill_count": 25,
   "file_count": 142,
   "files": [
@@ -191,15 +191,15 @@
       "path": "skills/orchestration/handoff/SKILL.md",
       "category": "orchestration",
       "skill": "handoff",
-      "bytes": 1420,
-      "sha256": "57036460ce382fbb0dd73102c5e1b86f8c3281bdc2234950544a54fd83df6628"
+      "bytes": 3062,
+      "sha256": "eb9893b3a8e9d85cc656cdc250b4e1d67a5e57f6fb12e693a7abe3d8b1a68d73"
     },
     {
       "path": "skills/orchestration/handoff/agents/openai.yaml",
       "category": "orchestration",
       "skill": "handoff",
-      "bytes": 294,
-      "sha256": "e0536c1bbc44e9c0530cec2e2fcd671e01784a63177fa753b35e0c0925102f13"
+      "bytes": 301,
+      "sha256": "fd19a7e7e7eff1045d7bce231221798605b6edc5f98a1fb1411d2a414c2f0b2a"
     },
     {
       "path": "skills/orchestration/opc/SKILL.md",
@@ -737,8 +737,8 @@
       "path": "skills/orchestration/repo-lessons/SKILL.md",
       "category": "orchestration",
       "skill": "repo-lessons",
-      "bytes": 7080,
-      "sha256": "7a321c09a8170e4c776b7eb0251af139b848177ee2e33e0233bce16f6b85a9c5"
+      "bytes": 6422,
+      "sha256": "2d4aeaaad3b0d499ea4675f2950e641348bf6338763626832a5a0c3d758ca2df"
     },
     {
       "path": "skills/orchestration/repo-lessons/agents/openai.yaml",
