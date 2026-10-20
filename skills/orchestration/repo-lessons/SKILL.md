@@ -1,6 +1,6 @@
 ---
 name: repo-lessons
-description: Maintain an assigned project's or durable workstream's STATUS.html and LESSONS.md, including the comprehensive update that $handoff commits before an owner migrates or is replaced.
+description: Maintain an assigned project's or durable workstream's STATUS.html and LESSONS.md: root and ownership rules, the five-section dashboard, and capped durable lessons.
 ---
 
 # Project Memory
@@ -57,13 +57,7 @@ Durable entries carry `Status`, `Verified`, `Evidence`, and `Review when`. Put n
 
 ## Handoff
 
-A handoff is a full, detailed update of this pair, never a separate file. `$handoff` runs it and commits the pair; do the same update before the owner migrates or is replaced (new session, model, host, or agent).
-
-- `STATUS.html`: rewrite the facts in all five sections, preserving every active identifier and owner gate, so a successor can continue from this file alone.
-- `LESSONS.md`: record every durable, non-obvious fact from the session that is not already there, within the cap.
-- Point to source paths, commits, and PRs instead of copying their content. Then say in one line that the pair is ready for the successor.
-
-A successor resumes by reading the pair as in "Read once, then maintain". There is nothing to consume, fold, or mark.
+Use `$handoff` for handoffs; a successor resumes by reading the pair as in "Read once, then maintain".
 
 ## Evidence and contradictions
 
