@@ -66,9 +66,9 @@ What `bw-paste` does:
 - Origin: the page URL must match one of the item's saved URIs under that URI's Bitwarden match mode.
   - Domain (the default) matches the same site, including subdomains.
   - Host matches host and port.
-  - Starts with and Exact compare the full URL, including port and path.
+  - Starts with and Exact compare the full URL, including port, path and the `#` route of single-page apps.
   - Regular expression and Never never authorize.
-- Field: the focused field in the page's main frame must fit (a password needs a password input; a username a text-like input or textarea). That field is pinned. The value is written into the pinned field itself, never into whatever has focus, and the field is checked again in the same step.
+- Field: the focused field in the page's main frame must fit (a password needs a password input; a username a text-like input or textarea). That field and the full page URL, `#` route included, are pinned. The value is written into the pinned field itself, never into whatever has focus, and the field is checked again in the same step.
 - Submit: it uses the pinned field's own form. It clicks that form's default submit button, as Enter does. If the form has no button, it submits the form; if there is no form, it sends Enter to the field. It then waits up to 10 seconds until no password field in the page holds a value.
 
 Exit codes:
