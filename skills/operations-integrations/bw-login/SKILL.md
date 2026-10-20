@@ -11,21 +11,25 @@ Sign in with the `bw-paste` helper. Values never appear in output, logs, files, 
 
 | Browser | Method |
 | --- | --- |
-| Paseo `browser_*` tools | Check where it runs first (below). Path a only from the same interactive desktop session; otherwise use a Playwright browser on your host with path c, or stop. |
+| Paseo `browser_*` tools | Path a only when the checks below pass; otherwise a Playwright browser on your host with path c, or stop |
 | Codex app Browser Use | Path b |
-| Desktop browser (Chrome, Edge, Safari) | Path a, only in the same interactive desktop session; otherwise stop |
+| Desktop browser (Chrome, Edge, Safari) | Path a only when the checks below pass; otherwise stop |
 | Playwright, `playwright-cli` or another Chromium this task launched | Path c |
 | Firefox or WebKit automation | Stop |
 
-A Paseo tab runs in the owner's Paseo desktop app, which may be on another machine than your shell, and its paste reads that desktop's clipboard. `bw-paste` copies to the clipboard of the session it runs in: on Linux, to the Mac's clipboard; over SSH on Windows, to that SSH logon's clipboard, not the desktop's. So before any paste into a Paseo tab:
+A browser's paste reads the clipboard of the desktop it runs on; a Paseo tab runs in the owner's Paseo desktop app, which may be another machine. `bw-paste` copies elsewhere in two cases: on Linux it always copies to the Mac's clipboard, and over SSH on Windows to that SSH logon's clipboard, not the desktop's. Path a is allowed only when all of these hold:
 
-1. Run `browser_evaluate` with `navigator.platform` (`Win32`, `MacIntel`, `Linux x86_64`). It tells you which host, and so which desktop clipboard, the tab uses.
-2. Paste only if your shell runs on that same host, in the desktop session the owner is logged into (not over SSH). Example: an agent on a Linux host while the Paseo app shows the tab on a Windows desktop must not paste.
-3. If the hosts or sessions differ, or you are unsure, do not paste: open the site in a Playwright browser on your own host and use path c.
+1. Your shell is on Mac or Windows. On Linux, never use path a, even for a browser on the same Linux host: use path c or stop.
+2. You know independently that your shell runs on the browser's machine, in the desktop session the owner is logged into, not over SSH (for example, the owner told you, or the app and your shell share the hostname and `SSH_CONNECTION` is unset).
+3. For a Paseo tab, `browser_evaluate` of `navigator.platform` matches your OS (`MacIntel` for Mac, `Win32` for Windows). This only filters out a mismatch; it never proves the same machine, since every Windows PC says `Win32`.
+
+If any check fails or you are unsure, do not paste: open the site in a Playwright browser on your own host and use path c, or stop.
 
 ## Hard stop: never submit an unproven fill
 
-Never click submit or press Enter on a login form unless every credential field's length is above 0 and grew by your paste. A prefilled field (the browser remembered the email) proves nothing. Measure each field's length (a number only) before and after its paste. If any field did not grow: clear it, stop and report. Path c does this itself: its exit 0 is the proof.
+Never click submit or press Enter on a login form unless every credential field's length is above 0 and grew by your paste. A prefilled field (the browser remembered the email) never counts. Measure each field's length (a number only) before and after its paste. If any field did not grow: clear it, stop and report.
+
+On path c, a successful `bw-paste` call for each credential field replaces the growth check: run it for the username too, even when it looks prefilled. The password call's exit 0 alone does not vouch for the username.
 
 ## 1. Pick the login
 
@@ -51,7 +55,7 @@ Use only these paths. For anything else, stop and report the exact error line.
 
 ### a. Desktop browser, or a tool that sends real OS keys
 
-Only in the same interactive desktop session as the browser (see Pick the path). If unsure, probe first with no secret: put `probe123` on the clipboard with the OS command, paste it into the username field, check the length is 8, then clear the field.
+Only when the Pick the path checks pass. Before the first real paste, probe with no secret: clear the username field and check its length is 0; put `probe123` on the clipboard with the OS command; paste it into that field; return only whether its value equals `probe123` (`field.value === 'probe123'`); then clear it and check its length is 0 again. If the probe returns false, stop and use path c. A passing probe shows the clipboard reaches the field; it does not replace the checks above.
 
 For each field: clear a prefilled value with an empty fill and check its length is 0. Run `bw-paste <id> username` or `bw-paste <id> password`. It copies the value to the OS clipboard and clears it after 20 seconds. Click the field and press Cmd+V on Mac or Ctrl+V elsewhere within 20 seconds, then check its length is above 0 (hard stop). Then submit (Enter, or the submit ref from your pre-fill snapshot) and run the section 2 length check.
 
@@ -79,7 +83,7 @@ Use this path for headless or automation browsers: `playwright-cli` sessions, pl
    - Plain Playwright script: `chromium.launchPersistentContext('<dir>/profile', { args: ['--remote-debugging-port=0'] })`, then use `--cdp-profile <dir>/profile`. With a fixed `--remote-debugging-port=<port>`, use `--cdp http://127.0.0.1:<port>` instead (IPv4 loopback only; `[::1]` is refused).
    - A Chrome or Edge you launch yourself: start it with `--remote-debugging-port=0` and its own `--user-data-dir=<dir>/profile`. Never relaunch the owner's own browser for this; use path a there.
 2. Snapshot the form once and note the username, password and submit refs.
-3. Click the username field, then run `bw-paste <id> username --cdp-profile <dir>/profile`. When the username is on its own page (two-step sign-in), add `--submit`.
+3. Click the username field, then run `bw-paste <id> username --cdp-profile <dir>/profile`, even if the field looks prefilled. When the username is on its own page (two-step sign-in), add `--submit`.
 4. Click the password field, then run `bw-paste <id> password --cdp-profile <dir>/profile --submit`. `--submit` is required for passwords.
 5. Expect `filled username for <name>`, then `filled password for <name>; submitted`. Exit 0 after `--submit` means `bw-paste` already verified that no password field in the page still holds a value, so a fresh snapshot is allowed.
 
