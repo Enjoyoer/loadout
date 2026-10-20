@@ -1,0 +1,10 @@
+{
+  "hosts": {
+    "tablet": {
+      "launch": {
+        "claude": { "tokenFiles": { "ANTHROPIC_AUTH_TOKEN": "~/.config/example-router/api-key" } },
+        "codex": { "args": ["-c", "model_provider=\"example_router\""] }
+      }
+    }
+  }
+}
