@@ -85,9 +85,8 @@ export function tierDecision(intent, model, catalogTiers) {
   if (intent?.lookupFailed) return codexRoute || zenFree ? { status: 'lookup-failed', error: intent.error } : { status: 'lookup-failed-untiered' };
   if (intent?.error) return { status: 'invalid', error: intent.error };
   if (!intent || intent.tier === 'inherit') return { status: 'inherited', header: codexRoute ? 'inherit' : undefined };
-  if (zenFree && intent.tier === 'standard') return { status: 'explicit-untiered' };
-  if (zenFree) return { status: 'unsupported', error: `service tier "${intent.tier}" is not supported for ${model?.id}: this route has no service tier` };
-  // A tier label left over from a GPT route must not break a later swap to an untiered route.
+  // A tier label left over from a GPT route must not break a later swap to an untiered route
+  // (Claude, web, free Zen IDs): send no tier and record it.
   if (!codexRoute) return { status: 'ignored-untiered' };
   if (intent.tier === 'standard') return { status: 'explicit', wire: TIER_WIRE.standard, header: 'standard' };
   if (catalogTiers && !catalogTiers.includes(CATALOG_TIER[intent.tier]))

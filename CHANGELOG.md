@@ -28,7 +28,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ### Fixed
 
-- Pi fleet routing: an explicit `opc.service-tier` (standard, fast, ultrafast) left on an agent swapped from a GPT route to a route without service tiers (Claude, any non-Codex route) is ignored instead of refusing every turn. The request carries no `service_tier` and no `X-Fleet-Service-Tier` header, and route evidence records `tierStatus: ignored-untiered`. Codex routes still fail closed on lookup failure and catalog-unsupported tiers, invalid label values still error everywhere, and free Zen IDs still refuse explicit Fast/Ultrafast.
+- Pi fleet routing: an explicit `opc.service-tier` (standard, fast, ultrafast) left on an agent swapped from a GPT route to a route without service tiers (Claude, any non-Codex route) is ignored instead of refusing every turn. The request carries no `service_tier` and no `X-Fleet-Service-Tier` header, and route evidence records `tierStatus: ignored-untiered`. Codex routes still fail closed on lookup failure and catalog-unsupported tiers, invalid label values still error everywhere, and free Zen IDs (which also ignore explicit Fast/Ultrafast now) still fail closed on lookup failure.
 
 ### Added
 - `bw-login`: an agent signs in to a website with the `bw-paste` helper without ever seeing the values, pasting from the OS clipboard, or in Codex Browser Use through a no-output bridge into the tab clipboard; it solves a CAPTCHA itself, while 2FA and a locked vault go to the owner.
