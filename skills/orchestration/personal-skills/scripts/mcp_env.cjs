@@ -10,38 +10,66 @@ const windows = process.platform === 'win32';
 const absent = e => e && (e.code === 'ENOENT' || e.code === 'ENOTDIR');
 // A file that is present but not owner-only, or not a single safe value.
 class Unsafe extends Error {}
-// Owner-only on Windows, read through PowerShell's .NET: inheritance off, the owner and every allow rule the current
-// user, SYSTEM, Administrators or OWNER RIGHTS, and one allow rule for the current user. SIDs, so a localized name cannot slip through.
-// The path arrives in the environment, never in the script text.
-const ACL_SCRIPT = [
-  "$ErrorActionPreference='Stop'",
-  // .NET, not Get-Acl: a cmdlet module would autoload, which stalls in a sparse environment.
-  '$acl=[IO.File]::GetAccessControl($env:LOADOUT_OWNER_FILE)',
-  '$sid=[Security.Principal.SecurityIdentifier]',
-  '$me=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
-  "$ok=@($me,'S-1-5-18','S-1-5-32-544')",
-  "$allow=@(@($acl.GetAccessRules($true,$true,$sid)).Where({ $_.AccessControlType -eq 'Allow' }))",
-  // OWNER RIGHTS (S-1-3-4) grants only the owner, which must itself be one of $ok.
-  "$bad=@($allow.Where({ ($ok+'S-1-3-4') -notcontains $_.IdentityReference.Value }))",
-  '$mine=@($allow.Where({ $_.IdentityReference.Value -eq $me }))',
-  "$why=@()",
-  "if(-not $acl.AreAccessRulesProtected){$why+='inheritance on'}",
-  "if($ok -notcontains $acl.GetOwner($sid).Value){$why+='owned by another account'}",
-  "$name={param($r) try{$r.IdentityReference.Translate([Security.Principal.NTAccount]).Value}catch{$r.IdentityReference.Value}}",
-  "if($bad.Count){$why+='other accounts allowed: '+(@($bad.ForEach({& $name $_})) -join ' and ')}",
-  "if(-not $mine.Count){$why+='no rule for the current user'}",
-  "if($why.Count){$why -join ', '}else{'owner-only'}",
-].join(';');
-// Null when owner-only, else the reasons it is not.
-function aclProblem(target) {
-  const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ACL_SCRIPT], {
-    env: { ...process.env, LOADOUT_OWNER_FILE: target }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
-    timeout: 30000, windowsHide: true });
-  return out.trim() === 'owner-only' ? null : 'ACL: ' + out.trim();
+// The Windows owner-only check, in PowerShell's .NET: no cmdlet module autoloads, which stalls in a sparse
+// environment. It refuses a link, junction or other reparse point on the path, opens the file sharing only reads
+// (so it cannot be replaced, renamed or written while open), and judges the ACL of that open handle, the bytes it
+// then reads coming from the same handle: inheritance off, an owner that is the current user, SYSTEM or
+// Administrators, allow rules only for those or OWNER RIGHTS (which grants only the owner), and one for the
+// current user. SIDs, so a localized name cannot slip through. The path arrives in the environment, never in the
+// script text; the value leaves only base64 on stdout, to this process.
+const OWNER_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$p = $env:LOADOUT_OWNER_FILE
+$link = {
+  $q = $p
+  while ($q) {
+    if ([IO.File]::GetAttributes($q).HasFlag([IO.FileAttributes]::ReparsePoint)) { return $q }
+    $q = [IO.Path]::GetDirectoryName($q)
+  }
+}
+$l = & $link
+if ($l) { 'unsafe:a link or junction at ' + $l; exit }
+$fs = [IO.FileStream]::new($p, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+  $acl = $fs.GetAccessControl()
+  $sid = [Security.Principal.SecurityIdentifier]
+  $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $ok = @($me, 'S-1-5-18', 'S-1-5-32-544')
+  $allow = @(@($acl.GetAccessRules($true, $true, $sid)).Where({ $_.AccessControlType -eq 'Allow' }))
+  $bad = @($allow.Where({ ($ok + 'S-1-3-4') -notcontains $_.IdentityReference.Value }))
+  $mine = @($allow.Where({ $_.IdentityReference.Value -eq $me }))
+  $name = { param($r) try { $r.IdentityReference.Translate([Security.Principal.NTAccount]).Value } catch { $r.IdentityReference.Value } }
+  $why = @()
+  if (-not $acl.AreAccessRulesProtected) { $why += 'ACL inheritance on' }
+  if ($ok -notcontains $acl.GetOwner($sid).Value) { $why += 'owned by another account' }
+  if ($bad.Count) { $why += 'other accounts allowed: ' + (@($bad.ForEach({ & $name $_ })) -join ' and ') }
+  if (-not $mine.Count) { $why += 'no rule for the current user' }
+  if ($fs.Length -lt 1 -or $fs.Length -gt 65536) { $why += 'empty or over 64 KiB' }
+  $l = & $link
+  if ($l) { $why += 'a link or junction at ' + $l }
+  if ($why.Count) { 'unsafe:' + ($why -join ', ') }
+  elseif ($env:LOADOUT_OWNER_READ -eq '1') {
+    $b = [byte[]]::new($fs.Length); $n = 0
+    while ($n -lt $b.Length) { $r = $fs.Read($b, $n, $b.Length - $n); if ($r -le 0) { throw 'short read' }; $n += $r }
+    'ok:' + [Convert]::ToBase64String($b)
+  } else { 'ok' }
+} finally { $fs.Dispose() }
+`;
+function windowsOwnerFile(target, read) {
+  const env = { ...process.env, LOADOUT_OWNER_FILE: target };
+  delete env.LOADOUT_OWNER_READ;
+  if (read) env.LOADOUT_OWNER_READ = '1';
+  const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+    Buffer.from(OWNER_SCRIPT, 'utf16le').toString('base64')], {
+    env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000, windowsHide: true }).trim();
+  if (out.startsWith('unsafe:')) throw new Unsafe(out.slice(7));
+  if (!read && out === 'ok') return true;
+  if (read && out.startsWith('ok:')) return Buffer.from(out.slice(3), 'base64').toString('utf8');
+  throw Error('owner-only check gave no verdict');
 }
 // HOME is the trusted boundary, and macOS may spell its temporary root through /var. Canonicalize that boundary,
-// but still refuse links anywhere below it. The file must be owner-only: mode 0600 and our uid on POSIX, the ACL
-// above on Windows. Returns the file's text when read is set, else true; throws when unsafe.
+// but still refuse links anywhere below it. The file must be owner-only: on POSIX mode 0600 and our uid, checked on
+// the descriptor read; on Windows the ACL check above. Returns the file's text when read is set, else true; throws when unsafe.
 function ownerFile(name, read) {
   const target = name.replace(/^~(?=[\\/])/, fs.realpathSync(os.homedir()));
   if (!path.isAbsolute(target)) throw new Unsafe('not an absolute path');
@@ -50,13 +78,12 @@ function ownerFile(name, read) {
     if (st.isSymbolicLink() || (part === target ? !st.isFile() : !st.isDirectory()))
       throw new Unsafe('a link or wrong file type at ' + part);
   }
-  const acl = windows && aclProblem(target);
-  if (acl) throw new Unsafe(acl);
+  if (windows) return windowsOwnerFile(target, read);
   const fd = fs.openSync(target, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
   try {
     const st = fs.fstatSync(fd);
     if (!st.isFile() || !st.size || st.size > 65536) throw new Unsafe('empty or over 64 KiB');
-    if (!windows && ((st.mode & 0o777) !== 0o600 || st.uid !== process.getuid())) throw new Unsafe('not mode 0600 and ours');
+    if ((st.mode & 0o777) !== 0o600 || st.uid !== process.getuid()) throw new Unsafe('not mode 0600 and ours');
     return read ? fs.readFileSync(fd, 'utf8') : true;
   } finally { fs.closeSync(fd); }
 }
@@ -97,39 +124,56 @@ function parents(dir) {
   const out = [];
   for (;;) { out.push(dir); const next = path.dirname(dir); if (next === dir) return out; dir = next; }
 }
-// Windows resolves a bare harness name as Paseo does: each PATH directory in order, trying the PATHEXT extensions
-// (the bare name only when it has an extension), then winget package executables.
+const isFile = p => { try { return fs.statSync(p).isFile(); } catch (e) { if (absent(e)) return false; throw e; } };
+// Windows resolves a bare harness name as Paseo does (the `which` package): each PATH directory in order, without
+// surrounding quotes, trying the PATHEXT extensions (the bare name only when it has an extension), then winget
+// package executables.
 function windowsExecutable(command, env) {
   const get = name => env[Object.keys(env).find(k => k.toUpperCase() === name)];
   const exts = (get('PATHEXT') || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
   const names = [...(path.extname(command) ? [command] : []), ...exts.map(ext => command + ext)];
-  const isFile = p => { try { return fs.statSync(p).isFile(); } catch (e) { if (absent(e)) return false; throw e; } };
   if (/[\\/]/.test(command)) return names.find(isFile) || null;
-  for (const dir of (get('PATH') || '').split(';').filter(Boolean))
-    for (const name of names) if (isFile(path.join(dir, name))) return path.join(dir, name);
+  for (const part of (get('PATH') || '').split(';')) {
+    const dir = /^".*"$/.test(part) ? part.slice(1, -1) : part;
+    if (dir) for (const name of names) if (isFile(path.join(dir, name))) return path.join(dir, name);
+  }
   const winget = path.join(get('LOCALAPPDATA') || '', 'Microsoft', 'WinGet', 'Packages');
   let packages = [];
   try { packages = fs.readdirSync(winget, { withFileTypes: true }).filter(e => e.isDirectory()); }
   catch (e) { if (!absent(e)) throw e; }
   return packages.map(e => path.join(winget, e.name, command + '.exe')).find(isFile) || null;
 }
-// cmd.exe quoting as Paseo applies it to a .cmd or .bat launch.
-function cmdQuote(value) {
-  const quoted = value.startsWith('"') && value.endsWith('"');
-  const bare = quoted ? value.slice(1, -1) : value;
-  const escaped = bare.replace(/([&|^<>()!])/g, '^$1');
-  if (!quoted && !/[\s"]/u.test(bare)) return escaped;
-  return '"' + escaped.replace(/(\\*)"/g, (_m, s) => s + s + '\\"').replace(/\\+$/u, s => s + s) + '"';
+// What an npm command shim runs, found as npm's read-cmd-shim finds it: [program, ...leading args], or null.
+// A Node script runs under the shim's own node.exe when it ships one, else this node; never through cmd.exe.
+function shimTarget(shim) {
+  const m = /"%(?:~dp0|dp0%)\\([^"]+?)"\s+%[*]/.exec(fs.readFileSync(shim, 'utf8'));
+  const target = m && path.join(path.dirname(shim), m[1]);
+  if (!target || !isFile(target)) return null;
+  if (/\.exe$/i.test(target)) return [target];
+  if (!/\.[cm]?js$/i.test(target)) return null;
+  const own = path.join(path.dirname(shim), 'node.exe');
+  return [isFile(own) ? own : process.execPath, target];
+}
+// Any other command script runs through cmd.exe, which expands % and ! and obeys its operators even inside an
+// argument, so no forwarded argument may hold them; the rest are quoted for the program's own command-line parser.
+const CMD_UNSAFE = /[%!^&|<>()\x00-\x1f]/;
+function cmdLine(script, args) {
+  if (/[%!"\x00-\x1f]/.test(script) || args.some(a => CMD_UNSAFE.test(a)))
+    throw Error('refusing to pass % ! ^ & | < > ( ) or control characters through cmd.exe to ' + path.basename(script));
+  const quote = a => a && !/[\s"]/.test(a) ? a
+    : '"' + a.replace(/(\\*)"/g, (_m, s) => s + s + '\\"').replace(/\\+$/, s => s + s) + '"';
+  return ['"' + script + '"', ...args.map(quote)].join(' ');
 }
 function launch(command, args, env) {
   const options = { env, stdio: 'inherit', windowsHide: true };
   if (!windows) return spawn(command, args, options);
   const resolved = windowsExecutable(command, env);
   if (!resolved) throw Error('harness not found on PATH: ' + command);
-  // A command script only runs through cmd.exe; one command line avoids Node's DEP0190 warning.
-  if (/\.(cmd|bat)$/i.test(resolved))
-    return spawn([resolved, ...args].map(cmdQuote).join(' '), { ...options, shell: true });
-  return spawn(resolved, args, options);
+  if (!/\.(cmd|bat)$/i.test(resolved)) return spawn(resolved, args, options);
+  const target = shimTarget(resolved);
+  if (target) return spawn(target[0], [...target.slice(1), ...args], options);
+  // One command line avoids Node's DEP0190 warning for args with shell:true.
+  return spawn(cmdLine(resolved, args), { ...options, shell: true });
 }
 module.exports = { loadEnv, tokenFileProblem };
 if (require.main === module) {

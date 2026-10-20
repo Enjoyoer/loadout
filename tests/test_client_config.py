@@ -195,6 +195,8 @@ class ClientConfigTest(unittest.TestCase):
         catalog = json.loads((self.fleet / 'client-config.json').read_text())
         catalog['mcpServers'] = {'ebay-analyze': {'url': 'http://192.0.2.40:8766/mcp',
             'bearerTokenEnvVar': 'EBAY_ANALYZE_MCP_TOKEN', 'hosts': {'laptop': True}}}
+        # No routing removal here: on a providers host it waits for a provider activation this test does not run.
+        catalog['claude'].pop('removeEnv')
         (self.fleet / 'client-config.json').write_text(json.dumps(catalog))
         home = self.home('laptop')
         (home / '.claude.json').write_text(json.dumps({'projects': {'kept': {}}, 'mcpServers': {'other': {'url': 'https://example.test/mcp'}}}))

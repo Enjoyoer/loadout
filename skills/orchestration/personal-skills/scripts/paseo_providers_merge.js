@@ -133,6 +133,12 @@ try {
       merged[k] = { ...rest, enabled: false };
     }
     if (manageLaunch) for (const provider of ['codex', 'claude', 'pi']) {
+      // Launch settings for a built-in provider with no row of its own wrap Paseo's default: its bare command.
+      if (!merged[provider] && launch[provider]) {
+        if (provider === 'pi') throw Error('launch settings for pi need a pi provider row');
+        merged[provider] = {};
+      }
+      // A provider turned off launches no agent, so it has nothing to route.
       if (!merged[provider] || merged[provider].enabled === false) continue;
       const rawCommand = merged[provider].command || [provider];
       const command = typeof rawCommand === 'string' ? [rawCommand] : rawCommand;

@@ -5,6 +5,11 @@ Reads <fleet>/client-config.json. Each host gets the base settings, then its
 role's (`local` for the source host, `remote` for the others, unless the host
 overrides it), then its own `hosts.<name>` overrides. Only managed keys are
 written; each changed file is backed up in place and replaced atomically.
+Keys listed for removal (`codex.removeTop`, `claude.removeEnv`) are terminal
+routing that Paseo's provider settings take over, so on a host with the
+providers scope they go only once the providers step has written and reloaded
+that host's current provider settings with no reload owed. Until then they stay
+and the host reports `held`.
 """
 
 from __future__ import annotations
@@ -188,8 +193,36 @@ def preflight(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, up
             token = Path(token_file).expanduser().read_text(encoding="utf-8").strip()
         except OSError as error:
             raise fleet.FleetError(f"cannot read token_file: {error.strerror}") from error
+    # Removal of terminal routing keys waits on each providers-scoped host until its daemon runs the current
+    # provider settings, so a host whose provider activation failed or is owed keeps its old routing.
+    providers, providers_error = None, None
+    providers_scoped = {h["name"] for h in fleet.hosts_for(fleet_doc, "providers")}
+    if any(h["name"] in providers_scoped and removals(settings_for(catalog, fleet_doc, h["name"])) for h in targets):
+        import paseo_providers
+        try:
+            providers = paseo_providers.load_for_hosts(fleet_doc, fleet_dir)
+        except fleet.FleetError as error:
+            providers_error = f"paseo-providers.json is unusable: {error}"
     return {"fleet_doc": fleet_doc, "catalog": catalog, "token": token, "dry_run": dry_run,
-            "update_claude": update_claude, "stamp": datetime.now().strftime("%Y%m%d-%H%M%S")}
+            "update_claude": update_claude, "stamp": datetime.now().strftime("%Y%m%d-%H%M%S"),
+            "providers_scoped": providers_scoped, "providers": providers, "providers_error": providers_error}
+
+
+def removals(wanted: dict) -> bool:
+    return bool(wanted["codex"]["removeTop"] or wanted["claude"]["removeEnv"])
+
+
+def removal_hold(state: dict, host: dict, wanted: dict) -> Optional[str]:
+    """Why the host's removal-listed routing keys must stay for now, or None when they may go."""
+    if not removals(wanted) or host["name"] not in state["providers_scoped"]:
+        return None
+    if state["providers_error"]:
+        return state["providers_error"]
+    import paseo_providers
+    try:
+        return paseo_providers.activation_problem(state["providers"], host)
+    except fleet.FleetError as error:
+        return str(error)
 
 
 def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
@@ -197,7 +230,8 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
     fleet_doc, token, dry_run, update_claude = (state["fleet_doc"], state["token"], state["dry_run"],
                                                 state["update_claude"])
     wanted = settings_for(state["catalog"], fleet_doc, name)
-    payload = {"codex": wanted["codex"], "claude": wanted["claude"],
+    hold = removal_hold(state, host, wanted)
+    payload = {"hold_removal": bool(hold),"codex": wanted["codex"], "claude": wanted["claude"],
                "token": token if wanted["claude"]["token_env"] else None,
                "stamp": state["stamp"], "dry_run": dry_run, "update_claude": update_claude,
                "mcpServers": wanted['mcpServers']}
@@ -212,6 +246,11 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
         return "FAILED"
     for line in describe(f"{name} ({wanted['role']})", result):
         emit(line)
+    held = [k for client in ("codex", "claude") for k in result.get(client, {}).get("held") or []]
+    if held:
+        emit(f"{name} ({wanted['role']}): routing removal HELD, kept [{', '.join(held)}]: {hold}; "
+             "run the providers step for this host, then this one again")
+        return "held"
     return status_of(result, dry_run)
 
 
@@ -241,7 +280,7 @@ def main(argv: Optional[list] = None) -> int:
     except fleet.FleetError as error:
         print(f"invalid: {error}", file=sys.stderr)
         return 2 if isinstance(error, fleet.HostSelectionError) else 1
-    return 1 if "FAILED" in statuses.values() else 0
+    return 1 if {"FAILED", "held"} & set(statuses.values()) else 0
 
 
 if __name__ == "__main__":
