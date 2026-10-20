@@ -60,6 +60,9 @@ function isAttempt(value: unknown): value is ResumeAttempt {
 const isQuotaHold = (value: unknown) => typeof value === "object" && value !== null &&
   isTime((value as Record<string, unknown>).until) && isString((value as Record<string, unknown>).reason);
 
+const isRpcTimeout = (value: unknown) => typeof value === "object" && value !== null &&
+  isTime((value as Record<string, unknown>).giveUpAt) && nullable((value as Record<string, unknown>).waiting, isString);
+
 // Each field a sweep or a send relies on; nullable fields may be null or absent.
 function isRecord(value: unknown): value is ResumeRecord {
   if (typeof value !== "object" || value === null) return false;
@@ -77,7 +80,7 @@ function isRecord(value: unknown): value is ResumeRecord {
     nullable(record.sentAt, isTime) && nullable(record.resumeTurnId, isString) && nullable(record.resumeStartedAt, isTime) &&
     nullable(record.resumeFinishedAt, isTime) && nullable(record.verificationDeadlineAt, isTime) &&
     isTime(record.createdAt) && isTime(record.updatedAt) && nullable(record.terminalReason, isString) &&
-    nullable(record.quotaHold, isQuotaHold);
+    nullable(record.quotaHold, isQuotaHold) && nullable(record.rpcTimeout, isRpcTimeout);
 }
 
 function defaultState(): State {

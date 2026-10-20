@@ -57,7 +57,11 @@ export type ResumeRecord = {
   terminalReason: string | null;
   // Set while the whole pq pool is out: no send before `until`, re-checked against pq on every due sweep.
   quotaHold?: QuotaHold | null;
+  // A Pi prompt RPC timeout: wait for the agent to settle, then resend the original message once (see rpcTimeoutDecision).
+  rpcTimeout?: RpcTimeoutWait | null;
 };
+
+export type RpcTimeoutWait = { giveUpAt: string; waiting: string | null };
 
 export type ResumeConfig = {
   maxAttempts: number;
@@ -309,11 +313,27 @@ export function buildTransientRecord(agent: AgentSnapshot, timeline: readonly Ag
   };
 }
 
+// Paseo's Pi provider fails a turn when Pi does not acknowledge the prompt RPC within rpcTimeoutMs. Pi acknowledges only
+// after its prompt preflight, which runs Pi's own threshold compaction first, so the prompt is still pending in Pi and
+// usually runs on its own once compaction ends. Seen on the QBO PM on 2026-10-20.
+export const RPC_PROMPT_TIMEOUT_PATTERN = /RPC request timed out phase=prompt\b/;
+// The longest a prompt-timeout record waits for the agent to settle before it gives up without sending.
+export const RPC_TIMEOUT_MAX_WAIT_MS = 30 * 60_000;
+// The quiet time after the failure and after compaction completes, so a prompt Pi runs on its own shows up first.
+export const RPC_TIMEOUT_QUIET_MS = 60_000;
+
+export function isRpcPromptTimeout(message: string): boolean {
+  return RPC_PROMPT_TIMEOUT_PATTERN.test(message);
+}
+
 export function buildFailedTransientRecord(agent: AgentSnapshot, timeline: readonly AgentTimelineItem[], error: { message: string; code?: string }, config: ResumeConfig, now = Date.now(), sourceTurnId?: string | null): ResumeRecord | null {
   if (!sourceTurnId || isOptedOut(agent, config) || agent.archivedAt || !agent.persistence?.sessionId || !agent.lastUserMessageAt) return null;
   if (failureSignature(error.message, error.code)) return null;
   const user = lastUserMessage(timeline);
   if (!user) return null;
+  const rpcTimeout = isRpcPromptTimeout(error.message);
+  // Nothing to resend: the timed-out prompt's text is not in the timeline.
+  if (rpcTimeout && !user.text.trim()) return null;
   const model = agent.model ?? agent.persistence.metadata?.model;
   if (typeof model !== "string" || !model) return null;
   const detectedAt = new Date(now).toISOString();
@@ -330,8 +350,10 @@ export function buildFailedTransientRecord(agent: AgentSnapshot, timeline: reado
     failureSignature: createHash("sha256").update(failure).digest("hex").slice(0, 24),
     failedAssistantText: failure, expectedUserText: user.text,
     expectedUserMessageId: user.messageId ?? user.clientMessageId ?? null,
-    // Pure resume: the failed turn may have done partial work, so never replay the original prompt.
-    retryPrompt: "continue",
+    // Pure resume: the failed turn may have done partial work, so never replay the original prompt. A prompt timeout
+    // never started its turn, so it resends the original message, once, after rpcTimeoutDecision allows it.
+    retryPrompt: rpcTimeout ? user.text : "continue",
+    ...(rpcTimeout ? { rpcTimeout: { giveUpAt: new Date(now + RPC_TIMEOUT_MAX_WAIT_MS).toISOString(), waiting: null } } : {}),
     notBefore: new Date(now + transientDelaySeconds(config, 0) * 1000).toISOString(),
     resetAt: null, attempts: [], state: "detected", sentAt: null,
     resumeTurnId: null, resumeStartedAt: null, resumeFinishedAt: null,
@@ -347,6 +369,45 @@ export function verifyTransientTimeline(record: ResumeRecord, timeline: readonly
   const id = user.messageId ?? user.clientMessageId ?? null;
   if (record.expectedUserMessageId && id !== record.expectedUserMessageId) return { ok: false, reason: "newer-user-message" };
   return { ok: true };
+}
+
+/** A prompt-timeout record that has not sent its one resend and has not ended. */
+export function isRpcTimeoutWaiting(record: ResumeRecord): boolean {
+  return !!record.rpcTimeout && attemptCount(record) === 0 && ["detected", "parked", "uncertain"].includes(record.state);
+}
+
+type TimelineEntry = { item: AgentTimelineItem; timestamp: string };
+
+const isRpcTimeoutRow = (item: AgentTimelineItem) =>
+  (item.type === "assistant_message" && /^\[System Error\]/.test(item.text) && isRpcPromptTimeout(item.text)) ||
+  (item.type === "error" && isRpcPromptTimeout(item.message));
+
+/**
+ * What a prompt-timeout record does now. The signal is the agent's own timeline since the original message: Pi's
+ * compaction rows (a `loading` row with no later `completed` row means compaction is still running) and any other row,
+ * which means Pi ran the prompt or another turn on its own. Paseo's agent status cannot show this compaction: the
+ * timed-out turn is already failed while Pi is still compacting. The send waits for an idle agent, no compaction, and
+ * RPC_TIMEOUT_QUIET_MS without new rows; anything else that happens first ends the record without a send.
+ */
+export function rpcTimeoutDecision(record: ResumeRecord, agent: AgentSnapshot, timeline: readonly TimelineEntry[] | null, now = Date.now()):
+  { act: "send" } | { act: "wait"; reason: string } | { act: "stop"; state: ResumeState; reason: string } {
+  if (!record.rpcTimeout || Date.parse(record.rpcTimeout.giveUpAt) <= now) return { act: "stop", state: "exhausted", reason: "rpc-timeout-wait-expired" };
+  if (agent.activeTurn || agent.status === "running") return { act: "stop", state: "superseded", reason: "agent-resumed-itself" };
+  if (agent.status !== "idle" && agent.status !== "error") return { act: "wait", reason: `agent-status=${agent.status}` };
+  if (!timeline) return { act: "wait", reason: "timeline-unavailable" };
+  const start = timeline.findLastIndex((entry) => entry.item.type === "user_message");
+  const user = timeline[start]?.item;
+  if (user?.type !== "user_message" || user.text !== record.expectedUserText ||
+      (record.expectedUserMessageId && (user.messageId ?? user.clientMessageId) !== record.expectedUserMessageId)) {
+    return { act: "stop", state: "superseded", reason: "newer-user-message" };
+  }
+  const after = timeline.slice(start + 1).filter((entry) => entry.item.type !== "plugin");
+  if (after.some((entry) => entry.item.type !== "compaction" && !isRpcTimeoutRow(entry.item))) return { act: "stop", state: "superseded", reason: "agent-resumed-itself" };
+  const compaction = after.findLast((entry) => entry.item.type === "compaction");
+  if (compaction?.item.type === "compaction" && compaction.item.status === "loading") return { act: "wait", reason: "compaction-in-progress" };
+  const lastActivity = Math.max(Date.parse(record.detectedAt), ...after.map((entry) => Date.parse(entry.timestamp)).filter(Number.isFinite));
+  if (lastActivity + RPC_TIMEOUT_QUIET_MS > now) return { act: "wait", reason: "settling" };
+  return { act: "send" };
 }
 
 export function transientRejectionState(reason: string): ResumeState {
@@ -530,6 +591,8 @@ export function shouldResume(record: ResumeRecord, agent: AgentSnapshot, config:
   if (record.state !== "parked" && record.state !== "detected") return { ok: false, reason: `state=${record.state}` };
   // Failed-turn records always resume; only the backoff (capped at its last step) limits them.
   if (!record.failedOutcome && record.attempts.length >= (record.kind === "transient" ? (config.transientMaxAttempts ?? 3) : config.maxAttempts)) return { ok: false, reason: "max-attempts" };
+  // A prompt-timeout resend goes out at most once.
+  if (record.rpcTimeout && attemptCount(record) > 0) return { ok: false, reason: "max-attempts" };
   if (Date.parse(record.notBefore) > now) return { ok: false, reason: "not-due" };
   // A failed turn leaves the agent in "error"; a send starts a fresh turn in the same session.
   if (agent.status !== "idle" && !((record.failedOutcome || record.usageFailedOutcome) && agent.status === "error")) return { ok: false, reason: `agent-status=${agent.status}` };
