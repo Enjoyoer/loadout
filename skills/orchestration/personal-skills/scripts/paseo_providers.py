@@ -270,7 +270,9 @@ def effective(config: dict, host: str) -> tuple[dict, list]:
 
 def _pi(value, where):
     if not isinstance(value, dict): raise fleet.FleetError(f"{where} must be an object")
-    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly", "claudeApiKeyRoute", "labelOrder", "contextWindows"}, where)
+    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly", "claudeApiKeyRoute", "labelOrder", "contextWindows", "options"}, where)
+    # Paseo's provider options for the generated Pi row (agents.providers.pi.options); Paseo validates the fields.
+    if "options" in value and not isinstance(value["options"], dict): raise fleet.FleetError(f"{where}.options must be an object")
     if isinstance(value.get('catalogSources'), list) and 'opencode' in value['catalogSources']:
         raise fleet.FleetError('OpenCode Zen free models require the native opencode picker, not Pi catalogSources')
     if value.get('catalogOnly') is True:
@@ -344,6 +346,7 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
                 generated['runtime']['mcpServers'] = mcp_config.pi_servers(mcp_servers)
             providers['pi'] = generated['provider']
             env.setdefault('pi', {})['LOADOUT_PI_ROOT'] = pi['root']
+        if 'options' in pi: providers['pi']['options'] = pi['options']
     return {
         "pi": generated,
         "mcpServers": mcp_servers,

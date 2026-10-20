@@ -8,7 +8,7 @@ import { ReturnStore, type Profile } from "./server/fallback.ts";
 import { readStoredProfiles } from "./server/stored-agent.ts";
 import { createFallbackRunner } from "./server/fallback-runner.ts";
 import { agentPool, QuotaReader, type PoolQuota, type QuotaPool } from "./server/quota.ts";
-import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, failureSignature, holdsClaim, isActive, isOwnLatestMessage, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
+import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, failureSignature, holdsClaim, isActive, isOwnLatestMessage, isRpcTimeoutWaiting, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, rpcTimeoutDecision, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
@@ -150,7 +150,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // All ambiguous transient sends take this path, including persisted records from older plugin versions. Never
   // infer delivery from prompt text alone: the latest user must be the original checked row or our stable send ID.
   async function reverifyTransient(record: ResumeRecord, currentConfig: Config): Promise<ResumeRecord | null> {
-    if (!currentConfig.armed || inFlight.has(record.agentId)) return null;
+    // A prompt-timeout record never re-arms: it sends its original message once, or nothing.
+    if (record.rpcTimeout || !currentConfig.armed || inFlight.has(record.agentId)) return null;
     const api = await acquire();
     const agent = await fetchAgent(api, record.agentId);
     if (!agent) return null;
@@ -229,6 +230,27 @@ export default function contribute(server: PluginServerContext, openClient: () =
       await store.update(record.recordId, (value) => ({ ...value, state: record.kind === "transient" ? "uncertain" : "superseded", terminalReason: "agent-missing", updatedAt: new Date().toISOString() }));
       log(`send-skipped agentId=${record.agentId} recordId=${record.recordId} reason=agent-missing`);
       return;
+    }
+    if (record.rpcTimeout && record.state === "parked") {
+      let entries: Awaited<ReturnType<typeof transientTimeline>> | null = null;
+      try { entries = await transientTimeline(api, record.agentId); } catch { entries = null; }
+      const decision = rpcTimeoutDecision(record, agent, entries);
+      const unchanged = (value: ResumeRecord) => value.state === record.state && value.updatedAt === record.updatedAt;
+      if (decision.act === "stop") {
+        await store.update(record.recordId, (value) => unchanged(value)
+          ? { ...value, state: decision.state, terminalReason: decision.reason, updatedAt: new Date().toISOString() } : value);
+        log(`rpc-timeout-${decision.state === "exhausted" ? "gave-up" : "no-resend"} agentId=${record.agentId} recordId=${record.recordId} reason=${decision.reason}`);
+        return;
+      }
+      if (decision.act === "wait") {
+        // Stored and logged once per reason, not on every poll.
+        if (record.rpcTimeout.waiting !== decision.reason) {
+          await store.update(record.recordId, (value) => unchanged(value) && value.rpcTimeout
+            ? { ...value, rpcTimeout: { ...value.rpcTimeout, waiting: decision.reason }, updatedAt: new Date().toISOString() } : value);
+          log(`rpc-timeout-waiting agentId=${record.agentId} recordId=${record.recordId} reason=${decision.reason} giveUpAt=${record.rpcTimeout.giveUpAt}`);
+        }
+        return;
+      }
     }
     const gate = shouldResume(record, agent, currentConfig);
     if (!gate.ok) {
@@ -326,9 +348,24 @@ export default function contribute(server: PluginServerContext, openClient: () =
           throw error;
         }
       }
-      const cancelled = claim.cancelled ?? presendCancel(record, taken, fresh, currentConfig);
+      // A prompt-timeout record decides again on the final timeline read: compaction and execution rows do not move the
+      // agent's updatedAt, so the agent re-read above cannot see them.
+      let timeoutCancel: ClaimCancel | null = null;
+      if (record.rpcTimeout && fresh && !claim.cancelled && !presendCancel(record, taken, fresh, currentConfig)) {
+        let entries: Awaited<ReturnType<typeof transientTimeline>> | null = null;
+        try { entries = await transientTimeline(api, record.agentId); } catch { entries = null; }
+        const decision = rpcTimeoutDecision(record, fresh, entries);
+        if (decision.act === "stop") timeoutCancel = { state: decision.state, reason: decision.reason };
+        else if (decision.act === "wait") timeoutCancel = { state: record.state, reason: decision.reason };
+      }
+      const cancelled = claim.cancelled ?? presendCancel(record, taken, fresh, currentConfig) ?? timeoutCancel;
       if (cancelled) {
-        await store.update(record.recordId, (value) => cancelClaim(value, record, claim, cancelled));
+        await store.update(record.recordId, (value) => {
+          const next = cancelClaim(value, record, claim, cancelled);
+          // A wait goes back to the record's state as it was, noting what it waits for.
+          return cancelled === timeoutCancel && next !== value && next.state === record.state && next.rpcTimeout
+            ? { ...next, terminalReason: record.terminalReason, rpcTimeout: { ...next.rpcTimeout, waiting: cancelled.reason } } : next;
+        });
         log(`send-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${cancelled.reason}`);
         return;
       }
@@ -430,6 +467,17 @@ export default function contribute(server: PluginServerContext, openClient: () =
           await store.update(latest.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: "send-state-unreconciled", updatedAt: new Date().toISOString() }));
           continue;
         }
+        // A prompt-timeout record never sends after any doubt: an uncertain one ends, a sent one is only verified.
+        if (latest.rpcTimeout && latest.state === "uncertain") {
+          await store.update(latest.recordId, (value) => value.state === "uncertain" && value.updatedAt === latest.updatedAt
+            ? { ...value, state: "exhausted", terminalReason: `rpc-timeout-${value.terminalReason ?? "uncertain"}`, updatedAt: new Date().toISOString() } : value);
+          log(`rpc-timeout-gave-up agentId=${latest.agentId} recordId=${latest.recordId} reason=${latest.terminalReason ?? "uncertain"}`);
+          continue;
+        }
+        if (latest.rpcTimeout && latest.state === "verifying") {
+          if (currentConfig.armed) await reconcile(latest, currentConfig);
+          continue;
+        }
         if (latest.kind === "transient" && (latest.state === "uncertain" || latest.state === "verifying")) {
           const rearmed = await reverifyTransient(latest, currentConfig);
           if (rearmed) await processRecord(rearmed, currentConfig);
@@ -468,17 +516,24 @@ export default function contribute(server: PluginServerContext, openClient: () =
       if (claim) {
         // Claim-aware: attach the turn while the claim stands, or bring the claim back if its rollback already landed.
         const next = await store.update(claim.recordId, (value) => applyClaimTurn(value, claim));
+        if (next?.resumeTurnId === turnId) await store.markHandled({ agentId: event.agent.id, sourceTurnId: turnId, persistenceSessionId: next.persistenceSessionId });
         if (next?.resumeTurnId === turnId) log(`resume-turn-started agentId=${event.agent.id} turnId=${turnId}`);
         return;
       }
       // Without a claim of its own the turn joins only a delivered send; a resuming record is a claim in flight here.
       const active = await store.activeForAgent(event.agent.id);
+      // Any other turn on an agent waiting out a prompt timeout means it resumed by itself (Pi ran the pending prompt).
+      if (active?.rpcTimeout && isRpcTimeoutWaiting(active) && turnId !== active.sourceTurnId) {
+        await settleResumedItself(active, event.agent.id);
+        return;
+      }
       if (!active || active.state !== "verifying" || active.resumeTurnId) return;
       // Check again inside the update: a rolled-back claim must not pick up a turn identity.
       const next = await store.update(active.recordId, (value) => value.state === "verifying" && !value.resumeTurnId
         ? { ...value, resumeTurnId: turnId, resumeStartedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
         : value);
       if (next?.resumeTurnId !== turnId) return;
+      await store.markHandled({ agentId: event.agent.id, sourceTurnId: turnId, persistenceSessionId: next.persistenceSessionId });
       log(`resume-turn-started agentId=${event.agent.id} turnId=${turnId}`);
     })().catch((error) => failed("turn-started-handler-failed", error)));
   });
@@ -504,11 +559,17 @@ export default function contribute(server: PluginServerContext, openClient: () =
           active = await store.activeForAgent(event.agent.id);
         }
       }
+      if (active?.rpcTimeout && isRpcTimeoutWaiting(active)) {
+        // The source turn's own repeated end changes nothing; any other turn means the agent resumed by itself.
+        if (event.turnId !== active.sourceTurnId) await settleResumedItself(active, event.agent.id);
+        return;
+      }
       if (active?.kind === "transient" && event.outcome.kind === "canceled") {
         await store.update(active.recordId, (value) => ({ ...value, state: "superseded", terminalReason: "retry-turn-canceled", updatedAt: new Date().toISOString() }));
         return;
       }
       if (active?.state === "verifying" && active.resumeTurnId === event.turnId) {
+        if (active.resumeTurnId) await store.markHandled({ agentId: event.agent.id, sourceTurnId: active.resumeTurnId, persistenceSessionId: active.persistenceSessionId });
         if (active.kind === "transient") {
           const failedTransient = event.outcome.kind === "failed" && !isUsageLimitError(event.outcome.error.message, event.outcome.error.code);
           const { assistant, user } = event.outcome.kind === "failed"
@@ -518,6 +579,13 @@ export default function contribute(server: PluginServerContext, openClient: () =
           if (!user || (user.messageId ?? user.clientMessageId) !== sentMessageId || user.text !== active.retryPrompt || !assistant) {
             await store.update(active.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: "retry-turn-ambiguous", updatedAt: new Date().toISOString() }));
             log(`retry-uncertain agentId=${event.agent.id} reason=retry-turn-ambiguous`);
+            return;
+          }
+          // The one resend of a prompt-timeout record: anything but a clean completion ends it without another send.
+          if (active.rpcTimeout && !(event.outcome.kind === "completed" && !isTransientAssistantText(assistant) && !isUsageLimitAssistantText(assistant))) {
+            await store.update(active.recordId, (value) => value.state === "verifying" && value.resumeTurnId === event.turnId
+              ? { ...value, state: "exhausted", terminalReason: "rpc-timeout-resend-failed", updatedAt: new Date().toISOString() } : value);
+            log(`rpc-timeout-gave-up agentId=${event.agent.id} recordId=${active.recordId} reason=rpc-timeout-resend-failed`);
             return;
           }
           if (failedTransient || (event.outcome.kind === "completed" && isTransientAssistantText(assistant))) {
@@ -596,7 +664,9 @@ export default function contribute(server: PluginServerContext, openClient: () =
         return;
       }
       // A record for this turn, or the guard a pruned one left, means the event was handled already.
-      if (await store.hasTurn(record)) {
+      // A turn the plugin started is its record's to settle, never a new failure, however often its end is delivered.
+      const sentBy = lastUserMessage(event.timeline);
+      if (await store.hasTurn(record) || await store.isOwnSend(record.agentId, sentBy?.messageId ?? sentBy?.clientMessageId)) {
         log(`duplicate-turn agentId=${record.agentId} sourceTurnId=${record.sourceTurnId}`);
         return;
       }
@@ -619,6 +689,12 @@ export default function contribute(server: PluginServerContext, openClient: () =
       if (await fallback.afterTurnEnded(event.agent.id, event.outcome, currentConfig)) await sweep();
     }).catch((error) => failed("pm-fallback-turn-failed", error)));
   });
+
+  async function settleResumedItself(active: ResumeRecord, agentId: string) {
+    const next = await store.update(active.recordId, (value) => isRpcTimeoutWaiting(value)
+      ? { ...value, state: "superseded", terminalReason: "agent-resumed-itself", updatedAt: new Date().toISOString() } : value);
+    if (next?.terminalReason === "agent-resumed-itself") log(`rpc-timeout-no-resend agentId=${agentId} recordId=${active.recordId} reason=agent-resumed-itself`);
+  }
 
   // Synchronous, before any await: a send claimed for this agent but not started yet must not go out. The handler's own
   // store write follows.

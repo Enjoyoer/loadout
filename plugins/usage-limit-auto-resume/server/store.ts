@@ -60,6 +60,9 @@ function isAttempt(value: unknown): value is ResumeAttempt {
 const isQuotaHold = (value: unknown) => typeof value === "object" && value !== null &&
   isTime((value as Record<string, unknown>).until) && isString((value as Record<string, unknown>).reason);
 
+const isRpcTimeout = (value: unknown) => typeof value === "object" && value !== null &&
+  isTime((value as Record<string, unknown>).giveUpAt) && nullable((value as Record<string, unknown>).waiting, isString);
+
 // Each field a sweep or a send relies on; nullable fields may be null or absent.
 function isRecord(value: unknown): value is ResumeRecord {
   if (typeof value !== "object" || value === null) return false;
@@ -77,7 +80,7 @@ function isRecord(value: unknown): value is ResumeRecord {
     nullable(record.sentAt, isTime) && nullable(record.resumeTurnId, isString) && nullable(record.resumeStartedAt, isTime) &&
     nullable(record.resumeFinishedAt, isTime) && nullable(record.verificationDeadlineAt, isTime) &&
     isTime(record.createdAt) && isTime(record.updatedAt) && nullable(record.terminalReason, isString) &&
-    nullable(record.quotaHold, isQuotaHold);
+    nullable(record.quotaHold, isQuotaHold) && nullable(record.rpcTimeout, isRpcTimeout);
 }
 
 function defaultState(): State {
@@ -117,6 +120,24 @@ export class ResumeStore {
   async hasTurn(turn: TurnGuard): Promise<boolean> {
     const state = await this.load();
     return state.records.some((record) => sameTurn(record, turn)) || (state.guards ?? []).some((guard) => sameTurn(guard, turn));
+  }
+
+  /** True when a stored record sent this message ID: the turn it started is one of the plugin's own sends. */
+  async isOwnSend(agentId: string, messageId: string | null | undefined): Promise<boolean> {
+    if (!messageId) return false;
+    return (await this.read()).some((record) => record.agentId === agentId && record.attempts.some((attempt) => attempt.messageId === messageId));
+  }
+
+  /**
+   * Marks a turn the plugin started as handled, with the same guard a pruned record leaves, so a repeated or late event
+   * for it reads as a duplicate whatever happens to its record later.
+   */
+  async markHandled(turn: TurnGuard): Promise<void> {
+    await this.exclusive(async () => {
+      const { records, guards = [] } = await this.load();
+      if (guards.some((guard) => sameTurn(guard, turn))) return;
+      await this.persist(records, [...guards, guardOf(turn)].slice(-MAX_TURN_GUARDS));
+    });
   }
 
   // Every read-modify-write runs inside one queue, so concurrent hook handlers
