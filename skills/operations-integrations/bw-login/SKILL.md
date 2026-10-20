@@ -1,6 +1,6 @@
 ---
 name: bw-login
-description: Log in to a website with Bitwarden without ever seeing the values, and save, update or rotate that site's login. Use when an owner task reaches a sign-in or sign-up page, or the owner says "use bw" or "sign into X".
+description: Log in to a website with Bitwarden without ever seeing the values, and save or update that site's login. Use when an owner task reaches a sign-in or sign-up page, or the owner says "use bw" or "sign into X".
 ---
 
 # bw-login
@@ -123,7 +123,7 @@ On every path, the section 2 length check comes after the submit, never between 
 - 2FA belongs to the owner: stop, leave the page visible, and ask.
 - Vault locked (exit 3): ask the owner to run `bw-unlock`. Never run `bw-unlock` or `bw-lock` yourself, not even with `--help`.
 
-## 6. Save, update or rotate a login
+## 6. Save or update a login
 
 Only for the site of the current task. `bw-paste` enforces this: the item's saved URIs must match the site or page. Never touch any other item, and never delete one.
 
@@ -133,11 +133,8 @@ Only for the site of the current task. `bw-paste` enforces this: the item's save
   - If the sign-up then fails, the vault entry stays: say so in your report.
   - `--no-symbols` or `--length <12-64>` only when the site rejects the default.
 - **Change non-secret fields:** use `bw-paste update <id> --site <url> [--username <u>] [--uri-add <url>] [--notes-append <text>]`. A new URI must be on the same site. It prints the changed field names.
-- **Change the password (rotate):** only when the owner asked for it in this task, and only on path c.
-  - Open the site's change-password form and click the new-password field. Run `bw-paste rotate <id> --cdp-profile <dir>`.
-  - It fills the current, new and confirm fields and submits. It saves the new password only when the page shows the change went through; the old one stays in Bitwarden's password history.
-  - On `rotate not confirmed`, the vault is unchanged and the fields are empty. If the site nevertheless says the password changed, tell the owner it needs a reset.
-  - On exit 7 (`VAULT NOT UPDATED`), tell the owner at once.
+- **Change the password:** not available yet. `bw-paste rotate` refuses (`rotate is not available yet`, exit 2) and changes nothing. If the owner asks for a password change, tell him and stop.
+- **Exit 8 (`saved remotely, local sync failed`):** the change is in Bitwarden, but the local copy is stale for up to 10 minutes, so a fill right away may use the old values. Do not save again; report it as saved, with that warning.
 - **Never save a password a website shows you** (a temporary or generated one): it is already in the transcript. Stop and tell the owner.
 - **Run each command once.** Never retry in a loop. Wait at least 5 seconds between vault commands. On `rate-limiting`, stop and report.
 - **Refusals (exit 5):**
@@ -145,4 +142,4 @@ Only for the site of the current task. `bw-paste` enforces this: the item's save
   - site or page not on the item;
   - wrong field focused or more than one form;
   - an item `bw-paste` cannot change safely: tell the owner.
-- **Report every add, update and rotate in your reply:** item name, site and which fields changed (for example `password`, `username, uris`). Never include values.
+- **Report every add and update in your reply:** item name, site and which fields changed (for example `password`, `username, uris`). Never include values.
