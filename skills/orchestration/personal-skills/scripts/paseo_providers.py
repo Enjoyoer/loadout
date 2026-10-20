@@ -43,8 +43,10 @@ RELOAD_JS = Path(__file__).resolve().parent / "paseo_reload_remote.js"
 BOOT = "eval(require('zlib').gunzipSync(Buffer.from(process.argv[1],'base64')).toString())"
 pack = fleet.pack
 parse_result = fleet.parse_result
-CONFIG_KEYS = {"providers", "env", "hosts", "pi", "disabledProviders"}
-HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi", "disabledProviders"}
+CONFIG_KEYS = {"providers", "env", "hosts", "pi", "disabledProviders", "launch"}
+HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi", "disabledProviders", "launch"}
+# Providers the launcher wraps; only these take launch settings.
+LAUNCH_PROVIDERS = {"claude", "codex", "pi"}
 # Providers the fleet itself runs on; disabledProviders never turns these off.
 PROTECTED_PROVIDERS = {"pi", "claude", "codex"}
 RELAY_TITLE = "loadout-provider-sync"
@@ -67,6 +69,9 @@ RELOADS_FILE = "provider-reloads.json"
 # Every read-modify-write of the record holds an OS lock on this file, waiting at most this long for another
 # sync. The file is never deleted, and the OS drops the lock when its holder exits, so it cannot go stale.
 RELOADS_LOCK = RELOADS_FILE + ".lock"
+# Beside it, under the same lock: the provider settings each host last activated, which gate the client-config
+# step's removal of terminal routing keys.
+ACTIVATIONS_FILE = "provider-activations.json"
 RELOADS_LOCK_SECONDS = 15
 # A debt still marked running this long after its operation started was left by a killed run.
 RELOADS_STALE_SECONDS = 24 * 3600
@@ -145,12 +150,79 @@ def unlock_file(fd: int) -> None:
         fcntl.flock(fd, fcntl.LOCK_UN)
 
 
-def update_owed(host: str, change: Callable[[dict], object]) -> dict:
-    """Apply change to host's debts in place, as one read-modify-write under the record's lock; returns them as they were.
+def write_record(path: Path, data: dict) -> None:
+    """Replace a record file whole, through a temp file."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}-{secrets.token_hex(4)}.tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
-    The record is written whole through a temp file. Another sync holding the lock is waited for at most
-    RELOADS_LOCK_SECONDS. Any failure, that timeout and the release included, is a ReloadRecordError; a failed
-    release never replaces the transaction's own error, and closing the lock file releases the lock regardless.
+
+def update_owed(host: str, change: Callable[[dict], object]) -> dict:
+    """Apply change to host's debts in place, as one read-modify-write under the record's lock; returns them as they were."""
+    def transaction(path: Path) -> dict:
+        owed = owed_reloads()
+        debts = owed.setdefault(host, {})
+        before = json.loads(json.dumps(debts))
+        change(debts)
+        if debts != before:
+            if not debts:
+                owed.pop(host)
+            write_record(path, owed)
+        return before
+    return locked(transaction)
+
+
+def activations_path() -> Path:
+    """The source host's record of the provider settings each host last activated: written and reloaded."""
+    return reloads_path().with_name(ACTIVATIONS_FILE)
+
+
+def activations() -> dict:
+    """{host: digest of the provider settings its daemon last ran after a successful write and reload}."""
+    path = activations_path()
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as error:
+        raise ReloadRecordError(f"unreadable activation record {path}: {error}") from error
+
+
+def record_activation(host: str, digest: Optional[str]) -> None:
+    """Record, or with None forget, the provider settings a host's daemon now runs."""
+    def transaction(_path: Path) -> None:
+        done = activations()
+        if done.get(host) != digest:
+            if digest is None:
+                done.pop(host, None)
+            else:
+                done[host] = digest
+            write_record(activations_path(), done)
+    locked(transaction)
+
+
+def activation_digest(config: dict, host: str, paseo_home: Optional[str] = None) -> str:
+    """What a host's provider settings are, as its payload carries them, without the run's stamp and mode."""
+    data = {k: v for k, v in payload(config, host, "", False, paseo_home).items() if k not in {"stamp", "dry_run"}}
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
+def activation_problem(config: dict, host: dict) -> Optional[str]:
+    """None when the host's daemon runs these provider settings: activated after a successful write and reload,
+    with no reload owed or in flight since; else why not."""
+    if owed_reloads().get(host["name"]):
+        return "a provider reload is owed or in flight"
+    if activations().get(host["name"]) != activation_digest(config, host["name"], host.get("paseo_home")):
+        return "these provider settings have not been written and reloaded"
+    return None
+
+
+def locked(transaction: Callable[[Path], object]):
+    """Run transaction(reload record path) as one read-modify-write under the records' lock; returns its result.
+
+    Another sync holding the lock is waited for at most RELOADS_LOCK_SECONDS. Any failure, that timeout and the
+    release included, is a ReloadRecordError; a failed release never replaces the transaction's own error, and
+    closing the lock file releases the lock regardless.
     """
     path = reloads_path()
     lock = path.with_name(RELOADS_LOCK)
@@ -172,18 +244,9 @@ def update_owed(host: str, change: Callable[[dict], object]) -> dict:
                                             f"provider sync ({error.strerror}): {lock}") from error
                 time.sleep(0.05)
         try:
-            owed = owed_reloads()
-            debts = owed.setdefault(host, {})
-            before = json.loads(json.dumps(debts))
-            change(debts)
-            if debts != before:
-                if not debts:
-                    owed.pop(host)
-                tmp = path.with_name(f"{path.name}.{os.getpid()}-{secrets.token_hex(4)}.tmp")
-                tmp.write_text(json.dumps(owed, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-                os.replace(tmp, path)
+            out = transaction(path)
         except OSError as error:
-            raise ReloadRecordError(f"cannot write the reload record {path}: {error}") from error
+            raise ReloadRecordError(f"cannot write the provider records beside {path}: {error}") from error
         failed = False
     finally:
         # Unlock, then close, which releases the lock even when unlocking fails. A release error never
@@ -197,7 +260,7 @@ def update_owed(host: str, change: Callable[[dict], object]) -> dict:
         if release_error and not failed:
             raise ReloadRecordError(f"cannot release the reload record lock {lock} ({release_error.strerror})"
                                     ) from release_error
-    return before
+    return out
 
 
 def staged_payload(program: str, data: str) -> tuple[str, str]:
@@ -261,6 +324,38 @@ def _disabled(value, where):
     return value
 
 
+def _launch(value, where):
+    """launch: per provider `tokenFiles` (env name to an owner-only file on the host) and `args` (leading flags)."""
+    if not isinstance(value, dict):
+        raise fleet.FleetError(f"{where} must be an object")
+    fleet._keys(value, LAUNCH_PROVIDERS, where)
+    for provider, settings in value.items():
+        at = f"{where}.{provider}"
+        if not isinstance(settings, dict):
+            raise fleet.FleetError(f"{at} must be an object")
+        fleet._keys(settings, {"tokenFiles", "args"}, at)
+        token_files = settings.get("tokenFiles", {})
+        if not isinstance(token_files, dict):
+            raise fleet.FleetError(f"{at}.tokenFiles must map env names to files")
+        for key, path in token_files.items():
+            if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", key):
+                raise fleet.FleetError(f"{at}.tokenFiles: {key!r} must be an env name")
+            if not isinstance(path, str) or not re.match(r"~[\\/]|/|[A-Za-z]:[\\/]", path) \
+                    or re.search(r"[\x00-\x1f]", path):
+                raise fleet.FleetError(f"{at}.tokenFiles.{key} must be an absolute path or start with ~/ or ~\\")
+        args = settings.get("args", [])
+        if not isinstance(args, list) or not all(isinstance(a, str) and a and not re.search(r"[\x00-\x1f]", a)
+                                                 for a in args):
+            raise fleet.FleetError(f"{at}.args must be a list of non-empty strings")
+
+
+def launch_for(config: dict, host: str) -> dict:
+    """A host's launch settings: a host provider entry replaces the default one; empty entries are dropped."""
+    merged = {**config.get("launch", {}), **config.get("hosts", {}).get(host, {}).get("launch", {})}
+    return {provider: {k: v for k, v in settings.items() if v} for provider, settings in merged.items()
+            if any(settings.values())}
+
+
 def effective(config: dict, host: str) -> tuple[dict, list]:
     """A host's provider blocks and disabled ids: host providers overlay the default, a host list replaces it."""
     settings = config.get("hosts", {}).get(host, {})
@@ -299,6 +394,7 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
     if "pi" in data: _pi(data["pi"], "pi")
     if "disabledProviders" in data: _disabled(data["disabledProviders"], "disabledProviders")
     _env_map(data.get("env", {}), "env")
+    if "launch" in data: _launch(data["launch"], "launch")
     scoped = {host["name"] for host in fleet.hosts_for(fleet_doc, "providers")}
     for name, settings in data.get("hosts", {}).items():
         if name not in scoped:
@@ -309,6 +405,7 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
             _disabled(settings["disabledProviders"], f"hosts.{name}.disabledProviders")
         _providers(settings.get("providers", {}), f"hosts.{name}.providers")
         _env_map(settings.get("env", {}), f"hosts.{name}.env")
+        if "launch" in settings: _launch(settings["launch"], f"hosts.{name}.launch")
         if not isinstance(settings.get("inherit_env", True), bool):
             raise fleet.FleetError(f"hosts.{name}.inherit_env must be true or false")
         required = settings.get("required_env", {})
@@ -333,6 +430,7 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
     pi = settings.get("pi", config.get("pi"))
     generated = None
     mcp_servers = config.get('_mcpHosts', {}).get(host, [])
+    launch = launch_for(config, host)
     if pi:
         sys.path.insert(0, str(Path(__file__).parent / 'pi'))
         from catalog import derive
@@ -350,7 +448,8 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
     return {
         "pi": generated,
         "mcpServers": mcp_servers,
-        "mcp_env_launcher": (Path(__file__).parent / 'mcp_env.cjs').read_text() if mcp_servers else None,
+        "mcp_env_launcher": (Path(__file__).parent / 'mcp_env.cjs').read_text() if mcp_servers or launch else None,
+        "launch": launch,
         "pi_files": ({f.name: f.read_text() for f in (Path(__file__).parent / 'pi').glob('*') if f.suffix in {'.py', '.mjs'}} if generated else {}),
         "host": host,
         "providers": providers,
@@ -627,6 +726,8 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
                  f"preserved [{', '.join(result['preserved'])}]{off}{backup}")
         if result and result.get('mcp'):
             emit(f"{name}: MCP " + '; '.join(result['mcp']))
+        if result and result.get('launch'):
+            emit(f"{name}: launch " + '; '.join(result['launch']))
         if runner.cleanup_warning:
             emit(f"{name}: cleanup warning: {runner.cleanup_warning}; the next run archives it")
         if result is None or result["error"] or not result["verified"]:
@@ -636,6 +737,7 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
         if dry_run:
             emit(f"{name}: reload{retry} skipped (dry run)" + ("; the real run retries it" if owed else ""))
             return "would update" if result["changed"] or owed else "same"
+        digest = activation_digest(config, runner.name, runner.paseo_home)
         reload_started = now()
         try:
             reload = "failed"
@@ -647,11 +749,14 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
             settle()
             if not result["changed"] and not others:
                 # Nothing was written and no other debt waits on a reload, so the daemon's config is current.
+                # An unchanged file is no proof of what the daemon loaded, so no activation is recorded: an
+                # earlier one for these settings stands, and without one routing removal stays held.
                 emit(f"{name}: reload warning (config unchanged, not a failure): {error}")
                 return "same"
             emit(f"{name}: reload{retry} FAILED: {error}; the next run retries it")
             return "FAILED"
         settle(reload_started)
+        record_activation(runner.name, digest)
         return "updated" if result["changed"] or owed else "same"
     except (KeyboardInterrupt, SystemExit):
         # Interrupted (SIGTERM and SIGHUP arrive as SystemExit): keep the debt, marked ended, for the next run.
@@ -676,8 +781,8 @@ def merge_program() -> str:
     return pack("\n".join(line.strip() for line in lines if not line.lstrip().startswith("//")).encode())
 
 
-def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool) -> dict:
-    """Load the provider config and the merge program once per sync."""
+def load_for_hosts(fleet_doc: dict, fleet_dir: Path) -> dict:
+    """The provider config with each host's MCP servers from client-config.json, as payload reads it."""
     config = load_config(fleet_dir / 'paseo-providers.json', fleet_doc)
     client_path = fleet_dir / 'client-config.json'
     if client_path.exists():
@@ -686,6 +791,12 @@ def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool) -> dict:
         clients = client_config.load_catalog(client_path, fleet_doc)
         config['_mcpHosts'] = {h['name']: mcp_config.for_host(clients.get('mcpServers', {}), h)
                                for h in fleet_doc['hosts']}
+    return config
+
+
+def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool) -> dict:
+    """Load the provider config and the merge program once per sync."""
+    config = load_for_hosts(fleet_doc, fleet_dir)
     return {"fleet_doc": fleet_doc, "fleet_dir": fleet_dir, "dry_run": dry_run,
             "config": config,
             "program": merge_program(), "stamp": datetime.now().strftime("%Y%m%d-%H%M%S")}

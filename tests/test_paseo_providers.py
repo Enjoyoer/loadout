@@ -147,6 +147,60 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertIn('write unchanged', out)
         self.assertEqual(self.config('laptop')['agents']['providers']['codex']['command'], command)
 
+    def test_launch_settings_route_paseo_harnesses_with_an_owner_only_token_file(self):
+        catalog = json.loads((self.fleet / 'paseo-providers.json').read_text())
+        overlay = json.loads((EXAMPLE / 'routed-launch-overlay.json').read_text())
+        catalog['hosts']['laptop'] = overlay['hosts']['tablet']
+        (self.fleet / 'paseo-providers.json').write_text(json.dumps(catalog))
+        home = self.root / 'hosts/laptop'
+        token = home / '.config/example-router/api-key'
+        token.parent.mkdir(parents=True)
+        token.write_text('fixture-token\n')
+        if os.name != 'nt':
+            token.chmod(0o644)
+        # Unsafe: group-readable on POSIX, the inherited temp-directory ACL on Windows.
+        code, out = self.run_sync('--host', 'laptop')
+        self.assertEqual(code, 1, out)
+        self.assertIn('token file missing or unsafe for claude ANTHROPIC_AUTH_TOKEN', out)
+        if os.name == 'nt':
+            # The documented recipe: a new file created owner-only, the value from the environment.
+            token.unlink()
+            subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                            str(SCRIPTS / 'new_token_file.ps1'), '-Path', str(token), '-FromEnv', 'FIXTURE_KEY'],
+                           check=True, capture_output=True, env={**os.environ, 'FIXTURE_KEY': 'fixture-token'})
+        else:
+            token.chmod(0o600)
+        code, out = self.run_sync('--host', 'laptop')
+        self.assertEqual(code, 0, out)
+        self.assertIn('tokenFile ~/.config/example-router/api-key present, owner-only', out)
+        providers = self.config('laptop')['agents']['providers']
+        self.assertEqual(providers['codex']['command'][2:], ['--provider', 'codex', '--', 'codex'])
+        self.assertEqual(providers['claude']['command'][2:], ['--provider', 'claude', '--', 'claude'])
+        self.assertNotIn('fixture-token', self.config_path('laptop').read_text() + out)
+        # A fake codex shim, a .cmd on Windows, that reports its argv; Paseo appends the app-server subcommand.
+        bin_dir = self.root / 'harness-bin'
+        bin_dir.mkdir()
+        (bin_dir / 'codex.js').write_text('console.log(JSON.stringify(process.argv.slice(2)))\n')
+        if os.name == 'nt':
+            (bin_dir / 'codex.cmd').write_text('@node "%~dp0\\codex.js" %*\r\n')
+        else:
+            (bin_dir / 'codex').write_text('#!/bin/sh\nexec node "$(dirname "$0")/codex.js" "$@"\n')
+            (bin_dir / 'codex').chmod(0o755)
+        # Windows PATH entries may be quoted, as Paseo's resolver accepts.
+        entry = f'"{bin_dir}"' if os.name == 'nt' else str(bin_dir)
+        env = {**self.env, 'PATH': entry + os.pathsep + self.env['PATH']}
+        # Arguments arrive literally: no shell expands or splits them.
+        literal = '%ANTHROPIC_AUTH_TOKEN%&echo !x! "q"'
+        done = subprocess.run([*providers['codex']['command'], 'app-server', '--listen', literal], env=env,
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), ['-c', 'model_provider="example_router"', 'app-server', '--listen', literal])
+        # The claude slot launched with node in place of claude: node.exe resolves through PATH and PATHEXT.
+        done = subprocess.run([*providers['claude']['command'][:5], 'node', '-e',
+                               'console.log(process.env.ANTHROPIC_AUTH_TOKEN.length)'], env=env,
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, '13'), done.stderr)
+
     def test_long_payload_windows_cmd_uses_stdin_and_is_idempotent(self):
         hosts = json.loads((self.fleet / "hosts.json").read_text())
         hosts["hosts"][1]["os"] = "windows"

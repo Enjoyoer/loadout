@@ -30,6 +30,7 @@ CODEX_TOML = "\r\n".join([
     "# my settings",
     'model = "host-model"',
     'approval_policy = "never"',
+    'model_provider = "example_router"',
     "",
     "",
     "[projects.alpha]",
@@ -42,7 +43,9 @@ CODEX_TOML = "\r\n".join([
     "",
 ])
 
-CLAUDE_SETTINGS = {"theme": "light", "hooks": {"x": 1}, "env": {"LOCAL_ONLY": "1"}}
+# A host an earlier sync routed: base URL and token in the global env, which the example now removes.
+CLAUDE_SETTINGS = {"theme": "light", "hooks": {"x": 1},
+                   "env": {"LOCAL_ONLY": "1", "ANTHROPIC_BASE_URL": "https://old.example.test", "ANTHROPIC_AUTH_TOKEN": "old"}}
 TOKEN = "tok-SECRET-123"
 
 
@@ -95,15 +98,20 @@ class ClientConfigTest(unittest.TestCase):
         text = (self.home("desktop") / ".codex/config.toml").read_bytes().decode()
         self.assertNotIn("\n", text.replace("\r\n", ""), "CRLF line endings kept")
         lines = text.split("\r\n")
-        self.assertEqual(lines[:6], ["# my settings", 'model = "host-model"', 'approval_policy = "on-request"',
-                                     'sandbox_mode = "workspace-write"', 'model_provider = "example_router"', ""])
-        self.assertEqual(lines[6:9], ["", "[projects.alpha]", 'trust_level = "trusted"'])
+        self.assertEqual(lines[:5], ["# my settings", 'model = "host-model"', 'approval_policy = "on-request"',
+                                     'sandbox_mode = "workspace-write"', ""])
+        self.assertEqual(lines[5:8], ["", "[projects.alpha]", 'trust_level = "trusted"'])
         section = lines[lines.index("[model_providers.example_router]"):]
         self.assertEqual(section[:5], ["[model_providers.example_router]", 'base_url = "https://router.example.test/v1"',
                                        "# keep this comment", 'extra = "kept"', 'wire_api = "responses"'])
-        self.assertIn("desktop (remote): codex CHANGED approval_policy,+sandbox_mode,+model_provider,"
+        self.assertIn("desktop (remote): codex CHANGED -model_provider,approval_policy,+sandbox_mode,"
                       "model_providers.example_router.base_url,+model_providers.example_router.wire_api", out)
         self.assertIn('host-local model="host-model"', out)
+
+    def use_token_env(self):
+        catalog = json.loads((self.fleet / "client-config.json").read_text())
+        catalog["hosts"]["desktop"]["claude"]["token_env"] = "EXAMPLE_ROUTER_TOKEN"
+        (self.fleet / "client-config.json").write_text(json.dumps(catalog))
 
     def test_remote_claude_gets_token_from_stdin_only(self):
         code, out = self.run_sync("--host", "desktop")
@@ -112,9 +120,13 @@ class ClientConfigTest(unittest.TestCase):
         self.assertEqual(settings["theme"], "light")
         self.assertEqual(settings["hooks"], {"x": 1})
         self.assertEqual(settings["permissions"], {"defaultMode": "acceptEdits"})
-        self.assertEqual(settings["env"], {"LOCAL_ONLY": "1", "CLAUDE_CODE_SUBAGENT_MODEL": "example-small",
-                                           "ANTHROPIC_BASE_URL": "https://router.example.test",
-                                           "ANTHROPIC_AUTH_TOKEN": TOKEN})
+        self.assertEqual(settings["env"], {"LOCAL_ONLY": "1", "CLAUDE_CODE_SUBAGENT_MODEL": "example-small"})
+        self.assertIn("-env.ANTHROPIC_BASE_URL,-env.ANTHROPIC_AUTH_TOKEN", out)
+        self.use_token_env()
+        code, out = self.run_sync("--host", "desktop")
+        self.assertEqual(code, 0, out)
+        settings = json.loads((self.home("desktop") / ".claude/settings.json").read_text())
+        self.assertEqual(settings["env"]["EXAMPLE_ROUTER_TOKEN"], TOKEN)
         self.assertNotIn(TOKEN, out)
         self.assertNotIn(TOKEN, (self.root / "calls.log").read_text())
         self.assertNotIn(TOKEN, (self.fleet / "client-config.json").read_text())
@@ -124,9 +136,9 @@ class ClientConfigTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         settings = json.loads((self.home("laptop") / ".claude/settings.json").read_text())
         self.assertEqual(settings["theme"], "dark")
-        self.assertEqual(settings["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:4000")
-        self.assertNotIn("ANTHROPIC_AUTH_TOKEN", settings["env"])
-        self.assertNotIn("model_provider =", (self.home("laptop") / ".codex/config.toml").read_text())
+        self.assertEqual(settings["env"], {"LOCAL_ONLY": "1", "CLAUDE_CODE_SUBAGENT_MODEL": "example-small"})
+        # Only the remote role removes model_provider, so the local host keeps its own.
+        self.assertIn('model_provider = "example_router"', (self.home("laptop") / ".codex/config.toml").read_text())
         self.assertFalse((self.root / "calls.log").exists(), "the source host runs locally")
 
     def test_backup_then_idempotent(self):
@@ -170,6 +182,7 @@ class ClientConfigTest(unittest.TestCase):
         self.assertFalse((self.home("desktop") / ".codex").exists())
 
     def test_missing_token_file_fails_without_leaking(self):
+        self.use_token_env()
         (self.root / "token").unlink()
         code, out = self.run_sync("--host", "desktop")
         self.assertEqual(code, 1)
@@ -182,6 +195,8 @@ class ClientConfigTest(unittest.TestCase):
         catalog = json.loads((self.fleet / 'client-config.json').read_text())
         catalog['mcpServers'] = {'ebay-analyze': {'url': 'http://192.0.2.40:8766/mcp',
             'bearerTokenEnvVar': 'EBAY_ANALYZE_MCP_TOKEN', 'hosts': {'laptop': True}}}
+        # No routing removal here: on a providers host it waits for a provider activation this test does not run.
+        catalog['claude'].pop('removeEnv')
         (self.fleet / 'client-config.json').write_text(json.dumps(catalog))
         home = self.home('laptop')
         (home / '.claude.json').write_text(json.dumps({'projects': {'kept': {}}, 'mcpServers': {'other': {'url': 'https://example.test/mcp'}}}))
@@ -339,7 +354,8 @@ class VersionAndCatalogTest(unittest.TestCase):
         self.check(lambda d: d["hosts"].update(devbox={}), "hosts.devbox")
         self.check(lambda d: d["hosts"].update(desktop={"role": "admin"}), "role")
         self.check(lambda d: d["codex"]["top"].update(bad=[1]), "codex.top.bad")
-        self.check(lambda d: d["roles"]["remote"]["claude"].update(minVersion="1"), "unknown keys ['minVersion']")
+        self.check(lambda d: d["roles"]["remote"].update(claude={"minVersion": "1"}), "unknown keys ['minVersion']")
+        self.check(lambda d: d["claude"]["env"].update(ANTHROPIC_BASE_URL="x"), "both managed and listed for removal")
 
     def test_example_is_valid_and_layers(self):
         fleet_doc = fleet.load(EXAMPLE)
@@ -347,9 +363,10 @@ class VersionAndCatalogTest(unittest.TestCase):
         desktop = client_config.settings_for(catalog, fleet_doc, "desktop")
         self.assertEqual(desktop["role"], "remote")
         self.assertEqual(desktop["claude"]["settings"]["theme"], "light")
-        self.assertEqual(desktop["claude"]["token_env"], "ANTHROPIC_AUTH_TOKEN")
+        self.assertEqual((desktop["claude"]["token_env"], desktop["codex"]["removeTop"]), (None, ["model_provider"]))
         laptop = client_config.settings_for(catalog, fleet_doc, "laptop")
-        self.assertEqual((laptop["role"], laptop["claude"]["token_env"]), ("local", None))
+        self.assertEqual((laptop["role"], laptop["codex"]["removeTop"]), ("local", []))
+        self.assertEqual(laptop["claude"]["removeEnv"], ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"])
 
 
 if __name__ == "__main__":
