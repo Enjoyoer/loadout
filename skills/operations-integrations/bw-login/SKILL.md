@@ -95,13 +95,14 @@ What `bw-paste` does:
   - Starts with and Exact compare the full URL, including port, path and the `#` route of single-page apps.
   - Regular expression and Never never authorize.
 - Field: the focused field in the page's main frame must fit (a password needs a password input; a username a text-like input or textarea). That field and the full page URL, `#` route included, are pinned. The value is written into the pinned field itself, never into whatever has focus, and the field is checked again in the same step.
-- Submit: it uses the pinned field's own form. It clicks that form's default submit button, as Enter does. If the form has no button, it submits the form; if there is no form, it sends Enter to the field. It then waits up to 10 seconds until no password field in the page holds a value.
+- Submit: it uses the pinned field's own form, and only a form that sends by POST to the page's own origin submits normally: it clicks that form's default submit button, as Enter does, or submits the form if it has no button. For a GET form (a form without a method is GET) or an action on another site, it only clicks the form's own submit button and blocks the browser's own submission, so the value can never go into a URL; if the page does not sign in by itself, that is exit 5. With no form, it sends Enter to the field. It then waits up to 10 seconds until no password field in the page holds a value, and checks the tab's URL and history for the value after every step.
 
 Exit codes:
 - 5, one fixed line, value not in the page:
   - before writing: wrong origin, not exactly one tab, no focused field in the main frame (a field inside an iframe counts), wrong field type, page or field changed;
-  - after writing: fill not verified, disabled submit button, or still filled 10 seconds after submit.
+  - after writing: fill not verified, disabled submit button, a form that would send the value in a URL or to another site (`would send it in the page URL`), or still filled 10 seconds after submit.
   On the after-writing refusals, it cleared the fields and verified them empty. Read the page if needed, then report.
+- 6, `UNSAFE STATE, CREDENTIAL LEAKED`: the value showed up in the page URL or the tab's history after the submit. It closed the tab (or tells you to close the session). The credential is leaked: never print, snapshot or list that tab, the tab list or the history, stop, and ask the owner to rotate it now.
 - 6, `UNSAFE STATE`, page state unknown: it could not verify the page is free of the value (a page that refills the field, a hung tab, or a lost connection).
   - Normally it has closed that tab: do not snapshot, and reopen the page if needed.
   - If the line says it could not close the tab, close the whole browser session now without a snapshot, then report.
@@ -135,7 +136,7 @@ Only for the site of the current task. `bw-paste` enforces this: the item's save
     If you do neither within 10 minutes, it is saved marked unconfirmed. Never run `add` again for the same account.
   - Paths a and b: run `add` without a browser flag, then paste `bw-paste <id> password` into each password field as in section 3. This saves at once, marked unconfirmed (exit 9), because no site has accepted the password yet. Use `--length <n>` when the field has a `maxlength`.
   - `--no-symbols` or `--length <12-64>` only when the site rejects the default (exit 5 with `pattern`, or an error page).
-- **Change non-secret fields:** use `bw-paste update <id> --site <url> [--username <u>] [--uri-add <url>] [--notes-append <text>]`. A new URI must be on the same site. It prints the changed field names.
+- **Change non-secret fields:** use `bw-paste update <id> --site <url> [--username <u>] [--uri-add <url>]... [--notes-append <text>]`. `--uri-add` may be given up to 10 times in one call; every new URI must be on the same site, and if one is not, nothing changes. It prints the changed field names.
 - **Change the password (rotate):** only when the owner asked for a password change in this task. Never on your own initiative, never because a site suggests it. It is two-phase, and the vault changes only after you sign in with the new password:
   1. Path c only. Open the site's change-password page, click the new-password field, and run `bw-paste rotate <id> --cdp-profile <dir>`. It fills the current password (if the form has that field), the new one and its confirmation, and submits. The vault is not updated yet. It prints `submitted the password change ...; the vault is NOT updated`.
   2. Within 10 minutes, open the site's sign-in page in a fresh browser session (new profile folder, new session), fill the username, click the password field, and run `bw-paste rotate <id> --signin --cdp-profile <new dir>`.
