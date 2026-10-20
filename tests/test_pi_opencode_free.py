@@ -63,7 +63,7 @@ class NativeZenFreeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'native opencode picker'):
                 providers._pi(descriptor, 'fixture')
 
-    def test_defensive_pi_hooks_refuse_fast_allow_standard_without_router_metadata(self):
+    def test_defensive_pi_hooks_ignore_tiers_without_router_metadata(self):
         script = r'''
 import assert from 'node:assert/strict';
 const m=await import(process.argv[1]);
@@ -77,10 +77,8 @@ for (const [id,api] of [['space-bunny-free','openai-completions'],['muse-spark-1
   globalThis.fetch=async()=>({ok:true,headers:new Headers(),text:async()=>JSON.stringify({result:{structuredContent:{snapshot:{labels:{'opc.service-tier':tier}}}}})});
   await handlers.before_agent_start({},ctx);
   const prepared=handlers.before_provider_request({payload},ctx);
-  if (tier==='standard') {
-   assert.equal(prepared.model,id);assert.equal(prepared.service_tier,undefined);assert.equal(prepared.client_metadata,undefined);
-   const event={headers:{}};handlers.before_provider_headers(event,ctx);assert.deepEqual(event.headers,{});
-  } else assert(prepared.model.startsWith(m.BLOCKED_MODEL_PREFIX));
+  assert.equal(prepared.model,id);assert.equal(prepared.service_tier,undefined);assert.equal(prepared.client_metadata,undefined);
+  const event={headers:{}};handlers.before_provider_headers(event,ctx);assert.deepEqual(event.headers,{});
  }
  globalThis.fetch=async()=>{throw Error('fixture lookup failed')};
  await handlers.before_agent_start({},ctx);

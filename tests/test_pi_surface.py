@@ -193,8 +193,8 @@ assert.deepEqual(D(R({}),sol,cat),{status:'inherited',header:'inherit'});
 assert.deepEqual(D(R({}),opus,null),{status:'inherited',header:undefined});
 assert.equal(D(R({'opc.service-tier':'ultrafast'}),sol,cat).status,'unsupported');
 assert.equal(D(R({'opc.service-tier':'fast'}),sol,[]).status,'unsupported');
-assert.equal(D(R({'opc.service-tier':'fast'}),opus,null).status,'unsupported');
-assert.equal(D(R({'opc.service-tier':'standard'}),web,null).status,'unsupported');
+for(const t of ['standard','fast'])assert.deepEqual(D(R({'opc.service-tier':t}),opus,null),{status:'ignored-untiered'});
+assert.deepEqual(D(R({'opc.service-tier':'standard'}),web,null),{status:'ignored-untiered'});
 assert.equal(D(R({'opc.service-tier':'fast'}),sol,null).status,'explicit-unverified');
 assert.equal(D(R({'opc.service-tier':'turbo'}),sol,cat).status,'invalid');
 const base={model:'gpt-6.1-sol',input:[],reasoning:{effort:'medium'},service_tier:'priority'};
@@ -257,6 +257,8 @@ for(const kind of ['http500','isError']){const r=await turn(boot(),sol,kind);ass
  const c=await turn(h,sol,'labels',{'opc.service-tier':'standard'});assert.equal(c.p.service_tier,'default');assert.equal(c.hd['X-Fleet-Service-Tier'],'standard');}
 // untiered route (Opus) is not refused for a lookup failure and gets no tier
 {const r=await turn(boot(),opus,'http500');assert.ok(!refused(r.p));assert.equal(r.p.service_tier,undefined);}
+// explicit Standard or Fast left on a Claude route is ignored: no refusal, no tier sent
+for(const t of ['standard','fast']){const r=await turn(boot(),opus,'labels',{'opc.service-tier':t});assert.ok(!refused(r.p),t);assert.equal(r.p.service_tier,undefined);assert.equal(r.hd['X-Fleet-Service-Tier'],undefined);}
 // evidence write failure cannot bypass the refusal
 {const dir=mkdtempSync(join(tmpdir(),'ev-'));mkdirSync(join(dir,'route-evidence.jsonl'));process.env.PI_CODING_AGENT_DIR=dir;
  const h=boot();const r=await turn(h,sol,'labels',{'opc.service-tier':'ultrafast'});assert.ok(refused(r.p));
