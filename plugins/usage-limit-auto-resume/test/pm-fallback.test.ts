@@ -460,28 +460,49 @@ it("a completed reply starting 'API Error: usage_limit_exceeded' never swaps, on
 
 // Owner cases from the 10/21 incident: every Claude account out, PMs got Anthropic 429s and the API-key route's 402, and
 // the plugin kept sending "continue" instead of swapping.
-// Review of #189: a 429 that is not an HTTP status, or a 429 whose error type is a blocked one, is no quota refusal.
+// Review of #189, every round: a 429 that is not a leading status, a status inside an ID, a path or a URL (escaped
+// quotes included), or a 429 whose error type is a blocked one, is no quota refusal.
 const NOT_QUOTA = [
   "Connection closed for request id=job-429-a",
   "ENOENT: no such file or directory, open '/fixture/job-429/output.json'",
-  '429 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}} (stopReason=error, model=fleet/claude-opus-5-5)',
-  '429 {"type":"error","error":{"type":"invalid_request_error","message":"context_length_exceeded"}} (stopReason=error, model=fleet/claude-opus-5-5)',
-  // Re-review: a status keyword inside an ID or a path, and a leading 429 that is a count, not a status.
+  "429 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}} (stopReason=error, model=fleet/claude-opus-5-5)",
+  "429 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"context_length_exceeded\"}} (stopReason=error, model=fleet/claude-opus-5-5)",
+  "ENOENT: no such file or directory, open /fixture/job-429/output.json",
+  "Tool process exited with code 1; processed 429 files",
+  "429 {\"error\":{\"type\":\"overloaded_error\",\"message\":\"Try again later\"}}",
+  "429 {\"error\":{\"type\":\"context_length_exceeded\",\"message\":\"input too long\"}}",
   "Transport failed for id=code429",
   "Transport failed for id=status429",
   "Transport failed for id=http429",
-  "ENOENT: open '/fixture/code429'",
   "ENOENT: open '/fixture/status=429'",
+  "ENOENT: open '/fixture/code429'",
   "429 files processed before transport broke",
   "429 bytes read; connection closed",
-  // Third review: a status form inside a Windows path, a path with ;params, or a URL.
-  String.raw`ENOENT: open 'C:\fixture\status code 429\output.json'`,
-  String.raw`ENOENT: open 'C:\fixture\job code 429'`,
-  "ENOENT: open /fixture/job;status=429",
+  "Transport failed after 429 files",
+  "Request 1429 failed",
+  "Transport failure, request_id=abc429def",
+  "ENOENT: open '/fixture/rate_limit_error'",
+  "Transport failed id=rate_limit_error-id",
+  "429 temporarily limiting requests",
+  "429 overloaded_error",
+  "429 context_length_exceeded",
+  "429 model_cooldown_active",
+  "Connection refused https://example.test/?status=429",
   "Connection refused https://example.test/resource;status=429",
+  "ENOENT: open 'C:\\fixture\\code429'",
+  "ENOENT: open 'C:\\fixture\\status=429'",
+  "ENOENT: open 'C:\\fixture\\status code 429\\output.json'",
+  "ENOENT: open 'C:\\fixture\\job code 429'",
+  "ENOENT: open '\\\\server\\share\\status=429'",
+  "ENOENT: open /fixture/job;status=429",
+  "ENOENT: open /fixture/code/429",
+  "ENOENT: open \"/fixture/\\\" status=429\"",
 ];
 
-for (const [name, error, decoys] of [["a 429 rate limit", RATE_LIMIT, NOT_QUOTA], ["a 402 credit balance", CREDIT, []]] as const) {
+// A credit message that also carries a billing URL is still a refusal (fourth review).
+const CREDIT_URL = '402 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low. Please visit https://example.test/billing"}} (stopReason=error, model=fleet/claude-opus-5-5)';
+
+for (const [name, error, decoys] of [["a 429 rate limit", RATE_LIMIT, NOT_QUOTA], ["a 402 credit balance", CREDIT, []], ["a 402 credit balance with a billing URL", CREDIT_URL, []]] as const) {
   it(`${name} on a failed PM turn while pq shows the Claude pool out swaps the PM; nothing more is sent on Claude`, () => scenario(async (f, logs) => {
     for (const [n, message] of decoys.entries()) {
       f.add(`decoy-${n}`, "pm", { labels: { role: "pm", project: "fixture" } });

@@ -136,49 +136,32 @@ const TRANSIENT_ERROR_PATTERN = /\b(?:selected model is at capacity|experiencing
 // Provider quota refusals the strict usage-limit classifier does not accept: a 429 rate limit (Anthropic's
 // rate_limit_error) and the 402 "credit balance is too low" of an API-key route. Alone they stay transient; on a failed
 // turn they are quota evidence, which counts only while pq shows the pool out (see quotaRefused and poolOut).
-// A 429 counts only in an HTTP status form, an allow-list rather than any occurrence of the number:
-// - leading the error, after an optional "[System Error]" or "API Error:", and followed by a JSON body, "Too Many
-//   Requests", "status code", ":" and the error text, or nothing ("429 {...}", "429: rate limited", "API Error: 429");
-// - after HTTP, status, status code or code that starts its own token (at the start, or after a space or an opening
-//   bracket, so never inside an ID) and a real delimiter: spaces, ":" or "=";
-// - a JSON status or code field ("status":429), "429 Too Many Requests", or "rejected (429)".
-// The phrase "rate limit" counts as a word, not inside a path or an ID.
-// The pattern runs on the error with its path and URL content masked (maskPaths), never on a file or resource name.
-const TOKEN_START = String.raw`(?<=^|[\s(\[{])`;
-const NUMBER_END = String.raw`(?![\w\/\\-]|\.\w)`;
+// Evidence, all read on the raw error text (blocked patterns still take precedence):
+// - a structured error code: 429, 402, rate_limit*, insufficient_credit(s) (QUOTA_CODE_PATTERN);
+// - a phrase: a rate-limit word ("rate limit", "rate_limit_error", "rate limited", ..., not inside a path or an ID),
+//   "credit balance is too low", "insufficient credit(s)", or "Too Many Requests";
+// - a numeric status only at the start of the error, after an optional "[System Error]" or "API Error:": 429 or 402
+//   followed by a JSON body, its reason phrase ("Too Many Requests", "Payment Required"), "status code", ":" and the
+//   error text, or nothing ("429 {...}", "402 Payment Required", "API Error: 429");
+// - a quoted JSON status or code key with 429 ("status":429, "status_code":429, "code":429), or "rejected (429)".
+// A status number anywhere else in the text (an "HTTP 429" mid-message with no phrase and no code) is no evidence: such
+// an error stays transient.
+const STATUS_REST = String.raw`(?:\s*\{|\s*:\s*\S|\s+status code\b|\s*$)`;
 const QUOTA_ERROR_PATTERN = new RegExp([
-  String.raw`^\s*(?:\[System Error\]\s*)?(?:API Error:\s*)?429(?:\s*\{|\s*:\s*\S|\s+status code\b|\s*[-(]?\s*Too Many Requests\b|\s*$)`,
-  String.raw`${TOKEN_START}(?:HTTP(?:\/\d(?:\.\d)?)?|status(?:[ _]?code)?|code)(?:\s*[:=]\s*|\s+)429${NUMBER_END}`,
-  String.raw`"(?:status|status_?code|code)"\s*:\s*"?429${NUMBER_END}`,
-  String.raw`${TOKEN_START}429 Too Many Requests\b`,
+  String.raw`^\s*(?:\[System Error\]\s*)?(?:API Error:\s*)?(?:429${STATUS_REST}|402(?:\s*[-(]?\s*Payment Required\b|${STATUS_REST}))`,
+  String.raw`"(?:status|status_?code|code)"\s*:\s*"?429(?![\w\/\\-]|\.\w)`,
   String.raw`\b(?:error|rejected)\s*\(429\)`,
   String.raw`(?<![\w\/.-])rate[_ -]?limit(?:ed|s|_error|_exceeded)?(?![\w\/-]|\.\w)`,
+  String.raw`(?<![\w\/.-])insufficient[_ -]credits?(?![\w\/-]|\.\w)`,
   String.raw`\bcredit balance is too low\b`,
+  String.raw`\bToo Many Requests\b`,
 ].join("|"), "i");
 // A structured error code that is itself the status or the provider's quota code.
 const QUOTA_CODE_PATTERN = /^\s*(?:429|402|rate[_ -]?limit(?:ed|_error|_exceeded)?|insufficient_credits?)\s*$/i;
 
-// Path and URL content: a quoted string with a slash or a backslash in it or a drive prefix at its start, or an unquoted
-// token (up to whitespace or a quote, so ";params" included) with "://", a slash or a backslash in it or a leading drive
-// letter. An HTTP version ("HTTP/1.1", "HTTP/2") is a protocol token, not a path.
-const SPAN_PATTERN = /"[^"]*"|'[^']*'|`[^`]*`|[^\s"'`]+/g;
-const HTTP_VERSION_PATTERN = /^[(\[{]?HTTP\/\d(?:\.\d)?[)\]},;:]?$/i;
-
-function isPathOrUrl(span: string): boolean {
-  const quoted = /^["'`]/.test(span);
-  const body = quoted ? span.slice(1, -1) : span;
-  if (!quoted && HTTP_VERSION_PATTERN.test(span)) return false;
-  return /[\/\\]/.test(body) || /^[A-Za-z]:/.test(body);
-}
-
-/** The error with every path and URL replaced by a placeholder, so nothing inside one reads as a status or a quota word. */
-export function maskPaths(message: string): string {
-  return message.replace(SPAN_PATTERN, (span) => isPathOrUrl(span) ? "<path>" : span);
-}
-
 export function isQuotaError(message: string, code?: string): boolean {
   if (BLOCKED_PATTERNS.some((pattern) => pattern.test(`${code ?? ""} ${message}`))) return false;
-  return QUOTA_CODE_PATTERN.test(code ?? "") || QUOTA_ERROR_PATTERN.test(maskPaths(message));
+  return QUOTA_CODE_PATTERN.test(code ?? "") || QUOTA_ERROR_PATTERN.test(message);
 }
 
 /** The model a failed turn's error names: Pi ends its failed-turn errors with "(stopReason=error, model=<id>)". */
