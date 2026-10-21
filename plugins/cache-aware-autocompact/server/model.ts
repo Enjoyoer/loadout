@@ -114,6 +114,19 @@ export function guardDecision(
   return safeBoundary(timeline, strictnessTier(used, config));
 }
 
+/**
+ * The part of a timeline a checkpoint keeps: every unsettled tool call (the boundary guard), the
+ * latest user message (the automatic-compact check) and the last three items (the key of a turn
+ * without an ID). A turn-end hook carries the agent's whole in-memory timeline, so keeping all of it
+ * held every tool output of every agent with a pending timer. The guard, the key and the compact
+ * check read the same values from this subset as from the whole timeline.
+ */
+export function checkpointTimeline(timeline: readonly AgentTimelineItem[]): AgentTimelineItem[] {
+  const latestUser = timeline.findLastIndex((item) => item.type === "user_message");
+  const tail = timeline.length - 3;
+  return timeline.filter((item, index) => index >= tail || index === latestUser || unsettledTool(item));
+}
+
 export function checkpointKey(agentId: string, turnId: string | null, timeline: readonly AgentTimelineItem[]): string {
   if (turnId) return `${agentId}:${turnId}`;
   const tail = timeline.slice(-3).map((item) => item.type === "assistant_message" ? item.text : item.type).join("\u0000");

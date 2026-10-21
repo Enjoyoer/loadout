@@ -2,7 +2,7 @@ import type { PaseoApi, PaseoClient } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { AutoCompactConfig } from "./config.ts";
-import { cacheExpired, cacheExpiredSkip, checkpointKey, disabledReason, guardDecision, providerDelayMinutes, strictnessTier, withFreshToolState } from "./model.ts";
+import { cacheExpired, cacheExpiredSkip, checkpointKey, checkpointTimeline, disabledReason, guardDecision, providerDelayMinutes, strictnessTier, withFreshToolState } from "./model.ts";
 import { StateStore, type StateEntry, type WriteJson } from "./store.ts";
 import { AgentTimers, realTimers, type TimerApi } from "./timer.ts";
 import { MetricsLog } from "./metrics.ts";
@@ -19,6 +19,7 @@ export type Checkpoint = {
   agentId: string;
   turnId: string | null;
   key: string;
+  /** Only the items checkpointTimeline keeps, never the whole timeline. */
   timeline: readonly AgentTimelineItem[];
   lastUserMessageAt: string | null;
   retryCount: number;
@@ -460,7 +461,12 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         update: () => {},
         error: (error) => { if (!stopped && active) log("subscription-failed", { reason: safeError(error) }); },
       });
-      removeListSubscription = removeList;
+      // Release it on the daemon too: a replaced subscription otherwise keeps streaming every
+      // agent update, with a snapshot of the whole agent list, to an API nothing listens on.
+      removeListSubscription = () => {
+        removeList();
+        void subscription.release?.().catch(() => undefined);
+      };
       if (!active) removeListSubscription();
     }).catch((error) => { if (!stopped && active) log("subscription-failed", { reason: safeError(error) }); });
   };
@@ -471,7 +477,9 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     recoveryFailures.delete(event.agent.id);
     timers.cancel(event.agent.id);
     log("turn-ended", { agentId: event.agent.id, turnId: event.turnId, outcome: event.outcome.kind });
-    void primeAndArm(event, context.paseo).catch((error) => log("arm-failed", { agentId: event.agent.id, reason: safeError(error) }));
+    // The event's timeline is the agent's whole in-memory timeline. Nothing past this handler holds it.
+    const ended = { agent: event.agent, turnId: event.turnId, timeline: checkpointTimeline(event.timeline) };
+    void primeAndArm(ended, context.paseo).catch((error) => log("arm-failed", { agentId: event.agent.id, reason: safeError(error) }));
   });
   const removeTurnStarted = server.on("agent.turn_started", (event, context) => {
     ensureSubscription(context.paseo);
