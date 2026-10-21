@@ -113,13 +113,15 @@ const FAILURE_PATTERNS: readonly RegExp[] = [
   /\bquota (?:exhausted|reached)\b/i,
 ];
 
+// Bounded by any non-alphanumeric character, so a provider code with an underscore suffix (overloaded_error,
+// context_length_exceeded, model_cooldown_active) is blocked too and keeps its precedence over usage and quota matches.
 const BLOCKED_PATTERNS: readonly RegExp[] = [
-  /\bcontext (?:window|length) (?:exceeded|limit)\b/i,
-  /\bcontext[_ -]?length\b/i,
-  /\btoo many tokens\b/i,
-  /\bmodel[_ -]?cooldown\b/i,
-  /\boverloaded\b/i,
-  /\btemporarily limiting requests\b/i,
+  /(?<![a-z0-9])context (?:window|length) (?:exceeded|limit)(?![a-z0-9])/i,
+  /(?<![a-z0-9])context[_ -]?length(?![a-z0-9])/i,
+  /(?<![a-z0-9])too many tokens(?![a-z0-9])/i,
+  /(?<![a-z0-9])model[_ -]?cooldown(?![a-z0-9])/i,
+  /(?<![a-z0-9])overloaded(?![a-z0-9])/i,
+  /(?<![a-z0-9])temporarily limiting requests(?![a-z0-9])/i,
 ];
 
 // Claude synthetic assistant messages use API Error prefixes; Codex reports model capacity.
@@ -134,11 +136,22 @@ const TRANSIENT_ERROR_PATTERN = /\b(?:selected model is at capacity|experiencing
 // Provider quota refusals the strict usage-limit classifier does not accept: a 429 rate limit (Anthropic's
 // rate_limit_error) and the 402 "credit balance is too low" of an API-key route. Alone they stay transient; on a failed
 // turn they are quota evidence, which counts only while pq shows the pool out (see quotaRefused and poolOut).
-const QUOTA_ERROR_PATTERN = /\b(?:429|rate[_ -]?limit(?:ed|_error)?|credit balance is too low)\b/i;
+// A 429 counts only as an HTTP status: leading the error ("429 {...}", "API Error: 429"), after HTTP, status or code,
+// "429 Too Many Requests", or "rejected (429)". The phrase "rate limit" counts as a word, not inside a path or an ID.
+const QUOTA_ERROR_PATTERN = new RegExp([
+  String.raw`^\s*(?:\[System Error\]\s*)?(?:API Error:\s*)?429(?![\w-]|\.\w|\/)`,
+  String.raw`\b(?:HTTP(?:\/\d(?:\.\d)?)?|status(?:[ _]?code)?|code)"?\s*[:=]?\s*"?429(?![\w-]|\.\w|\/)`,
+  String.raw`\b429 Too Many Requests\b`,
+  String.raw`\b(?:error|rejected)\s*\(429\)`,
+  String.raw`(?<![\w\/.-])rate[_ -]?limit(?:ed|s|_error|_exceeded)?(?![\w\/-]|\.\w)`,
+  String.raw`\bcredit balance is too low\b`,
+].join("|"), "i");
+// A structured error code that is itself the status or the provider's quota code.
+const QUOTA_CODE_PATTERN = /^\s*(?:429|402|rate[_ -]?limit(?:ed|_error|_exceeded)?|insufficient_credits?)\s*$/i;
 
 export function isQuotaError(message: string, code?: string): boolean {
-  const text = `${code ?? ""} ${message}`;
-  return !BLOCKED_PATTERNS.some((pattern) => pattern.test(text)) && QUOTA_ERROR_PATTERN.test(text);
+  if (BLOCKED_PATTERNS.some((pattern) => pattern.test(`${code ?? ""} ${message}`))) return false;
+  return QUOTA_CODE_PATTERN.test(code ?? "") || QUOTA_ERROR_PATTERN.test(message);
 }
 
 /** The record's failed turn was refused for quota by the pool its agent still draws on (not the one it moved to). */
@@ -456,11 +469,18 @@ export function attemptCount(record: ResumeRecord): number {
 // Failed-turn records retry without a cap, but this many retries in a row failing with the same quota error end one.
 export const QUOTA_REPEAT_LIMIT = 2;
 
-export function afterTransientFailure(record: ResumeRecord, assistant: string, userText: string, userMessageId: string, lastUserMessageAt: string, config: ResumeConfig, now = Date.now()): ResumeRecord {
+/**
+ * Re-parks a transient record after its retry failed again. `failure` is the failed outcome's own error, with its code
+ * when the caller has it: it, not the `failed: ...` text, decides whether this was a quota refusal. A re-read of the same
+ * failure without its code (re-verification sees only the text) keeps the record's earlier classification.
+ */
+export function afterTransientFailure(record: ResumeRecord, assistant: string, userText: string, userMessageId: string, lastUserMessageAt: string, config: ResumeConfig, now = Date.now(), failure: { message: string; code?: string } | null = null): ResumeRecord {
   const signature = createHash("sha256").update(assistant).digest("hex").slice(0, 24);
+  const same = signature === record.failureSignature;
   // The same quota error again is not transient. Only a sent retry counts as a repeat; any other failure resets the count.
-  const quota = !!record.failedOutcome && isQuotaError(assistant);
-  const quotaRepeats = quota && signature === record.failureSignature ? (record.quotaRepeats ?? 0) + (record.sentAt ? 1 : 0) : 0;
+  const quota = !!record.failedOutcome && !!failure &&
+    (isQuotaError(failure.message, failure.code) || (failure.code === undefined && same && !!record.refusedPool));
+  const quotaRepeats = quota && same ? (record.quotaRepeats ?? 0) + (record.sentAt ? 1 : 0) : 0;
   const quotaStop = quotaRepeats >= QUOTA_REPEAT_LIMIT;
   const exhausted = quotaStop || (!record.failedOutcome && record.attempts.length >= (config.transientMaxAttempts ?? 3));
   const updatedAt = new Date(now).toISOString();

@@ -98,7 +98,7 @@ function fixture(home: string) {
     agents.set(id, { id, provider: "pi", model: OPUS, thinkingOptionId: "high", cwd: "/fixture", status: "idle", labels: { role },
       lastUserMessageAt: "2026-01-02T00:00:00.000Z", persistence: { provider: "pi", sessionId: `${id}-session` }, ...extra });
   };
-  const endTurn = async (id: string, outcome: { kind: "failed"; error: { message: string } } | { kind: "completed" }, turnId: string, reply?: string) => {
+  const endTurn = async (id: string, outcome: { kind: "failed"; error: { message: string; code?: string } } | { kind: "completed" }, turnId: string, reply?: string) => {
     const agent = agents.get(id)!;
     Object.assign(agent, outcome.kind === "failed" ? { status: "error", lastError: outcome.error.message, requiresAttention: true, attentionReason: "error" } : { status: "idle" }, { activeTurn: null });
     const own = sent.get(turnId);
@@ -458,8 +458,22 @@ it("a completed reply starting 'API Error: usage_limit_exceeded' never swaps, on
 
 // Owner cases from the 10/21 incident: every Claude account out, PMs got Anthropic 429s and the API-key route's 402, and
 // the plugin kept sending "continue" instead of swapping.
-for (const [name, error] of [["a 429 rate limit", RATE_LIMIT], ["a 402 credit balance", CREDIT]] as const) {
+// Review of #189: a 429 that is not an HTTP status, or a 429 whose error type is a blocked one, is no quota refusal.
+const NOT_QUOTA = [
+  "Connection closed for request id=job-429-a",
+  "ENOENT: no such file or directory, open '/fixture/job-429/output.json'",
+  '429 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}} (stopReason=error, model=fleet/claude-opus-5-5)',
+  '429 {"type":"error","error":{"type":"invalid_request_error","message":"context_length_exceeded"}} (stopReason=error, model=fleet/claude-opus-5-5)',
+];
+
+for (const [name, error, decoys] of [["a 429 rate limit", RATE_LIMIT, NOT_QUOTA], ["a 402 credit balance", CREDIT, []]] as const) {
   it(`${name} on a failed PM turn while pq shows the Claude pool out swaps the PM; nothing more is sent on Claude`, () => scenario(async (f, logs) => {
+    for (const [n, message] of decoys.entries()) {
+      f.add(`decoy-${n}`, "pm", { labels: { role: "pm", project: "fixture" } });
+      await f.endTurn(`decoy-${n}`, { kind: "failed", error: { message } }, `decoy-${n}-turn-1`);
+    }
+    assert.equal(f.calls.apply.length, 0, "a failure that is not a quota refusal never swaps");
+    assert.equal(f.calls.sends.length, 0, "and is held on the out pool like any failed turn");
     f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
     await f.endTurn("pm", { kind: "failed", error: { message: error } }, "pm-turn-1");
     assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }]);
@@ -497,27 +511,30 @@ it("a rolled-over or stale Claude account still returning 429 counts as out: the
 });
 
 it("the same quota error on consecutive retries stops the loop once, logged once, with no send-skipped repeats", async () => {
-  for (const role of ["pm", "worker"]) {
+  // Review of #189: a quota refusal known only by its structured code repeats the same way.
+  const CODE_ONLY = { message: "Provider request rejected. Try again later.", code: "429" };
+  for (const [role, error] of [["pm", { message: RATE_LIMIT }], ["worker", { message: RATE_LIMIT }], ["pm", CODE_ONLY], ["worker", CODE_ONLY]] as const) {
     await scenario(async (f, logs) => {
+      const label = `${role} ${"code" in error ? "code-only" : "message"}`;
       // pq shows capacity, so the 429 stays transient and is retried; every retry fails the same way.
       f.pq.claude = { five: "ok", week: "ok" };
       f.add("agent", role);
-      await f.endTurn("agent", { kind: "failed", error: { message: RATE_LIMIT } }, "agent-turn-1");
-      assert.equal(f.calls.sends.length, 1, role);
-      await f.endTurn("agent", { kind: "failed", error: { message: RATE_LIMIT } }, "resume-1");
-      assert.equal((await f.records.read())[0]!.state, "parked", `${role}: one repeat still retries`);
+      await f.endTurn("agent", { kind: "failed", error }, "agent-turn-1");
+      assert.equal(f.calls.sends.length, 1, label);
+      await f.endTurn("agent", { kind: "failed", error }, "resume-1");
+      assert.equal((await f.records.read())[0]!.state, "parked", `${label}: one repeat still retries`);
       for (let n = 0; n < 4 && f.calls.sends.length < 2; n++) await f.tick();
-      assert.equal(f.calls.sends.length, 2, role);
-      await f.endTurn("agent", { kind: "failed", error: { message: RATE_LIMIT } }, "resume-2");
+      assert.equal(f.calls.sends.length, 2, label);
+      await f.endTurn("agent", { kind: "failed", error }, "resume-2");
       for (let n = 0; n < 40; n++) await f.tick();
-      assert.equal(f.calls.sends.length, 2, `${role}: no send after the stop`);
+      assert.equal(f.calls.sends.length, 2, `${label}: no send after the stop`);
       const [record] = await f.records.read();
       assert.equal(record!.state, "exhausted");
       assert.equal(record!.terminalReason, "quota-error-repeated");
-      assert.equal(logs.filter((l) => l.includes("retry-stopped agentId=agent")).length, 1, role);
-      assert.equal(logs.filter((l) => l.includes("send-skipped agentId=agent")).length, 1, `${role}: the wait for retry 2 is logged once`);
+      assert.equal(logs.filter((l) => l.includes("retry-stopped agentId=agent")).length, 1, label);
+      assert.equal(logs.filter((l) => l.includes("send-skipped agentId=agent")).length, 1, `${label}: the wait for retry 2 is logged once`);
       // A PM is considered for a swap on every quota failure; with Claude capacity it is held, and said once.
-      assert.equal(logs.filter((l) => l.includes("pm-fallback-held agentId=agent")).length, role === "pm" ? 1 : 0, role);
+      assert.equal(logs.filter((l) => l.includes("pm-fallback-held agentId=agent")).length, role === "pm" ? 1 : 0, label);
       assert.deepEqual(f.calls.apply, []);
     });
   }

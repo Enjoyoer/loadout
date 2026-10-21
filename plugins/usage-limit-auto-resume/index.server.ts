@@ -204,14 +204,16 @@ export default function contribute(server: PluginServerContext, openClient: () =
     // A parked failure already has its backoff. A lost end event anchors the next delay to the live error row, not
     // to each poll, so re-verification can never keep pushing the retry into the future.
     const endedAt = final?.timestamp && Number.isFinite(Date.parse(final.timestamp)) ? Date.parse(final.timestamp) : Date.now();
+    // The live state keeps only the error text, so the record's own classification of this failure is carried over.
     const next = afterTransientFailure({ ...record, failedOutcome: true, retryPrompt: "continue" }, `failed: ${failure}`,
-      user.text, user.messageId ?? user.clientMessageId ?? "", fresh.lastUserMessageAt, currentConfig, endedAt);
+      user.text, user.messageId ?? user.clientMessageId ?? "", fresh.lastUserMessageAt, currentConfig, endedAt, { message: failure });
     if (!record.sentAt) next.notBefore = record.notBefore;
     const unchanged = (value: ResumeRecord) => value.state === record.state && value.updatedAt === record.updatedAt;
-    // The same quota error again ends the record; nothing is sent.
+    // The same quota error again ends the record; nothing is sent. Logged only by the update that ended it.
     if (next.state === "exhausted") {
-      const stopped = await store.update(record.recordId, (value) => unchanged(value) ? next : value);
-      if (stopped?.updatedAt === next.updatedAt) logQuotaStop(stopped);
+      let ended = false;
+      const stopped = await store.update(record.recordId, (value) => unchanged(value) ? (ended = true, next) : value);
+      if (ended && stopped) logQuotaStop(stopped);
       return null;
     }
     const gate = shouldResume({ ...next, notBefore: new Date(0).toISOString() }, fresh, currentConfig);
@@ -610,10 +612,14 @@ export default function contribute(server: PluginServerContext, openClient: () =
               log(`retry-uncertain agentId=${event.agent.id} reason=retry-identity-ambiguous`);
               return;
             }
-            // Re-park only the attempt this turn ended; a decision another handler stored meanwhile stands.
+            // Re-park only the attempt this turn ended; a decision another handler stored meanwhile stands. The failed
+            // outcome's error, with its code, decides whether this was a quota refusal.
+            let reparked = false;
             const next = await store.update(active.recordId, (value) => value.state === "verifying" && value.resumeTurnId === event.turnId
-              ? afterTransientFailure({ ...value, ...(failedTransient ? { failedOutcome: true, retryPrompt: "continue" } : {}) }, assistant, user.text, sentMessageId!, agent.lastUserMessageAt!, currentConfig)
+              ? (reparked = true, afterTransientFailure({ ...value, ...(failedTransient ? { failedOutcome: true, retryPrompt: "continue" } : {}) }, assistant, user.text, sentMessageId!, agent.lastUserMessageAt!, currentConfig, Date.now(), event.outcome.kind === "failed" ? event.outcome.error : null))
               : value);
+            // A concurrent end event for the same turn gets the already re-parked record back; only this update logs it.
+            if (!reparked) return;
             if (next?.terminalReason === "quota-error-repeated") logQuotaStop(next);
             else if (next?.state === "parked" || next?.state === "exhausted") log(`retry-${next.state === "exhausted" ? "exhausted" : "scheduled"} agentId=${event.agent.id} attempts=${attemptCount(next)}`);
             return;
