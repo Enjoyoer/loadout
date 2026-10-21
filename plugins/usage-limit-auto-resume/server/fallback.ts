@@ -3,8 +3,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { agentPool, type PoolQuota } from "./quota.ts";
-import { failureSignature, isActive, type AgentSnapshot, type ResumeRecord } from "./model.ts";
+import { agentPool, poolOut, type PoolQuota } from "./quota.ts";
+import { failureSignature, isActive, isQuotaError, namedModel, quotaRefused, type AgentSnapshot, type ResumeRecord } from "./model.ts";
 import { StateUnreadableError } from "./store.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
 import { paseoHome } from "./vendor/daemon-target.ts";
@@ -72,21 +72,31 @@ export function fallbackIneligible(agent: AgentSnapshot, optOutLabel: string, or
 }
 
 /**
- * The only evidence that can swap a PM: a failed turn whose error the strict usage-limit classifier accepts, the same
- * evidence a usage resume record is built from. A completed reply never swaps, whatever its text says. Every swap path
- * builds its evidence with one of the two functions below and the swap itself checks it.
+ * The only evidence that can swap a PM: a failed turn the provider refused for quota, either an error the strict
+ * usage-limit classifier accepts (the evidence a usage resume record is built from) or a quota error (a 429 rate limit,
+ * a 402 credit balance). A completed reply never swaps, whatever its text says. Every swap path builds its evidence with
+ * one of the two functions below and the swap itself checks it; swapDecision then needs pq to show the pool out.
  */
 export type SwapEvidence = { failedOutcome: boolean; usageLimit: boolean };
 export const isSwapEvidence = (evidence: SwapEvidence) => evidence.failedOutcome && evidence.usageLimit;
 
 export function turnSwapEvidence(outcome: { kind: string; error?: { message?: string; code?: string } }): SwapEvidence {
   const failed = outcome.kind === "failed" && typeof outcome.error?.message === "string";
-  return { failedOutcome: failed, usageLimit: failed && failureSignature(outcome.error!.message!, outcome.error!.code) !== null };
+  const { message, code } = outcome.error ?? {};
+  // A refusal whose error names a model outside the Claude pool (a turn that still ran on the fallback) is not Claude's.
+  const named = failed ? namedModel(message!) : null;
+  const claude = !named || agentPool("pi", named) === "claude";
+  return { failedOutcome: failed, usageLimit: failed && claude && (failureSignature(message!, code) !== null || isQuotaError(message!, code)) };
 }
 
-/** A usage record counts only when it was built from a failed outcome; one built from a completed reply's text does not. */
+/**
+ * A record counts only when it was built from a failed outcome (one built from a completed reply's text does not): a
+ * usage record, or a transient record whose failure was a quota error from the pool its agent is on.
+ */
 export function recordSwapEvidence(record: ResumeRecord): SwapEvidence {
-  return { failedOutcome: isActive(record) && record.usageFailedOutcome === true, usageLimit: record.kind !== "transient" && !!record.failureSignature };
+  const usage = record.kind !== "transient" && record.usageFailedOutcome === true && !!record.failureSignature;
+  const quota = record.kind === "transient" && record.failedOutcome === true && quotaRefused(record);
+  return { failedOutcome: isActive(record) && (record.usageFailedOutcome === true || record.failedOutcome === true), usageLimit: usage || quota };
 }
 
 /**
@@ -103,9 +113,12 @@ export function writeBlocked(obligation: ReturnObligation, agent: AgentSnapshot,
 
 const known = (quota: PoolQuota): quota is Extract<PoolQuota, { status: "known" }> => quota.status === "known";
 
-/** pq positively shows every Claude account out, and does not show the fallback pool out too (no ping-pong). */
+/**
+ * pq shows no Claude account with quota left, and does not show the fallback pool out too (no ping-pong). Only swap
+ * evidence (a quota refusal) reaches this, so a stale or rolled-over Claude account counts as out (poolOut).
+ */
 export function swapDecision(claude: PoolQuota, fallback: PoolQuota): { swap: true } | { swap: false; reason: string } {
-  if (!known(claude) || !claude.exhausted) return { swap: false, reason: known(claude) ? "claude-pool-has-capacity" : `claude-quota-unknown: ${claude.reason}` };
+  if (!poolOut(claude, true)) return { swap: false, reason: known(claude) ? "claude-pool-has-capacity" : `claude-quota-unknown: ${claude.reason}` };
   if (known(fallback) && fallback.exhausted) return { swap: false, reason: "fallback-pool-exhausted" };
   return { swap: true };
 }

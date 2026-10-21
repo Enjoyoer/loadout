@@ -85,6 +85,15 @@ export function poolQuota(document: unknown, pool: QuotaPool | null, now = Date.
   return { status: "known", pool, accounts: accounts.length, available, unknown: unknownCount, exhausted, earliestReset, weekly: exhausted && weeklyOut === accounts.length, capacity };
 }
 
+/**
+ * Whether the pool reads as out. `refused` means the provider just refused this pool's request for quota (a usage limit,
+ * a 429 rate limit, a 402 credit balance): then an account pq cannot show with quota left, such as a stale or rolled-over
+ * reading, counts as out too, and only a fresh reading with quota left is capacity.
+ */
+export function poolOut(quota: PoolQuota, refused = false): boolean {
+  return quota.status === "known" && (quota.exhausted || (refused && quota.available === 0));
+}
+
 export type QuotaSettings = { resetBufferSeconds: number; maxDelaySeconds: number };
 
 /**
@@ -102,14 +111,14 @@ export function usageResumeAt(quota: PoolQuota, messageResetAt: string | null, m
 /** A hold on a send while the whole pool is out: until the earliest reset plus the buffer, with a visible reason. */
 export type QuotaHold = { until: string; reason: string };
 
-export function quotaHold(quota: PoolQuota, settings: QuotaSettings, now = Date.now()): QuotaHold | null {
-  if (quota.status !== "known" || !quota.exhausted || !quota.earliestReset) return null;
+export function quotaHold(quota: PoolQuota, settings: QuotaSettings, now = Date.now(), refused = false): QuotaHold | null {
+  if (quota.status !== "known" || !poolOut(quota, refused) || !quota.earliestReset) return null;
   const until = Math.min(quota.earliestReset.at + settings.resetBufferSeconds * 1000, now + settings.maxDelaySeconds * 1000);
   if (until <= now) return null;
   const iso = new Date(until).toISOString();
   return {
     until: iso,
-    reason: `quota-blocked pool=${quota.pool} ${quota.weekly ? "weekly" : `window=${quota.earliestReset.window}`} accounts=${quota.accounts} until=${iso}`,
+    reason: `quota-blocked pool=${quota.pool} ${quota.weekly ? "weekly" : `window=${quota.earliestReset.window}`} accounts=${quota.accounts}${quota.exhausted ? "" : ` unproven=${quota.unknown}`} until=${iso}`,
   };
 }
 

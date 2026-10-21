@@ -263,7 +263,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       return true;
     },
 
-    /** The sweep's backstop: owner settings, every obligation, and PMs whose usage record is held on an out pool. */
+    /** The sweep's backstop: owner settings, every obligation, and PMs whose failed-turn quota record is held on an out pool. */
     async sweep(config: Config) {
       // An enrollment that cannot be checked now (catalog or daemon unavailable) stays unconsumed for the next sweep and
       // never holds up the returns below.

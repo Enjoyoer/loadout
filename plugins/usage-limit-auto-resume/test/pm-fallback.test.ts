@@ -16,6 +16,9 @@ import { ResumeStore } from "../server/store.ts";
 const OPUS = "fleet/claude-opus-5-5";
 const SOL = "fleet/gpt-6.1-sol";
 const USAGE = "usage_limit_exceeded: fixture limit (stopReason=error, model=fleet/claude-opus-5-5)";
+// The provider errors of the 10/21 incident, as Pi reports them on a failed turn.
+const RATE_LIMIT = '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}} (stopReason=error, model=fleet/claude-opus-5-5)';
+const CREDIT = '402 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}} (stopReason=error, model=fleet/claude-opus-5-5)';
 type Window = "out" | "ok" | "missing";
 type Pool = { five: Window; week: Window };
 
@@ -23,7 +26,12 @@ function fixture(home: string) {
   const agents = new Map<string, AgentSnapshot>();
   const timelines = new Map<string, unknown[]>();
   const calls = { apply: [] as Array<{ agentId: string; modelId: string; thinkingOptionId: string | null }>, labels: [] as Array<Record<string, string>>, sends: [] as string[], cancels: 0 };
-  const pq: { claude: Pool; codex: Pool; stale: boolean } = { claude: { five: "out", week: "out" }, codex: { five: "ok", week: "ok" }, stale: false };
+  // `unproven` adds a second Claude account pq cannot read as out or as having quota: a rolled-over 5-hour window, or a
+  // stale reading that still shows quota left.
+  // `codexUnproven` adds the same kind of account to the codex pool.
+  const pq: { claude: Pool; codex: Pool; stale: boolean; unproven: "rolled_over" | "stale" | null; codexUnproven: boolean } = { claude: { five: "out", week: "out" }, codex: { five: "ok", week: "ok" }, stale: false, unproven: null, codexUnproven: false };
+  // The plugin's own message per turn it started, which is that turn's newest user row.
+  const sent = new Map<string, { text: string; messageId: string }>();
   let failApply = 0;
   // What the daemon's stored record holds per agent: it follows memory unless the agent's background persist fails.
   const unpersisted = new Map<string, Profile[]>();
@@ -35,8 +43,19 @@ function fixture(home: string) {
     { id: "five_hour", fresh: true, leftPct: pool.five === "out" ? 0 : 60, resetAt: now() + 3600, missing: pool.five === "missing" },
     { id: "seven_day", fresh: true, leftPct: pool.week === "out" ? 0 : 60, resetAt: now() + 86400, missing: pool.week === "missing" },
   ].filter((window) => !window.missing);
+  const unproven = () => pq.unproven === "rolled_over"
+    ? { provider: "claude", state: "rolled_over", fresh: false, availability: null, windows: [
+      { id: "five_hour", state: "window_reset", fresh: false, leftPct: null, resetAt: now() - 600 },
+      { id: "seven_day", state: "stale", fresh: false, leftPct: 40, resetAt: now() + 86400 },
+    ] }
+    : { provider: "claude", state: "stale", fresh: false, availability: null, windows: [
+      { id: "five_hour", state: "stale", fresh: false, leftPct: 30, resetAt: now() + 3600 },
+      { id: "seven_day", state: "stale", fresh: false, leftPct: 40, resetAt: now() + 86400 },
+    ] };
   const document = () => ({ schemaVersion: 1, snapshotStale: pq.stale, accounts: [
     { provider: "claude", fresh: true, windows: windows(pq.claude) },
+    ...(pq.unproven ? [unproven()] : []),
+    ...(pq.codexUnproven ? [{ ...unproven(), provider: "codex" }] : []),
     { provider: "codex", fresh: true, windows: windows(pq.codex) },
   ] });
   const api = {
@@ -46,9 +65,10 @@ function fixture(home: string) {
       refresh: async () => agents.has(id) ? { agent: structuredClone(agents.get(id)!) } : null,
       timeline: { refetch: async () => ({ entries: (timelines.get(id) ?? []).map((item) => ({ item })), hasNewer: false, hasOlder: false }) },
       cancel: async () => { calls.cancels++; },
-      send: async (prompt: string) => {
+      send: async (prompt: string, options: { messageId: string }) => {
         const agent = agents.get(id)!;
         calls.sends.push(`${id}:${agent.model}:${prompt.slice(0, 20)}`);
+        sent.set(`resume-${calls.sends.length}`, { text: prompt, messageId: options.messageId });
         Object.assign(agent, { status: "running", activeTurn: { turnId: `resume-${calls.sends.length}` }, lastUserMessageAt: new Date().toISOString(), requiresAttention: false });
         handlers.get("agent.turn_started")!({ agent: { id }, turnId: `resume-${calls.sends.length}` });
       },
@@ -80,10 +100,11 @@ function fixture(home: string) {
     agents.set(id, { id, provider: "pi", model: OPUS, thinkingOptionId: "high", cwd: "/fixture", status: "idle", labels: { role },
       lastUserMessageAt: "2026-01-02T00:00:00.000Z", persistence: { provider: "pi", sessionId: `${id}-session` }, ...extra });
   };
-  const endTurn = async (id: string, outcome: { kind: "failed"; error: { message: string } } | { kind: "completed" }, turnId: string, reply?: string) => {
+  const endTurn = async (id: string, outcome: { kind: "failed"; error: { message: string; code?: string } } | { kind: "completed" }, turnId: string, reply?: string) => {
     const agent = agents.get(id)!;
     Object.assign(agent, outcome.kind === "failed" ? { status: "error", lastError: outcome.error.message, requiresAttention: true, attentionReason: "error" } : { status: "idle" }, { activeTurn: null });
-    const timeline: unknown[] = [{ type: "user_message", text: "fixture work", messageId: `${turnId}-user` }];
+    const own = sent.get(turnId);
+    const timeline: unknown[] = [{ type: "user_message", text: own?.text ?? "fixture work", messageId: own?.messageId ?? `${turnId}-user` }];
     if (reply) timeline.push({ type: "assistant_message", text: reply });
     timelines.set(id, timeline);
     handlers.get("agent.turn_ended")!({ agent: { id }, turnId, outcome, timeline }, { paseo: api });
@@ -91,7 +112,7 @@ function fixture(home: string) {
   };
   const tick = async () => { mock.timers.tick(30_000); await plugin!.idle(); };
   return {
-    agents, calls, pq, start, stop, add, endTurn, tick, handlers, unpersisted,
+    agents, calls, pq, start, stop, add, endTurn, tick, handlers, unpersisted, timelines, sent,
     returns: new ReturnStore(path.join(home, "pm-return.json")), records: new ResumeStore(),
     failApplies: (n: number) => { failApply = n; },
     setConfig: (patch: Partial<Config>) => { config = ConfigSchema.parse({ ...config, ...patch }); },
@@ -436,3 +457,167 @@ it("a completed reply starting 'API Error: usage_limit_exceeded' never swaps, on
   assert.deepEqual((await f.returns.read()).obligations, []);
   assert.ok(!f.calls.sends.some((s) => s.includes(SOL)));
 }));
+
+// Owner cases from the 10/21 incident: every Claude account out, PMs got Anthropic 429s and the API-key route's 402, and
+// the plugin kept sending "continue" instead of swapping.
+// Review of #189, every round: a 429 that is not a leading status, a status inside an ID, a path or a URL (escaped
+// quotes included), or a 429 whose error type is a blocked one, is no quota refusal.
+const NOT_QUOTA = [
+  "Connection closed for request id=job-429-a",
+  "ENOENT: no such file or directory, open '/fixture/job-429/output.json'",
+  "429 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}} (stopReason=error, model=fleet/claude-opus-5-5)",
+  "429 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"context_length_exceeded\"}} (stopReason=error, model=fleet/claude-opus-5-5)",
+  "ENOENT: no such file or directory, open /fixture/job-429/output.json",
+  "Tool process exited with code 1; processed 429 files",
+  "429 {\"error\":{\"type\":\"overloaded_error\",\"message\":\"Try again later\"}}",
+  "429 {\"error\":{\"type\":\"context_length_exceeded\",\"message\":\"input too long\"}}",
+  "Transport failed for id=code429",
+  "Transport failed for id=status429",
+  "Transport failed for id=http429",
+  "ENOENT: open '/fixture/status=429'",
+  "ENOENT: open '/fixture/code429'",
+  "429 files processed before transport broke",
+  "429 bytes read; connection closed",
+  "Transport failed after 429 files",
+  "Request 1429 failed",
+  "Transport failure, request_id=abc429def",
+  "ENOENT: open '/fixture/rate_limit_error'",
+  "Transport failed id=rate_limit_error-id",
+  "429 temporarily limiting requests",
+  "429 overloaded_error",
+  "429 context_length_exceeded",
+  "429 model_cooldown_active",
+  "Connection refused https://example.test/?status=429",
+  "Connection refused https://example.test/resource;status=429",
+  "ENOENT: open 'C:\\fixture\\code429'",
+  "ENOENT: open 'C:\\fixture\\status=429'",
+  "ENOENT: open 'C:\\fixture\\status code 429\\output.json'",
+  "ENOENT: open 'C:\\fixture\\job code 429'",
+  "ENOENT: open '\\\\server\\share\\status=429'",
+  "ENOENT: open /fixture/job;status=429",
+  "ENOENT: open /fixture/code/429",
+  "ENOENT: open \"/fixture/\\\" status=429\"",
+  // Fifth review: a rule-B phrase inside a path.
+  "ENOENT: open 'C:\\fixture\\insufficient_credits\\output.json'",
+  "ENOENT: open '/fixture/Too Many Requests.log'",
+  "ENOENT: open '/fixture/credit balance is too low.log'",
+];
+
+// A credit message that also carries a billing URL is still a refusal (fourth review).
+const CREDIT_URL = '402 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low. Please visit https://example.test/billing"}} (stopReason=error, model=fleet/claude-opus-5-5)';
+
+for (const [name, error, decoys] of [["a 429 rate limit", RATE_LIMIT, NOT_QUOTA], ["a 402 credit balance", CREDIT, []], ["a 402 credit balance with a billing URL", CREDIT_URL, []]] as const) {
+  it(`${name} on a failed PM turn while pq shows the Claude pool out swaps the PM; nothing more is sent on Claude`, () => scenario(async (f, logs) => {
+    for (const [n, message] of decoys.entries()) {
+      f.add(`decoy-${n}`, "pm", { labels: { role: "pm", project: "fixture" } });
+      await f.endTurn(`decoy-${n}`, { kind: "failed", error: { message } }, `decoy-${n}-turn-1`);
+    }
+    assert.equal(f.calls.apply.length, 0, "a failure that is not a quota refusal never swaps");
+    assert.equal(f.calls.sends.length, 0, "and is held on the out pool like any failed turn");
+    f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+    await f.endTurn("pm", { kind: "failed", error: { message: error } }, "pm-turn-1");
+    assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }]);
+    assert.equal((await f.returns.get("pm"))?.phase, "fallback");
+    assert.ok(logs.some((l) => l.includes("pm-swap-start agentId=pm") && l.includes("trigger=usage-limit-turn")));
+    assert.deepEqual(f.calls.sends.map((s) => s.split(":")[1]), [SOL], "the retry runs on Sol, never on Claude");
+    assert.equal((await f.records.read()).find((r) => r.agentId === "pm")?.model, SOL);
+  }));
+}
+
+it("a 429 while pq shows Claude capacity stays transient: retried on Claude, no swap", () => scenario(async (f, logs) => {
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+  await f.endTurn("pm", { kind: "failed", error: { message: RATE_LIMIT } }, "pm-turn-1");
+  assert.deepEqual(f.calls.apply, []);
+  assert.deepEqual((await f.returns.read()).obligations, []);
+  assert.deepEqual(f.calls.sends, [`pm:${OPUS}:continue`]);
+  const record = (await f.records.read()).find((r) => r.agentId === "pm")!;
+  assert.equal(record.kind, "transient");
+  assert.equal(record.quotaHold ?? null, null);
+  assert.ok(logs.some((l) => l.includes("pm-fallback-held agentId=pm") && l.includes("claude-pool-has-capacity")));
+}));
+
+it("a rolled-over or stale Claude account still returning 429 counts as out: the PM swaps instead of retrying on Claude", async () => {
+  for (const unproven of ["rolled_over", "stale"] as const) {
+    await scenario(async (f, logs) => {
+      f.pq.unproven = unproven;
+      f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+      await f.endTurn("pm", { kind: "failed", error: { message: RATE_LIMIT } }, "pm-turn-1");
+      assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }], unproven);
+      assert.deepEqual(f.calls.sends.map((s) => s.split(":")[1]), [SOL], `${unproven}: no continue on Claude`);
+      assert.ok(logs.some((l) => l.includes("quota-hold agentId=pm") && l.includes("unproven=1")), unproven);
+    });
+  }
+  // Review of #189: a refusal counts only for the pool that refused. After the swap, Sol failing with the same generic
+  // text and no code is no Codex refusal, whether its end event arrives or only the live error is re-read.
+  const CODE_ONLY = { message: "Provider request rejected. Try again later.", code: "429" };
+  for (const mode of ["end-event", "re-verified"] as const) {
+    await scenario(async (f, logs) => {
+      f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+      await f.endTurn("pm", { kind: "failed", error: CODE_ONLY }, "pm-turn-1");
+      assert.equal(f.agents.get("pm")!.model, SOL, mode);
+      f.pq.codex = { five: "out", week: "ok" };
+      f.pq.codexUnproven = true;
+      if (mode === "end-event") await f.endTurn("pm", { kind: "failed", error: { message: CODE_ONLY.message } }, "resume-1");
+      else {
+        Object.assign(f.agents.get("pm")!, { status: "error", lastError: CODE_ONLY.message, activeTurn: null, requiresAttention: true, attentionReason: "error" });
+        f.timelines.set("pm", [{ type: "user_message", ...f.sent.get("resume-1")! }, { type: "assistant_message", text: `[System Error] ${CODE_ONLY.message}` }]);
+      }
+      for (let n = 0; n < 6; n++) await f.tick();
+      const record = (await f.records.read()).find((r) => r.agentId === "pm")!;
+      assert.equal(record.refusedPool ?? null, null, `${mode}: Claude's refusal never moves to the codex pool`);
+      assert.ok(!logs.some((l) => l.includes("quota-hold agentId=pm") && l.includes("pool=codex")), `${mode}: no codex hold`);
+      assert.equal(f.calls.sends.filter((s) => s.includes(SOL)).length, 2, `${mode}: the retry on Sol is sent`);
+    });
+  }
+  // And a Sol refusal carried through a restore and a re-verification is never Claude's: no second swap.
+  await scenario(async (f, logs) => {
+    f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+    await f.endTurn("pm", { kind: "failed", error: CODE_ONLY }, "pm-turn-1");
+    await f.endTurn("pm", { kind: "failed", error: CODE_ONLY }, "resume-1");
+    assert.equal((await f.records.read())[0]!.refusedPool, "codex", "Sol's own refusal is codex's");
+    f.pq.claude = { five: "ok", week: "ok" };
+    await f.tick();
+    assert.equal(f.agents.get("pm")!.model, OPUS, "restored");
+    // A resolved permission request sends the parked record through re-verification of the live (Sol) error.
+    f.handlers.get("agent.permission_requested")!({ agent: { id: "pm" } });
+    await f.tick();
+    await f.tick();
+    f.pq.claude = { five: "out", week: "ok" };
+    f.pq.unproven = "stale";
+    for (let n = 0; n < 10; n++) await f.tick();
+    assert.equal(logs.filter((l) => l.includes("pm-swap-start agentId=pm")).length, 1, "no swap without a new Claude refusal");
+    assert.deepEqual(f.calls.apply.map((c) => c.modelId), [SOL, OPUS]);
+    assert.deepEqual(f.calls.sends.map((s) => s.split(":")[1]), [SOL, OPUS], "the retry after the restore runs on Claude");
+  });
+});
+
+it("the same quota error on consecutive retries stops the loop once, logged once, with no send-skipped repeats", async () => {
+  // Review of #189: a quota refusal known only by its structured code repeats the same way.
+  const CODE_ONLY = { message: "Provider request rejected. Try again later.", code: "429" };
+  for (const [role, error] of [["pm", { message: RATE_LIMIT }], ["worker", { message: RATE_LIMIT }], ["pm", CODE_ONLY], ["worker", CODE_ONLY]] as const) {
+    await scenario(async (f, logs) => {
+      const label = `${role} ${"code" in error ? "code-only" : "message"}`;
+      // pq shows capacity, so the 429 stays transient and is retried; every retry fails the same way.
+      f.pq.claude = { five: "ok", week: "ok" };
+      f.add("agent", role);
+      await f.endTurn("agent", { kind: "failed", error }, "agent-turn-1");
+      assert.equal(f.calls.sends.length, 1, label);
+      await f.endTurn("agent", { kind: "failed", error }, "resume-1");
+      assert.equal((await f.records.read())[0]!.state, "parked", `${label}: one repeat still retries`);
+      for (let n = 0; n < 4 && f.calls.sends.length < 2; n++) await f.tick();
+      assert.equal(f.calls.sends.length, 2, label);
+      await f.endTurn("agent", { kind: "failed", error }, "resume-2");
+      for (let n = 0; n < 40; n++) await f.tick();
+      assert.equal(f.calls.sends.length, 2, `${label}: no send after the stop`);
+      const [record] = await f.records.read();
+      assert.equal(record!.state, "exhausted");
+      assert.equal(record!.terminalReason, "quota-error-repeated");
+      assert.equal(logs.filter((l) => l.includes("retry-stopped agentId=agent")).length, 1, label);
+      assert.equal(logs.filter((l) => l.includes("send-skipped agentId=agent")).length, 1, `${label}: the wait for retry 2 is logged once`);
+      // A PM is considered for a swap on every quota failure; with Claude capacity it is held, and said once.
+      assert.equal(logs.filter((l) => l.includes("pm-fallback-held agentId=agent")).length, role === "pm" ? 1 : 0, label);
+      assert.deepEqual(f.calls.apply, []);
+    });
+  }
+});
