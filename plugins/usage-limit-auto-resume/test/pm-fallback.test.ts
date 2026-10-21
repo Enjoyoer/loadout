@@ -28,7 +28,8 @@ function fixture(home: string) {
   const calls = { apply: [] as Array<{ agentId: string; modelId: string; thinkingOptionId: string | null }>, labels: [] as Array<Record<string, string>>, sends: [] as string[], cancels: 0 };
   // `unproven` adds a second Claude account pq cannot read as out or as having quota: a rolled-over 5-hour window, or a
   // stale reading that still shows quota left.
-  const pq: { claude: Pool; codex: Pool; stale: boolean; unproven: "rolled_over" | "stale" | null } = { claude: { five: "out", week: "out" }, codex: { five: "ok", week: "ok" }, stale: false, unproven: null };
+  // `codexUnproven` adds the same kind of account to the codex pool.
+  const pq: { claude: Pool; codex: Pool; stale: boolean; unproven: "rolled_over" | "stale" | null; codexUnproven: boolean } = { claude: { five: "out", week: "out" }, codex: { five: "ok", week: "ok" }, stale: false, unproven: null, codexUnproven: false };
   // The plugin's own message per turn it started, which is that turn's newest user row.
   const sent = new Map<string, { text: string; messageId: string }>();
   let failApply = 0;
@@ -54,6 +55,7 @@ function fixture(home: string) {
   const document = () => ({ schemaVersion: 1, snapshotStale: pq.stale, accounts: [
     { provider: "claude", fresh: true, windows: windows(pq.claude) },
     ...(pq.unproven ? [unproven()] : []),
+    ...(pq.codexUnproven ? [{ ...unproven(), provider: "codex" }] : []),
     { provider: "codex", fresh: true, windows: windows(pq.codex) },
   ] });
   const api = {
@@ -110,7 +112,7 @@ function fixture(home: string) {
   };
   const tick = async () => { mock.timers.tick(30_000); await plugin!.idle(); };
   return {
-    agents, calls, pq, start, stop, add, endTurn, tick, handlers, unpersisted,
+    agents, calls, pq, start, stop, add, endTurn, tick, handlers, unpersisted, timelines, sent,
     returns: new ReturnStore(path.join(home, "pm-return.json")), records: new ResumeStore(),
     failApplies: (n: number) => { failApply = n; },
     setConfig: (patch: Partial<Config>) => { config = ConfigSchema.parse({ ...config, ...patch }); },
@@ -464,6 +466,14 @@ const NOT_QUOTA = [
   "ENOENT: no such file or directory, open '/fixture/job-429/output.json'",
   '429 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}} (stopReason=error, model=fleet/claude-opus-5-5)',
   '429 {"type":"error","error":{"type":"invalid_request_error","message":"context_length_exceeded"}} (stopReason=error, model=fleet/claude-opus-5-5)',
+  // Re-review: a status keyword inside an ID or a path, and a leading 429 that is a count, not a status.
+  "Transport failed for id=code429",
+  "Transport failed for id=status429",
+  "Transport failed for id=http429",
+  "ENOENT: open '/fixture/code429'",
+  "ENOENT: open '/fixture/status=429'",
+  "429 files processed before transport broke",
+  "429 bytes read; connection closed",
 ];
 
 for (const [name, error, decoys] of [["a 429 rate limit", RATE_LIMIT, NOT_QUOTA], ["a 402 credit balance", CREDIT, []]] as const) {
@@ -508,6 +518,48 @@ it("a rolled-over or stale Claude account still returning 429 counts as out: the
       assert.ok(logs.some((l) => l.includes("quota-hold agentId=pm") && l.includes("unproven=1")), unproven);
     });
   }
+  // Review of #189: a refusal counts only for the pool that refused. After the swap, Sol failing with the same generic
+  // text and no code is no Codex refusal, whether its end event arrives or only the live error is re-read.
+  const CODE_ONLY = { message: "Provider request rejected. Try again later.", code: "429" };
+  for (const mode of ["end-event", "re-verified"] as const) {
+    await scenario(async (f, logs) => {
+      f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+      await f.endTurn("pm", { kind: "failed", error: CODE_ONLY }, "pm-turn-1");
+      assert.equal(f.agents.get("pm")!.model, SOL, mode);
+      f.pq.codex = { five: "out", week: "ok" };
+      f.pq.codexUnproven = true;
+      if (mode === "end-event") await f.endTurn("pm", { kind: "failed", error: { message: CODE_ONLY.message } }, "resume-1");
+      else {
+        Object.assign(f.agents.get("pm")!, { status: "error", lastError: CODE_ONLY.message, activeTurn: null, requiresAttention: true, attentionReason: "error" });
+        f.timelines.set("pm", [{ type: "user_message", ...f.sent.get("resume-1")! }, { type: "assistant_message", text: `[System Error] ${CODE_ONLY.message}` }]);
+      }
+      for (let n = 0; n < 6; n++) await f.tick();
+      const record = (await f.records.read()).find((r) => r.agentId === "pm")!;
+      assert.equal(record.refusedPool ?? null, null, `${mode}: Claude's refusal never moves to the codex pool`);
+      assert.ok(!logs.some((l) => l.includes("quota-hold agentId=pm") && l.includes("pool=codex")), `${mode}: no codex hold`);
+      assert.equal(f.calls.sends.filter((s) => s.includes(SOL)).length, 2, `${mode}: the retry on Sol is sent`);
+    });
+  }
+  // And a Sol refusal carried through a restore and a re-verification is never Claude's: no second swap.
+  await scenario(async (f, logs) => {
+    f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+    await f.endTurn("pm", { kind: "failed", error: CODE_ONLY }, "pm-turn-1");
+    await f.endTurn("pm", { kind: "failed", error: CODE_ONLY }, "resume-1");
+    assert.equal((await f.records.read())[0]!.refusedPool, "codex", "Sol's own refusal is codex's");
+    f.pq.claude = { five: "ok", week: "ok" };
+    await f.tick();
+    assert.equal(f.agents.get("pm")!.model, OPUS, "restored");
+    // A resolved permission request sends the parked record through re-verification of the live (Sol) error.
+    f.handlers.get("agent.permission_requested")!({ agent: { id: "pm" } });
+    await f.tick();
+    await f.tick();
+    f.pq.claude = { five: "out", week: "ok" };
+    f.pq.unproven = "stale";
+    for (let n = 0; n < 10; n++) await f.tick();
+    assert.equal(logs.filter((l) => l.includes("pm-swap-start agentId=pm")).length, 1, "no swap without a new Claude refusal");
+    assert.deepEqual(f.calls.apply.map((c) => c.modelId), [SOL, OPUS]);
+    assert.deepEqual(f.calls.sends.map((s) => s.split(":")[1]), [SOL, OPUS], "the retry after the restore runs on Claude");
+  });
 });
 
 it("the same quota error on consecutive retries stops the loop once, logged once, with no send-skipped repeats", async () => {

@@ -204,9 +204,10 @@ export default function contribute(server: PluginServerContext, openClient: () =
     // A parked failure already has its backoff. A lost end event anchors the next delay to the live error row, not
     // to each poll, so re-verification can never keep pushing the retry into the future.
     const endedAt = final?.timestamp && Number.isFinite(Date.parse(final.timestamp)) ? Date.parse(final.timestamp) : Date.now();
-    // The live state keeps only the error text, so the record's own classification of this failure is carried over.
+    // The live state keeps only the error text and no turn, so this recognizes no new quota evidence; the record's own
+    // evidence for the same failure is carried over as it is.
     const next = afterTransientFailure({ ...record, failedOutcome: true, retryPrompt: "continue" }, `failed: ${failure}`,
-      user.text, user.messageId ?? user.clientMessageId ?? "", fresh.lastUserMessageAt, currentConfig, endedAt, { message: failure });
+      user.text, user.messageId ?? user.clientMessageId ?? "", fresh.lastUserMessageAt, currentConfig, endedAt, { message: failure, textOnly: true });
     if (!record.sentAt) next.notBefore = record.notBefore;
     const unchanged = (value: ResumeRecord) => value.state === record.state && value.updatedAt === record.updatedAt;
     // The same quota error again ends the record; nothing is sent. Logged only by the update that ended it.

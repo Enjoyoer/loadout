@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { agentPool, poolOut, type PoolQuota } from "./quota.ts";
-import { failureSignature, isActive, isQuotaError, quotaRefused, type AgentSnapshot, type ResumeRecord } from "./model.ts";
+import { failureSignature, isActive, isQuotaError, namedModel, quotaRefused, type AgentSnapshot, type ResumeRecord } from "./model.ts";
 import { StateUnreadableError } from "./store.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
 import { paseoHome } from "./vendor/daemon-target.ts";
@@ -83,7 +83,10 @@ export const isSwapEvidence = (evidence: SwapEvidence) => evidence.failedOutcome
 export function turnSwapEvidence(outcome: { kind: string; error?: { message?: string; code?: string } }): SwapEvidence {
   const failed = outcome.kind === "failed" && typeof outcome.error?.message === "string";
   const { message, code } = outcome.error ?? {};
-  return { failedOutcome: failed, usageLimit: failed && (failureSignature(message!, code) !== null || isQuotaError(message!, code)) };
+  // A refusal whose error names a model outside the Claude pool (a turn that still ran on the fallback) is not Claude's.
+  const named = failed ? namedModel(message!) : null;
+  const claude = !named || agentPool("pi", named) === "claude";
+  return { failedOutcome: failed, usageLimit: failed && claude && (failureSignature(message!, code) !== null || isQuotaError(message!, code)) };
 }
 
 /**
