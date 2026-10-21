@@ -147,14 +147,18 @@ const TRANSIENT_ERROR_PATTERN = /\b(?:selected model is at capacity|experiencing
 // A status number anywhere else in the text (an "HTTP 429" mid-message with no phrase and no code) is no evidence: such
 // an error stays transient.
 const STATUS_REST = String.raw`(?:\s*\{|\s*:\s*\S|\s+status code\b|\s*$)`;
+// Every rule-B phrase stands on its own, never inside a path, a URL or an ID: not preceded by a word character, "/",
+// "\", ".", "-" or a drive-letter colon ("C:"), and not followed by a word character, "/", "\", "-", or a "." that
+// starts a word ("too low.log"). A sentence-ending "." before a space, a quote or the end still counts.
+const phrase = (body: string) => String.raw`(?<![\w\/\\.-])(?<!(?:^|[^\w])[A-Za-z]:)(?:${body})(?![\w\/\\-]|\.\w)`;
 const QUOTA_ERROR_PATTERN = new RegExp([
   String.raw`^\s*(?:\[System Error\]\s*)?(?:API Error:\s*)?(?:429${STATUS_REST}|402(?:\s*[-(]?\s*Payment Required\b|${STATUS_REST}))`,
   String.raw`"(?:status|status_?code|code)"\s*:\s*"?429(?![\w\/\\-]|\.\w)`,
   String.raw`\b(?:error|rejected)\s*\(429\)`,
-  String.raw`(?<![\w\/.-])rate[_ -]?limit(?:ed|s|_error|_exceeded)?(?![\w\/-]|\.\w)`,
-  String.raw`(?<![\w\/.-])insufficient[_ -]credits?(?![\w\/-]|\.\w)`,
-  String.raw`\bcredit balance is too low\b`,
-  String.raw`\bToo Many Requests\b`,
+  phrase(String.raw`rate[_ -]?limit(?:ed|s|_error|_exceeded)?`),
+  phrase(String.raw`insufficient[_ -]credits?`),
+  phrase(String.raw`credit balance is too low`),
+  phrase(String.raw`Too Many Requests`),
 ].join("|"), "i");
 // A structured error code that is itself the status or the provider's quota code.
 const QUOTA_CODE_PATTERN = /^\s*(?:429|402|rate[_ -]?limit(?:ed|_error|_exceeded)?|insufficient_credits?)\s*$/i;

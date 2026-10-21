@@ -497,6 +497,10 @@ const NOT_QUOTA = [
   "ENOENT: open /fixture/job;status=429",
   "ENOENT: open /fixture/code/429",
   "ENOENT: open \"/fixture/\\\" status=429\"",
+  // Fifth review: a rule-B phrase inside a path.
+  "ENOENT: open 'C:\\fixture\\insufficient_credits\\output.json'",
+  "ENOENT: open '/fixture/Too Many Requests.log'",
+  "ENOENT: open '/fixture/credit balance is too low.log'",
 ];
 
 // A credit message that also carries a billing URL is still a refusal (fourth review).
