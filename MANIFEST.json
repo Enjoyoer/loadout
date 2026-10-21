@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "4b781453ddf9431791279fb636c111bf779a8936",
+  "source_commit": "871435d6f3e393adb9d00ecefb5125471aeafc2b",
   "skill_count": 25,
   "file_count": 144,
   "files": [
@@ -1550,8 +1550,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 26969,
-      "sha256": "7fcff7e67c2c76f4bd0cab3b0fc3064e3bf7b7fa449630293239240830848573"
+      "bytes": 27224,
+      "sha256": "319ebaafaa1cac80e3d89884d0329f2d23606c3091a0f1fc3cb3dd2ec3d46370"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
@@ -1604,8 +1604,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/model.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 44955,
-      "sha256": "99a2a4dfa730e4f9d68c9358e63aab08ef3fd17f5299c1580dec97f94206a05e"
+      "bytes": 45376,
+      "sha256": "62f09f9f499e727869b47a5714d7d5a404736856368652bbf3dc5d96e9059ffa"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/quota.ts",
@@ -1664,8 +1664,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/test/pm-fallback.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 38714,
-      "sha256": "97886a9a8f47d279686b47c508e6186acd4fe2eeeb01c6cf3d6bd2ca7ae7b0d9"
+      "bytes": 38941,
+      "sha256": "33abe47ca7dc5db1bb9d158e640a34eaa5e431f430caf3371408901a96b63851"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/rpc-timeout.test.ts",
