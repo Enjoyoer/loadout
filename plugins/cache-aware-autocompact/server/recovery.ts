@@ -1,7 +1,7 @@
 import type { PaseoAgent, PaseoAgentTimelineHandle } from "@getpaseo/client";
 import type { FetchAgentTimelinePayload } from "@getpaseo/client/internal/daemon-client";
 import type { AutoCompactConfig } from "./config.ts";
-import { cacheFamily, checkpointKey, providerDelayMinutes } from "./model.ts";
+import { cacheFamily, checkpointKey, checkpointTimeline, providerDelayMinutes } from "./model.ts";
 import type { Checkpoint } from "./runtime.ts";
 import { probe } from "./vendor/fs-probe.ts";
 
@@ -60,7 +60,7 @@ export function recoverTurn(agent: PaseoAgent, history: FetchAgentTimelinePayloa
   if (!Number.isFinite(Date.parse(endedAt)) ||
     Date.parse(endedAt) < Date.parse(agent.lastUserMessageAt ?? "1970-01-01T00:00:00Z")) return null;
   const timeline = entries.map((entry) => entry.item);
-  return { agentId: agent.id, turnId, key: checkpointKey(agent.id, turnId, timeline), timeline,
+  return { agentId: agent.id, turnId, key: checkpointKey(agent.id, turnId, timeline), timeline: checkpointTimeline(timeline),
     lastUserMessageAt: agent.lastUserMessageAt ?? null, retryCount: 0, endedAt };
 }
 
