@@ -16,6 +16,9 @@ import { ResumeStore } from "../server/store.ts";
 const OPUS = "fleet/claude-opus-5-5";
 const SOL = "fleet/gpt-6.1-sol";
 const USAGE = "usage_limit_exceeded: fixture limit (stopReason=error, model=fleet/claude-opus-5-5)";
+// The provider errors of the 10/21 incident, as Pi reports them on a failed turn.
+const RATE_LIMIT = '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}} (stopReason=error, model=fleet/claude-opus-5-5)';
+const CREDIT = '402 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}} (stopReason=error, model=fleet/claude-opus-5-5)';
 type Window = "out" | "ok" | "missing";
 type Pool = { five: Window; week: Window };
 
@@ -23,7 +26,11 @@ function fixture(home: string) {
   const agents = new Map<string, AgentSnapshot>();
   const timelines = new Map<string, unknown[]>();
   const calls = { apply: [] as Array<{ agentId: string; modelId: string; thinkingOptionId: string | null }>, labels: [] as Array<Record<string, string>>, sends: [] as string[], cancels: 0 };
-  const pq: { claude: Pool; codex: Pool; stale: boolean } = { claude: { five: "out", week: "out" }, codex: { five: "ok", week: "ok" }, stale: false };
+  // `unproven` adds a second Claude account pq cannot read as out or as having quota: a rolled-over 5-hour window, or a
+  // stale reading that still shows quota left.
+  const pq: { claude: Pool; codex: Pool; stale: boolean; unproven: "rolled_over" | "stale" | null } = { claude: { five: "out", week: "out" }, codex: { five: "ok", week: "ok" }, stale: false, unproven: null };
+  // The plugin's own message per turn it started, which is that turn's newest user row.
+  const sent = new Map<string, { text: string; messageId: string }>();
   let failApply = 0;
   // What the daemon's stored record holds per agent: it follows memory unless the agent's background persist fails.
   const unpersisted = new Map<string, Profile[]>();
@@ -35,8 +42,18 @@ function fixture(home: string) {
     { id: "five_hour", fresh: true, leftPct: pool.five === "out" ? 0 : 60, resetAt: now() + 3600, missing: pool.five === "missing" },
     { id: "seven_day", fresh: true, leftPct: pool.week === "out" ? 0 : 60, resetAt: now() + 86400, missing: pool.week === "missing" },
   ].filter((window) => !window.missing);
+  const unproven = () => pq.unproven === "rolled_over"
+    ? { provider: "claude", state: "rolled_over", fresh: false, availability: null, windows: [
+      { id: "five_hour", state: "window_reset", fresh: false, leftPct: null, resetAt: now() - 600 },
+      { id: "seven_day", state: "stale", fresh: false, leftPct: 40, resetAt: now() + 86400 },
+    ] }
+    : { provider: "claude", state: "stale", fresh: false, availability: null, windows: [
+      { id: "five_hour", state: "stale", fresh: false, leftPct: 30, resetAt: now() + 3600 },
+      { id: "seven_day", state: "stale", fresh: false, leftPct: 40, resetAt: now() + 86400 },
+    ] };
   const document = () => ({ schemaVersion: 1, snapshotStale: pq.stale, accounts: [
     { provider: "claude", fresh: true, windows: windows(pq.claude) },
+    ...(pq.unproven ? [unproven()] : []),
     { provider: "codex", fresh: true, windows: windows(pq.codex) },
   ] });
   const api = {
@@ -46,9 +63,10 @@ function fixture(home: string) {
       refresh: async () => agents.has(id) ? { agent: structuredClone(agents.get(id)!) } : null,
       timeline: { refetch: async () => ({ entries: (timelines.get(id) ?? []).map((item) => ({ item })), hasNewer: false, hasOlder: false }) },
       cancel: async () => { calls.cancels++; },
-      send: async (prompt: string) => {
+      send: async (prompt: string, options: { messageId: string }) => {
         const agent = agents.get(id)!;
         calls.sends.push(`${id}:${agent.model}:${prompt.slice(0, 20)}`);
+        sent.set(`resume-${calls.sends.length}`, { text: prompt, messageId: options.messageId });
         Object.assign(agent, { status: "running", activeTurn: { turnId: `resume-${calls.sends.length}` }, lastUserMessageAt: new Date().toISOString(), requiresAttention: false });
         handlers.get("agent.turn_started")!({ agent: { id }, turnId: `resume-${calls.sends.length}` });
       },
@@ -83,7 +101,8 @@ function fixture(home: string) {
   const endTurn = async (id: string, outcome: { kind: "failed"; error: { message: string } } | { kind: "completed" }, turnId: string, reply?: string) => {
     const agent = agents.get(id)!;
     Object.assign(agent, outcome.kind === "failed" ? { status: "error", lastError: outcome.error.message, requiresAttention: true, attentionReason: "error" } : { status: "idle" }, { activeTurn: null });
-    const timeline: unknown[] = [{ type: "user_message", text: "fixture work", messageId: `${turnId}-user` }];
+    const own = sent.get(turnId);
+    const timeline: unknown[] = [{ type: "user_message", text: own?.text ?? "fixture work", messageId: own?.messageId ?? `${turnId}-user` }];
     if (reply) timeline.push({ type: "assistant_message", text: reply });
     timelines.set(id, timeline);
     handlers.get("agent.turn_ended")!({ agent: { id }, turnId, outcome, timeline }, { paseo: api });
@@ -436,3 +455,70 @@ it("a completed reply starting 'API Error: usage_limit_exceeded' never swaps, on
   assert.deepEqual((await f.returns.read()).obligations, []);
   assert.ok(!f.calls.sends.some((s) => s.includes(SOL)));
 }));
+
+// Owner cases from the 10/21 incident: every Claude account out, PMs got Anthropic 429s and the API-key route's 402, and
+// the plugin kept sending "continue" instead of swapping.
+for (const [name, error] of [["a 429 rate limit", RATE_LIMIT], ["a 402 credit balance", CREDIT]] as const) {
+  it(`${name} on a failed PM turn while pq shows the Claude pool out swaps the PM; nothing more is sent on Claude`, () => scenario(async (f, logs) => {
+    f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+    await f.endTurn("pm", { kind: "failed", error: { message: error } }, "pm-turn-1");
+    assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }]);
+    assert.equal((await f.returns.get("pm"))?.phase, "fallback");
+    assert.ok(logs.some((l) => l.includes("pm-swap-start agentId=pm") && l.includes("trigger=usage-limit-turn")));
+    assert.deepEqual(f.calls.sends.map((s) => s.split(":")[1]), [SOL], "the retry runs on Sol, never on Claude");
+    assert.equal((await f.records.read()).find((r) => r.agentId === "pm")?.model, SOL);
+  }));
+}
+
+it("a 429 while pq shows Claude capacity stays transient: retried on Claude, no swap", () => scenario(async (f, logs) => {
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+  await f.endTurn("pm", { kind: "failed", error: { message: RATE_LIMIT } }, "pm-turn-1");
+  assert.deepEqual(f.calls.apply, []);
+  assert.deepEqual((await f.returns.read()).obligations, []);
+  assert.deepEqual(f.calls.sends, [`pm:${OPUS}:continue`]);
+  const record = (await f.records.read()).find((r) => r.agentId === "pm")!;
+  assert.equal(record.kind, "transient");
+  assert.equal(record.quotaHold ?? null, null);
+  assert.ok(logs.some((l) => l.includes("pm-fallback-held agentId=pm") && l.includes("claude-pool-has-capacity")));
+}));
+
+it("a rolled-over or stale Claude account still returning 429 counts as out: the PM swaps instead of retrying on Claude", async () => {
+  for (const unproven of ["rolled_over", "stale"] as const) {
+    await scenario(async (f, logs) => {
+      f.pq.unproven = unproven;
+      f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+      await f.endTurn("pm", { kind: "failed", error: { message: RATE_LIMIT } }, "pm-turn-1");
+      assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }], unproven);
+      assert.deepEqual(f.calls.sends.map((s) => s.split(":")[1]), [SOL], `${unproven}: no continue on Claude`);
+      assert.ok(logs.some((l) => l.includes("quota-hold agentId=pm") && l.includes("unproven=1")), unproven);
+    });
+  }
+});
+
+it("the same quota error on consecutive retries stops the loop once, logged once, with no send-skipped repeats", async () => {
+  for (const role of ["pm", "worker"]) {
+    await scenario(async (f, logs) => {
+      // pq shows capacity, so the 429 stays transient and is retried; every retry fails the same way.
+      f.pq.claude = { five: "ok", week: "ok" };
+      f.add("agent", role);
+      await f.endTurn("agent", { kind: "failed", error: { message: RATE_LIMIT } }, "agent-turn-1");
+      assert.equal(f.calls.sends.length, 1, role);
+      await f.endTurn("agent", { kind: "failed", error: { message: RATE_LIMIT } }, "resume-1");
+      assert.equal((await f.records.read())[0]!.state, "parked", `${role}: one repeat still retries`);
+      for (let n = 0; n < 4 && f.calls.sends.length < 2; n++) await f.tick();
+      assert.equal(f.calls.sends.length, 2, role);
+      await f.endTurn("agent", { kind: "failed", error: { message: RATE_LIMIT } }, "resume-2");
+      for (let n = 0; n < 40; n++) await f.tick();
+      assert.equal(f.calls.sends.length, 2, `${role}: no send after the stop`);
+      const [record] = await f.records.read();
+      assert.equal(record!.state, "exhausted");
+      assert.equal(record!.terminalReason, "quota-error-repeated");
+      assert.equal(logs.filter((l) => l.includes("retry-stopped agentId=agent")).length, 1, role);
+      assert.equal(logs.filter((l) => l.includes("send-skipped agentId=agent")).length, 1, `${role}: the wait for retry 2 is logged once`);
+      // A PM is considered for a swap on every quota failure; with Claude capacity it is held, and said once.
+      assert.equal(logs.filter((l) => l.includes("pm-fallback-held agentId=agent")).length, role === "pm" ? 1 : 0, role);
+      assert.deepEqual(f.calls.apply, []);
+    });
+  }
+});

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
-import { quotaHold, usageResumeAt, type PoolQuota, type QuotaHold, type QuotaSettings } from "./quota.ts";
+import { agentPool, quotaHold, usageResumeAt, type PoolQuota, type QuotaHold, type QuotaPool, type QuotaSettings } from "./quota.ts";
 
 export type ResumeState = "detected" | "parked" | "resuming" | "verifying" | "done" | "exhausted" | "opted-out" | "superseded" | "uncertain";
 
@@ -59,6 +59,10 @@ export type ResumeRecord = {
   quotaHold?: QuotaHold | null;
   // A Pi prompt RPC timeout: wait for the agent to settle, then resend the original message once (see rpcTimeoutDecision).
   rpcTimeout?: RpcTimeoutWait | null;
+  // The pq pool whose provider refused the failed turn for quota (see quotaRefused); absent for any other failure.
+  refusedPool?: QuotaPool | null;
+  // Retries in a row that failed with the record's same quota error; QUOTA_REPEAT_LIMIT of them end the record.
+  quotaRepeats?: number;
 };
 
 export type RpcTimeoutWait = { giveUpAt: string; waiting: string | null };
@@ -126,6 +130,21 @@ const CAPACITY_PATTERN = /^(?:\[System Error\]\s*)?(?:API Error:\s*)?Selected mo
 // Provider errors include "Selected model is at capacity. Please try a different model."
 // and "We’re currently experiencing high demand, which may cause temporary errors."
 const TRANSIENT_ERROR_PATTERN = /\b(?:selected model is at capacity|experiencing high demand|temporary errors?|temporarily (?:unavailable|limiting requests)|overloaded(?:_error)?|rate[_ -]?limit(?:ed|_error)?|429|529|503)\b/i;
+
+// Provider quota refusals the strict usage-limit classifier does not accept: a 429 rate limit (Anthropic's
+// rate_limit_error) and the 402 "credit balance is too low" of an API-key route. Alone they stay transient; on a failed
+// turn they are quota evidence, which counts only while pq shows the pool out (see quotaRefused and poolOut).
+const QUOTA_ERROR_PATTERN = /\b(?:429|rate[_ -]?limit(?:ed|_error)?|credit balance is too low)\b/i;
+
+export function isQuotaError(message: string, code?: string): boolean {
+  const text = `${code ?? ""} ${message}`;
+  return !BLOCKED_PATTERNS.some((pattern) => pattern.test(text)) && QUOTA_ERROR_PATTERN.test(text);
+}
+
+/** The record's failed turn was refused for quota by the pool its agent still draws on (not the one it moved to). */
+export function quotaRefused(record: Pick<ResumeRecord, "refusedPool" | "provider" | "model">): boolean {
+  return !!record.refusedPool && record.refusedPool === agentPool(record.provider, record.model);
+}
 
 export function isTransientAssistantText(message: string): boolean {
   const text = message.trim();
@@ -237,6 +256,7 @@ export function buildRecord(eventAgent: AgentSnapshot, failureMessage: string, c
     recordId,
     sourceTurnId,
     usageFailedOutcome,
+    ...(usageFailedOutcome ? { refusedPool: agentPool(eventAgent.provider, model) } : {}),
     agentId: eventAgent.id,
     workspaceId: eventAgent.workspaceId ?? null,
     provider: eventAgent.provider,
@@ -276,13 +296,16 @@ export function scheduleUsage(record: ResumeRecord, quota: PoolQuota, settings: 
   if (reset === null) return record;
   // While some account still has quota, a reset can bring the resume earlier but never later than the flat delay.
   const at = quota.status === "known" && !quota.exhausted ? Math.min(reset, Date.parse(record.notBefore)) : reset;
-  const hold = quotaHold(quota, settings, now);
+  const hold = quotaHold(quota, settings, now, quotaRefused(record));
   return { ...record, notBefore: new Date(at).toISOString(), ...(hold ? { quotaHold: hold } : {}) };
 }
 
-/** The pre-send quota decision: hold while the whole pool is out, otherwise send as before. */
+/**
+ * The pre-send quota decision: hold while the whole pool is out, otherwise send as before. After a quota refusal from
+ * this pool, an account pq cannot show with quota left counts as out (poolOut).
+ */
 export function quotaDecision(record: ResumeRecord, quota: PoolQuota, settings: QuotaSettings, now = Date.now()): { hold: QuotaHold | null; changed: boolean } {
-  const hold = quotaHold(quota, settings, now);
+  const hold = quotaHold(quota, settings, now, quotaRefused(record));
   return { hold, changed: (hold?.reason ?? null) !== (record.quotaHold?.reason ?? null) };
 }
 
@@ -355,6 +378,7 @@ export function buildFailedTransientRecord(agent: AgentSnapshot, timeline: reado
     // never started its turn, so it resends the original message, once, after rpcTimeoutDecision allows it.
     retryPrompt: rpcTimeout ? user.text : "continue",
     ...(rpcTimeout ? { rpcTimeout: { giveUpAt: new Date(now + RPC_TIMEOUT_MAX_WAIT_MS).toISOString(), waiting: null } } : {}),
+    ...(isQuotaError(error.message, error.code) ? { refusedPool: agentPool(agent.provider, model) } : {}),
     notBefore: new Date(now + transientDelaySeconds(config, 0) * 1000).toISOString(),
     resetAt: null, attempts: [], state: "detected", sentAt: null,
     resumeTurnId: null, resumeStartedAt: null, resumeFinishedAt: null,
@@ -429,8 +453,16 @@ export function attemptCount(record: ResumeRecord): number {
   return (record.attemptsDropped ?? 0) + record.attempts.length;
 }
 
+// Failed-turn records retry without a cap, but this many retries in a row failing with the same quota error end one.
+export const QUOTA_REPEAT_LIMIT = 2;
+
 export function afterTransientFailure(record: ResumeRecord, assistant: string, userText: string, userMessageId: string, lastUserMessageAt: string, config: ResumeConfig, now = Date.now()): ResumeRecord {
-  const exhausted = !record.failedOutcome && record.attempts.length >= (config.transientMaxAttempts ?? 3);
+  const signature = createHash("sha256").update(assistant).digest("hex").slice(0, 24);
+  // The same quota error again is not transient. Only a sent retry counts as a repeat; any other failure resets the count.
+  const quota = !!record.failedOutcome && isQuotaError(assistant);
+  const quotaRepeats = quota && signature === record.failureSignature ? (record.quotaRepeats ?? 0) + (record.sentAt ? 1 : 0) : 0;
+  const quotaStop = quotaRepeats >= QUOTA_REPEAT_LIMIT;
+  const exhausted = quotaStop || (!record.failedOutcome && record.attempts.length >= (config.transientMaxAttempts ?? 3));
   const updatedAt = new Date(now).toISOString();
   const attempts = record.attempts.slice(-MAX_KEPT_ATTEMPTS);
   const dropped = record.attempts.length - attempts.length;
@@ -438,9 +470,11 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
     ...record,
     ...(dropped > 0 ? { attempts, attemptsDropped: (record.attemptsDropped ?? 0) + dropped } : {}),
     state: exhausted ? "exhausted" : "parked",
-    terminalReason: exhausted ? "max-attempts" : null,
+    terminalReason: quotaStop ? "quota-error-repeated" : exhausted ? "max-attempts" : null,
     failedAssistantText: assistant,
-    failureSignature: createHash("sha256").update(assistant).digest("hex").slice(0, 24),
+    failureSignature: signature,
+    refusedPool: quota ? agentPool(record.provider, record.model) : null,
+    quotaRepeats,
     expectedUserText: userText,
     expectedUserMessageId: userMessageId,
     lastUserMessageAt,

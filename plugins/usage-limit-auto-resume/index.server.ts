@@ -30,6 +30,9 @@ export default function contribute(server: PluginServerContext, openClient: () =
   let stateErrorLogged = false;
   // One entry per agent with a send in flight; see processRecord.
   const inFlight = new Map<string, InFlightClaim>();
+  // The send-skipped reason last logged per record and attempt, so a record waiting out its delay is logged once, not on
+  // every poll.
+  const skipLogged = new Map<string, string>();
   // The startup chain, sweeps and hook handlers still running, so idle() can wait for them after cleanup. None of
   // them rejects.
   const tasks = new Set<Promise<unknown>>();
@@ -204,12 +207,19 @@ export default function contribute(server: PluginServerContext, openClient: () =
     const next = afterTransientFailure({ ...record, failedOutcome: true, retryPrompt: "continue" }, `failed: ${failure}`,
       user.text, user.messageId ?? user.clientMessageId ?? "", fresh.lastUserMessageAt, currentConfig, endedAt);
     if (!record.sentAt) next.notBefore = record.notBefore;
+    const unchanged = (value: ResumeRecord) => value.state === record.state && value.updatedAt === record.updatedAt;
+    // The same quota error again ends the record; nothing is sent.
+    if (next.state === "exhausted") {
+      const stopped = await store.update(record.recordId, (value) => unchanged(value) ? next : value);
+      if (stopped?.updatedAt === next.updatedAt) logQuotaStop(stopped);
+      return null;
+    }
     const gate = shouldResume({ ...next, notBefore: new Date(0).toISOString() }, fresh, currentConfig);
     if (!gate.ok) {
       if (["opted-out", "identity-changed", "archived", "newer-user-message"].includes(gate.reason)) await settle(gate.reason === "opted-out" ? "exhausted" : "superseded", gate.reason);
       return null;
     }
-    const stored = await store.update(record.recordId, (value) => value.state === record.state && value.updatedAt === record.updatedAt ? next : value);
+    const stored = await store.update(record.recordId, (value) => unchanged(value) ? next : value);
     return stored?.state === "parked" && stored.updatedAt === next.updatedAt ? stored : null;
   }
 
@@ -254,7 +264,11 @@ export default function contribute(server: PluginServerContext, openClient: () =
     }
     const gate = shouldResume(record, agent, currentConfig);
     if (!gate.ok) {
-      log(`send-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${gate.reason}`);
+      const skip = `${attemptCount(record)}:${gate.reason}`;
+      if (skipLogged.get(record.recordId) !== skip) {
+        skipLogged.set(record.recordId, skip);
+        log(`send-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${gate.reason}`);
+      }
       // An immediate retry can race the agent settling after its turn ends; keep the record and retry on the next sweep.
       const settling = gate.reason === "active-turn" || gate.reason === "agent-status=running";
       if (record.kind === "transient" && gate.reason !== "not-due" && !settling) {
@@ -264,6 +278,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
       }
       return;
     }
+    skipLogged.delete(record.recordId);
     // Before any send, the pool's quota: while every account is out, hold until the earliest reset instead of burning
     // an attempt. The hold is stored and logged once per change; an available or unknown quota sends as before.
     const decision = quotaDecision(record, await poolQuotaFor(record, currentConfig), quotaSettings(currentConfig));
@@ -599,7 +614,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
             const next = await store.update(active.recordId, (value) => value.state === "verifying" && value.resumeTurnId === event.turnId
               ? afterTransientFailure({ ...value, ...(failedTransient ? { failedOutcome: true, retryPrompt: "continue" } : {}) }, assistant, user.text, sentMessageId!, agent.lastUserMessageAt!, currentConfig)
               : value);
-            if (next?.state === "parked" || next?.state === "exhausted") log(`retry-${next.state === "exhausted" ? "exhausted" : "scheduled"} agentId=${event.agent.id} attempts=${attemptCount(next)}`);
+            if (next?.terminalReason === "quota-error-repeated") logQuotaStop(next);
+            else if (next?.state === "parked" || next?.state === "exhausted") log(`retry-${next.state === "exhausted" ? "exhausted" : "scheduled"} agentId=${event.agent.id} attempts=${attemptCount(next)}`);
             return;
           }
           if ((event.outcome.kind === "completed" && isUsageLimitAssistantText(assistant)) || (event.outcome.kind === "failed" && !failedTransient)) {
@@ -685,10 +701,17 @@ export default function contribute(server: PluginServerContext, openClient: () =
       if (stopped) return;
       const currentConfig = await config();
       if (!currentConfig) return;
-      // The runner decides from the outcome itself (turnSwapEvidence): only a failed usage-limit turn can swap.
+      // The runner decides from the outcome itself (turnSwapEvidence): only a failed turn refused for quota can swap.
       if (await fallback.afterTurnEnded(event.agent.id, event.outcome, currentConfig)) await sweep();
     }).catch((error) => failed("pm-fallback-turn-failed", error)));
   });
+
+  // A failed-turn record ended by the same quota error again (afterTransientFailure): said once, as the state changes.
+  function logQuotaStop(record: ResumeRecord) {
+    if (record.state !== "exhausted" || record.terminalReason !== "quota-error-repeated") return;
+    skipLogged.delete(record.recordId);
+    log(`retry-stopped agentId=${record.agentId} recordId=${record.recordId} reason=quota-error-repeated repeats=${record.quotaRepeats ?? 0} attempts=${attemptCount(record)} error=${JSON.stringify(record.failedAssistantText ?? "")}`);
+  }
 
   async function settleResumedItself(active: ResumeRecord, agentId: string) {
     const next = await store.update(active.recordId, (value) => isRpcTimeoutWaiting(value)
