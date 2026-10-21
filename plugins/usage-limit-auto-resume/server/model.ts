@@ -140,11 +140,12 @@ const TRANSIENT_ERROR_PATTERN = /\b(?:selected model is at capacity|experiencing
 // - leading the error, after an optional "[System Error]" or "API Error:", and followed by a JSON body, "Too Many
 //   Requests", "status code", ":" and the error text, or nothing ("429 {...}", "429: rate limited", "API Error: 429");
 // - after HTTP, status, status code or code that starts its own token (at the start, or after a space or an opening
-//   bracket, a comma or a semicolon, so never inside a path, URL or ID) and a real delimiter: spaces, ":" or "=";
+//   bracket, so never inside an ID) and a real delimiter: spaces, ":" or "=";
 // - a JSON status or code field ("status":429), "429 Too Many Requests", or "rejected (429)".
 // The phrase "rate limit" counts as a word, not inside a path or an ID.
-const TOKEN_START = String.raw`(?<=^|[\s(\[{,;])`;
-const NUMBER_END = String.raw`(?![\w\/-]|\.\w)`;
+// The pattern runs on the error with its path and URL content masked (maskPaths), never on a file or resource name.
+const TOKEN_START = String.raw`(?<=^|[\s(\[{])`;
+const NUMBER_END = String.raw`(?![\w\/\\-]|\.\w)`;
 const QUOTA_ERROR_PATTERN = new RegExp([
   String.raw`^\s*(?:\[System Error\]\s*)?(?:API Error:\s*)?429(?:\s*\{|\s*:\s*\S|\s+status code\b|\s*[-(]?\s*Too Many Requests\b|\s*$)`,
   String.raw`${TOKEN_START}(?:HTTP(?:\/\d(?:\.\d)?)?|status(?:[ _]?code)?|code)(?:\s*[:=]\s*|\s+)429${NUMBER_END}`,
@@ -157,9 +158,27 @@ const QUOTA_ERROR_PATTERN = new RegExp([
 // A structured error code that is itself the status or the provider's quota code.
 const QUOTA_CODE_PATTERN = /^\s*(?:429|402|rate[_ -]?limit(?:ed|_error|_exceeded)?|insufficient_credits?)\s*$/i;
 
+// Path and URL content: a quoted string with a slash or a backslash in it or a drive prefix at its start, or an unquoted
+// token (up to whitespace or a quote, so ";params" included) with "://", a slash or a backslash in it or a leading drive
+// letter. An HTTP version ("HTTP/1.1", "HTTP/2") is a protocol token, not a path.
+const SPAN_PATTERN = /"[^"]*"|'[^']*'|`[^`]*`|[^\s"'`]+/g;
+const HTTP_VERSION_PATTERN = /^[(\[{]?HTTP\/\d(?:\.\d)?[)\]},;:]?$/i;
+
+function isPathOrUrl(span: string): boolean {
+  const quoted = /^["'`]/.test(span);
+  const body = quoted ? span.slice(1, -1) : span;
+  if (!quoted && HTTP_VERSION_PATTERN.test(span)) return false;
+  return /[\/\\]/.test(body) || /^[A-Za-z]:/.test(body);
+}
+
+/** The error with every path and URL replaced by a placeholder, so nothing inside one reads as a status or a quota word. */
+export function maskPaths(message: string): string {
+  return message.replace(SPAN_PATTERN, (span) => isPathOrUrl(span) ? "<path>" : span);
+}
+
 export function isQuotaError(message: string, code?: string): boolean {
   if (BLOCKED_PATTERNS.some((pattern) => pattern.test(`${code ?? ""} ${message}`))) return false;
-  return QUOTA_CODE_PATTERN.test(code ?? "") || QUOTA_ERROR_PATTERN.test(message);
+  return QUOTA_CODE_PATTERN.test(code ?? "") || QUOTA_ERROR_PATTERN.test(maskPaths(message));
 }
 
 /** The model a failed turn's error names: Pi ends its failed-turn errors with "(stopReason=error, model=<id>)". */

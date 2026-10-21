@@ -474,6 +474,11 @@ const NOT_QUOTA = [
   "ENOENT: open '/fixture/status=429'",
   "429 files processed before transport broke",
   "429 bytes read; connection closed",
+  // Third review: a status form inside a Windows path, a path with ;params, or a URL.
+  String.raw`ENOENT: open 'C:\fixture\status code 429\output.json'`,
+  String.raw`ENOENT: open 'C:\fixture\job code 429'`,
+  "ENOENT: open /fixture/job;status=429",
+  "Connection refused https://example.test/resource;status=429",
 ];
 
 for (const [name, error, decoys] of [["a 429 rate limit", RATE_LIMIT, NOT_QUOTA], ["a 402 credit balance", CREDIT, []]] as const) {
