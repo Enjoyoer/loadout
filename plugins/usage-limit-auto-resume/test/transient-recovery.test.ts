@@ -470,3 +470,38 @@ it("a failure whose handler reads the agent after a newer user message is stale:
     });
   }
 });
+
+it("clock skew never makes a failure stale: its own user row stamped ahead of the plugin's clock, or the clock stepping back", async () => {
+  // Detection: the daemon stamped the failed turn's user row, and lastUserMessageAt, ahead of the plugin's clock.
+  for (const kind of ["transient", "usage"]) for (const ahead of [1, 1000]) {
+    await recoveryLane(async (lane) => {
+      const message = kind === "usage" ? "usage_limit_exceeded" : OVERLOADED;
+      mock.timers.setTime(START + ahead);
+      lane.append({ type: "user_message", text: "Next step", messageId: "human-skewed" }, "skew-turn");
+      lane.append({ type: "assistant_message", text: `[System Error] ${message}` }, "skew-turn");
+      Object.assign(lane.snapshot, { status: "error", lastError: message, lastUserMessageAt: new Date().toISOString() });
+      mock.timers.setTime(START);
+      lane.emit("agent.turn_ended", { agent: { id: lane.snapshot.id }, turnId: "skew-turn", outcome: { kind: "failed", error: { message } }, timeline: lane.timeline() });
+      await lane.plugin.idle();
+      const [record] = await lane.store.read();
+      assert.equal(record?.sourceTurnId, "skew-turn", `${kind} +${ahead}ms: the failure has its record`);
+      assert.equal(record?.originUserMessageAt, new Date(START + ahead).toISOString(), "the work's origin is its own user row's stamp");
+      if (kind === "usage") await lane.sweep(START + 6 * 3600_000);
+      assert.equal(lane.sends.length, 1, `${kind} +${ahead}ms: the failure is retried`);
+      assert.ok(!laneLogs.some((line) => line.includes("stale-failure")));
+    });
+  }
+  // A failed retry whose own message is still the latest user row, with the plugin's clock stepped back 1 ms before its
+  // end event arrives: it re-parks and sends its next attempt.
+  await recoveryLane(async (lane) => {
+    await lane.fail(START, OVERLOADED);
+    assert.equal(lane.sends.length, 1);
+    await lane.fail(START - 1, OVERLOADED);
+    const [record] = await lane.store.read();
+    assert.equal(record?.state, "parked");
+    assert.ok(!laneLogs.some((line) => line.includes("stale-failure")));
+    await lane.sweep(START + 150_000);
+    assert.equal(lane.sends.length, 2);
+    assert.match(lane.sends[1]!.messageId, /:attempt:2$/);
+  });
+});

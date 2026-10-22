@@ -40,9 +40,10 @@ export type ResumeRecord = {
   configFingerprint: string;
   detectedAt: string;
   lastUserMessageAt: string | null;
-  // The user message the work began with: the failed turn's own when the work's first record was created, then carried
-  // unchanged by every successor and re-park, never read again from a later agent snapshot. Only it can show that the
-  // work is newer than an agent close (closeDecision). Absent on records from before 0.3.0.
+  // When the user message the work began with was stamped: the failed turn's own row, by the daemon, when the work's
+  // first record was created (staleFailure), then carried unchanged by every successor and re-park, never read again
+  // from a later agent snapshot. Only it can show that the work is newer than an agent close (closeDecision). Absent on
+  // records from before 0.3.0.
   originUserMessageAt?: string | null;
   failureSignature: string;
   notBefore: string;
@@ -94,13 +95,44 @@ export function closeDecision(close: AgentClose | null, record: Pick<ResumeRecor
 }
 
 /**
- * The agent still has no user message newer than the turn that ended at `endedAt` (when its turn_ended event arrived),
- * so its latest user message is the one that turn ran on. A turn-end handler reads the agent after awaiting; if a user
- * message reached the agent meanwhile, the failure is stale and creates no record. Otherwise the record would take
- * that newer message's time for the old failed turn and pass the newer-message and close checks as new work.
+ * The user message a failed turn ran on, by identity: the latest user row of its turn_ended event, else the
+ * predecessor record's own last send. Null when neither has an ID.
  */
-export function isBoundToTurn(agent: Pick<AgentSnapshot, "lastUserMessageAt">, endedAt: number): boolean {
-  return !agent.lastUserMessageAt || Date.parse(agent.lastUserMessageAt) <= endedAt;
+export type BoundUser = { id: string; text: string | null };
+
+export function boundUser(user: Extract<AgentTimelineItem, { type: "user_message" }> | null, predecessor: Pick<ResumeRecord, "attempts"> | null): BoundUser | null {
+  const id = user ? user.messageId ?? user.clientMessageId : undefined;
+  if (user && id) return { id, text: user.text };
+  const own = predecessor?.attempts.at(-1)?.messageId;
+  return own ? { id: own, text: null } : null;
+}
+
+const userItem = (entry: TimelineEntry) => entry.item.type === "user_message" ? entry.item : null;
+const userId = (entry: TimelineEntry) => { const user = userItem(entry); return user ? user.messageId ?? user.clientMessageId ?? null : null; };
+
+/**
+ * Whether a failed turn is stale, decided from a timeline read after its handler's awaits. Only daemon evidence counts,
+ * never the plugin's clock. The failure is stale when the latest user row is a different message from the bound one
+ * (another ID, and not that row rebuilt with a new ID by the isExpectedUser rule: same text, no clientMessageId, the
+ * agent's lastUserMessageAt unchanged since the predecessor) and is later than it: after it in the daemon's timeline,
+ * and stamped no earlier, since rows of the same millisecond share a stamp. Newer work then took over, and a record for
+ * the old turn would take that work's time.
+ *
+ * `at` is the origin of the work (originUserMessageAt): the bound row's own daemon timestamp. When nothing is bound, or
+ * the timeline was not read (a closed agent, whose read would load it again, or a failed read), the failure is not
+ * stale and the snapshot's lastUserMessageAt stands in, so a legitimate failure is never dropped. When the bound row is
+ * gone from the timeline, the agent was loaded again since, which follows a close: the failure is not stale and has no
+ * origin, so that close holds and ends its record.
+ */
+export function staleFailure(bound: BoundUser | null, entries: readonly TimelineEntry[] | null, lastUserMessageAt: string | null | undefined, predecessor: Pick<ResumeRecord, "lastUserMessageAt"> | null): { stale: boolean; at: string | null } {
+  if (!bound || !entries) return { stale: false, at: lastUserMessageAt ?? null };
+  const row = entries.findLast((entry) => userId(entry) === bound.id);
+  if (!row) return { stale: false, at: null };
+  const latest = entries.findLast((entry) => !!userItem(entry))!;
+  const user = userItem(latest)!;
+  const rebuilt = bound.text !== null && user.text === bound.text && !user.clientMessageId && !!predecessor && !!lastUserMessageAt && lastUserMessageAt === predecessor.lastUserMessageAt;
+  if (row === latest || rebuilt) return { stale: false, at: row.timestamp };
+  return { stale: Date.parse(latest.timestamp) >= Date.parse(row.timestamp), at: row.timestamp };
 }
 
 // Retry immediately, then after 2, 5 and 15 minutes, then every 30 minutes: the last step repeats for as long as the
@@ -496,7 +528,7 @@ export function isRpcTimeoutWaiting(record: ResumeRecord): boolean {
   return !!record.rpcTimeout && attemptCount(record) === 0 && ["detected", "parked", "uncertain"].includes(record.state);
 }
 
-type TimelineEntry = { item: AgentTimelineItem; timestamp: string };
+export type TimelineEntry = { item: AgentTimelineItem; timestamp: string };
 
 const isRpcTimeoutRow = (item: AgentTimelineItem) =>
   (item.type === "assistant_message" && /^\[System Error\]/.test(item.text) && isRpcPromptTimeout(item.text)) ||

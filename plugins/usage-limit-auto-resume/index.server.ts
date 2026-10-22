@@ -8,7 +8,7 @@ import { ReturnStore, type Profile } from "./server/fallback.ts";
 import { readStoredProfiles } from "./server/stored-agent.ts";
 import { createFallbackRunner } from "./server/fallback-runner.ts";
 import { agentPool, QuotaReader, type PoolQuota, type QuotaPool } from "./server/quota.ts";
-import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, closeDecision, failureSignature, holdsClaim, isActive, isBoundToTurn, isExpectedUser, isOwnLatestMessage, isRpcTimeoutWaiting, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, rpcTimeoutDecision, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, USAGE_ENDING_GATES, verificationDecision, verifyTransientTimeline, type AgentClose, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
+import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, boundUser, cancelClaim, closeDecision, failureSignature, holdsClaim, isActive, isExpectedUser, isOwnLatestMessage, isRpcTimeoutWaiting, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, rpcTimeoutDecision, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, USAGE_ENDING_GATES, verificationDecision, verifyTransientTimeline, staleFailure, type AgentClose, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim, type TimelineEntry } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
@@ -154,16 +154,22 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // A long retry can fill the entire tail page. Walk back to the newest user, rather than treating a missing row
   // in 200 entries as an ambiguous send. Older pages naturally have hasNewer; anchor them to the fresh tail's epoch.
   async function transientTimeline(api: PaseoApi, record: ResumeRecord) {
-    const timeline = api.agents.ref(record.agentId).timeline;
-    if (heldByClose(record)) throw new Error("agent-closed");
+    return walkTimeline(api, record.agentId, (entries) => !!lastUserMessage(entries.map((entry) => entry.item)), () => !heldByClose(record));
+  }
+
+  // The tail of the agent's timeline, walked back until `enough` holds or it starts. `readable` is checked before each
+  // read, since a read loads a closed agent again.
+  async function walkTimeline(api: PaseoApi, agentId: string, enough: (entries: TimelineEntry[]) => boolean, readable: () => boolean) {
+    const timeline = api.agents.ref(agentId).timeline;
+    if (!readable()) throw new Error("agent-closed");
     let page = await timeline.refetch({ direction: "before", limit: 200 });
     if (page.error || page.gap || page.staleCursor || page.hasNewer) throw new Error("timeline-incomplete");
     const epoch = page.epoch;
     let entries = page.entries;
-    while (!lastUserMessage(entries.map((entry) => entry.item)) && page.hasOlder) {
+    while (!enough(entries) && page.hasOlder) {
       const cursor = page.startCursor;
       if (!cursor || cursor.epoch !== epoch) throw new Error("timeline-incomplete");
-      if (heldByClose(record)) throw new Error("agent-closed");
+      if (!readable()) throw new Error("agent-closed");
       page = await timeline.refetch({ direction: "before", cursor, limit: 200 });
       if (page.error || page.gap || page.staleCursor || page.epoch !== epoch || !page.entries.length ||
           (page.startCursor && page.startCursor.seq >= cursor.seq)) throw new Error("timeline-incomplete");
@@ -618,9 +624,24 @@ export default function contribute(server: PluginServerContext, openClient: () =
   });
 
   const removeTurnEnded = server.on("agent.turn_ended", (event, context) => {
-    // When the turn ended, as far as this handler can tell. A record built after an await binds to that turn's user
-    // message: a user message newer than this belongs to other work (isBoundToTurn).
-    const endedAt = Date.now();
+    // The user message the failed turn ran on, taken from the event before any await. A record built after the awaits
+    // binds to it, never to a later snapshot's user message (bindFailure).
+    const eventUser = lastUserMessage(event.timeline);
+    // The agent, and the close this process had seen when it was read: a close after that stops bindFailure's read.
+    const readAgent = async () => {
+      const agent = await fetchAgent(context.paseo, event.agent.id);
+      return { agent, closeSeen: closes.get(event.agent.id) };
+    };
+    // After the awaits: is a different, later user message now the agent's latest (staleFailure)? The timeline is read
+    // back to the bound row, unless the agent was closed by the snapshot or since: that read would load it again.
+    const bindFailure = async (agent: AgentSnapshot, closeSeen: AgentClose | undefined, predecessor: ResumeRecord | null) => {
+      const bound = boundUser(eventUser, predecessor);
+      const open = () => agent.status !== "closed" && closes.get(event.agent.id) === closeSeen;
+      const entries = bound && open()
+        ? await walkTimeline(context.paseo, event.agent.id, (rows) => rows.some((entry) => entry.item.type === "user_message" && (entry.item.messageId ?? entry.item.clientMessageId) === bound.id), open).catch(() => null)
+        : null;
+      return staleFailure(bound, entries, agent.lastUserMessageAt, predecessor);
+    };
     // Synchronous, before any await: another turn ending before a send is invoked stops that send.
     const pending = inFlight.get(event.agent.id);
     const unsent = pending && !pending.sendStarted ? pending : null;
@@ -658,8 +679,10 @@ export default function contribute(server: PluginServerContext, openClient: () =
         // no successor may take that work's time. The record ends.
         const predecessor = active;
         const settleStale = async (agent: AgentSnapshot) => {
-          await store.update(predecessor.recordId, (value) => !owns(value) ? value : ({ ...value, state: "superseded", terminalReason: "stale-failure", updatedAt: new Date().toISOString() }));
-          log(`stale-failure agentId=${event.agent.id} turnId=${event.turnId} recordId=${predecessor.recordId} reason=newer-user-message lastUserMessageAt=${agent.lastUserMessageAt}`);
+          let settled = false;
+          await store.update(predecessor.recordId, (value) => !owns(value) ? value : (settled = true, { ...value, state: "superseded", terminalReason: "stale-failure", updatedAt: new Date().toISOString() }));
+          // A duplicate end event for this turn finds it settled already and logs nothing.
+          if (settled) log(`stale-failure agentId=${event.agent.id} turnId=${event.turnId} recordId=${predecessor.recordId} reason=newer-user-message lastUserMessageAt=${agent.lastUserMessageAt}`);
         };
         // A successor continues the same work: it keeps the user message that work began with, not the snapshot's.
         const inherit = (successor: ResumeRecord): ResumeRecord => ({ ...successor, originUserMessageAt: predecessor.originUserMessageAt ?? null });
@@ -683,13 +706,13 @@ export default function contribute(server: PluginServerContext, openClient: () =
             return;
           }
           if (failedTransient || (event.outcome.kind === "completed" && isTransientAssistantText(assistant))) {
-            const agent = await fetchAgent(context.paseo, event.agent.id);
+            const { agent, closeSeen } = await readAgent();
             if (!agent || !agent.lastUserMessageAt || !isSameAgentAndSession(active, agent)) {
               await store.update(active.recordId, (value) => !owns(value) ? value : ({ ...value, state: "uncertain", terminalReason: "retry-identity-ambiguous", updatedAt: new Date().toISOString() }));
               log(`retry-uncertain agentId=${event.agent.id} reason=retry-identity-ambiguous`);
               return;
             }
-            if (!isBoundToTurn(agent, endedAt)) { await settleStale(agent); return; }
+            if ((await bindFailure(agent, closeSeen, active)).stale) { await settleStale(agent); return; }
             // Re-park only the attempt this turn ended; a decision another handler stored meanwhile stands. The failed
             // outcome's error, with its code, decides whether this was a quota refusal.
             let reparked = false;
@@ -701,8 +724,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
             return;
           }
           if ((event.outcome.kind === "completed" && isUsageLimitAssistantText(assistant)) || (event.outcome.kind === "failed" && !failedTransient)) {
-            const agent = await fetchAgent(context.paseo, event.agent.id);
-            if (agent && !isBoundToTurn(agent, endedAt)) { await settleStale(agent); return; }
+            const { agent, closeSeen } = await readAgent();
+            if (agent && (await bindFailure(agent, closeSeen, active)).stale) { await settleStale(agent); return; }
             const usage = agent && buildRecord(agent, assistant, undefined, currentConfig, Date.now(), event.turnId, event.outcome.kind === "failed");
             if (!usage || !isSameAgentAndSession(active, agent!)) {
               await store.update(active.recordId, (value) => !owns(value) ? value : ({ ...value, state: "uncertain", terminalReason: "usage-handoff-ambiguous", updatedAt: new Date().toISOString() }));
@@ -734,8 +757,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
           // A failed resume turn is a failed turn like any other: it hands the work to a new record for that turn (a
           // usage limit again waits for its reset, anything else retries on the backoff) instead of ending it.
           const error = event.outcome.error;
-          const agent = await fetchAgent(context.paseo, event.agent.id);
-          if (agent && !isBoundToTurn(agent, endedAt)) { await settleStale(agent); return; }
+          const { agent, closeSeen } = await readAgent();
+          if (agent && (await bindFailure(agent, closeSeen, active)).stale) { await settleStale(agent); return; }
           const built = agent && isSameAgentAndSession(active, agent)
             ? buildRecord(agent, error.message, error.code, currentConfig, Date.now(), event.turnId, true) ?? buildFailedTransientRecord(agent, event.timeline, error, currentConfig, Date.now(), event.turnId)
             : null;
@@ -774,7 +797,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
         log(`not-resumable agentId=${event.agent.id} outcome=${event.outcome.kind}`);
         return;
       }
-      const agent = await fetchAgent(context.paseo, event.agent.id);
+      const { agent, closeSeen } = await readAgent();
       if (!agent) return;
       const finalText = event.outcome.kind === "completed" ? turnText(event.timeline).assistant : null;
       const built = event.outcome.kind === "failed"
@@ -783,17 +806,19 @@ export default function contribute(server: PluginServerContext, openClient: () =
         : finalText && isUsageLimitAssistantText(finalText)
           ? buildRecord(agent, finalText, undefined, currentConfig, Date.now(), event.turnId)
           : buildTransientRecord(agent, event.timeline, currentConfig, Date.now(), event.turnId);
-      const record = built && await scheduled(built, currentConfig);
-      if (!record) {
+      const scheduledRecord = built && await scheduled(built, currentConfig);
+      if (!scheduledRecord) {
         log(`not-resumable agentId=${event.agent.id} outcome=${event.outcome.kind} reason=${event.outcome.kind === "failed" ? JSON.stringify(event.outcome.error) : "unrecognized-final"}`);
         return;
       }
-      // A user message reached the agent after this turn ended: newer work took over, and the record would take that
-      // work's time for this old turn.
-      if (!isBoundToTurn(agent, endedAt)) {
+      // A different, later user message is the agent's latest: newer work took over, and the record would take that
+      // work's time for this old turn. The work's origin is the failed turn's own user row (staleFailure).
+      const binding = await bindFailure(agent, closeSeen, null);
+      if (binding.stale) {
         log(`stale-failure agentId=${event.agent.id} turnId=${event.turnId} reason=newer-user-message lastUserMessageAt=${agent.lastUserMessageAt}`);
         return;
       }
+      const record: ResumeRecord = { ...scheduledRecord, originUserMessageAt: binding.at };
       // A record for this turn, or the guard a pruned one left, means the event was handled already.
       // A turn the plugin started is its record's to settle, never a new failure, however often its end is delivered.
       const sentBy = lastUserMessage(event.timeline);
