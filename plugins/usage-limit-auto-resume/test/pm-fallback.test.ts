@@ -277,9 +277,9 @@ it("a crash after a settings update but before its acknowledgement is finished, 
   assert.deepEqual(f.calls.apply, []);
 }));
 
-it("owner enrollment registers an already-fallen-back PM once and returns it on release; opt-out and archive are respected", () => scenario(async (f, logs) => {
+it("owner enrollment registers an already-fallen-back PM once and returns it on release; archive is respected, a nofallback label is not", () => scenario(async (f, logs) => {
   f.add("manual", "pm", { model: SOL, thinkingOptionId: "medium" });
-  f.add("pinned", "pm", { labels: { role: "pm", nofallback: "true" } });
+  f.add("labelled", "pm", { labels: { role: "pm", nofallback: "true" } });
   f.setConfig({ pmFallbackEnroll: [{ agentId: "manual", model: OPUS, thinkingOptionId: "high", serviceTier: null }] });
   await f.tick();
   await f.tick();
@@ -287,13 +287,14 @@ it("owner enrollment registers an already-fallen-back PM once and returns it on 
   assert.equal(obligations.length, 1);
   assert.equal(obligations[0]!.source, "enrolled");
   assert.equal(logs.filter((l) => l.includes("pm-enrolled agentId=manual")).length, 1);
-  await f.endTurn("pinned", { kind: "failed", error: { message: USAGE } }, "pinned-turn-1");
-  assert.equal(f.agents.get("pinned")!.model, OPUS);
+  await f.endTurn("labelled", { kind: "failed", error: { message: USAGE } }, "labelled-turn-1");
+  assert.equal(f.agents.get("labelled")!.model, SOL, "the nofallback label is ignored");
   f.agents.get("manual")!.archivedAt = "2026-01-02T11:00:00.000Z";
   f.pq.claude = { five: "ok", week: "ok" };
   await f.tick();
   assert.equal(f.agents.get("manual")!.model, SOL, "archived agents are not touched");
-  assert.equal((await f.returns.read()).obligations.length, 1, "the obligation waits");
+  assert.ok(await f.returns.get("manual"), "the obligation waits");
+  assert.equal(f.agents.get("labelled")!.model, OPUS, "the labelled PM returns like any other");
   f.agents.get("manual")!.archivedAt = null;
   await f.tick();
   assert.equal(f.agents.get("manual")!.model, OPUS);
@@ -327,7 +328,6 @@ it("a persisted swap intent is re-checked before it is applied; one that already
   const original = { model: OPUS, thinkingOptionId: "high", serviceTier: null };
   const fallback = { model: SOL, thinkingOptionId: "medium", serviceTier: "fast" };
   const cases: Array<[string, Partial<AgentSnapshot>, () => void]> = [
-    ["pinned", { labels: { role: "pm", nofallback: "true" } }, () => undefined],
     ["worker", { labels: { role: "worker" } }, () => undefined],
     ["nonclaude", { model: "local/qwen3.8-27b" }, () => undefined],
     ["freed", {}, () => { f.pq.claude = { five: "ok", week: "ok" }; }],
@@ -416,24 +416,24 @@ it("enrolling with an unset thinking option stores the catalog default, so the r
   assert.ok(logs.some((l) => l.includes("pm-restore-verified agentId=manual")));
 }));
 
-// Review r3 of 002a93f.
-it("a pinned agent with a landed swap is never repaired or returned; its resume sends are not held", () => scenario(async (f, logs) => {
-  f.add("pm", "pm", { model: SOL, thinkingOptionId: "high", labels: { role: "pm", nofallback: "true" } });
-  const ob = await f.returns.add(newObligation("pm", { model: OPUS, thinkingOptionId: "high", serviceTier: null }, { model: SOL, thinkingOptionId: "medium", serviceTier: "fast" }, "auto", "switching"));
-  await f.stop();
-  f.pq.stale = true;
-  await f.start();
-  f.pq.stale = false;
+// 10/21: a PM that inherited nofallback=true through a PM reassignment was never swapped. The label is ignored now.
+it("a nofallback label is ignored: the PM swaps on a quota refusal, a landed swap is finished, and both return", () => scenario(async (f, logs) => {
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture", nofallback: "true" } });
+  await f.endTurn("pm", { kind: "failed", error: { message: RATE_LIMIT } }, "pm-turn-1");
+  assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }]);
+  assert.deepEqual(f.calls.sends.map((s) => s.split(":")[1]), [SOL], "the retry runs on Sol");
+  // A swap that landed before a restart is repaired and kept as a return, not left pinned.
+  f.add("landed", "pm", { model: SOL, thinkingOptionId: "high", labels: { role: "pm", nofallback: "true" } });
+  await f.returns.add(newObligation("landed", { model: OPUS, thinkingOptionId: "high", serviceTier: null }, { model: SOL, thinkingOptionId: "medium", serviceTier: "fast" }, "auto", "switching"));
+  await f.tick();
+  assert.deepEqual(f.calls.apply.at(-1), { agentId: "landed", modelId: SOL, thinkingOptionId: "medium" });
+  assert.equal((await f.returns.get("landed"))?.phase, "fallback");
   f.pq.claude = { five: "ok", week: "ok" };
   await f.tick();
-  assert.deepEqual(f.calls.apply, []);
-  assert.deepEqual(f.calls.labels, []);
-  assert.deepEqual(profileOf(f.agents.get("pm")!), { model: SOL, thinkingOptionId: "high", serviceTier: null });
-  const kept = await f.returns.get("pm");
-  assert.equal(kept?.obligationId, ob!.obligationId, "the return waits for the owner");
-  assert.equal(kept?.restoreDueAt, null);
-  assert.equal(kept?.phase, "fallback");
-  assert.ok(logs.some((l) => l.includes("pm-return-waiting agentId=pm") && l.includes("reason=opted-out")));
+  assert.equal(f.agents.get("pm")!.model, OPUS);
+  assert.deepEqual(profileOf(f.agents.get("landed")!), { model: OPUS, thinkingOptionId: "high", serviceTier: null });
+  assert.deepEqual((await f.returns.read()).obligations, []);
+  assert.ok(!logs.some((l) => l.includes("opted-out")), "no opt-out path is left");
 }));
 
 it("a cancel in settings wins on the turn-end path before the sweep reads it", () => scenario(async (f, logs) => {

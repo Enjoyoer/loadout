@@ -21,12 +21,14 @@ const ConfigObjectSchema = z.object({
   pqTimeoutSeconds: z.number().int().min(1).max(15).default(5),
   excludedLabels: z.array(z.string().min(1)).default(["noresume"]),
   // PM quota fallback: a Pi PM on Claude moves to this exact catalog profile while pq shows Claude out, and is moved
-  // back once pq shows Claude usable. Off by default; turning it off stops new swaps, never a pending return.
+  // back once pq shows Claude usable. Off by default; turning it off stops new swaps, never a pending return. Every such
+  // PM is eligible: no label opts it out.
   pmFallback: z.boolean().default(false),
   pmFallbackModel: z.string().min(1).default("fleet/gpt-6.1-sol"),
   pmFallbackThinking: z.string().min(1).default("medium"),
   pmFallbackServiceTier: z.string().min(1).default("fast"),
-  pmFallbackOptOutLabel: z.string().min(1).default("nofallback"),
+  // Ignored since 0.3.0 (the nofallback opt-out is gone). Still accepted, because existing settings files may set it.
+  pmFallbackOptOutLabel: z.string().optional(),
   // Owner surface: register the original profile of a PM that is already elsewhere, or cancel one return by its id.
   pmFallbackEnroll: z.array(z.object({
     agentId: z.string().min(1),

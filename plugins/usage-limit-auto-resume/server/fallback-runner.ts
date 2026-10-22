@@ -93,7 +93,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
   }
 
   // The write gate, ahead of every settings change, repair or completion. A cancel is carried out here, so no trigger
-  // can act on a cancelled obligation before the sweep reads the cancel list. A pinned or archived agent is left
+  // can act on a cancelled obligation before the sweep reads the cancel list. An archived agent is left
   // exactly as it is: an unapplied swap intent is dropped, a landed one becomes a plain return that waits, and nothing
   // holds its resume sends.
   async function gate(obligation: ReturnObligation, agent: AgentSnapshot, config: Config): Promise<boolean> {
@@ -120,12 +120,12 @@ export function createFallbackRunner(deps: FallbackDeps) {
   // the return.
   async function recheckSwap(obligation: ReturnObligation, agent: AgentSnapshot, config: Config): Promise<ReturnObligation | null> {
     if (agent.model === obligation.fallback.model) {
-      const ineligible = fallbackIneligible(agent, config.pmFallbackOptOutLabel, obligation.original.model);
+      const ineligible = fallbackIneligible(agent, obligation.original.model);
       if (!ineligible) return obligation;
       log(`pm-swap-not-completed agentId=${agent.id} obligationId=${obligation.obligationId} reason=${ineligible} return=kept`);
       return returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", updatedAt: new Date().toISOString() }));
     }
-    let reason = agent.model !== obligation.original.model ? "model-changed" : fallbackIneligible(agent, config.pmFallbackOptOutLabel, obligation.original.model);
+    let reason = agent.model !== obligation.original.model ? "model-changed" : fallbackIneligible(agent, obligation.original.model);
     if (!reason && !config.pmFallback) reason = "pmFallback-off";
     if (!reason) {
       const decision = swapDecision(await deps.quota(agentPool("pi", obligation.original.model) ?? "claude", config, { fresh: true }), await deps.quota(agentPool("pi", obligation.fallback.model) ?? "codex", config, { fresh: true }));
@@ -201,7 +201,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const api = await deps.acquire();
     const agent = await fetchAgent(api, agentId);
     if (!agent) return;
-    const ineligible = fallbackIneligible(agent, config.pmFallbackOptOutLabel);
+    const ineligible = fallbackIneligible(agent);
     if (ineligible) {
       if (agent.labels?.role === "pm") once(agentId, `pm-fallback-skipped agentId=${agentId} reason=${ineligible}`);
       return;
