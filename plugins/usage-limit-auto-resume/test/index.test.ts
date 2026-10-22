@@ -427,7 +427,7 @@ it("keeps the turn from a claim when it starts while the rollback write is still
   }
 });
 
-it("sends nothing when a permission request's decision lands between the send gates and the resume claim", async () => {
+it("holds a send when a permission request lands between the send gates and the resume claim, then sends once it clears", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-claim-"));
   const plugins = pluginTracker();
   const previousHome = process.env.PASEO_HOME;
@@ -435,55 +435,66 @@ it("sends nothing when a permission request's decision lands between the send ga
   const originalLog = console.log;
   const logs: string[] = [];
   console.log = (line: string) => { logs.push(line); };
+  mock.timers.enable({ apis: ["setInterval"] });
   try {
-    const config = ConfigSchema.parse({ armed: true });
+    const config = ConfigSchema.parse({ armed: true, pollIntervalSeconds: 5 });
     const record: ResumeRecord = { ...buildRecord(agent, "out of credits", undefined, config, Date.now() - 6 * 3600_000, "turn-1")!, state: "parked" };
     const store = new ResumeStore();
     await store.upsert(record);
     const handlers = new Map<string, (event: unknown) => void>();
     let sends = 0;
-    // The gates have passed and the claim is the sweep's first store write. Deliver the permission request first and
-    // let its handler store its decision before the claim's write runs.
+    let settingsReads = 0;
+    let pending: AgentSnapshot["pendingPermissions"] = [];
+    // The gates have passed and the claim is the sweep's first store write. The permission request arrives just before
+    // that write runs.
     let holdClaim = true;
-    let permissionStored: Promise<void> | null = null;
     const update = ResumeStore.prototype.update;
     mock.method(ResumeStore.prototype, "update", function (this: ResumeStore, ...args: Parameters<ResumeStore["update"]>) {
-      if (!holdClaim) return update.apply(this, args);
-      holdClaim = false;
-      handlers.get("agent.permission_requested")!({ agent: { id: agent.id } });
-      permissionStored = (async () => {
-        // Bounded well under until()'s 10 s so the claim is released, and the test continues, before the outer wait expires.
-        await poll(async () => (await store.read())[0]?.state === "uncertain", 3_000);
-      })();
-      return permissionStored.then(() => update.apply(this, args));
+      if (holdClaim) {
+        holdClaim = false;
+        pending = [{ id: "permission-1" }];
+        handlers.get("agent.permission_requested")!({ agent: { id: agent.id } });
+      }
+      return update.apply(this, args);
     });
     const open = async () => ({
       getConnectionState: () => ({ status: "connected" }),
       close: async () => undefined,
       agents: { ref: () => ({
-        refresh: async () => ({ agent }),
+        refresh: async () => ({ agent: { ...agent, pendingPermissions: pending } }),
         send: async () => { sends += 1; },
       }) },
     } as unknown as PaseoClient);
     const server = {
-      registerSettings: () => ({ read: async () => ({ status: "ready", revision: "r1", values: config }) }),
+      registerSettings: () => ({ read: async () => { settingsReads += 1; return { status: "ready", revision: "r1", values: config }; } }),
       on: (name: string, handler: (event: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
     } as unknown as PluginServerContext;
     const cleanup = plugins.start(server, open);
-    await until(() => logs.some((line) => line.includes("send-skipped") || line.includes("resume-sent")));
-    assert.ok(permissionStored, "the claim's write was held behind the permission request");
-    await permissionStored;
-    (cleanup as () => void)();
+    await until(() => logs.some((line) => line.includes("record-held") && line.includes("reason=permission-requested")));
+    assert.equal(holdClaim, false, "the permission request arrived during the claim");
     assert.equal(sends, 0);
-    const [stored] = await store.read();
-    assert.equal(stored?.state, "uncertain");
-    assert.equal(stored?.terminalReason, "permission-requested");
+    let [stored] = await store.read();
+    // Nothing was sent, so the record waits as it was: not uncertain, which would end a usage record for good.
+    assert.equal(stored?.state, "parked");
     assert.deepEqual(stored?.attempts, []);
+    // While the permission is pending the send gate holds it.
+    await completeNextSweep(() => settingsReads, 5000);
+    assert.equal(sends, 0);
+    assert.equal((await store.read())[0]?.state, "parked");
+    // Once it is answered, the record sends on its schedule.
+    pending = [];
+    await completeNextSweep(() => settingsReads, 5000);
+    assert.equal(sends, 1);
+    assert.ok(logs.some((line) => line.includes("resume-sent")));
+    [stored] = await store.read();
+    assert.equal(stored?.attempts.length, 1);
+    (cleanup as () => void)();
   } finally {
     try {
       await plugins.dispose(home);
     } finally {
       mock.restoreAll();
+      mock.timers.reset();
       console.log = originalLog;
       if (previousHome === undefined) delete process.env.PASEO_HOME;
       else process.env.PASEO_HOME = previousHome;

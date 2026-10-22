@@ -277,9 +277,9 @@ it("a crash after a settings update but before its acknowledgement is finished, 
   assert.deepEqual(f.calls.apply, []);
 }));
 
-it("owner enrollment registers an already-fallen-back PM once and returns it on release; opt-out and archive are respected", () => scenario(async (f, logs) => {
+it("owner enrollment registers an already-fallen-back PM once and returns it on release; archive is respected, a nofallback label is not", () => scenario(async (f, logs) => {
   f.add("manual", "pm", { model: SOL, thinkingOptionId: "medium" });
-  f.add("pinned", "pm", { labels: { role: "pm", nofallback: "true" } });
+  f.add("labelled", "pm", { labels: { role: "pm", nofallback: "true" } });
   f.setConfig({ pmFallbackEnroll: [{ agentId: "manual", model: OPUS, thinkingOptionId: "high", serviceTier: null }] });
   await f.tick();
   await f.tick();
@@ -287,13 +287,14 @@ it("owner enrollment registers an already-fallen-back PM once and returns it on 
   assert.equal(obligations.length, 1);
   assert.equal(obligations[0]!.source, "enrolled");
   assert.equal(logs.filter((l) => l.includes("pm-enrolled agentId=manual")).length, 1);
-  await f.endTurn("pinned", { kind: "failed", error: { message: USAGE } }, "pinned-turn-1");
-  assert.equal(f.agents.get("pinned")!.model, OPUS);
+  await f.endTurn("labelled", { kind: "failed", error: { message: USAGE } }, "labelled-turn-1");
+  assert.equal(f.agents.get("labelled")!.model, SOL, "the nofallback label is ignored");
   f.agents.get("manual")!.archivedAt = "2026-01-02T11:00:00.000Z";
   f.pq.claude = { five: "ok", week: "ok" };
   await f.tick();
   assert.equal(f.agents.get("manual")!.model, SOL, "archived agents are not touched");
-  assert.equal((await f.returns.read()).obligations.length, 1, "the obligation waits");
+  assert.ok(await f.returns.get("manual"), "the obligation waits");
+  assert.equal(f.agents.get("labelled")!.model, OPUS, "the labelled PM returns like any other");
   f.agents.get("manual")!.archivedAt = null;
   await f.tick();
   assert.equal(f.agents.get("manual")!.model, OPUS);
@@ -327,7 +328,6 @@ it("a persisted swap intent is re-checked before it is applied; one that already
   const original = { model: OPUS, thinkingOptionId: "high", serviceTier: null };
   const fallback = { model: SOL, thinkingOptionId: "medium", serviceTier: "fast" };
   const cases: Array<[string, Partial<AgentSnapshot>, () => void]> = [
-    ["pinned", { labels: { role: "pm", nofallback: "true" } }, () => undefined],
     ["worker", { labels: { role: "worker" } }, () => undefined],
     ["nonclaude", { model: "local/qwen3.8-27b" }, () => undefined],
     ["freed", {}, () => { f.pq.claude = { five: "ok", week: "ok" }; }],
@@ -416,24 +416,24 @@ it("enrolling with an unset thinking option stores the catalog default, so the r
   assert.ok(logs.some((l) => l.includes("pm-restore-verified agentId=manual")));
 }));
 
-// Review r3 of 002a93f.
-it("a pinned agent with a landed swap is never repaired or returned; its resume sends are not held", () => scenario(async (f, logs) => {
-  f.add("pm", "pm", { model: SOL, thinkingOptionId: "high", labels: { role: "pm", nofallback: "true" } });
-  const ob = await f.returns.add(newObligation("pm", { model: OPUS, thinkingOptionId: "high", serviceTier: null }, { model: SOL, thinkingOptionId: "medium", serviceTier: "fast" }, "auto", "switching"));
-  await f.stop();
-  f.pq.stale = true;
-  await f.start();
-  f.pq.stale = false;
+// 10/21: a PM that inherited nofallback=true through a PM reassignment was never swapped. The label is ignored now.
+it("a nofallback label is ignored: the PM swaps on a quota refusal, a landed swap is finished, and both return", () => scenario(async (f, logs) => {
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture", nofallback: "true" } });
+  await f.endTurn("pm", { kind: "failed", error: { message: RATE_LIMIT } }, "pm-turn-1");
+  assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }]);
+  assert.deepEqual(f.calls.sends.map((s) => s.split(":")[1]), [SOL], "the retry runs on Sol");
+  // A swap that landed before a restart is repaired and kept as a return, not left pinned.
+  f.add("landed", "pm", { model: SOL, thinkingOptionId: "high", labels: { role: "pm", nofallback: "true" } });
+  await f.returns.add(newObligation("landed", { model: OPUS, thinkingOptionId: "high", serviceTier: null }, { model: SOL, thinkingOptionId: "medium", serviceTier: "fast" }, "auto", "switching"));
+  await f.tick();
+  assert.deepEqual(f.calls.apply.at(-1), { agentId: "landed", modelId: SOL, thinkingOptionId: "medium" });
+  assert.equal((await f.returns.get("landed"))?.phase, "fallback");
   f.pq.claude = { five: "ok", week: "ok" };
   await f.tick();
-  assert.deepEqual(f.calls.apply, []);
-  assert.deepEqual(f.calls.labels, []);
-  assert.deepEqual(profileOf(f.agents.get("pm")!), { model: SOL, thinkingOptionId: "high", serviceTier: null });
-  const kept = await f.returns.get("pm");
-  assert.equal(kept?.obligationId, ob!.obligationId, "the return waits for the owner");
-  assert.equal(kept?.restoreDueAt, null);
-  assert.equal(kept?.phase, "fallback");
-  assert.ok(logs.some((l) => l.includes("pm-return-waiting agentId=pm") && l.includes("reason=opted-out")));
+  assert.equal(f.agents.get("pm")!.model, OPUS);
+  assert.deepEqual(profileOf(f.agents.get("landed")!), { model: OPUS, thinkingOptionId: "high", serviceTier: null });
+  assert.deepEqual((await f.returns.read()).obligations, []);
+  assert.ok(!logs.some((l) => l.includes("opted-out")), "no opt-out path is left");
 }));
 
 it("a cancel in settings wins on the turn-end path before the sweep reads it", () => scenario(async (f, logs) => {
@@ -592,29 +592,56 @@ it("a rolled-over or stale Claude account still returning 429 counts as out: the
   });
 });
 
-it("the same quota error on consecutive retries stops the loop once, logged once, with no send-skipped repeats", async () => {
+// The 10/21 incident: PMs got Anthropic's 429 rate_limit_error while pq showed weekly quota left, and every record ended
+// `quota-error-repeated` after two retries, leaving the PM idle. Now every retry goes out on the backoff, past the
+// third, until a success or a newer user message.
+it("a repeated 429 rate_limit_error with pool capacity keeps retrying on the backoff past attempt 3, until success or a newer user message", async () => {
   // Review of #189: a quota refusal known only by its structured code repeats the same way.
   const CODE_ONLY = { message: "Provider request rejected. Try again later.", code: "429" };
-  for (const [role, error] of [["pm", { message: RATE_LIMIT }], ["worker", { message: RATE_LIMIT }], ["pm", CODE_ONLY], ["worker", CODE_ONLY]] as const) {
+  const cases = [["pm", { message: RATE_LIMIT }, "success"], ["worker", { message: RATE_LIMIT }, "newer-user-message"], ["pm", CODE_ONLY, "newer-user-message"], ["worker", CODE_ONLY, "success"]] as const;
+  for (const [role, error, end] of cases) {
     await scenario(async (f, logs) => {
-      const label = `${role} ${"code" in error ? "code-only" : "message"}`;
+      const label = `${role} ${"code" in error ? "code-only" : "message"} ${end}`;
       // pq shows capacity, so the 429 stays transient and is retried; every retry fails the same way.
       f.pq.claude = { five: "ok", week: "ok" };
       f.add("agent", role);
       await f.endTurn("agent", { kind: "failed", error }, "agent-turn-1");
-      assert.equal(f.calls.sends.length, 1, label);
-      await f.endTurn("agent", { kind: "failed", error }, "resume-1");
-      assert.equal((await f.records.read())[0]!.state, "parked", `${label}: one repeat still retries`);
-      for (let n = 0; n < 4 && f.calls.sends.length < 2; n++) await f.tick();
-      assert.equal(f.calls.sends.length, 2, label);
-      await f.endTurn("agent", { kind: "failed", error }, "resume-2");
-      for (let n = 0; n < 40; n++) await f.tick();
-      assert.equal(f.calls.sends.length, 2, `${label}: no send after the stop`);
-      const [record] = await f.records.read();
-      assert.equal(record!.state, "exhausted");
-      assert.equal(record!.terminalReason, "quota-error-repeated");
-      assert.equal(logs.filter((l) => l.includes("retry-stopped agentId=agent")).length, 1, label);
-      assert.equal(logs.filter((l) => l.includes("send-skipped agentId=agent")).length, 1, `${label}: the wait for retry 2 is logged once`);
+      // Seconds from each failure to the send that retries it.
+      const gaps: number[] = [];
+      let failedAt = Date.now();
+      const sent = async (count: number) => {
+        for (let n = 0; n < 100 && f.calls.sends.length < count; n++) await f.tick();
+        assert.equal(f.calls.sends.length, count, label);
+        gaps.push((Date.now() - failedAt) / 1000);
+      };
+      await sent(1);
+      for (let retry = 1; retry <= 6; retry++) {
+        await f.endTurn("agent", { kind: "failed", error }, `resume-${retry}`);
+        failedAt = Date.now();
+        assert.equal((await f.records.read())[0]!.state, "parked", `${label}: retry ${retry} failed and is parked again`);
+        await sent(retry + 1);
+      }
+      assert.deepEqual(gaps, [0, 120, 300, 900, 1800, 1800, 1800], label);
+      assert.ok(f.calls.sends.every((s) => s === `agent:${OPUS}:continue`), label);
+      if (end === "success") {
+        await f.endTurn("agent", { kind: "completed" }, "resume-7", "Work completed.");
+        assert.deepEqual(await f.records.read(), [], `${label}: the success removes the record`);
+      } else {
+        await f.endTurn("agent", { kind: "failed", error }, "resume-7");
+        await f.tick();
+        Object.assign(f.agents.get("agent")!, { lastUserMessageAt: new Date().toISOString() });
+        await f.endTurn("agent", { kind: "completed" }, "user-turn-2", "Answered.");
+        const [record] = await f.records.read();
+        assert.equal(record!.state, "superseded", label);
+        assert.equal(record!.terminalReason, "newer-user-message", label);
+      }
+      for (let n = 0; n < 120; n++) await f.tick();
+      assert.equal(f.calls.sends.length, 7, `${label}: nothing is sent after the stop`);
+      // One line per retry, never one per poll.
+      assert.equal(logs.filter((l) => l.includes("retry-sent agentId=agent")).length, 7, label);
+      assert.equal(logs.filter((l) => l.includes("retry-scheduled agentId=agent")).length, end === "success" ? 6 : 7, label);
+      assert.equal(logs.filter((l) => l.includes("send-skipped agentId=agent")).length, end === "success" ? 6 : 7, `${label}: each wait is logged once`);
+      assert.ok(!logs.some((l) => l.includes("retry-stopped") || l.includes("exhausted")), label);
       // A PM is considered for a swap on every quota failure; with Claude capacity it is held, and said once.
       assert.equal(logs.filter((l) => l.includes("pm-fallback-held agentId=agent")).length, role === "pm" ? 1 : 0, label);
       assert.deepEqual(f.calls.apply, []);

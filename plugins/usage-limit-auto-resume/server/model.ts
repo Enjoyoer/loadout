@@ -20,7 +20,7 @@ export type ResumeRecord = {
   version: 2;
   kind?: "usage" | "transient";
   failedOutcome?: boolean;
-  // Usage failures also leave Pi in error, but retain the usage delay/attempt cap.
+  // Usage failures also leave Pi in error, but retain the usage delay.
   usageFailedOutcome?: boolean;
   retryPrompt?: string;
   expectedUserText?: string;
@@ -40,6 +40,11 @@ export type ResumeRecord = {
   configFingerprint: string;
   detectedAt: string;
   lastUserMessageAt: string | null;
+  // When the user message the work began with was stamped: the failed turn's own row, by the daemon, when the work's
+  // first record was created (staleFailure), then carried unchanged by every successor and re-park, never read again
+  // from a later agent snapshot. Only it can show that the work is newer than an agent close (closeDecision). Absent on
+  // records from before 0.3.0.
+  originUserMessageAt?: string | null;
   failureSignature: string;
   notBefore: string;
   resetAt: string | null;
@@ -61,15 +66,81 @@ export type ResumeRecord = {
   rpcTimeout?: RpcTimeoutWait | null;
   // The pq pool whose provider refused the failed turn for quota (see quotaRefused); absent for any other failure.
   refusedPool?: QuotaPool | null;
-  // Retries in a row that failed with the record's same quota error; QUOTA_REPEAT_LIMIT of them end the record.
-  quotaRepeats?: number;
 };
 
 export type RpcTimeoutWait = { giveUpAt: string; waiting: string | null };
 
+/** Paseo closed this agent (`agent.closed`): when, and which daemon run saw it (the plugin's parent process). */
+export type AgentClose = { agentId: string; at: string; daemon: string };
+
+// Paseo 0.11.1 closes every agent when the daemon shuts down, with the same `agent.closed` event an explicit close or
+// kill sends, and stops plugins a few seconds later. A close this daemon run still outlives by this long was an
+// explicit one.
+export const AGENT_CLOSE_GRACE_MS = 60_000;
+
+/**
+ * What the agent's close means for one of its records now. The close belongs to the agent, not to a record, so it
+ * holds every record of the agent, including one a handler created after the close.
+ * - "go": no close, or the record's work is newer than it: the user message the work began with (originUserMessageAt)
+ *   came after the close, so someone opened the agent again with that message.
+ * - "stale": an earlier daemon run saw the close, which was that run's shutdown. It no longer applies.
+ * - "hold": this daemon run saw the close less than AGENT_CLOSE_GRACE_MS ago. Nothing is sent or read for the record.
+ * - "end": this daemon run has outlived the close, so it was a kill or close by a user or an agent. The record ends.
+ */
+export function closeDecision(close: AgentClose | null, record: Pick<ResumeRecord, "originUserMessageAt">, daemon: string, now = Date.now()): "go" | "stale" | "hold" | "end" {
+  if (!close) return "go";
+  if (close.daemon !== daemon) return "stale";
+  if (record.originUserMessageAt && Date.parse(record.originUserMessageAt) > Date.parse(close.at)) return "go";
+  return Date.parse(close.at) + AGENT_CLOSE_GRACE_MS <= now ? "end" : "hold";
+}
+
+/**
+ * The user message a failed turn ran on, by identity: the latest user row of its turn_ended event, else the
+ * predecessor record's own last send. Null when neither has an ID.
+ */
+export type BoundUser = { id: string; text: string | null };
+
+export function boundUser(user: Extract<AgentTimelineItem, { type: "user_message" }> | null, predecessor: Pick<ResumeRecord, "attempts"> | null): BoundUser | null {
+  const id = user ? user.messageId ?? user.clientMessageId : undefined;
+  if (user && id) return { id, text: user.text };
+  const own = predecessor?.attempts.at(-1)?.messageId;
+  return own ? { id: own, text: null } : null;
+}
+
+const userItem = (entry: TimelineEntry) => entry.item.type === "user_message" ? entry.item : null;
+const userId = (entry: TimelineEntry) => { const user = userItem(entry); return user ? user.messageId ?? user.clientMessageId ?? null : null; };
+
+/**
+ * Whether a failed turn is stale, decided from a timeline read after its handler's awaits. Only daemon evidence counts,
+ * never the plugin's clock. The failure is stale when the latest user row is a different message from the bound one
+ * (another ID, and not that row rebuilt with a new ID by the isExpectedUser rule: same text, no clientMessageId, the
+ * agent's lastUserMessageAt unchanged since the predecessor) and is later than it: after it in the daemon's timeline,
+ * and stamped no earlier, since rows of the same millisecond share a stamp. Newer work then took over, and a record for
+ * the old turn would take that work's time.
+ *
+ * `at` is the origin of the work (originUserMessageAt): the bound row's own daemon timestamp. When nothing is bound, or
+ * the read failed, the failure is not stale and the snapshot's lastUserMessageAt stands in, so a legitimate failure is
+ * never dropped. (A closed agent's timeline is never read, since the read would load it again; its caller gives that
+ * failure no origin.) When the bound row is
+ * gone from the timeline, the agent was loaded again since, which follows a close: the failure is not stale and has no
+ * origin, so that close holds and ends its record.
+ */
+export function staleFailure(bound: BoundUser | null, entries: readonly TimelineEntry[] | null, lastUserMessageAt: string | null | undefined, predecessor: Pick<ResumeRecord, "lastUserMessageAt"> | null): { stale: boolean; at: string | null } {
+  if (!bound || !entries) return { stale: false, at: lastUserMessageAt ?? null };
+  const row = entries.findLast((entry) => userId(entry) === bound.id);
+  if (!row) return { stale: false, at: null };
+  const latest = entries.findLast((entry) => !!userItem(entry))!;
+  const user = userItem(latest)!;
+  const rebuilt = bound.text !== null && user.text === bound.text && !user.clientMessageId && !!predecessor && !!lastUserMessageAt && lastUserMessageAt === predecessor.lastUserMessageAt;
+  if (row === latest || rebuilt) return { stale: false, at: row.timestamp };
+  return { stale: Date.parse(latest.timestamp) >= Date.parse(row.timestamp), at: row.timestamp };
+}
+
+// Retry immediately, then after 2, 5 and 15 minutes, then every 30 minutes: the last step repeats for as long as the
+// record lives. No attempt count ends a record.
+export const DEFAULT_BACKOFF_SECONDS: readonly number[] = [0, 120, 300, 900, 1800];
+
 export type ResumeConfig = {
-  maxAttempts: number;
-  transientMaxAttempts?: number;
   transientBackoffSeconds?: readonly number[];
   baseDelaySeconds: number;
   maxDelaySeconds: number;
@@ -219,7 +290,7 @@ export function turnText(timeline: readonly AgentTimelineItem[]): { assistant: s
 }
 
 export function transientDelaySeconds(config: ResumeConfig, attempts: number): number {
-  const delays = config.transientBackoffSeconds ?? [0, 120, 300, 900];
+  const delays = config.transientBackoffSeconds ?? DEFAULT_BACKOFF_SECONDS;
   return delays[Math.min(attempts, delays.length - 1)]!;
 }
 
@@ -309,6 +380,7 @@ export function buildRecord(eventAgent: AgentSnapshot, failureMessage: string, c
     configFingerprint: identity,
     detectedAt,
     lastUserMessageAt: eventAgent.lastUserMessageAt ?? null,
+    originUserMessageAt: eventAgent.lastUserMessageAt ?? null,
     failureSignature: signature,
     notBefore: new Date(Math.max(now + delayMs, resetAt ? Date.parse(resetAt) + config.resetBufferSeconds * 1000 : 0)).toISOString(),
     resetAt,
@@ -364,7 +436,7 @@ export function buildTransientRecord(agent: AgentSnapshot, timeline: readonly Ag
     modeId: agent.currentModeId ?? null, thinkingOptionId: agent.thinkingOptionId ?? null,
     cwd: agent.cwd, persistenceSessionId: agent.persistence.sessionId,
     nativeHandle: agent.persistence.nativeHandle ?? null, configFingerprint: identity,
-    detectedAt, lastUserMessageAt: agent.lastUserMessageAt,
+    detectedAt, lastUserMessageAt: agent.lastUserMessageAt, originUserMessageAt: agent.lastUserMessageAt,
     failureSignature: createHash("sha256").update(assistant).digest("hex").slice(0, 24),
     failedAssistantText: assistant, expectedUserText: user.text,
     expectedUserMessageId: user.messageId ?? user.clientMessageId ?? null,
@@ -410,7 +482,7 @@ export function buildFailedTransientRecord(agent: AgentSnapshot, timeline: reado
     modeId: agent.currentModeId ?? null, thinkingOptionId: agent.thinkingOptionId ?? null,
     cwd: agent.cwd, persistenceSessionId: agent.persistence.sessionId,
     nativeHandle: agent.persistence.nativeHandle ?? null, configFingerprint: identity,
-    detectedAt, lastUserMessageAt: agent.lastUserMessageAt,
+    detectedAt, lastUserMessageAt: agent.lastUserMessageAt, originUserMessageAt: agent.lastUserMessageAt,
     failureSignature: createHash("sha256").update(failure).digest("hex").slice(0, 24),
     failedAssistantText: failure, expectedUserText: user.text,
     expectedUserMessageId: user.messageId ?? user.clientMessageId ?? null,
@@ -426,14 +498,30 @@ export function buildFailedTransientRecord(agent: AgentSnapshot, timeline: reado
   };
 }
 
-export function verifyTransientTimeline(record: ResumeRecord, timeline: readonly AgentTimelineItem[]): { ok: true } | { ok: false; reason: string } {
+/**
+ * The timeline's newest user row is the one the record checked: the original human message before the first send, or
+ * the record's own last send after a failed retry. `lastUserMessageAt` is the agent's, read with or before the timeline.
+ */
+export function verifyTransientTimeline(record: ResumeRecord, timeline: readonly AgentTimelineItem[], lastUserMessageAt: string | null | undefined): { ok: true } | { ok: false; reason: string } {
   const { assistant, user } = record.failedOutcome ? { assistant: record.failedAssistantText ?? null, user: lastUserMessage(timeline) } : turnText(timeline);
   if (!assistant || assistant !== record.failedAssistantText) return { ok: false, reason: "failure-text-changed" };
   if (!user) return { ok: false, reason: "user-prompt-missing" };
-  if (user.text !== record.expectedUserText) return { ok: false, reason: "newer-user-message" };
-  const id = user.messageId ?? user.clientMessageId ?? null;
-  if (record.expectedUserMessageId && id !== record.expectedUserMessageId) return { ok: false, reason: "newer-user-message" };
+  if (!isExpectedUser(record, user, lastUserMessageAt)) return { ok: false, reason: "newer-user-message" };
   return { ok: true };
+}
+
+/**
+ * The user row is the one the record expects: the same text, and the same message ID or, on a timeline Paseo rebuilt
+ * after a daemon restart, the same message by its time. A rebuild gives every user row a new ID and no clientMessageId,
+ * so the ID of the original human message and of the plugin's own sends no longer match. Any newer user message moves
+ * the agent's lastUserMessageAt, so an unchanged lastUserMessageAt, not the ID, proves it is the same message. A row that
+ * still carries a clientMessageId is a live row, whose ID must match.
+ */
+export function isExpectedUser(record: Pick<ResumeRecord, "expectedUserText" | "expectedUserMessageId" | "lastUserMessageAt">, user: Extract<AgentTimelineItem, { type: "user_message" }>, lastUserMessageAt: string | null | undefined): boolean {
+  if (user.text !== record.expectedUserText) return false;
+  const id = user.messageId ?? user.clientMessageId ?? null;
+  if (!record.expectedUserMessageId || id === record.expectedUserMessageId) return true;
+  return !user.clientMessageId && !!lastUserMessageAt && lastUserMessageAt === record.lastUserMessageAt;
 }
 
 /** A prompt-timeout record that has not sent its one resend and has not ended. */
@@ -441,7 +529,7 @@ export function isRpcTimeoutWaiting(record: ResumeRecord): boolean {
   return !!record.rpcTimeout && attemptCount(record) === 0 && ["detected", "parked", "uncertain"].includes(record.state);
 }
 
-type TimelineEntry = { item: AgentTimelineItem; timestamp: string };
+export type TimelineEntry = { item: AgentTimelineItem; timestamp: string };
 
 const isRpcTimeoutRow = (item: AgentTimelineItem) =>
   (item.type === "assistant_message" && /^\[System Error\]/.test(item.text) && isRpcPromptTimeout(item.text)) ||
@@ -468,8 +556,7 @@ export function rpcTimeoutDecision(record: ResumeRecord, agent: AgentSnapshot, t
   if (!timeline) return { act: "wait", reason: "timeline-unavailable" };
   const start = timeline.findLastIndex((entry) => entry.item.type === "user_message");
   const user = timeline[start]?.item;
-  if (user?.type !== "user_message" || user.text !== record.expectedUserText ||
-      (record.expectedUserMessageId && (user.messageId ?? user.clientMessageId) !== record.expectedUserMessageId)) {
+  if (user?.type !== "user_message" || !isExpectedUser(record, user, agent.lastUserMessageAt)) {
     return { act: "stop", state: "superseded", reason: "newer-user-message" };
   }
   const after = timeline.slice(start + 1).filter((entry) => entry.item.type !== "plugin");
@@ -483,25 +570,24 @@ export function rpcTimeoutDecision(record: ResumeRecord, agent: AgentSnapshot, t
 }
 
 export function transientRejectionState(reason: string): ResumeState {
-  return reason === "newer-user-message" ? "superseded" : reason === "max-attempts" ? "exhausted" : "uncertain";
+  return reason === "newer-user-message" ? "superseded" : reason === "rpc-timeout-resent" ? "exhausted" : "uncertain";
 }
 
-// Failed-turn records retry without a cap, so only their newest attempts are kept in full.
+// Records retry without a cap, so only their newest attempts are kept in full.
 export const MAX_KEPT_ATTEMPTS = 20;
 
 export function attemptCount(record: ResumeRecord): number {
   return (record.attemptsDropped ?? 0) + record.attempts.length;
 }
 
-// Failed-turn records retry without a cap, but this many retries in a row failing with the same quota error end one.
-export const QUOTA_REPEAT_LIMIT = 2;
-
 /**
- * Re-parks a transient record after its retry failed again. `failure` is the failed outcome's own error, with its code
- * when the caller has it: it, not the `failed: ...` text, decides whether this was a quota refusal, and the refusal
- * belongs to the pool of the model that refused (refusingPool). `textOnly` marks a re-read of the live error
- * (re-verification), which has no code and no turn: it recognizes no new evidence. A re-read of the same failure without
- * its code keeps the record's evidence as it is, on the pool it came from; carried evidence never moves to another pool.
+ * Re-parks a transient record after its retry failed again, on the next backoff step. No attempt count and no repeat of
+ * the same error ends it. `failure` is the failed outcome's own error, with its code when the caller has it: it, not the
+ * `failed: ...` text, decides whether this was a quota refusal (which can hold the next send while pq shows the pool
+ * out), and the refusal belongs to the pool of the model that refused (refusingPool). `textOnly` marks a re-read of the
+ * live error (re-verification), which has no code and no turn: it recognizes no new evidence. A re-read of the same
+ * failure without its code keeps the record's evidence as it is, on the pool it came from; carried evidence never moves
+ * to another pool.
  */
 export function afterTransientFailure(record: ResumeRecord, assistant: string, userText: string, userMessageId: string, lastUserMessageAt: string, config: ResumeConfig, now = Date.now(), failure: { message: string; code?: string; textOnly?: boolean } | null = null): ResumeRecord {
   const signature = createHash("sha256").update(assistant).digest("hex").slice(0, 24);
@@ -509,24 +595,17 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
   const recognized = !!record.failedOutcome && !!failure && !failure.textOnly && isQuotaError(failure.message, failure.code);
   const carried = !!record.failedOutcome && !!failure && !failure.code && same ? record.refusedPool ?? null : null;
   const refusedPool = recognized ? refusingPool(record.provider, record.model, failure!.message) : carried;
-  // The same quota error again, from the pool the record is on, is not transient. Only a sent retry counts as a repeat;
-  // any other failure resets the count.
-  const quota = !!refusedPool && refusedPool === agentPool(record.provider, record.model);
-  const quotaRepeats = quota && same ? (record.quotaRepeats ?? 0) + (record.sentAt ? 1 : 0) : 0;
-  const quotaStop = quotaRepeats >= QUOTA_REPEAT_LIMIT;
-  const exhausted = quotaStop || (!record.failedOutcome && record.attempts.length >= (config.transientMaxAttempts ?? 3));
   const updatedAt = new Date(now).toISOString();
   const attempts = record.attempts.slice(-MAX_KEPT_ATTEMPTS);
   const dropped = record.attempts.length - attempts.length;
   return {
     ...record,
     ...(dropped > 0 ? { attempts, attemptsDropped: (record.attemptsDropped ?? 0) + dropped } : {}),
-    state: exhausted ? "exhausted" : "parked",
-    terminalReason: quotaStop ? "quota-error-repeated" : exhausted ? "max-attempts" : null,
+    state: "parked",
+    terminalReason: null,
     failedAssistantText: assistant,
     failureSignature: signature,
     refusedPool,
-    quotaRepeats,
     expectedUserText: userText,
     expectedUserMessageId: userMessageId,
     lastUserMessageAt,
@@ -540,7 +619,12 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
 export type TurnObservation = { turnId: string | null; startedAt: string | null };
 
 /** The decision of an event (a permission request, an archive, another turn) that stops a send not yet started. */
-export type ClaimCancel = { state: ResumeState; reason: string };
+// A hold keeps the record's state from before the claim: nothing was sent, and the record sends later on its schedule.
+export type ClaimCancel = { state: ResumeState; reason: string; hold?: boolean };
+
+// The send gates that end a usage record. Every other one, such as a pending permission or an attention request, holds
+// it until a later sweep.
+export const USAGE_ENDING_GATES = ["newer-user-message", "identity-changed", "opted-out", "archived"];
 
 /**
  * One send in flight: what its claim writes, whether its rollback has replaced the claim, and any turn seen meanwhile.
@@ -574,7 +658,9 @@ export function presendCancel(record: ResumeRecord, taken: TurnMark, agent: Agen
   if (mark.lastUserMessageAt !== taken.lastUserMessageAt) return { state: "superseded", reason: "newer-user-message" };
   if (mark.activeTurnId !== taken.activeTurnId || mark.updatedAt !== taken.updatedAt) return { state: "superseded", reason: "turn-changed-before-send" };
   const gate = shouldResume(record, agent, config, now);
-  return gate.ok ? null : { state: "uncertain", reason: gate.reason };
+  if (gate.ok) return null;
+  if (record.kind !== "transient" && !USAGE_ENDING_GATES.includes(gate.reason)) return { state: record.state, reason: gate.reason, hold: true };
+  return { state: "uncertain", reason: gate.reason };
 }
 
 const isClaimAttempt = (attempt: ResumeAttempt, claim: InFlightClaim) => attempt.messageId === claim.attempt.messageId && attempt.at === claim.attempt.at;
@@ -591,7 +677,7 @@ export function cancelClaim(current: ResumeRecord, before: ResumeRecord, claim: 
   if (!current.attempts.some((attempt) => isClaimAttempt(attempt, claim))) return current;
   return {
     ...current,
-    ...(current.state === "resuming" ? { state: cancel.state, terminalReason: cancel.reason } : {}),
+    ...(current.state === "resuming" ? cancel.hold ? { state: before.state } : { state: cancel.state, terminalReason: cancel.reason } : {}),
     sentAt: current.sentAt === claim.sentAt ? before.sentAt : current.sentAt,
     verificationDeadlineAt: current.verificationDeadlineAt === claim.verificationDeadlineAt ? before.verificationDeadlineAt : current.verificationDeadlineAt,
     attempts: current.attempts.filter((attempt) => !isClaimAttempt(attempt, claim)),
@@ -678,7 +764,7 @@ export function rebindRecord(record: ResumeRecord, agent: AgentSnapshot, now = D
     quotaHold: null,
     // Quota evidence belongs to the model that refused: it never follows the record to another one, nor back after a
     // round trip without a new refusal there.
-    ...(model !== record.model ? { refusedPool: null, quotaRepeats: 0 } : {}),
+    ...(model !== record.model ? { refusedPool: null } : {}),
     notBefore: record.kind === "transient" ? record.notBefore : new Date(Math.min(Date.parse(record.notBefore), now)).toISOString(),
     updatedAt: new Date(now).toISOString(),
   };
@@ -686,13 +772,14 @@ export function rebindRecord(record: ResumeRecord, agent: AgentSnapshot, now = D
 
 export function shouldResume(record: ResumeRecord, agent: AgentSnapshot, config: ResumeConfig, now = Date.now()): { ok: true } | { ok: false; reason: string } {
   if (record.state !== "parked" && record.state !== "detected") return { ok: false, reason: `state=${record.state}` };
-  // Failed-turn records always resume; only the backoff (capped at its last step) limits them.
-  if (!record.failedOutcome && record.attempts.length >= (record.kind === "transient" ? (config.transientMaxAttempts ?? 3) : config.maxAttempts)) return { ok: false, reason: "max-attempts" };
-  // A prompt-timeout resend goes out at most once.
-  if (record.rpcTimeout && attemptCount(record) > 0) return { ok: false, reason: "max-attempts" };
+  // No attempt count ends a record; only the backoff (repeating its last step) spaces the sends. The one exception is
+  // a prompt-timeout resend, which goes out at most once.
+  if (record.rpcTimeout && attemptCount(record) > 0) return { ok: false, reason: "rpc-timeout-resent" };
   if (Date.parse(record.notBefore) > now) return { ok: false, reason: "not-due" };
-  // A failed turn leaves the agent in "error"; a send starts a fresh turn in the same session.
-  if (agent.status !== "idle" && !((record.failedOutcome || record.usageFailedOutcome) && agent.status === "error")) return { ok: false, reason: `agent-status=${agent.status}` };
+  // A failed turn leaves the agent in "error"; a send starts a fresh turn in the same session. "closed" is an agent whose
+  // runtime is not loaded, which is every agent after a daemon restart; the send loads it again. Only an archive or a
+  // delete ends the work.
+  if (agent.status !== "idle" && agent.status !== "closed" && !((record.failedOutcome || record.usageFailedOutcome) && agent.status === "error")) return { ok: false, reason: `agent-status=${agent.status}` };
   if (agent.activeTurn) return { ok: false, reason: "active-turn" };
   if ((agent.pendingPermissions?.length ?? 0) > 0) return { ok: false, reason: "pending-permission" };
   // "finished" and "error" are Paseo's unread markers after a turn ends (an errored agent always carries "error"); only input requests block a resume.

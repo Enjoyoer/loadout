@@ -9,12 +9,15 @@ import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { QuotaReader } from "../server/quota.ts";
 import contribute from "../index.server.ts";
 import { ConfigSchema } from "../server/config.ts";
-import { buildFailedTransientRecord, type AgentSnapshot, type ResumeRecord } from "../server/model.ts";
+import { buildFailedTransientRecord, buildRecord, isActive, type AgentSnapshot, type ResumeRecord } from "../server/model.ts";
 import { ResumeStore } from "../server/store.ts";
 
 const START = Date.parse("2026-10-13T03:49:59.979Z");
 const OVERLOADED = "Our servers are currently overloaded";
 const AUTH_UNAVAILABLE = "fleet API error (503): auth_unavailable: no auth available; server_is_overloaded";
+
+// What the plugin logged in the current lane.
+let laneLogs: string[] = [];
 
 async function recoveryLane(run: (lane: Awaited<ReturnType<typeof setup>>) => Promise<void>) {
   const scratch = path.join(homedir(), ".cache", "fleet-scratch", "loadout", "autoresume-regression");
@@ -23,7 +26,8 @@ async function recoveryLane(run: (lane: Awaited<ReturnType<typeof setup>>) => Pr
   const oldHome = process.env.PASEO_HOME;
   const oldLog = console.log;
   process.env.PASEO_HOME = home;
-  console.log = () => undefined;
+  laneLogs = [];
+  console.log = (line: unknown) => { laneLogs.push(String(line)); };
   mock.timers.enable({ apis: ["Date", "setInterval"], now: START });
   let lane: Awaited<ReturnType<typeof setup>> | undefined;
   try {
@@ -31,6 +35,8 @@ async function recoveryLane(run: (lane: Awaited<ReturnType<typeof setup>>) => Pr
     await run(lane);
   } finally {
     try {
+      // A handler a failed test left held would keep idle() waiting forever.
+      lane?.releaseHeld();
       lane?.plugin();
       await lane?.plugin.idle();
     } finally {
@@ -62,16 +68,26 @@ async function setup() {
   const sends: Array<{ prompt: string; messageId: string }> = [];
   const handlers = new Map<string, (event: unknown, context?: unknown) => void>();
   let olderReads = 0;
-  let beforeRefresh: (() => void) | null = null;
+  // Timeline reads while the agent is closed: on Paseo 0.11.1 each one loads the agent again.
+  let closedReads = 0;
+  // Returns "before" when the agent read answers with the snapshot taken before the hook ran.
+  let beforeRefresh: (() => void | "before" | Promise<void | "before">) | null = null;
+  // The daemon run the plugin sees; a test that restarts the daemon changes it.
+  let daemonRun = "daemon-run-1";
+  const held: Array<() => void> = [];
   const api = {
     getConnectionState: () => ({ status: "connected" }),
     close: async () => undefined,
     agents: { ref: () => ({
-      refresh: async () => { beforeRefresh?.(); return { agent: { ...snapshot } }; },
+      refresh: async () => {
+        const taken = { ...snapshot };
+        return { agent: await beforeRefresh?.() === "before" ? taken : { ...snapshot } };
+      },
       timeline: { refetch: async (options: { cursor?: { epoch: string; seq: number }; limit: number }) => {
         const end = options.cursor ? options.cursor.seq - 1 : entries.length;
         const start = Math.max(0, end - options.limit);
         if (options.cursor) olderReads++;
+        if (snapshot.status === "closed") closedReads++;
         return { entries: entries.slice(start, end), epoch: "epoch-1", hasOlder: start > 0, hasNewer: !!options.cursor,
           startCursor: { epoch: "epoch-1", seq: start + 1 }, error: null, gap: false, staleCursor: false };
       } },
@@ -93,12 +109,51 @@ async function setup() {
     on: (name: string, handler: (event: unknown, context?: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
   } as unknown as PluginServerContext;
   // The host's real pq never decides these quota-blind cases.
-  const plugin = contribute(server, async () => api, new QuotaReader(async () => ({ error: "pq disabled in tests" })));
+  const plugin = contribute(server, async () => api, new QuotaReader(async () => ({ error: "pq disabled in tests" })), undefined, undefined, () => daemonRun);
   await plugin.idle();
   return {
     config, store, snapshot, sends, plugin, append,
     olderReads: () => olderReads,
-    beforeRefresh: (action: (() => void) | null) => { beforeRefresh = action; },
+    closedReads: () => closedReads,
+    beforeRefresh: (action: (() => void | Promise<void>) | null) => { beforeRefresh = action; },
+    /**
+     * Holds the next agent read until release(); the lane releases it at cleanup too. With "before" the read answers
+     * with the snapshot taken when it began, as a daemon reply that arrives late does.
+     */
+    holdNextRefresh(snapshotAt: "before" | "after" = "after") {
+      let release!: () => void;
+      const barrier = new Promise<void>((resolve) => { release = resolve; });
+      held.push(release);
+      let reached = false;
+      beforeRefresh = async () => {
+        if (reached) return;
+        reached = true;
+        await barrier;
+        return snapshotAt === "before" ? "before" : undefined;
+      };
+      return { reached: () => reached, release };
+    },
+    releaseHeld: () => { for (const release of held) release(); },
+    /** Delivers a hook event without waiting for the plugin to settle. */
+    emit: (name: string, event: unknown) => handlers.get(name)?.(event, { paseo: api }),
+    timeline: () => entries.map((entry) => entry.item),
+    /** A daemon restart: a new daemon run, every agent closed, and each user row rebuilt with a new ID and no clientMessageId. */
+    restart() {
+      daemonRun = `daemon-run-${Number(daemonRun.split("-").at(-1)) + 1}`;
+      snapshot.status = "closed";
+      entries = entries.map((entry, at) => entry.item.type === "user_message"
+        ? { ...entry, item: { type: "user_message", text: entry.item.text, messageId: `rebuilt-${at}` } } : entry);
+    },
+    async complete(at: number) {
+      mock.timers.setTime(at);
+      const turnId = snapshot.activeTurn!.turnId;
+      append({ type: "assistant_message", text: "Done." }, turnId);
+      snapshot.status = "idle";
+      snapshot.activeTurn = null;
+      snapshot.lastError = undefined;
+      snapshot.updatedAt = new Date().toISOString();
+      handlers.get("agent.turn_ended")!({ agent: { id: snapshot.id }, turnId, timeline: entries.map((entry) => entry.item), outcome: { kind: "completed" } }, { paseo: api });
+    },
     async sweep(at: number) {
       mock.timers.setTime(at);
       mock.timers.tick(30_000);
@@ -207,6 +262,305 @@ it("transient recovery sends nothing while running or after a newer human messag
       const [record] = await lane.store.read();
       assert.equal(record?.state, change === "running" ? "uncertain" : "superseded");
       if (change === "presend-human") assert.equal(record?.attempts.length, 1, "cancelled claim leaves no extra attempt");
+    });
+  }
+});
+
+/** Lets the plugin's pending work run while a hook handler is held, so the test cannot wait for idle(). */
+// Wall clock between checks: a check that reads the state file in a tight loop can keep Windows from replacing it.
+async function settles(check: () => boolean | Promise<boolean>, what: string) {
+  const deadline = performance.now() + 10_000;
+  while (!(await check())) {
+    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}; the plugin logged:\n${laneLogs.slice(-8).join("\n")}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/** The close handler logs once its store write has landed; waiting on the log reads no file. */
+const closeStored = (id: string) => () => laneLogs.some((line) => line.includes(`agent-closed agentId=${id} `));
+
+it("a rebuilt timeline keeps a waiting retry, before its first send or after its own continue, until a newer user message", async () => {
+  // Quota held the first retry, so nothing was sent; the daemon restarts and rebuilds the original human row.
+  await recoveryLane(async (lane) => {
+    const record = buildFailedTransientRecord(lane.snapshot, lane.timeline(), { message: OVERLOADED }, lane.config, START, "source-turn")!;
+    await lane.store.upsert({ ...record, state: "parked", quotaHold: { until: new Date(START - 1).toISOString(), reason: "quota held the first retry" } });
+    lane.restart();
+    await lane.sweep(START);
+    assert.deepEqual(lane.sends.map((send) => send.prompt), ["continue"]);
+    assert.equal((await lane.store.read())[0]?.state, "verifying");
+  });
+  // A failed retry waits in uncertain behind a permission request; the permission clears and the daemon restarts,
+  // rebuilding the plugin's own continue. With lastUserMessageAt unchanged it is still that continue.
+  for (const newer of [false, true]) {
+    await recoveryLane(async (lane) => {
+      await lane.fail(START, OVERLOADED);
+      await lane.fail(START + 25_000, OVERLOADED);
+      lane.snapshot.pendingPermissions = [{ id: "permission-1" }];
+      await lane.sweep(START + 150_000);
+      assert.equal((await lane.store.read())[0]?.state, "uncertain");
+      lane.snapshot.pendingPermissions = [];
+      lane.restart();
+      if (newer) {
+        // A newer human message with the same text: the rebuilt row looks the same, but lastUserMessageAt moved.
+        lane.append({ type: "user_message", text: "continue", messageId: "human-new" }, "human-turn");
+        lane.snapshot.lastUserMessageAt = new Date(START + 200_000).toISOString();
+      }
+      await lane.sweep(START + 300_000);
+      const [stored] = await lane.store.read();
+      if (newer) {
+        assert.equal(lane.sends.length, 1);
+        assert.equal(stored?.state, "superseded");
+        assert.equal(stored?.terminalReason, "newer-user-message");
+      } else {
+        assert.equal(lane.sends.length, 2);
+        assert.match(lane.sends[1]!.messageId, /:attempt:2$/);
+        assert.equal(stored?.state, "verifying");
+      }
+    });
+  }
+});
+
+it("an explicit close ends a waiting retry, while a close from a daemon shutdown is cleared by the next daemon run", async () => {
+  for (const close of ["explicit", "shutdown"]) {
+    await recoveryLane(async (lane) => {
+      await lane.fail(START, OVERLOADED);
+      await lane.fail(START + 25_000, OVERLOADED);
+      // The retry is due at START + 145 s; each sweep runs 30 s after the time it is given.
+      const closedAt = START + 120_000;
+      mock.timers.setTime(closedAt);
+      lane.snapshot.status = "closed";
+      lane.emit("agent.closed", { agent: { id: lane.snapshot.id } });
+      await lane.plugin.idle();
+      assert.equal((await lane.store.closeOf(lane.snapshot.id))?.at, new Date(closedAt).toISOString(), "the close is stored for the agent");
+      if (close === "shutdown") lane.restart();
+      // Due, 30 s after the close.
+      await lane.sweep(closedAt);
+      if (close === "shutdown") {
+        assert.equal(lane.sends.length, 2, "a new daemon run retries on the schedule");
+        assert.equal(await lane.store.closeOf(lane.snapshot.id), null, "the new daemon run cleared the close");
+        assert.equal((await lane.store.read())[0]?.state, "verifying");
+        return;
+      }
+      assert.equal(lane.sends.length, 1, "nothing is sent while the close is not decided");
+      assert.equal((await lane.store.read())[0]?.state, "parked");
+      // This daemon run outlived the close, so it was a kill or close by a user or an agent.
+      await lane.sweep(closedAt + 40_000);
+      const [stored] = await lane.store.read();
+      assert.equal(stored?.state, "superseded");
+      assert.equal(stored?.terminalReason, "agent-closed");
+      lane.snapshot.status = "idle";
+      await lane.sweep(closedAt + 3_600_000);
+      assert.equal(lane.sends.length, 1, "an agent reopened later gets no retry for the work it was closed on");
+      // A user message opens it again, and the failure of that newer work retries as usual.
+      lane.append({ type: "user_message", text: "Start over", messageId: "human-2" }, "human-turn-2");
+      Object.assign(lane.snapshot, { status: "running", activeTurn: { turnId: "human-turn-2" }, lastUserMessageAt: new Date(closedAt + 3_600_000).toISOString() });
+      await lane.fail(closedAt + 3_610_000, OVERLOADED);
+      assert.deepEqual(lane.sends.map((send) => send.prompt), ["continue", "continue"]);
+      assert.equal((await lane.store.read()).filter(isActive)[0]?.state, "verifying");
+    });
+  }
+});
+
+it("a duplicate end event for a failed usage resume turn never resets or resends the successor after it succeeded", async () => {
+  await recoveryLane(async (lane) => {
+    lane.snapshot.lastError = "usage_limit_exceeded";
+    const usage = buildRecord(lane.snapshot, "usage_limit_exceeded", undefined, lane.config, START - 6 * 3600_000, "source-turn", true)!;
+    await lane.store.upsert({ ...usage, state: "parked", notBefore: new Date(START).toISOString() });
+    await lane.sweep(START);
+    assert.equal(lane.sends.length, 1);
+    // The resume turn fails on the usage limit again, and its end is delivered twice. The first handler is held at
+    // its agent read until the other one has handed off and the successor has resumed and succeeded.
+    const turnId = lane.snapshot.activeTurn!.turnId;
+    lane.append({ type: "assistant_message", text: "[System Error] usage_limit_exceeded" }, turnId);
+    Object.assign(lane.snapshot, { status: "error", activeTurn: null, lastError: "usage_limit_exceeded", updatedAt: new Date().toISOString() });
+    const event = { agent: { id: lane.snapshot.id }, turnId, outcome: { kind: "failed", error: { message: "usage_limit_exceeded" } }, timeline: lane.timeline() };
+    const first = lane.holdNextRefresh();
+    lane.emit("agent.turn_ended", event);
+    await settles(first.reached, "the first handler's agent read");
+    lane.emit("agent.turn_ended", structuredClone(event));
+    const successor = async () => (await lane.store.read()).find((record) => record.sourceTurnId === turnId);
+    // Waits on the plugin's log lines, each written once its store write has landed, not on reads of the state file.
+    const logged = (pattern: RegExp) => () => laneLogs.some((line) => pattern.test(line));
+    const handedOff = /resume-failed-rescheduled .* notBefore=(\S+)/;
+    await settles(logged(handedOff), "the successor");
+    mock.timers.setTime(Date.parse(laneLogs.find((line) => handedOff.test(line))!.match(handedOff)![1]!));
+    mock.timers.tick(30_000);
+    await settles(logged(/resume-turn-started .* turnId=retry-turn-2$/), "the successor's resume");
+    await lane.complete(Date.now() + 60_000);
+    await settles(logged(/resume-completed .* turnId=retry-turn-2$/), "the successor's success");
+    first.release();
+    await lane.plugin.idle();
+    let next = await successor();
+    assert.equal(next?.state, "done");
+    assert.equal(next?.attempts.length, 1);
+    await lane.sweep(Date.now() + 24 * 3600_000);
+    next = await successor();
+    assert.equal(next?.state, "done");
+    assert.equal(lane.sends.length, 2);
+    assert.equal((await lane.store.read()).filter(isActive).length, 0);
+  });
+});
+
+it("a close while a failed turn's handler is still building its record holds and ends that record too", async () => {
+  // A failed usage resume hands off to a transient retry or to another usage record; a failed first turn creates the
+  // first record. Each handler is held at its agent read while the agent is closed, so the record it then creates
+  // never saw the close.
+  for (const path of ["usage-to-transient", "usage-to-usage", "first-detection"]) {
+    await recoveryLane(async (lane) => {
+      const id = lane.snapshot.id;
+      let turnId = "source-turn";
+      let failure = OVERLOADED;
+      if (path !== "first-detection") {
+        lane.snapshot.lastError = "usage_limit_exceeded";
+        const usage = buildRecord(lane.snapshot, "usage_limit_exceeded", undefined, lane.config, START - 6 * 3600_000, "source-turn", true)!;
+        await lane.store.upsert({ ...usage, state: "parked", notBefore: new Date(START).toISOString() });
+        await lane.sweep(START);
+        assert.equal(lane.sends.length, 1);
+        turnId = lane.snapshot.activeTurn!.turnId;
+        failure = path === "usage-to-usage" ? "usage_limit_exceeded" : OVERLOADED;
+        lane.append({ type: "assistant_message", text: `[System Error] ${failure}` }, turnId);
+        Object.assign(lane.snapshot, { status: "error", activeTurn: null, lastError: failure, updatedAt: new Date().toISOString() });
+      }
+      const sends = lane.sends.length;
+      const handler = lane.holdNextRefresh();
+      lane.emit("agent.turn_ended", { agent: { id }, turnId, outcome: { kind: "failed", error: { message: failure } }, timeline: lane.timeline() });
+      await settles(handler.reached, "the failed turn handler's agent read");
+      const closedAt = Date.now() + 1_000;
+      mock.timers.setTime(closedAt);
+      lane.snapshot.status = "closed";
+      lane.emit("agent.closed", { agent: { id } });
+      await settles(closeStored(id), "the stored close");
+      handler.release();
+      await lane.plugin.idle();
+      const created = () => lane.store.read().then((records) => records.find((record) => record.sourceTurnId === turnId && isActive(record)));
+      assert.ok(await created(), `${path}: the handler created its record after the close`);
+      assert.equal(lane.sends.length, sends, `${path}: the new record sends nothing while the close is held`);
+      await lane.sweep(closedAt + 40_000);
+      const [ended] = (await lane.store.read()).filter((record) => record.sourceTurnId === turnId);
+      assert.equal(ended?.state, "superseded", path);
+      assert.equal(ended?.terminalReason, "agent-closed", path);
+      // Past the usage record's own delay too.
+      await lane.sweep(closedAt + 6 * 3600_000);
+      assert.equal(lane.sends.length, sends, `${path}: the killed agent is never sent to again`);
+    });
+  }
+});
+
+it("a failure whose handler reads the agent after a newer user message never sends: stale, or held by a close and reopen", async () => {
+  // Each old failure's handler is held at its agent read while a new human request reaches the agent and succeeds. Its
+  // snapshot then shows that request's time, which must not become the old work's. Without a close the timeline shows
+  // the newer request, so the failure is stale. With a close before that request (which opened the agent again), the
+  // read is not trusted for a timeline read at all, and the close holds and ends whatever record the failure left.
+  for (const reopened of [false, true]) for (const path of ["usage-resume-handoff", "first-detection"]) {
+    await recoveryLane(async (lane) => {
+      const id = lane.snapshot.id;
+      let turnId = "old-source";
+      if (path === "usage-resume-handoff") {
+        lane.snapshot.lastError = "usage_limit_exceeded";
+        const usage = buildRecord(lane.snapshot, "usage_limit_exceeded", undefined, lane.config, START - 6 * 3600_000, "source-turn", true)!;
+        await lane.store.upsert({ ...usage, state: "parked", notBefore: new Date(START).toISOString() });
+        await lane.sweep(START);
+        assert.equal(lane.sends.length, 1);
+        turnId = lane.snapshot.activeTurn!.turnId;
+        lane.append({ type: "assistant_message", text: "[System Error] usage_limit_exceeded" }, turnId);
+        Object.assign(lane.snapshot, { status: "error", activeTurn: null, lastError: "usage_limit_exceeded", updatedAt: new Date().toISOString() });
+      }
+      const sends = lane.sends.length;
+      const endedAt = Date.now();
+      const handler = lane.holdNextRefresh();
+      lane.emit("agent.turn_ended", { agent: { id }, turnId, outcome: { kind: "failed", error: { message: "usage_limit_exceeded" } }, timeline: lane.timeline() });
+      await settles(handler.reached, "the old failure's agent read");
+      if (reopened) {
+        mock.timers.setTime(endedAt + 100);
+        lane.snapshot.status = "closed";
+        lane.emit("agent.closed", { agent: { id } });
+        await settles(closeStored(id), "the stored close");
+      }
+      // A different human request reaches the agent (opening it again after a close) and succeeds.
+      mock.timers.setTime(endedAt + 1_100);
+      lane.append({ type: "user_message", text: "New work, not the old task", messageId: "human-new" }, "human-turn");
+      Object.assign(lane.snapshot, { status: "running", activeTurn: { turnId: "human-turn" }, lastError: undefined, lastUserMessageAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      lane.emit("agent.turn_started", { agent: { id }, turnId: "human-turn" });
+      await lane.complete(endedAt + 5_000);
+      handler.release();
+      await lane.plugin.idle();
+      const label = `${path}${reopened ? " after a close and reopen" : ""}`;
+      const records = await lane.store.read();
+      if (!reopened) {
+        assert.equal(records.filter(isActive).length, 0, `${label}: the stale failure created no record`);
+        assert.ok(!records.some((record) => record.sourceTurnId === turnId), `${label}: no record for the old failed turn`);
+        if (path === "usage-resume-handoff") assert.equal(records[0]?.terminalReason, "stale-failure");
+      }
+      await lane.sweep(endedAt + 6 * 3600_000);
+      assert.equal(lane.sends.length, sends, `${label}: nothing is sent after the newer work succeeded`);
+      const after = await lane.store.read();
+      assert.equal(after.filter(isActive).length, 0, `${label}: no record is left waiting`);
+      if (reopened) for (const record of after.filter((value) => value.sourceTurnId === turnId)) assert.equal(record.terminalReason, "agent-closed", `${label}: the close ended the old turn's record`);
+    });
+  }
+});
+
+it("clock skew never makes a failure stale: its own user row stamped ahead of the plugin's clock, or the clock stepping back", async () => {
+  // Detection: the daemon stamped the failed turn's user row, and lastUserMessageAt, ahead of the plugin's clock.
+  for (const kind of ["transient", "usage"]) for (const ahead of [1, 1000]) {
+    await recoveryLane(async (lane) => {
+      const message = kind === "usage" ? "usage_limit_exceeded" : OVERLOADED;
+      mock.timers.setTime(START + ahead);
+      lane.append({ type: "user_message", text: "Next step", messageId: "human-skewed" }, "skew-turn");
+      lane.append({ type: "assistant_message", text: `[System Error] ${message}` }, "skew-turn");
+      Object.assign(lane.snapshot, { status: "error", lastError: message, lastUserMessageAt: new Date().toISOString() });
+      mock.timers.setTime(START);
+      lane.emit("agent.turn_ended", { agent: { id: lane.snapshot.id }, turnId: "skew-turn", outcome: { kind: "failed", error: { message } }, timeline: lane.timeline() });
+      await lane.plugin.idle();
+      const [record] = await lane.store.read();
+      assert.equal(record?.sourceTurnId, "skew-turn", `${kind} +${ahead}ms: the failure has its record`);
+      assert.equal(record?.originUserMessageAt, new Date(START + ahead).toISOString(), "the work's origin is its own user row's stamp");
+      if (kind === "usage") await lane.sweep(START + 6 * 3600_000);
+      assert.equal(lane.sends.length, 1, `${kind} +${ahead}ms: the failure is retried`);
+      assert.ok(!laneLogs.some((line) => line.includes("stale-failure")));
+    });
+  }
+  // A failed retry whose own message is still the latest user row, with the plugin's clock stepped back 1 ms before its
+  // end event arrives: it re-parks and sends its next attempt.
+  await recoveryLane(async (lane) => {
+    await lane.fail(START, OVERLOADED);
+    assert.equal(lane.sends.length, 1);
+    await lane.fail(START - 1, OVERLOADED);
+    const [record] = await lane.store.read();
+    assert.equal(record?.state, "parked");
+    assert.ok(!laneLogs.some((line) => line.includes("stale-failure")));
+    await lane.sweep(START + 150_000);
+    assert.equal(lane.sends.length, 2);
+    assert.match(lane.sends[1]!.messageId, /:attempt:2$/);
+  });
+});
+
+it("a close that lands while a failed turn's handler reads the agent stops its timeline read, so the closed agent stays closed", async () => {
+  for (const closed of ["before-the-read", "during-the-read"]) {
+    await recoveryLane(async (lane) => {
+      const id = lane.snapshot.id;
+      const close = async () => {
+        mock.timers.setTime(START + 10);
+        lane.snapshot.status = "closed";
+        lane.emit("agent.closed", { agent: { id } });
+        await settles(closeStored(id), "the stored close");
+      };
+      if (closed === "before-the-read") await close();
+      // The daemon answers the agent read with the open snapshot it took before the close, after the close landed.
+      const handler = closed === "during-the-read" ? lane.holdNextRefresh("before") : null;
+      lane.emit("agent.turn_ended", { agent: { id }, turnId: "source-turn", outcome: { kind: "failed", error: { message: "usage_limit_exceeded" } }, timeline: lane.timeline() });
+      if (handler) {
+        await settles(handler.reached, "the failed turn's agent read");
+        await close();
+        handler.release();
+      }
+      await lane.plugin.idle();
+      assert.equal(lane.closedReads(), 0, `${closed}: no timeline read of the closed agent`);
+      await lane.sweep(START + 3600_000);
+      const [record] = await lane.store.read();
+      assert.equal(record?.terminalReason, "agent-closed", `${closed}: the close ends the record`);
+      assert.equal(lane.closedReads(), 0);
+      assert.equal(lane.sends.length, 0);
     });
   }
 });

@@ -1,10 +1,13 @@
 import { z } from "zod";
+import { DEFAULT_BACKOFF_SECONDS } from "./model.ts";
 
 const ConfigObjectSchema = z.object({
   armed: z.boolean().default(false),
-  maxAttempts: z.number().int().min(1).max(10).default(3),
-  transientMaxAttempts: z.number().int().min(1).max(10).default(3),
-  transientBackoffSeconds: z.array(z.number().int().min(0).max(86400)).min(1).max(10).default([0, 120, 300, 900]),
+  // Ignored since 0.3.0: no attempt count ends a retry. Still accepted, because existing settings files set them.
+  maxAttempts: z.number().optional(),
+  transientMaxAttempts: z.number().optional(),
+  // The retry delays in order; the last one repeats for as long as the record lives.
+  transientBackoffSeconds: z.array(z.number().int().min(0).max(86400)).min(1).max(10).default([...DEFAULT_BACKOFF_SECONDS]),
   baseDelaySeconds: z.number().int().min(60).max(86400).default(18000),
   maxDelaySeconds: z.number().int().min(300).max(604800).default(604800),
   pollIntervalSeconds: z.number().int().min(5).max(3600).default(30),
@@ -18,12 +21,14 @@ const ConfigObjectSchema = z.object({
   pqTimeoutSeconds: z.number().int().min(1).max(15).default(5),
   excludedLabels: z.array(z.string().min(1)).default(["noresume"]),
   // PM quota fallback: a Pi PM on Claude moves to this exact catalog profile while pq shows Claude out, and is moved
-  // back once pq shows Claude usable. Off by default; turning it off stops new swaps, never a pending return.
+  // back once pq shows Claude usable. Off by default; turning it off stops new swaps, never a pending return. Every such
+  // PM is eligible: no label opts it out.
   pmFallback: z.boolean().default(false),
   pmFallbackModel: z.string().min(1).default("fleet/gpt-6.1-sol"),
   pmFallbackThinking: z.string().min(1).default("medium"),
   pmFallbackServiceTier: z.string().min(1).default("fast"),
-  pmFallbackOptOutLabel: z.string().min(1).default("nofallback"),
+  // Ignored since 0.3.0 (the nofallback opt-out is gone). Still accepted, because existing settings files may set it.
+  pmFallbackOptOutLabel: z.string().optional(),
   // Owner surface: register the original profile of a PM that is already elsewhere, or cancel one return by its id.
   pmFallbackEnroll: z.array(z.object({
     agentId: z.string().min(1),

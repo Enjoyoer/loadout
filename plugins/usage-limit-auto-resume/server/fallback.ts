@@ -59,13 +59,12 @@ export function storedMatches(stored: readonly Profile[], profile: Profile): boo
 
 /**
  * Why an agent may not be moved to the fallback profile, or null when it may: a live Pi PM whose original model
- * (by default its current one) is a Claude model.
+ * (by default its current one) is a Claude model. No label opts a PM out (since 0.3.0).
  */
-export function fallbackIneligible(agent: AgentSnapshot, optOutLabel: string, originalModel = agent.model): string | null {
+export function fallbackIneligible(agent: AgentSnapshot, originalModel = agent.model): string | null {
   if (agent.labels?.role !== "pm") return "not-pm";
   if (agent.provider !== "pi") return "not-pi";
   if (agent.archivedAt) return "archived";
-  if (agent.labels?.[optOutLabel] === "true") return "opted-out";
   if (!agent.persistence?.sessionId) return "no-session";
   if (agentPool(agent.provider, originalModel) !== "claude") return "not-claude";
   return null;
@@ -101,12 +100,10 @@ export function recordSwapEvidence(record: ResumeRecord): SwapEvidence {
 
 /**
  * Why the plugin must not change this agent's settings for this obligation now, or null. Checked before every write,
- * repair or completion, on every path: an owner cancel, the owner opt-out label (a pinned agent is never touched,
- * not even to return it), or an archived agent.
+ * repair or completion, on every path: an owner cancel, or an archived agent.
  */
-export function writeBlocked(obligation: ReturnObligation, agent: AgentSnapshot, config: { pmFallbackCancel: readonly string[]; pmFallbackOptOutLabel: string }): "cancelled" | "opted-out" | "archived" | null {
+export function writeBlocked(obligation: ReturnObligation, agent: AgentSnapshot, config: { pmFallbackCancel: readonly string[] }): "cancelled" | "archived" | null {
   if (config.pmFallbackCancel.includes(obligation.obligationId)) return "cancelled";
-  if (agent.labels?.[config.pmFallbackOptOutLabel] === "true") return "opted-out";
   if (agent.archivedAt) return "archived";
   return null;
 }
