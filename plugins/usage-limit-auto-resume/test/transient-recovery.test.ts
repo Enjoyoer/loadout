@@ -16,6 +16,9 @@ const START = Date.parse("2026-10-13T03:49:59.979Z");
 const OVERLOADED = "Our servers are currently overloaded";
 const AUTH_UNAVAILABLE = "fleet API error (503): auth_unavailable: no auth available; server_is_overloaded";
 
+// What the plugin logged in the current lane.
+let laneLogs: string[] = [];
+
 async function recoveryLane(run: (lane: Awaited<ReturnType<typeof setup>>) => Promise<void>) {
   const scratch = path.join(homedir(), ".cache", "fleet-scratch", "loadout", "autoresume-regression");
   await mkdir(scratch, { recursive: true });
@@ -23,7 +26,8 @@ async function recoveryLane(run: (lane: Awaited<ReturnType<typeof setup>>) => Pr
   const oldHome = process.env.PASEO_HOME;
   const oldLog = console.log;
   process.env.PASEO_HOME = home;
-  console.log = () => undefined;
+  laneLogs = [];
+  console.log = (line: unknown) => { laneLogs.push(String(line)); };
   mock.timers.enable({ apis: ["Date", "setInterval"], now: START });
   let lane: Awaited<ReturnType<typeof setup>> | undefined;
   try {
@@ -247,13 +251,17 @@ it("transient recovery sends nothing while running or after a newer human messag
 });
 
 /** Lets the plugin's pending work run while a hook handler is held, so the test cannot wait for idle(). */
+// Wall clock between checks: a check that reads the state file in a tight loop can keep Windows from replacing it.
 async function settles(check: () => boolean | Promise<boolean>, what: string) {
-  const deadline = performance.now() + 5_000;
+  const deadline = performance.now() + 10_000;
   while (!(await check())) {
     if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+/** The close handler logs once its store write has landed; waiting on the log reads no file. */
+const closeStored = (id: string) => () => laneLogs.some((line) => line.includes(`agent-closed agentId=${id} `));
 
 it("a rebuilt timeline keeps a waiting retry, before its first send or after its own continue, until a newer user message", async () => {
   // Quota held the first retry, so nothing was sent; the daemon restarts and rebuilds the original human row.
@@ -402,7 +410,7 @@ it("a close while a failed turn's handler is still building its record holds and
       mock.timers.setTime(closedAt);
       lane.snapshot.status = "closed";
       lane.emit("agent.closed", { agent: { id } });
-      await settles(async () => !!(await lane.store.closeOf(id)), "the stored close");
+      await settles(closeStored(id), "the stored close");
       handler.release();
       await lane.plugin.idle();
       const created = () => lane.store.read().then((records) => records.find((record) => record.sourceTurnId === turnId && isActive(record)));
@@ -444,7 +452,7 @@ it("a failure whose handler reads the agent after a newer user message is stale:
       mock.timers.setTime(endedAt + 100);
       lane.snapshot.status = "closed";
       lane.emit("agent.closed", { agent: { id } });
-      await settles(async () => !!(await lane.store.closeOf(id)), "the stored close");
+      await settles(closeStored(id), "the stored close");
       // A different human request opens the agent again and succeeds.
       mock.timers.setTime(endedAt + 1_100);
       lane.append({ type: "user_message", text: "New work, not the closed task", messageId: "human-new" }, "human-turn");
