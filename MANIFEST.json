@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "bf7db1fedee0fca48b63f1301088fc0a1175be02",
+  "source_commit": "c0dd2f36d8e6db52a4144d58e42b9afcd1b0ab7c",
   "skill_count": 25,
   "file_count": 144,
   "files": [
@@ -1550,14 +1550,14 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 32084,
-      "sha256": "7d87c85ae880b7af37c91052e22984f456318b543837b0e3fb0c0e36d5e7c44f"
+      "bytes": 32262,
+      "sha256": "3dba86166d22bcd67334c18c94185f1051c79e83a4601249f45dcb5e001478b1"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 62058,
-      "sha256": "a4e3cba205d91512f5ffb533f7fd32d5f04da51abb2ed84356d172eef88cb1ef"
+      "bytes": 62637,
+      "sha256": "bc5938e0a0b72fc5578bdce564e5b7b719742f4d3aaf5c7d5fa5b4f8680e693d"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
@@ -1604,8 +1604,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/model.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 51765,
-      "sha256": "c47b9ef811e9ea2d7a695f45ab7557de1847834b5280a73263306a590b88aab6"
+      "bytes": 51811,
+      "sha256": "4c2ca5e3c299f5211d83de89ffcc076bf0d944a31222da6272606d1ecd87f5f7"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/quota.ts",
@@ -1688,8 +1688,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/test/transient-recovery.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 29237,
-      "sha256": "403a0b6691d220f2f6cf03a0e0fde31936c8d09d87a93914037fab17ab7ce775"
+      "bytes": 32571,
+      "sha256": "5537f07edc263c4fbfe4a62ec094390acae0d47043d3888db9650601b5d9c0b7"
     },
     {
       "path": "plugins/usage-limit-auto-resume/tsconfig.json",
