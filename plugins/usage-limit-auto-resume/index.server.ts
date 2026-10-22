@@ -627,19 +627,29 @@ export default function contribute(server: PluginServerContext, openClient: () =
     // The user message the failed turn ran on, taken from the event before any await. A record built after the awaits
     // binds to it, never to a later snapshot's user message (bindFailure).
     const eventUser = lastUserMessage(event.timeline);
-    // The agent, and the close this process had seen when it was read: a close after that stops bindFailure's read.
+    // The agent, and the close this process had seen before the read began. A close that lands while the read is in
+    // flight may postdate a snapshot that still shows the agent open, so it differs from closeSeen and stops
+    // bindFailure's timeline read: that snapshot counts as closed.
     const readAgent = async () => {
+      const closeSeen = closes.get(event.agent.id);
       const agent = await fetchAgent(context.paseo, event.agent.id);
-      return { agent, closeSeen: closes.get(event.agent.id) };
+      return { agent, closeSeen };
     };
     // After the awaits: is a different, later user message now the agent's latest (staleFailure)? The timeline is read
-    // back to the bound row, unless the agent was closed by the snapshot or since: that read would load it again.
+    // back to the bound row.
     const bindFailure = async (agent: AgentSnapshot, closeSeen: AgentClose | undefined, predecessor: ResumeRecord | null) => {
       const bound = boundUser(eventUser, predecessor);
       const open = () => agent.status !== "closed" && closes.get(event.agent.id) === closeSeen;
-      const entries = bound && open()
+      // Closed by the snapshot, or a close landed since the agent read began: the timeline is not read, since that would
+      // load the agent again, and the snapshot may postdate the close. The failure is not stale and has no origin, so
+      // the close holds and ends its record.
+      const closed = { stale: false, at: null };
+      if (!open()) return closed;
+      const entries = bound
         ? await walkTimeline(context.paseo, event.agent.id, (rows) => rows.some((entry) => entry.item.type === "user_message" && (entry.item.messageId ?? entry.item.clientMessageId) === bound.id), open).catch(() => null)
         : null;
+      // A walk a close cut short counts as closed too.
+      if (!entries && !open()) return closed;
       return staleFailure(bound, entries, agent.lastUserMessageAt, predecessor);
     };
     // Synchronous, before any await: another turn ending before a send is invoked stops that send.

@@ -119,8 +119,9 @@ const userId = (entry: TimelineEntry) => { const user = userItem(entry); return 
  * the old turn would take that work's time.
  *
  * `at` is the origin of the work (originUserMessageAt): the bound row's own daemon timestamp. When nothing is bound, or
- * the timeline was not read (a closed agent, whose read would load it again, or a failed read), the failure is not
- * stale and the snapshot's lastUserMessageAt stands in, so a legitimate failure is never dropped. When the bound row is
+ * the read failed, the failure is not stale and the snapshot's lastUserMessageAt stands in, so a legitimate failure is
+ * never dropped. (A closed agent's timeline is never read, since the read would load it again; its caller gives that
+ * failure no origin.) When the bound row is
  * gone from the timeline, the agent was loaded again since, which follows a close: the failure is not stale and has no
  * origin, so that close holds and ends its record.
  */
