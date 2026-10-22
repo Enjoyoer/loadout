@@ -157,5 +157,5 @@ Only for the site of the current task. `bw-paste` enforces this: the item's save
   - wrong field focused or more than one form;
   - the field's length limits leave no room for a 12-64 character password (`length limits`): tell the owner;
   - nothing pending under that id (discarded, or past its 10 minutes);
-  - an item `bw-paste` cannot change safely: tell the owner.
+  - an item `bw-paste` cannot change safely (organization, passkeys, master-password re-prompt, or a per-item key while the Mac's rbw is not the item-key build): tell the owner.
 - **Report every add, update and rotate in your reply:** item name, site, which fields changed (for example `password`, `username, uris`), and for add whether it was saved confirmed, saved unconfirmed or discarded. Never include values.
