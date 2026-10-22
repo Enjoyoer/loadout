@@ -1,10 +1,13 @@
 import { z } from "zod";
+import { DEFAULT_BACKOFF_SECONDS } from "./model.ts";
 
 const ConfigObjectSchema = z.object({
   armed: z.boolean().default(false),
-  maxAttempts: z.number().int().min(1).max(10).default(3),
-  transientMaxAttempts: z.number().int().min(1).max(10).default(3),
-  transientBackoffSeconds: z.array(z.number().int().min(0).max(86400)).min(1).max(10).default([0, 120, 300, 900]),
+  // Ignored since 0.3.0: no attempt count ends a retry. Still accepted, because existing settings files set them.
+  maxAttempts: z.number().optional(),
+  transientMaxAttempts: z.number().optional(),
+  // The retry delays in order; the last one repeats for as long as the record lives.
+  transientBackoffSeconds: z.array(z.number().int().min(0).max(86400)).min(1).max(10).default([...DEFAULT_BACKOFF_SECONDS]),
   baseDelaySeconds: z.number().int().min(60).max(86400).default(18000),
   maxDelaySeconds: z.number().int().min(300).max(604800).default(604800),
   pollIntervalSeconds: z.number().int().min(5).max(3600).default(30),

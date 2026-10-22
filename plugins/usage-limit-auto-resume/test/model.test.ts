@@ -9,9 +9,7 @@ import { agentPool, poolQuota, QuotaReader, runPq, type PqResult } from "../serv
 
 const NOW = Date.parse("2026-09-25T12:00:00.000Z");
 const config: ResumeConfig = {
-  maxAttempts: 3,
-  transientMaxAttempts: 3,
-  transientBackoffSeconds: [0, 120, 300, 900],
+  transientBackoffSeconds: [0, 120, 300, 900, 1800],
   baseDelaySeconds: 18000,
   maxDelaySeconds: 604800,
   resetBufferSeconds: 30,
@@ -64,7 +62,7 @@ function transient(overrides = {}) {
 }
 
 describe("Pi native failed usage outcomes", () => {
-  it("parks formatted Pi errors for five hours then resumes error status with an attempt cap", () => {
+  it("parks formatted Pi errors for five hours then resumes error status with no attempt cap", () => {
     const pi = agent({ provider: "pi", model: "fleet/gpt-6.1-sol", status: "error", requiresAttention: true, attentionReason: "error", persistence: { provider: "pi", sessionId: "pi-session" } });
     for (const text of ["usage_limit_exceeded", "You've hit your usage limit. Try again in 1 hour.", "You’ve hit your usage limit.", "You are out of credits"]) {
       const error = `${text} (stopReason=error, model=fleet/gpt-6.1-sol)`;
@@ -75,7 +73,7 @@ describe("Pi native failed usage outcomes", () => {
       assert.equal(usage.notBefore, new Date(NOW + 18000 * 1000).toISOString());
       assert.deepEqual(shouldResume(usage, pi, config, NOW), { ok: false, reason: "not-due" });
       assert.deepEqual(shouldResume(usage, pi, config, NOW + 18000 * 1000), { ok: true });
-      assert.deepEqual(shouldResume({ ...usage, attempts: Array(3).fill({ at: "", messageId: "", result: "sent" }) }, pi, config, NOW + 18000 * 1000), { ok: false, reason: "max-attempts" });
+      assert.deepEqual(shouldResume({ ...usage, attempts: Array(3).fill({ at: "", messageId: "", result: "sent" }) }, pi, config, NOW + 18000 * 1000), { ok: true });
       assert.equal(buildFailedTransientRecord(pi, timeline(""), { message: error }, config, NOW, "pi-failure"), null);
     }
     const completed = buildRecord(pi, "usage_limit_exceeded", undefined, config, NOW, "completed")!;
@@ -137,14 +135,15 @@ describe("completed-turn transient classification", () => {
     assert.equal(turnText([...timeline(RATE_LIMIT), { type: "user_message", text: "New task" }]).assistant, null);
   });
 
-  it("retries immediately, then after 2, 5, and 15 minutes and caps attempts independently of the five-hour path", () => {
+  it("retries immediately, then after 2, 5, and 15 minutes, then every 30 minutes, with no attempt cap", () => {
     const value = transient();
     assert.equal(Date.parse(value.notBefore) - NOW, 0);
-    assert.deepEqual([0, 1, 2, 3, 4].map((attempts) => transientDelaySeconds(config, attempts)), [0, 120, 300, 900, 900]);
+    assert.deepEqual([0, 1, 2, 3, 4, 5, 50].map((attempts) => transientDelaySeconds(config, attempts)), [0, 120, 300, 900, 1800, 1800, 1800]);
+    assert.deepEqual([0, 1, 2, 3, 4, 5].map((attempts) => transientDelaySeconds({ ...config, transientBackoffSeconds: undefined }, attempts)), [0, 120, 300, 900, 1800, 1800]);
     assert.equal(value.retryPrompt, "Fix the bug exactly.");
     assert.equal(buildRecord(agent(), "usage_limit_exceeded", undefined, config, NOW, "turn-1")?.notBefore, new Date(NOW + 18_000_000).toISOString());
-    const exhausted = { ...value, state: "parked" as const, attempts: [1, 2, 3].map((n) => ({ at: value.createdAt, messageId: `retry-${n}`, result: "sent" as const })) };
-    assert.deepEqual(shouldResume(exhausted, agent(), config, Date.parse(value.notBefore)), { ok: false, reason: "max-attempts" });
+    const third = { ...value, state: "parked" as const, attempts: [1, 2, 3].map((n) => ({ at: value.createdAt, messageId: `retry-${n}`, result: "sent" as const })) };
+    assert.deepEqual(shouldResume(third, agent(), config, Date.parse(value.notBefore)), { ok: true });
   });
 
   it("uses continuation wording when the last user text is empty", () => {
@@ -152,13 +151,14 @@ describe("completed-turn transient classification", () => {
     assert.match(value?.retryPrompt ?? "", /Continue the last user request/);
   });
 
-  it("reschedules failed retry turns at 2, 5, then 15 minutes, then exhausts", () => {
+  it("reschedules failed retry turns at 2, 5, 15, then every 30 minutes, never exhausting", () => {
     let value = transient();
     const sentAt = new Date(NOW + 120_000).toISOString();
-    for (const [attempt, delay] of [[1, 120], [2, 300], [3, 900]] as const) {
+    for (const [attempt, delay] of [[1, 120], [2, 300], [3, 900], [4, 1800], [5, 1800], [6, 1800]] as const) {
       value = afterTransientFailure({ ...value, attempts: [...value.attempts, { at: sentAt, messageId: `retry-${attempt}`, result: "sent" }] }, RATE_LIMIT, "Fix the bug exactly.", `retry-${attempt}`, sentAt, config, NOW + attempt * 120_000);
       assert.equal(Date.parse(value.notBefore) - (NOW + attempt * 120_000), delay * 1000);
-      assert.equal(value.state, attempt === 3 ? "exhausted" : "parked");
+      assert.equal(value.state, "parked");
+      assert.equal(value.terminalReason, null);
     }
   });
 
@@ -209,7 +209,7 @@ describe("failed-turn transient classification", () => {
       value = afterTransientFailure({ ...value, attempts: [...value.attempts, { at: value.createdAt, messageId: `retry-${attempt}`, result: "sent" }] }, `failed: ${CAPACITY}`, "continue", `retry-${attempt}`, agent().lastUserMessageAt!, config, NOW);
       assert.equal(value.state, "parked");
     }
-    assert.equal(Date.parse(value.notBefore) - NOW, 900_000);
+    assert.equal(Date.parse(value.notBefore) - NOW, 1_800_000);
     assert.deepEqual(shouldResume(value, agent({ status: "error" }), config, Date.parse(value.notBefore)), { ok: true });
   });
 
@@ -224,7 +224,7 @@ describe("failed-turn transient classification", () => {
     assert.equal(attemptCount(value), total);
     assert.equal(value.attempts.at(-1)?.messageId, `${value.recordId}:attempt:${total}`);
     assert.equal(messageId(value), `${value.recordId}:attempt:${total + 1}`);
-    assert.equal(Date.parse(value.notBefore) - NOW, 900_000);
+    assert.equal(Date.parse(value.notBefore) - NOW, 1_800_000);
   });
 
   it("allows sending to an errored agent only for failed-outcome records", () => {
@@ -269,12 +269,12 @@ describe("send gates", () => {
     assert.deepEqual(shouldResume(value, agent({ lastUserMessageAt: "2026-09-25T12:00:01.000Z" }), config, Date.parse(value.notBefore)), { ok: false, reason: "newer-user-message" });
   });
 
-  it("allows only a due idle record and caps attempts", () => {
+  it("allows only a due idle record, whatever its attempt count", () => {
     const value = record();
     assert.deepEqual(shouldResume(value, agent(), config, NOW), { ok: false, reason: "not-due" });
     assert.deepEqual(shouldResume(value, agent(), config, Date.parse(value.notBefore)), { ok: true });
-    const exhausted = record({ attempts: [{ at: value.createdAt, messageId: "x", result: "sent" }, { at: value.createdAt, messageId: "y", result: "sent" }, { at: value.createdAt, messageId: "z", result: "sent" }] });
-    assert.deepEqual(shouldResume(exhausted, agent(), config, Date.parse(exhausted.notBefore)), { ok: false, reason: "max-attempts" });
+    const third = record({ attempts: [{ at: value.createdAt, messageId: "x", result: "sent" }, { at: value.createdAt, messageId: "y", result: "sent" }, { at: value.createdAt, messageId: "z", result: "sent" }] });
+    assert.deepEqual(shouldResume(third, agent(), config, Date.parse(third.notBefore)), { ok: true });
   });
 });
 

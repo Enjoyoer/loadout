@@ -20,7 +20,7 @@ export type ResumeRecord = {
   version: 2;
   kind?: "usage" | "transient";
   failedOutcome?: boolean;
-  // Usage failures also leave Pi in error, but retain the usage delay/attempt cap.
+  // Usage failures also leave Pi in error, but retain the usage delay.
   usageFailedOutcome?: boolean;
   retryPrompt?: string;
   expectedUserText?: string;
@@ -61,15 +61,15 @@ export type ResumeRecord = {
   rpcTimeout?: RpcTimeoutWait | null;
   // The pq pool whose provider refused the failed turn for quota (see quotaRefused); absent for any other failure.
   refusedPool?: QuotaPool | null;
-  // Retries in a row that failed with the record's same quota error; QUOTA_REPEAT_LIMIT of them end the record.
-  quotaRepeats?: number;
 };
 
 export type RpcTimeoutWait = { giveUpAt: string; waiting: string | null };
 
+// Retry immediately, then after 2, 5 and 15 minutes, then every 30 minutes: the last step repeats for as long as the
+// record lives. No attempt count ends a record.
+export const DEFAULT_BACKOFF_SECONDS: readonly number[] = [0, 120, 300, 900, 1800];
+
 export type ResumeConfig = {
-  maxAttempts: number;
-  transientMaxAttempts?: number;
   transientBackoffSeconds?: readonly number[];
   baseDelaySeconds: number;
   maxDelaySeconds: number;
@@ -219,7 +219,7 @@ export function turnText(timeline: readonly AgentTimelineItem[]): { assistant: s
 }
 
 export function transientDelaySeconds(config: ResumeConfig, attempts: number): number {
-  const delays = config.transientBackoffSeconds ?? [0, 120, 300, 900];
+  const delays = config.transientBackoffSeconds ?? DEFAULT_BACKOFF_SECONDS;
   return delays[Math.min(attempts, delays.length - 1)]!;
 }
 
@@ -432,8 +432,18 @@ export function verifyTransientTimeline(record: ResumeRecord, timeline: readonly
   if (!user) return { ok: false, reason: "user-prompt-missing" };
   if (user.text !== record.expectedUserText) return { ok: false, reason: "newer-user-message" };
   const id = user.messageId ?? user.clientMessageId ?? null;
-  if (record.expectedUserMessageId && id !== record.expectedUserMessageId) return { ok: false, reason: "newer-user-message" };
+  if (record.expectedUserMessageId && id !== record.expectedUserMessageId && !isRebuiltOwnRow(record, user)) return { ok: false, reason: "newer-user-message" };
   return { ok: true };
+}
+
+/**
+ * After a daemon restart Paseo rebuilds an agent's timeline from its provider session: each user row keeps its text but
+ * gets a new ID and no clientMessageId. While live, the plugin's own sends carry their stable ID in both fields, so a row
+ * with the exact text of the record's own last send and no clientMessageId is that send, rebuilt. A newer message with
+ * the same text would move the agent's lastUserMessageAt, which shouldResume checks again before the same send.
+ */
+function isRebuiltOwnRow(record: ResumeRecord, user: Extract<AgentTimelineItem, { type: "user_message" }>): boolean {
+  return !!record.expectedUserMessageId?.startsWith(`${record.recordId}:attempt:`) && !user.clientMessageId && user.text === record.expectedUserText;
 }
 
 /** A prompt-timeout record that has not sent its one resend and has not ended. */
@@ -483,25 +493,24 @@ export function rpcTimeoutDecision(record: ResumeRecord, agent: AgentSnapshot, t
 }
 
 export function transientRejectionState(reason: string): ResumeState {
-  return reason === "newer-user-message" ? "superseded" : reason === "max-attempts" ? "exhausted" : "uncertain";
+  return reason === "newer-user-message" ? "superseded" : reason === "rpc-timeout-resent" ? "exhausted" : "uncertain";
 }
 
-// Failed-turn records retry without a cap, so only their newest attempts are kept in full.
+// Records retry without a cap, so only their newest attempts are kept in full.
 export const MAX_KEPT_ATTEMPTS = 20;
 
 export function attemptCount(record: ResumeRecord): number {
   return (record.attemptsDropped ?? 0) + record.attempts.length;
 }
 
-// Failed-turn records retry without a cap, but this many retries in a row failing with the same quota error end one.
-export const QUOTA_REPEAT_LIMIT = 2;
-
 /**
- * Re-parks a transient record after its retry failed again. `failure` is the failed outcome's own error, with its code
- * when the caller has it: it, not the `failed: ...` text, decides whether this was a quota refusal, and the refusal
- * belongs to the pool of the model that refused (refusingPool). `textOnly` marks a re-read of the live error
- * (re-verification), which has no code and no turn: it recognizes no new evidence. A re-read of the same failure without
- * its code keeps the record's evidence as it is, on the pool it came from; carried evidence never moves to another pool.
+ * Re-parks a transient record after its retry failed again, on the next backoff step. No attempt count and no repeat of
+ * the same error ends it. `failure` is the failed outcome's own error, with its code when the caller has it: it, not the
+ * `failed: ...` text, decides whether this was a quota refusal (which can hold the next send while pq shows the pool
+ * out), and the refusal belongs to the pool of the model that refused (refusingPool). `textOnly` marks a re-read of the
+ * live error (re-verification), which has no code and no turn: it recognizes no new evidence. A re-read of the same
+ * failure without its code keeps the record's evidence as it is, on the pool it came from; carried evidence never moves
+ * to another pool.
  */
 export function afterTransientFailure(record: ResumeRecord, assistant: string, userText: string, userMessageId: string, lastUserMessageAt: string, config: ResumeConfig, now = Date.now(), failure: { message: string; code?: string; textOnly?: boolean } | null = null): ResumeRecord {
   const signature = createHash("sha256").update(assistant).digest("hex").slice(0, 24);
@@ -509,24 +518,17 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
   const recognized = !!record.failedOutcome && !!failure && !failure.textOnly && isQuotaError(failure.message, failure.code);
   const carried = !!record.failedOutcome && !!failure && !failure.code && same ? record.refusedPool ?? null : null;
   const refusedPool = recognized ? refusingPool(record.provider, record.model, failure!.message) : carried;
-  // The same quota error again, from the pool the record is on, is not transient. Only a sent retry counts as a repeat;
-  // any other failure resets the count.
-  const quota = !!refusedPool && refusedPool === agentPool(record.provider, record.model);
-  const quotaRepeats = quota && same ? (record.quotaRepeats ?? 0) + (record.sentAt ? 1 : 0) : 0;
-  const quotaStop = quotaRepeats >= QUOTA_REPEAT_LIMIT;
-  const exhausted = quotaStop || (!record.failedOutcome && record.attempts.length >= (config.transientMaxAttempts ?? 3));
   const updatedAt = new Date(now).toISOString();
   const attempts = record.attempts.slice(-MAX_KEPT_ATTEMPTS);
   const dropped = record.attempts.length - attempts.length;
   return {
     ...record,
     ...(dropped > 0 ? { attempts, attemptsDropped: (record.attemptsDropped ?? 0) + dropped } : {}),
-    state: exhausted ? "exhausted" : "parked",
-    terminalReason: quotaStop ? "quota-error-repeated" : exhausted ? "max-attempts" : null,
+    state: "parked",
+    terminalReason: null,
     failedAssistantText: assistant,
     failureSignature: signature,
     refusedPool,
-    quotaRepeats,
     expectedUserText: userText,
     expectedUserMessageId: userMessageId,
     lastUserMessageAt,
@@ -678,7 +680,7 @@ export function rebindRecord(record: ResumeRecord, agent: AgentSnapshot, now = D
     quotaHold: null,
     // Quota evidence belongs to the model that refused: it never follows the record to another one, nor back after a
     // round trip without a new refusal there.
-    ...(model !== record.model ? { refusedPool: null, quotaRepeats: 0 } : {}),
+    ...(model !== record.model ? { refusedPool: null } : {}),
     notBefore: record.kind === "transient" ? record.notBefore : new Date(Math.min(Date.parse(record.notBefore), now)).toISOString(),
     updatedAt: new Date(now).toISOString(),
   };
@@ -686,13 +688,14 @@ export function rebindRecord(record: ResumeRecord, agent: AgentSnapshot, now = D
 
 export function shouldResume(record: ResumeRecord, agent: AgentSnapshot, config: ResumeConfig, now = Date.now()): { ok: true } | { ok: false; reason: string } {
   if (record.state !== "parked" && record.state !== "detected") return { ok: false, reason: `state=${record.state}` };
-  // Failed-turn records always resume; only the backoff (capped at its last step) limits them.
-  if (!record.failedOutcome && record.attempts.length >= (record.kind === "transient" ? (config.transientMaxAttempts ?? 3) : config.maxAttempts)) return { ok: false, reason: "max-attempts" };
-  // A prompt-timeout resend goes out at most once.
-  if (record.rpcTimeout && attemptCount(record) > 0) return { ok: false, reason: "max-attempts" };
+  // No attempt count ends a record; only the backoff (repeating its last step) spaces the sends. The one exception is
+  // a prompt-timeout resend, which goes out at most once.
+  if (record.rpcTimeout && attemptCount(record) > 0) return { ok: false, reason: "rpc-timeout-resent" };
   if (Date.parse(record.notBefore) > now) return { ok: false, reason: "not-due" };
-  // A failed turn leaves the agent in "error"; a send starts a fresh turn in the same session.
-  if (agent.status !== "idle" && !((record.failedOutcome || record.usageFailedOutcome) && agent.status === "error")) return { ok: false, reason: `agent-status=${agent.status}` };
+  // A failed turn leaves the agent in "error"; a send starts a fresh turn in the same session. "closed" is an agent whose
+  // runtime is not loaded, which is every agent after a daemon restart; the send loads it again. Only an archive or a
+  // delete ends the work.
+  if (agent.status !== "idle" && agent.status !== "closed" && !((record.failedOutcome || record.usageFailedOutcome) && agent.status === "error")) return { ok: false, reason: `agent-status=${agent.status}` };
   if (agent.activeTurn) return { ok: false, reason: "active-turn" };
   if ((agent.pendingPermissions?.length ?? 0) > 0) return { ok: false, reason: "pending-permission" };
   // "finished" and "error" are Paseo's unread markers after a turn ends (an errored agent always carries "error"); only input requests block a resume.

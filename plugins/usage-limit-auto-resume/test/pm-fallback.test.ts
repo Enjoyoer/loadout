@@ -592,29 +592,56 @@ it("a rolled-over or stale Claude account still returning 429 counts as out: the
   });
 });
 
-it("the same quota error on consecutive retries stops the loop once, logged once, with no send-skipped repeats", async () => {
+// The 10/21 incident: PMs got Anthropic's 429 rate_limit_error while pq showed weekly quota left, and every record ended
+// `quota-error-repeated` after two retries, leaving the PM idle. Now every retry goes out on the backoff, past the
+// third, until a success or a newer user message.
+it("a repeated 429 rate_limit_error with pool capacity keeps retrying on the backoff past attempt 3, until success or a newer user message", async () => {
   // Review of #189: a quota refusal known only by its structured code repeats the same way.
   const CODE_ONLY = { message: "Provider request rejected. Try again later.", code: "429" };
-  for (const [role, error] of [["pm", { message: RATE_LIMIT }], ["worker", { message: RATE_LIMIT }], ["pm", CODE_ONLY], ["worker", CODE_ONLY]] as const) {
+  const cases = [["pm", { message: RATE_LIMIT }, "success"], ["worker", { message: RATE_LIMIT }, "newer-user-message"], ["pm", CODE_ONLY, "newer-user-message"], ["worker", CODE_ONLY, "success"]] as const;
+  for (const [role, error, end] of cases) {
     await scenario(async (f, logs) => {
-      const label = `${role} ${"code" in error ? "code-only" : "message"}`;
+      const label = `${role} ${"code" in error ? "code-only" : "message"} ${end}`;
       // pq shows capacity, so the 429 stays transient and is retried; every retry fails the same way.
       f.pq.claude = { five: "ok", week: "ok" };
       f.add("agent", role);
       await f.endTurn("agent", { kind: "failed", error }, "agent-turn-1");
-      assert.equal(f.calls.sends.length, 1, label);
-      await f.endTurn("agent", { kind: "failed", error }, "resume-1");
-      assert.equal((await f.records.read())[0]!.state, "parked", `${label}: one repeat still retries`);
-      for (let n = 0; n < 4 && f.calls.sends.length < 2; n++) await f.tick();
-      assert.equal(f.calls.sends.length, 2, label);
-      await f.endTurn("agent", { kind: "failed", error }, "resume-2");
-      for (let n = 0; n < 40; n++) await f.tick();
-      assert.equal(f.calls.sends.length, 2, `${label}: no send after the stop`);
-      const [record] = await f.records.read();
-      assert.equal(record!.state, "exhausted");
-      assert.equal(record!.terminalReason, "quota-error-repeated");
-      assert.equal(logs.filter((l) => l.includes("retry-stopped agentId=agent")).length, 1, label);
-      assert.equal(logs.filter((l) => l.includes("send-skipped agentId=agent")).length, 1, `${label}: the wait for retry 2 is logged once`);
+      // Seconds from each failure to the send that retries it.
+      const gaps: number[] = [];
+      let failedAt = Date.now();
+      const sent = async (count: number) => {
+        for (let n = 0; n < 100 && f.calls.sends.length < count; n++) await f.tick();
+        assert.equal(f.calls.sends.length, count, label);
+        gaps.push((Date.now() - failedAt) / 1000);
+      };
+      await sent(1);
+      for (let retry = 1; retry <= 6; retry++) {
+        await f.endTurn("agent", { kind: "failed", error }, `resume-${retry}`);
+        failedAt = Date.now();
+        assert.equal((await f.records.read())[0]!.state, "parked", `${label}: retry ${retry} failed and is parked again`);
+        await sent(retry + 1);
+      }
+      assert.deepEqual(gaps, [0, 120, 300, 900, 1800, 1800, 1800], label);
+      assert.ok(f.calls.sends.every((s) => s === `agent:${OPUS}:continue`), label);
+      if (end === "success") {
+        await f.endTurn("agent", { kind: "completed" }, "resume-7", "Work completed.");
+        assert.deepEqual(await f.records.read(), [], `${label}: the success removes the record`);
+      } else {
+        await f.endTurn("agent", { kind: "failed", error }, "resume-7");
+        await f.tick();
+        Object.assign(f.agents.get("agent")!, { lastUserMessageAt: new Date().toISOString() });
+        await f.endTurn("agent", { kind: "completed" }, "user-turn-2", "Answered.");
+        const [record] = await f.records.read();
+        assert.equal(record!.state, "superseded", label);
+        assert.equal(record!.terminalReason, "newer-user-message", label);
+      }
+      for (let n = 0; n < 120; n++) await f.tick();
+      assert.equal(f.calls.sends.length, 7, `${label}: nothing is sent after the stop`);
+      // One line per retry, never one per poll.
+      assert.equal(logs.filter((l) => l.includes("retry-sent agentId=agent")).length, 7, label);
+      assert.equal(logs.filter((l) => l.includes("retry-scheduled agentId=agent")).length, end === "success" ? 6 : 7, label);
+      assert.equal(logs.filter((l) => l.includes("send-skipped agentId=agent")).length, end === "success" ? 6 : 7, `${label}: each wait is logged once`);
+      assert.ok(!logs.some((l) => l.includes("retry-stopped") || l.includes("exhausted")), label);
       // A PM is considered for a swap on every quota failure; with Claude capacity it is held, and said once.
       assert.equal(logs.filter((l) => l.includes("pm-fallback-held agentId=agent")).length, role === "pm" ? 1 : 0, label);
       assert.deepEqual(f.calls.apply, []);

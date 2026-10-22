@@ -7,7 +7,6 @@ import { MAX_SETTLED_RECORDS, ResumeStore, StateUnreadableError } from "../serve
 import { buildRecord, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
 
 const config: ResumeConfig = {
-  maxAttempts: 3,
   baseDelaySeconds: 18000,
   maxDelaySeconds: 604800,
   resetBufferSeconds: 30,
