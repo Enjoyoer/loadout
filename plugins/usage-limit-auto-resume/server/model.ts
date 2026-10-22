@@ -40,6 +40,10 @@ export type ResumeRecord = {
   configFingerprint: string;
   detectedAt: string;
   lastUserMessageAt: string | null;
+  // The user message the work began with: the failed turn's own when the work's first record was created, then carried
+  // unchanged by every successor and re-park, never read again from a later agent snapshot. Only it can show that the
+  // work is newer than an agent close (closeDecision). Absent on records from before 0.3.0.
+  originUserMessageAt?: string | null;
   failureSignature: string;
   notBefore: string;
   resetAt: string | null;
@@ -76,17 +80,27 @@ export const AGENT_CLOSE_GRACE_MS = 60_000;
 /**
  * What the agent's close means for one of its records now. The close belongs to the agent, not to a record, so it
  * holds every record of the agent, including one a handler created after the close.
- * - "go": no close, or the record's work is newer than it: its user message came after the close, so someone opened
- *   the agent again with that message.
+ * - "go": no close, or the record's work is newer than it: the user message the work began with (originUserMessageAt)
+ *   came after the close, so someone opened the agent again with that message.
  * - "stale": an earlier daemon run saw the close, which was that run's shutdown. It no longer applies.
  * - "hold": this daemon run saw the close less than AGENT_CLOSE_GRACE_MS ago. Nothing is sent or read for the record.
  * - "end": this daemon run has outlived the close, so it was a kill or close by a user or an agent. The record ends.
  */
-export function closeDecision(close: AgentClose | null, record: Pick<ResumeRecord, "lastUserMessageAt">, daemon: string, now = Date.now()): "go" | "stale" | "hold" | "end" {
+export function closeDecision(close: AgentClose | null, record: Pick<ResumeRecord, "originUserMessageAt">, daemon: string, now = Date.now()): "go" | "stale" | "hold" | "end" {
   if (!close) return "go";
   if (close.daemon !== daemon) return "stale";
-  if (record.lastUserMessageAt && Date.parse(record.lastUserMessageAt) > Date.parse(close.at)) return "go";
+  if (record.originUserMessageAt && Date.parse(record.originUserMessageAt) > Date.parse(close.at)) return "go";
   return Date.parse(close.at) + AGENT_CLOSE_GRACE_MS <= now ? "end" : "hold";
+}
+
+/**
+ * The agent still has no user message newer than the turn that ended at `endedAt` (when its turn_ended event arrived),
+ * so its latest user message is the one that turn ran on. A turn-end handler reads the agent after awaiting; if a user
+ * message reached the agent meanwhile, the failure is stale and creates no record. Otherwise the record would take
+ * that newer message's time for the old failed turn and pass the newer-message and close checks as new work.
+ */
+export function isBoundToTurn(agent: Pick<AgentSnapshot, "lastUserMessageAt">, endedAt: number): boolean {
+  return !agent.lastUserMessageAt || Date.parse(agent.lastUserMessageAt) <= endedAt;
 }
 
 // Retry immediately, then after 2, 5 and 15 minutes, then every 30 minutes: the last step repeats for as long as the
@@ -333,6 +347,7 @@ export function buildRecord(eventAgent: AgentSnapshot, failureMessage: string, c
     configFingerprint: identity,
     detectedAt,
     lastUserMessageAt: eventAgent.lastUserMessageAt ?? null,
+    originUserMessageAt: eventAgent.lastUserMessageAt ?? null,
     failureSignature: signature,
     notBefore: new Date(Math.max(now + delayMs, resetAt ? Date.parse(resetAt) + config.resetBufferSeconds * 1000 : 0)).toISOString(),
     resetAt,
@@ -388,7 +403,7 @@ export function buildTransientRecord(agent: AgentSnapshot, timeline: readonly Ag
     modeId: agent.currentModeId ?? null, thinkingOptionId: agent.thinkingOptionId ?? null,
     cwd: agent.cwd, persistenceSessionId: agent.persistence.sessionId,
     nativeHandle: agent.persistence.nativeHandle ?? null, configFingerprint: identity,
-    detectedAt, lastUserMessageAt: agent.lastUserMessageAt,
+    detectedAt, lastUserMessageAt: agent.lastUserMessageAt, originUserMessageAt: agent.lastUserMessageAt,
     failureSignature: createHash("sha256").update(assistant).digest("hex").slice(0, 24),
     failedAssistantText: assistant, expectedUserText: user.text,
     expectedUserMessageId: user.messageId ?? user.clientMessageId ?? null,
@@ -434,7 +449,7 @@ export function buildFailedTransientRecord(agent: AgentSnapshot, timeline: reado
     modeId: agent.currentModeId ?? null, thinkingOptionId: agent.thinkingOptionId ?? null,
     cwd: agent.cwd, persistenceSessionId: agent.persistence.sessionId,
     nativeHandle: agent.persistence.nativeHandle ?? null, configFingerprint: identity,
-    detectedAt, lastUserMessageAt: agent.lastUserMessageAt,
+    detectedAt, lastUserMessageAt: agent.lastUserMessageAt, originUserMessageAt: agent.lastUserMessageAt,
     failureSignature: createHash("sha256").update(failure).digest("hex").slice(0, 24),
     failedAssistantText: failure, expectedUserText: user.text,
     expectedUserMessageId: user.messageId ?? user.clientMessageId ?? null,

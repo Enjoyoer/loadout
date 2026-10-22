@@ -80,7 +80,7 @@ function isRecord(value: unknown): value is ResumeRecord {
     isId(record.recordId) && isId(record.sourceTurnId) && isId(record.agentId) && nullable(record.workspaceId, isString) &&
     isString(record.provider) && isString(record.model) && nullable(record.modeId, isString) && nullable(record.thinkingOptionId, isString) &&
     isString(record.cwd) && isId(record.persistenceSessionId) && nullable(record.nativeHandle, isString) && isString(record.configFingerprint) &&
-    isTime(record.detectedAt) && nullable(record.lastUserMessageAt, isString) && isString(record.failureSignature) &&
+    isTime(record.detectedAt) && nullable(record.lastUserMessageAt, isString) && nullable(record.originUserMessageAt, isString) && isString(record.failureSignature) &&
     isTime(record.notBefore) && nullable(record.resetAt, isTime) &&
     Array.isArray(record.attempts) && record.attempts.every(isAttempt) && optional(record.attemptsDropped, isCount) && isOneOf(record.state, STATES) &&
     nullable(record.sentAt, isTime) && nullable(record.resumeTurnId, isString) && nullable(record.resumeStartedAt, isTime) &&

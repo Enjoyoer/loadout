@@ -418,3 +418,47 @@ it("a close while a failed turn's handler is still building its record holds and
     });
   }
 });
+
+it("a failure whose handler reads the agent after a newer user message is stale: no record, even across a close and reopen", async () => {
+  // Each old failure's handler is held at its agent read while the agent is closed and then opened again with a new
+  // human request, which succeeds. Its snapshot then shows that request's time, which must not become the old work's.
+  for (const path of ["usage-resume-handoff", "first-detection"]) {
+    await recoveryLane(async (lane) => {
+      const id = lane.snapshot.id;
+      let turnId = "old-source";
+      if (path === "usage-resume-handoff") {
+        lane.snapshot.lastError = "usage_limit_exceeded";
+        const usage = buildRecord(lane.snapshot, "usage_limit_exceeded", undefined, lane.config, START - 6 * 3600_000, "source-turn", true)!;
+        await lane.store.upsert({ ...usage, state: "parked", notBefore: new Date(START).toISOString() });
+        await lane.sweep(START);
+        assert.equal(lane.sends.length, 1);
+        turnId = lane.snapshot.activeTurn!.turnId;
+        lane.append({ type: "assistant_message", text: "[System Error] usage_limit_exceeded" }, turnId);
+        Object.assign(lane.snapshot, { status: "error", activeTurn: null, lastError: "usage_limit_exceeded", updatedAt: new Date().toISOString() });
+      }
+      const sends = lane.sends.length;
+      const endedAt = Date.now();
+      const handler = lane.holdNextRefresh();
+      lane.emit("agent.turn_ended", { agent: { id }, turnId, outcome: { kind: "failed", error: { message: "usage_limit_exceeded" } }, timeline: lane.timeline() });
+      await settles(handler.reached, "the old failure's agent read");
+      mock.timers.setTime(endedAt + 100);
+      lane.snapshot.status = "closed";
+      lane.emit("agent.closed", { agent: { id } });
+      await settles(async () => !!(await lane.store.closeOf(id)), "the stored close");
+      // A different human request opens the agent again and succeeds.
+      mock.timers.setTime(endedAt + 1_100);
+      lane.append({ type: "user_message", text: "New work, not the closed task", messageId: "human-new" }, "human-turn");
+      Object.assign(lane.snapshot, { status: "running", activeTurn: { turnId: "human-turn" }, lastError: undefined, lastUserMessageAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      lane.emit("agent.turn_started", { agent: { id }, turnId: "human-turn" });
+      await lane.complete(endedAt + 5_000);
+      handler.release();
+      await lane.plugin.idle();
+      const records = await lane.store.read();
+      assert.equal(records.filter(isActive).length, 0, `${path}: the stale failure created no record`);
+      assert.ok(!records.some((record) => record.sourceTurnId === turnId), `${path}: no record for the old failed turn`);
+      if (path === "usage-resume-handoff") assert.equal(records[0]?.terminalReason, "stale-failure");
+      await lane.sweep(endedAt + 6 * 3600_000);
+      assert.equal(lane.sends.length, sends, `${path}: nothing is sent after the newer work succeeded`);
+    });
+  }
+});
