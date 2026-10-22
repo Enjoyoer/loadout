@@ -1,18 +1,21 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { isActive, type ResumeAttempt, type ResumeRecord, type ResumeState } from "./model.ts";
+import { isActive, type AgentClose, type ResumeAttempt, type ResumeRecord, type ResumeState } from "./model.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
 import { paseoHome } from "./vendor/daemon-target.ts";
 
 /** What a pruned record leaves behind: its source turn, so a repeated event for that turn still reads as a duplicate. */
 export type TurnGuard = { agentId: string; sourceTurnId: string; persistenceSessionId: string };
 
-type State = { version: 2; records: ResumeRecord[]; guards?: TurnGuard[] };
+// closes: the agents Paseo closed (agent.closed), one entry per agent, kept apart from records so a record created
+// after the close is held by it too.
+type State = { version: 2; records: ResumeRecord[]; guards?: TurnGuard[]; closes?: AgentClose[] };
 
 // Settled records (done, exhausted, opted out, superseded) only answer repeated turn events and keep recent evidence, so
 // beyond this bound the oldest leave just a guard. A record that can still act, or is uncertain, is never pruned.
 export const MAX_SETTLED_RECORDS = 200;
 export const MAX_TURN_GUARDS = 2000;
+export const MAX_AGENT_CLOSES = 1000;
 
 const isSettled = (record: ResumeRecord) => !isActive(record) && record.state !== "uncertain";
 const guardOf = ({ agentId, sourceTurnId, persistenceSessionId }: TurnGuard): TurnGuard => ({ agentId, sourceTurnId, persistenceSessionId });
@@ -63,8 +66,8 @@ const isQuotaHold = (value: unknown) => typeof value === "object" && value !== n
 const isRpcTimeout = (value: unknown) => typeof value === "object" && value !== null &&
   isTime((value as Record<string, unknown>).giveUpAt) && nullable((value as Record<string, unknown>).waiting, isString);
 
-const isClosedMark = (value: unknown) => typeof value === "object" && value !== null &&
-  isTime((value as Record<string, unknown>).at) && isId((value as Record<string, unknown>).daemon);
+const isClose = (value: unknown): value is AgentClose => typeof value === "object" && value !== null &&
+  isId((value as Record<string, unknown>).agentId) && isTime((value as Record<string, unknown>).at) && isId((value as Record<string, unknown>).daemon);
 
 // Each field a sweep or a send relies on; nullable fields may be null or absent.
 function isRecord(value: unknown): value is ResumeRecord {
@@ -83,7 +86,7 @@ function isRecord(value: unknown): value is ResumeRecord {
     nullable(record.sentAt, isTime) && nullable(record.resumeTurnId, isString) && nullable(record.resumeStartedAt, isTime) &&
     nullable(record.resumeFinishedAt, isTime) && nullable(record.verificationDeadlineAt, isTime) &&
     isTime(record.createdAt) && isTime(record.updatedAt) && nullable(record.terminalReason, isString) &&
-    nullable(record.quotaHold, isQuotaHold) && nullable(record.rpcTimeout, isRpcTimeout) && nullable(record.agentClosed, isClosedMark);
+    nullable(record.quotaHold, isQuotaHold) && nullable(record.rpcTimeout, isRpcTimeout);
 }
 
 function defaultState(): State {
@@ -112,6 +115,7 @@ export class ResumeStore {
       const invalid = state.records.findIndex((record) => !isRecord(record));
       if (invalid >= 0) throw new Error(`invalid record at index ${invalid}`);
       if (state.guards !== undefined && !(Array.isArray(state.guards) && state.guards.every(isGuard))) throw new Error("invalid guards");
+      if (state.closes !== undefined && !(Array.isArray(state.closes) && state.closes.every(isClose))) throw new Error("invalid agent closes");
       return state;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaultState();
@@ -137,9 +141,37 @@ export class ResumeStore {
    */
   async markHandled(turn: TurnGuard): Promise<void> {
     await this.exclusive(async () => {
-      const { records, guards = [] } = await this.load();
+      const state = await this.load();
+      const guards = state.guards ?? [];
       if (guards.some((guard) => sameTurn(guard, turn))) return;
-      await this.persist(records, [...guards, guardOf(turn)].slice(-MAX_TURN_GUARDS));
+      await this.persist(state.records, [...guards, guardOf(turn)].slice(-MAX_TURN_GUARDS), state.closes);
+    });
+  }
+
+  /** The agent's stored close, if any. */
+  async closeOf(agentId: string): Promise<AgentClose | null> {
+    return (await this.load()).closes?.find((close) => close.agentId === agentId) ?? null;
+  }
+
+  /**
+   * Stores a close of the agent, replacing any earlier one: Paseo sends one agent.closed per close, so a later event is
+   * a later close of an agent that was open again. Closes another daemon run saw are dropped; they no longer apply.
+   */
+  async markClosed(close: AgentClose): Promise<void> {
+    await this.exclusive(async () => {
+      const state = await this.load();
+      const kept = (state.closes ?? []).filter((other) => other.agentId !== close.agentId && other.daemon === close.daemon);
+      await this.persist(state.records, state.guards, [...kept, close].slice(-MAX_AGENT_CLOSES));
+    });
+  }
+
+  /** Removes this close, unless a newer one replaced it meanwhile. */
+  async clearClose(close: AgentClose): Promise<void> {
+    await this.exclusive(async () => {
+      const state = await this.load();
+      const closes = state.closes ?? [];
+      const kept = closes.filter((other) => !(other.agentId === close.agentId && other.at === close.at && other.daemon === close.daemon));
+      if (kept.length !== closes.length) await this.persist(state.records, state.guards, kept);
     });
   }
 
@@ -151,9 +183,9 @@ export class ResumeStore {
     return run;
   }
 
-  private async persist(records: ResumeRecord[], guards: TurnGuard[] = []): Promise<void> {
+  private async persist(records: ResumeRecord[], guards: TurnGuard[] = [], closes: AgentClose[] = []): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    const state: State = guards.length > 0 ? { version: 2, records, guards } : { version: 2, records };
+    const state: State = { version: 2, records, ...(guards.length > 0 ? { guards } : {}), ...(closes.length > 0 ? { closes } : {}) };
     await writeJsonAtomically(this.filePath, state, { mode: 0o600 });
   }
 
@@ -164,23 +196,24 @@ export class ResumeStore {
 
   async upsert(record: ResumeRecord): Promise<void> {
     await this.exclusive(async () => {
-      const { records, guards } = await this.load();
+      const state = await this.load();
+      const { records } = state;
       const index = records.findIndex((candidate) => candidate.recordId === record.recordId);
       if (index < 0) records.push(record);
       else records[index] = record;
-      const kept = retain(records, guards);
-      await this.persist(kept.records, kept.guards);
+      const kept = retain(records, state.guards);
+      await this.persist(kept.records, kept.guards, state.closes);
     });
   }
 
   async update(recordId: string, update: (record: ResumeRecord) => ResumeRecord): Promise<ResumeRecord | null> {
     return this.exclusive(async () => {
-      const { records, guards } = await this.load();
-      const index = records.findIndex((candidate) => candidate.recordId === recordId);
+      const state = await this.load();
+      const index = state.records.findIndex((candidate) => candidate.recordId === recordId);
       if (index < 0) return null;
-      const next = update(records[index]!);
-      records[index] = next;
-      await this.persist(records, guards);
+      const next = update(state.records[index]!);
+      state.records[index] = next;
+      await this.persist(state.records, state.guards, state.closes);
       return next;
     });
   }
@@ -193,20 +226,21 @@ export class ResumeStore {
    */
   async handoff(recordId: string, owns: (record: ResumeRecord) => boolean, settle: ((record: ResumeRecord) => ResumeRecord) | null, successor: ResumeRecord): Promise<boolean> {
     return this.exclusive(async () => {
-      const { records, guards } = await this.load();
+      const state = await this.load();
+      const { records } = state;
       const index = records.findIndex((candidate) => candidate.recordId === recordId);
       if (index < 0 || !owns(records[index]!) || records.some((candidate) => candidate.recordId === successor.recordId)) return false;
       const next = settle ? records.map((record, at) => at === index ? settle(record) : record) : records.filter((_, at) => at !== index);
-      const kept = retain([...next, successor], guards);
-      await this.persist(kept.records, kept.guards);
+      const kept = retain([...next, successor], state.guards);
+      await this.persist(kept.records, kept.guards, state.closes);
       return true;
     });
   }
 
   async remove(recordId: string): Promise<void> {
     await this.exclusive(async () => {
-      const { records, guards } = await this.load();
-      await this.persist(records.filter((record) => record.recordId !== recordId), guards);
+      const state = await this.load();
+      await this.persist(state.records.filter((record) => record.recordId !== recordId), state.guards, state.closes);
     });
   }
 }

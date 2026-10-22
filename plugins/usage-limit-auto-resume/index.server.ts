@@ -8,7 +8,7 @@ import { ReturnStore, type Profile } from "./server/fallback.ts";
 import { readStoredProfiles } from "./server/stored-agent.ts";
 import { createFallbackRunner } from "./server/fallback-runner.ts";
 import { agentPool, QuotaReader, type PoolQuota, type QuotaPool } from "./server/quota.ts";
-import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, closeDecision, failureSignature, holdsClaim, isActive, isExpectedUser, isOwnLatestMessage, isRpcTimeoutWaiting, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, rpcTimeoutDecision, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, USAGE_ENDING_GATES, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
+import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, cancelClaim, closeDecision, failureSignature, holdsClaim, isActive, isExpectedUser, isOwnLatestMessage, isRpcTimeoutWaiting, lastUserMessage, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, rpcTimeoutDecision, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, USAGE_ENDING_GATES, verificationDecision, verifyTransientTimeline, type AgentClose, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
@@ -34,6 +34,16 @@ export default function contribute(server: PluginServerContext, openClient: () =
   let stateErrorLogged = false;
   // One entry per agent with a send in flight; see processRecord.
   const inFlight = new Map<string, InFlightClaim>();
+  // The newest agent.closed this process saw per agent, set before any await so a send about to be claimed sees it
+  // before its store write lands (see closeGate).
+  const closes = new Map<string, AgentClose>();
+  // Synchronous, so it is checked again right before each timeline read and claim: a close seen while the caller awaited
+  // holds the record (closeGate decides it on the next sweep).
+  const heldByClose = (record: ResumeRecord) => {
+    const seen = closes.get(record.agentId);
+    const decision = seen ? closeDecision(seen, record, daemon()) : "go";
+    return decision === "hold" || decision === "end";
+  };
   // The wait reason last logged per record and attempt, so a record waiting out its delay (or an unarmed host, or a PM
   // profile change) is logged once per retry, not on every poll.
   const skipLogged = new Map<string, string>();
@@ -143,8 +153,9 @@ export default function contribute(server: PluginServerContext, openClient: () =
 
   // A long retry can fill the entire tail page. Walk back to the newest user, rather than treating a missing row
   // in 200 entries as an ambiguous send. Older pages naturally have hasNewer; anchor them to the fresh tail's epoch.
-  async function transientTimeline(api: PaseoApi, agentId: string) {
-    const timeline = api.agents.ref(agentId).timeline;
+  async function transientTimeline(api: PaseoApi, record: ResumeRecord) {
+    const timeline = api.agents.ref(record.agentId).timeline;
+    if (heldByClose(record)) throw new Error("agent-closed");
     let page = await timeline.refetch({ direction: "before", limit: 200 });
     if (page.error || page.gap || page.staleCursor || page.hasNewer) throw new Error("timeline-incomplete");
     const epoch = page.epoch;
@@ -152,6 +163,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
     while (!lastUserMessage(entries.map((entry) => entry.item)) && page.hasOlder) {
       const cursor = page.startCursor;
       if (!cursor || cursor.epoch !== epoch) throw new Error("timeline-incomplete");
+      if (heldByClose(record)) throw new Error("agent-closed");
       page = await timeline.refetch({ direction: "before", cursor, limit: 200 });
       if (page.error || page.gap || page.staleCursor || page.epoch !== epoch || !page.entries.length ||
           (page.startCursor && page.startCursor.seq >= cursor.seq)) throw new Error("timeline-incomplete");
@@ -160,29 +172,31 @@ export default function contribute(server: PluginServerContext, openClient: () =
     return entries;
   }
 
-  // An agent.closed mark (closeDecision) is decided before anything reads the agent's timeline, since that read loads the
-  // agent again. From an earlier daemon run the mark is cleared and the record goes on, as returned. From this run it
-  // holds the record, and ends it once this run has outlived the close.
-  async function passClose(record: ResumeRecord): Promise<ResumeRecord | null> {
-    const mark = record.agentClosed;
-    const decision = closeDecision(record, daemon());
-    if (!mark || decision === "none") return record;
-    const same = (value: ResumeRecord) => value.agentClosed?.at === mark.at && value.agentClosed?.daemon === mark.daemon;
-    if (decision === "stale") {
-      const cleared = await store.update(record.recordId, (value) => same(value)
-        ? { ...value, agentClosed: null, updatedAt: new Date().toISOString() } : value);
-      if (!cleared || cleared.agentClosed) return null;
-      log(`agent-close-cleared agentId=${record.agentId} recordId=${record.recordId} reason=daemon-restarted closedAt=${mark.at}`);
-      return cleared.state === record.state ? cleared : null;
+  // Decided before anything reads the agent's timeline, since that read loads a closed agent again (closeDecision).
+  // The close is the agent's, so this holds every record of the agent, whenever and by whichever handler it was
+  // created. True when the record may go on.
+  async function closeGate(record: ResumeRecord): Promise<boolean> {
+    const run = daemon();
+    let close = await store.closeOf(record.agentId);
+    if (close && close.daemon !== run) {
+      await store.clearClose(close);
+      log(`agent-close-cleared agentId=${record.agentId} reason=daemon-restarted closedAt=${close.at}`);
+      close = null;
     }
+    // A close this process saw whose store write has not landed yet.
+    const seen = closes.get(record.agentId);
+    if (seen && (!close || Date.parse(seen.at) > Date.parse(close.at))) close = seen;
+    const decision = closeDecision(close, record, run);
+    if (decision === "go" || decision === "stale") return true;
     if (decision === "hold") {
-      logOnce(record, "agent-closed", `send-held agentId=${record.agentId} recordId=${record.recordId} reason=agent-closed closedAt=${mark.at}`);
-      return null;
+      logOnce(record, "agent-closed", `send-held agentId=${record.agentId} recordId=${record.recordId} reason=agent-closed closedAt=${close!.at}`);
+      return false;
     }
-    const ended = await store.update(record.recordId, (value) => same(value) && isActive(value)
+    const closedAt = close!.at;
+    const ended = await store.update(record.recordId, (value) => isActive(value) && closeDecision(close, value, run) === "end"
       ? { ...value, state: "superseded", terminalReason: "agent-closed", updatedAt: new Date().toISOString() } : value);
-    if (ended?.terminalReason === "agent-closed" && ended.state === "superseded") log(`record-superseded agentId=${record.agentId} recordId=${record.recordId} reason=agent-closed closedAt=${mark.at}`);
-    return null;
+    if (ended?.terminalReason === "agent-closed" && ended.state === "superseded") log(`record-superseded agentId=${record.agentId} recordId=${record.recordId} reason=agent-closed closedAt=${closedAt}`);
+    return false;
   }
 
   // All ambiguous transient sends take this path, including persisted records from older plugin versions. Never
@@ -190,8 +204,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
   async function reverifyTransient(input: ResumeRecord, currentConfig: Config): Promise<ResumeRecord | null> {
     // A prompt-timeout record never re-arms: it sends its original message once, or nothing.
     if (input.rpcTimeout || !currentConfig.armed || inFlight.has(input.agentId)) return null;
-    const record = await passClose(input);
-    if (!record) return null;
+    if (!(await closeGate(input))) return null;
+    const record = input;
     const api = await acquire();
     const agent = await fetchAgent(api, record.agentId);
     const settle = async (state: ResumeState, reason: string) => store.update(record.recordId, (value) =>
@@ -214,7 +228,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
     if (agent.pendingPermissions?.length || (agent.requiresAttention && !["error", "finished"].includes(agent.attentionReason ?? ""))) return null;
     let entries: FetchAgentTimelineResponseMessage["payload"]["entries"];
     try {
-      entries = await transientTimeline(api, record.agentId);
+      entries = await transientTimeline(api, record);
     } catch (error) {
       log(`retry-verification-deferred agentId=${record.agentId} reason=${JSON.stringify(errorMessage(error))}`);
       return null;
@@ -285,7 +299,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
     }
     if (record.rpcTimeout && record.state === "parked") {
       let entries: Awaited<ReturnType<typeof transientTimeline>> | null = null;
-      try { entries = await transientTimeline(api, record.agentId); } catch { entries = null; }
+      if (heldByClose(record)) return;
+      try { entries = await transientTimeline(api, record); } catch { entries = null; }
       const decision = rpcTimeoutDecision(record, agent, entries);
       const unchanged = (value: ResumeRecord) => value.state === record.state && value.updatedAt === record.updatedAt;
       if (decision.act === "stop") {
@@ -335,8 +350,9 @@ export default function contribute(server: PluginServerContext, openClient: () =
     // The agent snapshot the last send check passed on; the claim is taken on its latest user message and turn.
     let gated = agent;
     if (record.kind === "transient") {
+      if (heldByClose(record)) return;
       try {
-        const entries = await transientTimeline(api, record.agentId);
+        const entries = await transientTimeline(api, record);
         const timelineGate = verifyTransientTimeline(record, entries.map((entry) => entry.item), agent.lastUserMessageAt);
         if (!timelineGate.ok) throw new Error(timelineGate.reason);
         const freshAgent = await fetchAgent(api, record.agentId);
@@ -371,6 +387,12 @@ export default function contribute(server: PluginServerContext, openClient: () =
       turnId: null,
       startedAt: null,
     };
+    // The checks above awaited: an agent.closed seen meanwhile holds the send. From here on the close handler cancels
+    // the claim itself.
+    if (heldByClose(record)) {
+      logOnce(record, "agent-closed", `send-held agentId=${record.agentId} recordId=${record.recordId} reason=agent-closed`);
+      return;
+    }
     inFlight.set(record.agentId, claim);
     try {
       // Claim only the record the gates checked: still in that state, unwritten since, at the same attempt generation.
@@ -408,7 +430,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
       let timeoutCancel: ClaimCancel | null = null;
       if (record.rpcTimeout && fresh && !claim.cancelled && !presendCancel(record, taken, fresh, currentConfig)) {
         let entries: Awaited<ReturnType<typeof transientTimeline>> | null = null;
-        try { entries = await transientTimeline(api, record.agentId); } catch { entries = null; }
+        try { entries = await transientTimeline(api, record); } catch { entries = null; }
         const decision = rpcTimeoutDecision(record, fresh, entries);
         if (decision.act === "stop") timeoutCancel = { state: decision.state, reason: decision.reason };
         else if (decision.act === "wait") timeoutCancel = { state: record.state, reason: decision.reason };
@@ -477,6 +499,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
     // The send is itself a user message, so the agent's latest user time moves past the record's. Take that time only
     // when the newest user row is this attempt's own message; any other newer message still supersedes the record.
     const lastUserMessageAt = agent.lastUserMessageAt ?? null;
+    if (heldByClose(record)) return;
     if (lastUserMessageAt && lastUserMessageAt !== record.lastUserMessageAt && await ownMessageIsLatest(api, record)) {
       const correlated = await store.update(record.recordId, (value) => value.state === record.state && value.updatedAt === record.updatedAt
         ? { ...value, lastUserMessageAt, updatedAt: new Date().toISOString() }
@@ -516,10 +539,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
         if (record.state === "detected") {
           await store.update(record.recordId, (value) => value.state === "detected" ? { ...value, state: "parked", updatedAt: new Date().toISOString() } : value);
         }
-        const read = (await store.read()).find((value) => value.recordId === record.recordId);
-        if (!read) continue;
-        const latest = await passClose(read);
-        if (!latest) continue;
+        const latest = (await store.read()).find((value) => value.recordId === record.recordId);
+        if (!latest || !(await closeGate(latest))) continue;
         if (latest.state === "resuming") {
           await store.update(latest.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: "send-state-unreconciled", updatedAt: new Date().toISOString() }));
           continue;
@@ -823,21 +844,18 @@ export default function contribute(server: PluginServerContext, openClient: () =
   });
 
   // Paseo sends agent.closed for an explicit close or kill and for every agent when the daemon shuts down; nothing in
-  // the event tells them apart. Each waiting record of the agent is marked with this daemon run, and closeDecision
-  // decides on a later sweep: ended when this run outlives the close, continued when a new run finds it.
+  // the event tells them apart. The close is stored for the agent, with this daemon run, whether or not it has a record
+  // yet, and closeGate decides on every later sweep: work of this agent is held, and ended once this run outlives the
+  // close, while a new daemon run clears it.
   const removeClosed = server.on("agent.closed", (event) => {
     // The plugin's own profile swap reloads the agent, and a failed reload closes it. That is no one's close.
     if (fallback.isBusy(event.agent.id)) return;
+    const close: AgentClose = { agentId: event.agent.id, at: new Date().toISOString(), daemon: daemon() };
+    closes.set(close.agentId, close);
     cancelInFlight(event.agent.id, { state: "parked", reason: "agent-closed", hold: true });
     track((async () => {
-      const mark = { at: new Date().toISOString(), daemon: daemon() };
-      for (const record of (await store.read()).filter((value) => value.agentId === event.agent.id && isActive(value))) {
-        const marked = await store.update(record.recordId, (value) => isActive(value) && value.agentClosed?.daemon !== mark.daemon
-          ? { ...value, agentClosed: mark, updatedAt: mark.at } : value);
-        if (marked?.agentClosed?.at === mark.at && marked.agentClosed.daemon === mark.daemon) {
-          log(`agent-closed agentId=${event.agent.id} recordId=${record.recordId} closedAt=${mark.at}`);
-        }
-      }
+      await store.markClosed(close);
+      log(`agent-closed agentId=${close.agentId} closedAt=${close.at}`);
     })().catch((error) => failed("close-handler-failed", error)));
   });
 

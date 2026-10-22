@@ -59,16 +59,14 @@ export type ResumeRecord = {
   quotaHold?: QuotaHold | null;
   // A Pi prompt RPC timeout: wait for the agent to settle, then resend the original message once (see rpcTimeoutDecision).
   rpcTimeout?: RpcTimeoutWait | null;
-  // Paseo closed the agent (`agent.closed`) while this record waited; see closeDecision.
-  agentClosed?: ClosedMark | null;
   // The pq pool whose provider refused the failed turn for quota (see quotaRefused); absent for any other failure.
   refusedPool?: QuotaPool | null;
 };
 
 export type RpcTimeoutWait = { giveUpAt: string; waiting: string | null };
 
-/** When Paseo closed the record's agent, and which daemon run saw it (the plugin's parent process). */
-export type ClosedMark = { at: string; daemon: string };
+/** Paseo closed this agent (`agent.closed`): when, and which daemon run saw it (the plugin's parent process). */
+export type AgentClose = { agentId: string; at: string; daemon: string };
 
 // Paseo 0.11.1 closes every agent when the daemon shuts down, with the same `agent.closed` event an explicit close or
 // kill sends, and stops plugins a few seconds later. A close this daemon run still outlives by this long was an
@@ -76,15 +74,19 @@ export type ClosedMark = { at: string; daemon: string };
 export const AGENT_CLOSE_GRACE_MS = 60_000;
 
 /**
- * What a close mark means now. A mark from an earlier daemon run is the shutdown that ended it: the record continues
- * ("stale", and the mark is cleared). A mark from this run holds every send, and once this run has outlived it by
- * AGENT_CLOSE_GRACE_MS the close was explicit (a kill or close by a user or an agent) and ends the record.
+ * What the agent's close means for one of its records now. The close belongs to the agent, not to a record, so it
+ * holds every record of the agent, including one a handler created after the close.
+ * - "go": no close, or the record's work is newer than it: its user message came after the close, so someone opened
+ *   the agent again with that message.
+ * - "stale": an earlier daemon run saw the close, which was that run's shutdown. It no longer applies.
+ * - "hold": this daemon run saw the close less than AGENT_CLOSE_GRACE_MS ago. Nothing is sent or read for the record.
+ * - "end": this daemon run has outlived the close, so it was a kill or close by a user or an agent. The record ends.
  */
-export function closeDecision(record: Pick<ResumeRecord, "agentClosed">, daemon: string, now = Date.now()): "none" | "stale" | "hold" | "end" {
-  const mark = record.agentClosed;
-  if (!mark) return "none";
-  if (mark.daemon !== daemon) return "stale";
-  return Date.parse(mark.at) + AGENT_CLOSE_GRACE_MS <= now ? "end" : "hold";
+export function closeDecision(close: AgentClose | null, record: Pick<ResumeRecord, "lastUserMessageAt">, daemon: string, now = Date.now()): "go" | "stale" | "hold" | "end" {
+  if (!close) return "go";
+  if (close.daemon !== daemon) return "stale";
+  if (record.lastUserMessageAt && Date.parse(record.lastUserMessageAt) > Date.parse(close.at)) return "go";
+  return Date.parse(close.at) + AGENT_CLOSE_GRACE_MS <= now ? "end" : "hold";
 }
 
 // Retry immediately, then after 2, 5 and 15 minutes, then every 30 minutes: the last step repeats for as long as the
