@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "8813c2bb141e2bfdb6c2f13642cac288ce1d0d81",
+  "source_commit": "cc5fabe96837fe31fa2738100fa5dadce46771d6",
   "skill_count": 25,
   "file_count": 144,
   "files": [
@@ -1688,8 +1688,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/test/transient-recovery.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 26586,
-      "sha256": "246ee5ecebb03676660c8ad5bd06c011e3d6de12f29c7feedd148a3db0ce9210"
+      "bytes": 26987,
+      "sha256": "259e8109ca0232a72d58632cf052abd49520f8cd24dc167bdbb6404a970a364e"
     },
     {
       "path": "plugins/usage-limit-auto-resume/tsconfig.json",
