@@ -59,11 +59,33 @@ export type ResumeRecord = {
   quotaHold?: QuotaHold | null;
   // A Pi prompt RPC timeout: wait for the agent to settle, then resend the original message once (see rpcTimeoutDecision).
   rpcTimeout?: RpcTimeoutWait | null;
+  // Paseo closed the agent (`agent.closed`) while this record waited; see closeDecision.
+  agentClosed?: ClosedMark | null;
   // The pq pool whose provider refused the failed turn for quota (see quotaRefused); absent for any other failure.
   refusedPool?: QuotaPool | null;
 };
 
 export type RpcTimeoutWait = { giveUpAt: string; waiting: string | null };
+
+/** When Paseo closed the record's agent, and which daemon run saw it (the plugin's parent process). */
+export type ClosedMark = { at: string; daemon: string };
+
+// Paseo 0.11.1 closes every agent when the daemon shuts down, with the same `agent.closed` event an explicit close or
+// kill sends, and stops plugins a few seconds later. A close this daemon run still outlives by this long was an
+// explicit one.
+export const AGENT_CLOSE_GRACE_MS = 60_000;
+
+/**
+ * What a close mark means now. A mark from an earlier daemon run is the shutdown that ended it: the record continues
+ * ("stale", and the mark is cleared). A mark from this run holds every send, and once this run has outlived it by
+ * AGENT_CLOSE_GRACE_MS the close was explicit (a kill or close by a user or an agent) and ends the record.
+ */
+export function closeDecision(record: Pick<ResumeRecord, "agentClosed">, daemon: string, now = Date.now()): "none" | "stale" | "hold" | "end" {
+  const mark = record.agentClosed;
+  if (!mark) return "none";
+  if (mark.daemon !== daemon) return "stale";
+  return Date.parse(mark.at) + AGENT_CLOSE_GRACE_MS <= now ? "end" : "hold";
+}
 
 // Retry immediately, then after 2, 5 and 15 minutes, then every 30 minutes: the last step repeats for as long as the
 // record lives. No attempt count ends a record.
@@ -426,24 +448,30 @@ export function buildFailedTransientRecord(agent: AgentSnapshot, timeline: reado
   };
 }
 
-export function verifyTransientTimeline(record: ResumeRecord, timeline: readonly AgentTimelineItem[]): { ok: true } | { ok: false; reason: string } {
+/**
+ * The timeline's newest user row is the one the record checked: the original human message before the first send, or
+ * the record's own last send after a failed retry. `lastUserMessageAt` is the agent's, read with or before the timeline.
+ */
+export function verifyTransientTimeline(record: ResumeRecord, timeline: readonly AgentTimelineItem[], lastUserMessageAt: string | null | undefined): { ok: true } | { ok: false; reason: string } {
   const { assistant, user } = record.failedOutcome ? { assistant: record.failedAssistantText ?? null, user: lastUserMessage(timeline) } : turnText(timeline);
   if (!assistant || assistant !== record.failedAssistantText) return { ok: false, reason: "failure-text-changed" };
   if (!user) return { ok: false, reason: "user-prompt-missing" };
-  if (user.text !== record.expectedUserText) return { ok: false, reason: "newer-user-message" };
-  const id = user.messageId ?? user.clientMessageId ?? null;
-  if (record.expectedUserMessageId && id !== record.expectedUserMessageId && !isRebuiltOwnRow(record, user)) return { ok: false, reason: "newer-user-message" };
+  if (!isExpectedUser(record, user, lastUserMessageAt)) return { ok: false, reason: "newer-user-message" };
   return { ok: true };
 }
 
 /**
- * After a daemon restart Paseo rebuilds an agent's timeline from its provider session: each user row keeps its text but
- * gets a new ID and no clientMessageId. While live, the plugin's own sends carry their stable ID in both fields, so a row
- * with the exact text of the record's own last send and no clientMessageId is that send, rebuilt. A newer message with
- * the same text would move the agent's lastUserMessageAt, which shouldResume checks again before the same send.
+ * The user row is the one the record expects: the same text, and the same message ID or, on a timeline Paseo rebuilt
+ * after a daemon restart, the same message by its time. A rebuild gives every user row a new ID and no clientMessageId,
+ * so the ID of the original human message and of the plugin's own sends no longer match. Any newer user message moves
+ * the agent's lastUserMessageAt, so an unchanged lastUserMessageAt, not the ID, proves it is the same message. A row that
+ * still carries a clientMessageId is a live row, whose ID must match.
  */
-function isRebuiltOwnRow(record: ResumeRecord, user: Extract<AgentTimelineItem, { type: "user_message" }>): boolean {
-  return !!record.expectedUserMessageId?.startsWith(`${record.recordId}:attempt:`) && !user.clientMessageId && user.text === record.expectedUserText;
+export function isExpectedUser(record: Pick<ResumeRecord, "expectedUserText" | "expectedUserMessageId" | "lastUserMessageAt">, user: Extract<AgentTimelineItem, { type: "user_message" }>, lastUserMessageAt: string | null | undefined): boolean {
+  if (user.text !== record.expectedUserText) return false;
+  const id = user.messageId ?? user.clientMessageId ?? null;
+  if (!record.expectedUserMessageId || id === record.expectedUserMessageId) return true;
+  return !user.clientMessageId && !!lastUserMessageAt && lastUserMessageAt === record.lastUserMessageAt;
 }
 
 /** A prompt-timeout record that has not sent its one resend and has not ended. */
@@ -478,8 +506,7 @@ export function rpcTimeoutDecision(record: ResumeRecord, agent: AgentSnapshot, t
   if (!timeline) return { act: "wait", reason: "timeline-unavailable" };
   const start = timeline.findLastIndex((entry) => entry.item.type === "user_message");
   const user = timeline[start]?.item;
-  if (user?.type !== "user_message" || user.text !== record.expectedUserText ||
-      (record.expectedUserMessageId && (user.messageId ?? user.clientMessageId) !== record.expectedUserMessageId)) {
+  if (user?.type !== "user_message" || !isExpectedUser(record, user, agent.lastUserMessageAt)) {
     return { act: "stop", state: "superseded", reason: "newer-user-message" };
   }
   const after = timeline.slice(start + 1).filter((entry) => entry.item.type !== "plugin");
@@ -542,7 +569,12 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
 export type TurnObservation = { turnId: string | null; startedAt: string | null };
 
 /** The decision of an event (a permission request, an archive, another turn) that stops a send not yet started. */
-export type ClaimCancel = { state: ResumeState; reason: string };
+// A hold keeps the record's state from before the claim: nothing was sent, and the record sends later on its schedule.
+export type ClaimCancel = { state: ResumeState; reason: string; hold?: boolean };
+
+// The send gates that end a usage record. Every other one, such as a pending permission or an attention request, holds
+// it until a later sweep.
+export const USAGE_ENDING_GATES = ["newer-user-message", "identity-changed", "opted-out", "archived"];
 
 /**
  * One send in flight: what its claim writes, whether its rollback has replaced the claim, and any turn seen meanwhile.
@@ -576,7 +608,9 @@ export function presendCancel(record: ResumeRecord, taken: TurnMark, agent: Agen
   if (mark.lastUserMessageAt !== taken.lastUserMessageAt) return { state: "superseded", reason: "newer-user-message" };
   if (mark.activeTurnId !== taken.activeTurnId || mark.updatedAt !== taken.updatedAt) return { state: "superseded", reason: "turn-changed-before-send" };
   const gate = shouldResume(record, agent, config, now);
-  return gate.ok ? null : { state: "uncertain", reason: gate.reason };
+  if (gate.ok) return null;
+  if (record.kind !== "transient" && !USAGE_ENDING_GATES.includes(gate.reason)) return { state: record.state, reason: gate.reason, hold: true };
+  return { state: "uncertain", reason: gate.reason };
 }
 
 const isClaimAttempt = (attempt: ResumeAttempt, claim: InFlightClaim) => attempt.messageId === claim.attempt.messageId && attempt.at === claim.attempt.at;
@@ -593,7 +627,7 @@ export function cancelClaim(current: ResumeRecord, before: ResumeRecord, claim: 
   if (!current.attempts.some((attempt) => isClaimAttempt(attempt, claim))) return current;
   return {
     ...current,
-    ...(current.state === "resuming" ? { state: cancel.state, terminalReason: cancel.reason } : {}),
+    ...(current.state === "resuming" ? cancel.hold ? { state: before.state } : { state: cancel.state, terminalReason: cancel.reason } : {}),
     sentAt: current.sentAt === claim.sentAt ? before.sentAt : current.sentAt,
     verificationDeadlineAt: current.verificationDeadlineAt === claim.verificationDeadlineAt ? before.verificationDeadlineAt : current.verificationDeadlineAt,
     attempts: current.attempts.filter((attempt) => !isClaimAttempt(attempt, claim)),

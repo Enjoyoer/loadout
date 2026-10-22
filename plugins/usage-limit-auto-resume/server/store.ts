@@ -63,6 +63,9 @@ const isQuotaHold = (value: unknown) => typeof value === "object" && value !== n
 const isRpcTimeout = (value: unknown) => typeof value === "object" && value !== null &&
   isTime((value as Record<string, unknown>).giveUpAt) && nullable((value as Record<string, unknown>).waiting, isString);
 
+const isClosedMark = (value: unknown) => typeof value === "object" && value !== null &&
+  isTime((value as Record<string, unknown>).at) && isId((value as Record<string, unknown>).daemon);
+
 // Each field a sweep or a send relies on; nullable fields may be null or absent.
 function isRecord(value: unknown): value is ResumeRecord {
   if (typeof value !== "object" || value === null) return false;
@@ -80,7 +83,7 @@ function isRecord(value: unknown): value is ResumeRecord {
     nullable(record.sentAt, isTime) && nullable(record.resumeTurnId, isString) && nullable(record.resumeStartedAt, isTime) &&
     nullable(record.resumeFinishedAt, isTime) && nullable(record.verificationDeadlineAt, isTime) &&
     isTime(record.createdAt) && isTime(record.updatedAt) && nullable(record.terminalReason, isString) &&
-    nullable(record.quotaHold, isQuotaHold) && nullable(record.rpcTimeout, isRpcTimeout);
+    nullable(record.quotaHold, isQuotaHold) && nullable(record.rpcTimeout, isRpcTimeout) && nullable(record.agentClosed, isClosedMark);
 }
 
 function defaultState(): State {
@@ -179,6 +182,24 @@ export class ResumeStore {
       records[index] = next;
       await this.persist(records, guards);
       return next;
+    });
+  }
+
+  /**
+   * Hands one record's work to a successor in a single write. Only while `owns` still holds for the stored record is it
+   * settled (`settle`, or removed when that is null) and the successor added. A successor already stored is never
+   * replaced. So of two handlers for the same turn end, the later one writes nothing: it can neither reset nor
+   * resurrect the successor. Returns whether the handoff happened.
+   */
+  async handoff(recordId: string, owns: (record: ResumeRecord) => boolean, settle: ((record: ResumeRecord) => ResumeRecord) | null, successor: ResumeRecord): Promise<boolean> {
+    return this.exclusive(async () => {
+      const { records, guards } = await this.load();
+      const index = records.findIndex((candidate) => candidate.recordId === recordId);
+      if (index < 0 || !owns(records[index]!) || records.some((candidate) => candidate.recordId === successor.recordId)) return false;
+      const next = settle ? records.map((record, at) => at === index ? settle(record) : record) : records.filter((_, at) => at !== index);
+      const kept = retain([...next, successor], guards);
+      await this.persist(kept.records, kept.guards);
+      return true;
     });
   }
 

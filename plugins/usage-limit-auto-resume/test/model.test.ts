@@ -164,9 +164,9 @@ describe("completed-turn transient classification", () => {
 
   it("rejects changed timeline, newer user messages, permissions, and changed session", () => {
     const value = transient({ state: "parked" });
-    assert.deepEqual(verifyTransientTimeline(value, timeline(RATE_LIMIT)), { ok: true });
-    assert.deepEqual(verifyTransientTimeline(value, timeline(RATE_LIMIT, "Different request")), { ok: false, reason: "newer-user-message" });
-    assert.deepEqual(verifyTransientTimeline(value, timeline("API Error: 529 overloaded")), { ok: false, reason: "failure-text-changed" });
+    assert.deepEqual(verifyTransientTimeline(value, timeline(RATE_LIMIT), value.lastUserMessageAt), { ok: true });
+    assert.deepEqual(verifyTransientTimeline(value, timeline(RATE_LIMIT, "Different request"), value.lastUserMessageAt), { ok: false, reason: "newer-user-message" });
+    assert.deepEqual(verifyTransientTimeline(value, timeline("API Error: 529 overloaded"), value.lastUserMessageAt), { ok: false, reason: "failure-text-changed" });
     assert.deepEqual(shouldResume(value, agent({ lastUserMessageAt: "2026-09-25T12:00:01.000Z" }), config, Date.parse(value.notBefore)), { ok: false, reason: "newer-user-message" });
     assert.deepEqual(shouldResume(value, agent({ pendingPermissions: [{}] }), config, Date.parse(value.notBefore)), { ok: false, reason: "pending-permission" });
     assert.deepEqual(shouldResume(value, agent({ model: "other" }), config, Date.parse(value.notBefore)), { ok: false, reason: "identity-changed" });
@@ -196,8 +196,8 @@ describe("failed-turn transient classification", () => {
     assert.equal(value.expectedUserText, "Process calls until 08:40.");
     assert.equal(value.retryPrompt, "continue");
     assert.equal(Date.parse(value.notBefore) - NOW, 0);
-    assert.deepEqual(verifyTransientTimeline(value, failedTimeline), { ok: true });
-    assert.deepEqual(verifyTransientTimeline(value, [...failedTimeline, { type: "user_message", text: "New task", messageId: "user-2" }]), { ok: false, reason: "newer-user-message" });
+    assert.deepEqual(verifyTransientTimeline(value, failedTimeline, value.lastUserMessageAt), { ok: true });
+    assert.deepEqual(verifyTransientTimeline(value, [...failedTimeline, { type: "user_message", text: "New task", messageId: "user-2" }], value.lastUserMessageAt), { ok: false, reason: "newer-user-message" });
     assert.ok(buildFailedTransientRecord(agent(), failedTimeline, { message: "invalid API key" }, config, NOW, "turn-1"), "any failed turn resumes");
     assert.equal(buildFailedTransientRecord(agent(), failedTimeline, { message: "usage_limit_exceeded" }, config, NOW, "turn-1"), null);
     assert.equal(buildFailedTransientRecord(agent(), [], { message: CAPACITY }, config, NOW, "turn-1"), null);
