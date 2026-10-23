@@ -6,10 +6,71 @@ import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const spec = JSON.parse(readFileSync(join(root, 'runtime.json'), 'utf8'));
-const settings = JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8'));
-if (settings.codemode?.mode !== 'on' || JSON.stringify(settings.defaultTools) !== '["+codemode"]'
-    || !settings.extensions?.includes(join(root, 'fleet-routing.mjs')))
-  throw Error('Pi requires fixed Codemode on');
+const requireCodemode = settings => {
+  if (settings.codemode?.mode !== 'on' || JSON.stringify(settings.defaultTools) !== '["+codemode"]'
+      || !settings.extensions?.includes(join(root, 'fleet-routing.mjs')))
+    throw Error('Pi requires fixed Codemode on');
+};
+requireCodemode(JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8')));
+// Per-agent overlays: the owner or a PM may write models.overlay.json or settings.overlay.json into agents/<id>/.
+// Every launch rebuilds that agent's models.json and settings.json from the shared agent/ copies and applies the
+// overlay on top, so deleting an overlay restores the shared values. Only this allowlist is accepted; any other key,
+// JSON type, provider or model refuses the launch. Every object and list needs at least one entry, n is a positive
+// integer, and each provider, model id and "<provider>/<model id>" key must exist in the shared models.json:
+//   models.overlay.json    {"providers": {"<provider>": {"models": [{"id": "<model id>", "contextWindow"?: n, "maxTokens"?: n}]}}}
+//   settings.overlay.json  {"compaction": {"enabled"?: true|false, "reserveTokens"?: n, "keepRecentTokens"?: n,
+//                           "modelOverrides"?: {"<provider>/<model id>": {"reserveTokens"?: n, "keepRecentTokens"?: n}}}}
+// For example, a 1M window for one model with a 40960-token compaction reserve:
+//   {"providers": {"fleet": {"models": [{"id": "<model id>", "contextWindow": 1000000}]}}}
+//   {"compaction": {"modelOverrides": {"fleet/<model id>": {"reserveTokens": 40960}}}}
+// Probes and launches without a caller never read overlays.
+const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+function only(value, keys, where) {
+  if (!isObject(value) || !Object.keys(value).length) throw Error(`${where} must be a non-empty object`);
+  const other = Object.keys(value).find(key => !keys.includes(key));
+  if (other !== undefined) throw Error(`${where} does not allow "${other}"`);
+  return value;
+}
+function counts(value, keys, where) {
+  for (const key of keys)
+    if (Object.hasOwn(value, key) && !(Number.isSafeInteger(value[key]) && value[key] > 0))
+      throw Error(`${where}.${key} must be a positive integer`);
+}
+function overlayModels(models, overlay) {
+  const providers = only(only(overlay, ['providers'], 'the overlay').providers, Object.keys(models.providers), 'providers');
+  for (const [name, provider] of Object.entries(providers)) {
+    const where = `providers.${name}.models`, list = only(provider, ['models'], `providers.${name}`).models;
+    if (!Array.isArray(list) || !list.length) throw Error(`${where} must be a non-empty list`);
+    for (const entry of list) {
+      only(entry, ['id', 'contextWindow', 'maxTokens'], `${where} entry`);
+      const model = (models.providers[name].models ?? []).find(row => row.id === entry.id);
+      if (!model) throw Error(`${where} has no shared model "${entry.id}"`);
+      if (Object.keys(entry).length < 2) throw Error(`${where} entry "${entry.id}" changes nothing`);
+      counts(entry, ['contextWindow', 'maxTokens'], `${where} entry "${entry.id}"`);
+      Object.assign(model, entry);
+    }
+  }
+  return models;
+}
+function overlaySettings(settings, overlay, models) {
+  const compaction = only(only(overlay, ['compaction'], 'the overlay').compaction,
+    ['enabled', 'reserveTokens', 'keepRecentTokens', 'modelOverrides'], 'compaction');
+  if (Object.hasOwn(compaction, 'enabled') && typeof compaction.enabled !== 'boolean')
+    throw Error('compaction.enabled must be true or false');
+  counts(compaction, ['reserveTokens', 'keepRecentTokens'], 'compaction');
+  const merged = { ...settings.compaction, ...compaction };
+  if (Object.hasOwn(compaction, 'modelOverrides')) {
+    const ids = Object.entries(models.providers)
+      .flatMap(([name, provider]) => (provider.models ?? []).map(row => `${name}/${row.id}`));
+    merged.modelOverrides = { ...settings.compaction?.modelOverrides };
+    for (const [key, override] of Object.entries(only(compaction.modelOverrides, ids, 'compaction.modelOverrides'))) {
+      const where = `compaction.modelOverrides["${key}"]`;
+      counts(only(override, ['reserveTokens', 'keepRecentTokens'], where), ['reserveTokens', 'keepRecentTokens'], where);
+      merged.modelOverrides[key] = { ...merged.modelOverrides[key], ...override };
+    }
+  }
+  return { ...settings, compaction: merged };
+}
 if (process.argv.slice(2).some(arg => /^(--(?:no-)?codemode|--no-extensions)(=|$)/.test(arg)))
   throw Error('Pi Codemode cannot be overridden per agent');
 const cli = join(root, 'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');
@@ -29,9 +90,21 @@ if (caller && !probe) {
   const home = join(root, 'agents', caller);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   // Keep sessions stable across resumes, without shared settings or MCP identity.
-  for (const file of ['models.json', 'settings.json']) {
-    writeFileSync(join(home, file), readFileSync(join(root, 'agent', file)), { mode: 0o600 });
+  const shared = Object.fromEntries(['models.json', 'settings.json']
+    .map(file => [file, readFileSync(join(root, 'agent', file))]));
+  const files = { ...shared };
+  for (const [file, apply] of [['models.json', overlayModels], ['settings.json', overlaySettings]]) {
+    const path = join(home, file.replace(/json$/, 'overlay.json'));
+    let text;
+    // Only a missing overlay is absent; an unreadable one refuses the launch.
+    try { text = readFileSync(path, 'utf8'); } catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue; throw error; }
+    try {
+      const merged = apply(JSON.parse(shared[file]), JSON.parse(text), JSON.parse(shared['models.json']));
+      if (file === 'settings.json') requireCodemode(merged);
+      files[file] = JSON.stringify(merged, null, 2) + '\n';
+    } catch (error) { throw Error(`invalid ${path}: ${error.message}`); }
   }
+  for (const [file, data] of Object.entries(files)) writeFileSync(join(home, file), data, { mode: 0o600 });
   if (existsSync(join(root, 'agent/AGENTS.md')))
     writeFileSync(join(home, 'AGENTS.md'), readFileSync(join(root, 'agent/AGENTS.md')), { mode: 0o600 });
   const url = new URL(spec.paseoMcp.url);

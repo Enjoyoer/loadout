@@ -171,21 +171,27 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
             self.assertNotEqual(launch.returncode, 0)
             self.assertIn('requires fixed Codemode', launch.stderr)
 
-    def test_launcher_runs_a_paseo_probe_without_an_agent_home(self):
+    def launcher_root(self, tmp):
+        """A configured launcher root with a stub Pi 1.0.0 CLI that prints its agent dir."""
         sys.path.insert(0, str(PI))
         from configure import build
         spec = {'baseUrl': 'https://router.example.test/v1', 'credential': {'kind': 'env', 'name': 'EXISTING_KEY'},
-                'models': [{'id': 'current', 'name': 'Sol'}], 'paseoMcp': {'url': 'http://127.0.0.1:1/mcp/agents'},
+                'models': [{'id': 'current', 'name': 'Sol', 'contextWindow': 272000}, {'id': 'other', 'name': 'Luna', 'contextWindow': 272000}],
+                'paseoMcp': {'url': 'http://127.0.0.1:1/mcp/agents'},
                 'settings': {'defaultProvider': 'fleet', 'defaultModel': 'current', 'defaultThinkingLevel': 'high'}}
+        root = Path(tmp).resolve()  # the launcher checks settings against its own resolved path
+        for name, data in build(spec, root).items():
+            (root/name).parent.mkdir(parents=True, exist_ok=True); (root/name).write_text(json.dumps(data))
+        (root/'launch.mjs').write_bytes((PI/'launch.mjs').read_bytes())
+        app = root/'app/node_modules/@earendil-works/pi-coding-agent'
+        (app/'dist/bundle').mkdir(parents=True)
+        (app/'package.json').write_text('{"version": "1.0.0"}')
+        (app/'dist/bundle/cli.js').write_text('console.log(process.env.PI_CODING_AGENT_DIR)')
+        return root
+
+    def test_launcher_runs_a_paseo_probe_without_an_agent_home(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp).resolve()  # the launcher checks settings against its own resolved path
-            for name, data in build(spec, root).items():
-                (root/name).parent.mkdir(parents=True, exist_ok=True); (root/name).write_text(json.dumps(data))
-            (root/'launch.mjs').write_bytes((PI/'launch.mjs').read_bytes())
-            app = root/'app/node_modules/@earendil-works/pi-coding-agent'
-            (app/'dist/bundle').mkdir(parents=True)
-            (app/'package.json').write_text('{"version": "1.0.0"}')
-            (app/'dist/bundle/cli.js').write_text('console.log(process.env.PI_CODING_AGENT_DIR)')
+            root = self.launcher_root(tmp)
             # A daemon restarted from an agent shell hands that agent's id to its catalog probe.
             env = {**os.environ, 'PASEO_AGENT_ID': 'borrowed-agent-0001'}
             run = lambda *args: subprocess.run(['node', str(root/'launch.mjs'), *args], capture_output=True, text=True, env=env)
@@ -196,6 +202,39 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
             unresolved = run('--mode', 'rpc', '--extension', str(root/'x.mjs'))
             self.assertNotEqual(unresolved.returncode, 0)
             self.assertIn('concrete catalog model', unresolved.stderr)
+
+    def test_launcher_merges_per_agent_overlays_over_the_shared_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.launcher_root(tmp)
+            home = root/'agents/overlay-agent-0001'; home.mkdir(parents=True)
+            env = {**os.environ, 'PASEO_AGENT_ID': 'overlay-agent-0001'}
+            run = lambda: subprocess.run(['node', str(root/'launch.mjs'), '--mode', 'rpc', '--model', 'fleet/current'], capture_output=True, text=True, env=env)
+            shared = {name: (root/'agent'/name).read_bytes() for name in ('settings.json', 'models.json')}
+            compaction = {'modelOverrides': {'fleet/current': {'reserveTokens': 40960}}}
+            (home/'settings.overlay.json').write_text(json.dumps({'compaction': compaction}))
+            (home/'models.overlay.json').write_text(json.dumps({'providers': {'fleet': {'models': [{'id': 'current', 'contextWindow': 1000000}]}}}))
+            done = run()
+            self.assertEqual(done.returncode, 0, done.stderr)
+            settings = json.loads((home/'settings.json').read_text())
+            self.assertEqual(settings, {**json.loads(shared['settings.json']), 'compaction': compaction})
+            rows = json.loads((home/'models.json').read_text())['providers']['fleet']['models']
+            self.assertEqual([(row['id'], row['contextWindow']) for row in rows], [('current', 1000000), ('other', 272000)])
+            for name in shared: (home/name.replace('.json', '.overlay.json')).unlink()
+            done = run()
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual({name: (home/name).read_bytes() for name in shared}, shared)
+            # Only the allowlisted shape is accepted; a refused launch leaves the agent's files as they were.
+            for name, overlay, error in [
+                    ('settings', {'codemode': {'mode': 'off'}}, 'does not allow "codemode"'),
+                    ('settings', {'packages': [{'source': str(root/'package'), 'extensions': ['index.ts']}]}, 'does not allow "packages"'),
+                    ('settings', {'httpProxy': 'http://127.0.0.1:9'}, 'does not allow "httpProxy"'),
+                    ('models', {'providers': []}, 'providers must be a non-empty object')]:
+                for stale in home.glob('*.overlay.json'): stale.unlink()
+                (home/f'{name}.overlay.json').write_text(json.dumps(overlay))
+                refused = run()
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(error, refused.stderr)
+                self.assertEqual({name: (home/name).read_bytes() for name in shared}, shared)
 
     def test_service_tier_intent_eligibility_and_wire(self):
         script=r"""
