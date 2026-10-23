@@ -296,10 +296,12 @@ def envelope(program: Path, payload: dict, paseo_home: Optional[str] = None) -> 
 
 
 def parse_result(output: str) -> Optional[dict]:
-    match = RESULT.search(output)
+    # A relay terminal capture folds long lines, so a line break can fall anywhere in the result, markers included.
+    # The result is one line of JSON, which holds no raw line break of its own.
+    match = RESULT.search(output.replace("\r", "").replace("\n", ""))
     if not match:
         return None
-    return json.loads(match.group(1).replace("\r", "").replace("\n", ""))
+    return json.loads(match.group(1))
 
 
 def secret_sources(directory: Path) -> dict:

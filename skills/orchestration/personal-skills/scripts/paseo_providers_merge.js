@@ -6,7 +6,8 @@ const fs = require("fs"), os = require("os"), path = require("path"), zlib = req
 const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toString());
 // wrote: this run changed, or may have changed, the host (its config or its Pi runtime), so a reload is owed.
 const disabled = p.disabled || [];
-const result = { host: p.host, changed: false, wrote: false, backup: null, preserved: [], disabled, verified: false, error: null };
+// result.disabled: only the listed ids this run turns off (enabled or missing before); a row already off is not news.
+const result = { host: p.host, changed: false, wrote: false, backup: null, preserved: [], disabled: [], verified: false, error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
   process.exit(code);
@@ -262,6 +263,7 @@ try {
     if (result.pi) result.mcp.push('Pi runtime files: ' + (result.pi.changed.join(', ') || 'unchanged'));
   }
   result.preserved = Object.keys(m.prev).filter(k => !(k in p.providers) && !(k in p.env) && !disabled.includes(k));
+  result.disabled = disabled.filter(k => m.prev[k]?.enabled !== false);
   result.changed = Boolean(result.pi?.changed?.length) || m.rows || envChanged.length > 0;
   const now = published ? JSON.parse(read()).agents.providers : m.merged;
   result.verified = labelsMatch(now);

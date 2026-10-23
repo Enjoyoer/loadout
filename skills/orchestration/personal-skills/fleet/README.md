@@ -115,7 +115,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\new_token_file.p
 
 It refuses an existing file and any link or junction on the path, creates the file with a protected ACL granting only the current user's SID, reads that ACL back from the open handle, and stops before writing the value, removing the empty file, if anything differs. To replace a value, delete the file first.
 
-- `disabledProviders`: optional list of provider ids to turn off, such as `["example-retired"]`. Each listed id gets `enabled: false` in `agents.providers.<id>`, keeps its other fields, and loses its `models` key, so its picker shows none. Removing a block from `providers` alone leaves the host's old block as it was. An id may not also be in the host's effective `providers`, and `pi`, `claude` and `codex` are refused. The dry run and the result line name the ids disabled.
+- `disabledProviders`: optional list of provider ids to turn off, such as `["example-retired"]`. Each listed id gets `enabled: false` in `agents.providers.<id>`, keeps its other fields, and loses its `models` key, so its picker shows none. Removing a block from `providers` alone leaves the host's old block as it was. An id may not also be in the host's effective `providers`, and `pi`, `claude` and `codex` are refused. The dry run and the result line name only the ids that run turns off (enabled or missing before); a host whose listed rows are already off names none.
 - `hosts`: optional settings by host name, each for a host with the `providers` scope.
   - `disabledProviders`: replaces the top-level list for this host; `[]` disables none.
   - `launch`: per-provider launch settings layered over the default, as above.
