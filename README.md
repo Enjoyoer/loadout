@@ -8,7 +8,7 @@ New here and want to copy a few skills? Read [START-HERE.md](START-HERE.md) firs
 
 Agent skills for Claude Code and Codex, a fleet sync that keeps them identical across machines, and plugins for the [Paseo](https://paseo.sh) agent daemon. Together they run coding agents as a small team: you give a project manager (PM) agent an outcome; it delegates bounded work to workers, reviews their changes, lands approved work, and syncs the fleet. You remain the owner who sets scope and approves decisions.
 
-- **25 skills** for multi-agent orchestration, project memory and handoffs, architecture and domain modeling, docs lookup, PDFs, total-cost shopping research, frontend design, and browser automation.
+- **26 skills** for multi-agent orchestration, project memory and handoffs, architecture and domain modeling, docs lookup, PDFs, total-cost shopping research, frontend design, browser automation, and interactive setup wizards.
 - **Fleet sync**: one command installs verified skills (every file checked against a SHA256 manifest) on every host over SSH, and never overwrites a local edit.
 - **6 Paseo plugins**: four server plugins that resume agents after usage limits, archive merged worker workspaces, compact idle agents to save prompt-cache cost, and clean up orphaned projects, each only logging what it would do until you arm it; plus `workspace-folder-title`, which titles new workspaces with their folder name, and `pi-fast-toggle`, composer Fast shortcuts and a per-agent thinking level menu.
 
@@ -112,12 +112,12 @@ Keep secrets in a secrets manager and authenticate locally. Never commit credent
 
 ## Skills
 
-All 25 active packages. Install them flat under the target client's `skills` directory, or through the Claude Code plugin that groups them. There are no archived packages in this public repository.
+All 26 active packages. Install them flat under the target client's `skills` directory, or through the Claude Code plugin that groups them. There are no archived packages in this public repository.
 
 | Category (`skills/<category>`) | Packages | Claude Code plugin |
 |---|---|---|
 | Engineering (`engineering`) | `codebase-design`, `domain-modeling`, `improve-codebase-architecture`, `uv-python` | `loadout-engineering` |
-| Operations and integrations (`operations-integrations`) | `bw-login`, `project-icon`, `recover-mouse-input` | `loadout-ops` |
+| Operations and integrations (`operations-integrations`) | `bw-login`, `project-icon`, `recover-mouse-input`, `wizard` | `loadout-ops` |
 | Orchestration (`orchestration`) | `dispatching-parallel-agents`, `handoff`, `opc`, `opn`, `reassign-pm`, `repo-lessons`, `unstuck`, `wo` | `loadout-orchestration` |
 | Orchestration (`orchestration`) | `personal-skills` | none; install from a clone |
 | Planning and writing (`planning-writing`) | `grilling`, `sample` | `loadout-writing` |
@@ -177,4 +177,4 @@ Issues and pull requests are welcome, and every new one is triaged within 7 days
 
 ## License
 
-Original material is licensed under [MIT](LICENSE). `frontend-design` and `playwright` retain their bundled Apache-2.0 licenses; `playwright` also retains its upstream notice. `codebase-design`, `domain-modeling`, `improve-codebase-architecture`, and `grilling` are adapted from Matt Pocock's MIT-licensed skills, and `find-docs` from Context7's MIT-licensed skill; each carries its upstream `LICENSE.txt`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). These package-level terms take precedence for those files.
+Original material is licensed under [MIT](LICENSE). `frontend-design` and `playwright` retain their bundled Apache-2.0 licenses; `playwright` also retains its upstream notice. `codebase-design`, `domain-modeling`, `improve-codebase-architecture`, `grilling`, and `wizard` are adapted from Matt Pocock's MIT-licensed skills, and `find-docs` from Context7's MIT-licensed skill; each carries its upstream `LICENSE.txt`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). These package-level terms take precedence for those files.

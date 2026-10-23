@@ -90,7 +90,7 @@
     {
       "name": "loadout-ops",
       "source": "./",
-      "description": "Bitwarden website sign-in, Paseo project sticker icons, and Windows mouse-input recovery.",
+      "description": "Bitwarden website sign-in, Paseo project sticker icons, Windows mouse-input recovery, and interactive bash wizards for manual steps.",
       "version": "0.1.0",
       "license": "MIT",
       "category": "productivity",
@@ -99,7 +99,8 @@
       "skills": [
         "./skills/operations-integrations/bw-login",
         "./skills/operations-integrations/project-icon",
-        "./skills/operations-integrations/recover-mouse-input"
+        "./skills/operations-integrations/recover-mouse-input",
+        "./skills/operations-integrations/wizard"
       ]
     }
   ]
