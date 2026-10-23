@@ -720,6 +720,7 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
             if dry_run and result["changed"]:
                 state = "would change (dry run)"
             backup = f"; backup {result['backup']}" if result["backup"] else ""
+            # Only the ids this run turns off; none, and no line part, when every listed row is already off.
             disabled = result.get("disabled") or []
             off = (f"; {'would disable' if dry_run else 'disabled'} [{', '.join(disabled)}]" if disabled else "")
             emit(f"{name}: write {state}; labels {'verified' if result['verified'] else 'MISMATCH'}; "
