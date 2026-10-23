@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "8ea8c8fb352e7c970963b0fb39518f014173bd89",
-  "skill_count": 25,
-  "file_count": 144,
+  "source_commit": "3e58ff2b3e26b8a1cd4d648bd49eb6afa97c831c",
+  "skill_count": 26,
+  "file_count": 148,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -172,6 +172,34 @@
       "skill": "recover-mouse-input",
       "bytes": 230,
       "sha256": "4834a17cb5bb048e721e41a3bc357a42543c929c3747c3b252fce28a7a555e08"
+    },
+    {
+      "path": "skills/operations-integrations/wizard/LICENSE.txt",
+      "category": "operations-integrations",
+      "skill": "wizard",
+      "bytes": 1068,
+      "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
+    },
+    {
+      "path": "skills/operations-integrations/wizard/SKILL.md",
+      "category": "operations-integrations",
+      "skill": "wizard",
+      "bytes": 6360,
+      "sha256": "31d857a7de0e267ed964412fe4bb0af90b12d7363396621992b8a571c9ddeb72"
+    },
+    {
+      "path": "skills/operations-integrations/wizard/agents/openai.yaml",
+      "category": "operations-integrations",
+      "skill": "wizard",
+      "bytes": 96,
+      "sha256": "98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83"
+    },
+    {
+      "path": "skills/operations-integrations/wizard/template.sh",
+      "category": "operations-integrations",
+      "skill": "wizard",
+      "bytes": 17202,
+      "sha256": "295fe45a45f5ae39cbc4595759c4bf332dcd1c92bb2b7bd0d50c414e8e53c852"
     },
     {
       "path": "skills/orchestration/dispatching-parallel-agents/SKILL.md",
