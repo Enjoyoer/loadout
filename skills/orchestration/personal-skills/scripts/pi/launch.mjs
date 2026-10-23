@@ -20,7 +20,11 @@ env.LOADOUT_PI_MCP_URL = spec.paseoMcp.url;
 env.LOADOUT_PI_PARENT_MODEL = '';
 env.LOADOUT_PI_PARENT_THINKING = spec.settings?.defaultThinkingLevel || '';
 const caller = env.PASEO_AGENT_ID;
-if (caller) {
+const args = process.argv.slice(2);
+// Paseo 0.11 probes Pi (model catalog, MCP support) with only --mode rpc. A catalog probe's PASEO_AGENT_ID is
+// inherited from whoever started the daemon, so a probe runs like an uncalled launch and writes no agent home.
+const probe = args.length === 2 && args[0] === '--mode' && args[1] === 'rpc';
+if (caller && !probe) {
   if (!/^[a-zA-Z0-9-]{8,128}$/.test(caller)) throw Error('invalid Paseo caller identity');
   const home = join(root, 'agents', caller);
   mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -35,7 +39,6 @@ if (caller) {
   url.searchParams.set('callerAgentId', caller);
   const mcp = JSON.parse(readFileSync(join(root, 'agent/mcp.json'), 'utf8'));
   env.LOADOUT_PI_MCP_URL = url.href;
-  const args = process.argv.slice(2);
   const modelIndex = args.lastIndexOf('--model');
   // Paseo 0.11 resumes with --session and applies the model over RPC; mcp_bridge reads the live model.
   if (modelIndex >= 0 && args[modelIndex + 1]) env.LOADOUT_PI_PARENT_MODEL = args[modelIndex + 1];

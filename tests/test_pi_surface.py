@@ -171,6 +171,32 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
             self.assertNotEqual(launch.returncode, 0)
             self.assertIn('requires fixed Codemode', launch.stderr)
 
+    def test_launcher_runs_a_paseo_probe_without_an_agent_home(self):
+        sys.path.insert(0, str(PI))
+        from configure import build
+        spec = {'baseUrl': 'https://router.example.test/v1', 'credential': {'kind': 'env', 'name': 'EXISTING_KEY'},
+                'models': [{'id': 'current', 'name': 'Sol'}], 'paseoMcp': {'url': 'http://127.0.0.1:1/mcp/agents'},
+                'settings': {'defaultProvider': 'fleet', 'defaultModel': 'current', 'defaultThinkingLevel': 'high'}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()  # the launcher checks settings against its own resolved path
+            for name, data in build(spec, root).items():
+                (root/name).parent.mkdir(parents=True, exist_ok=True); (root/name).write_text(json.dumps(data))
+            (root/'launch.mjs').write_bytes((PI/'launch.mjs').read_bytes())
+            app = root/'app/node_modules/@earendil-works/pi-coding-agent'
+            (app/'dist/bundle').mkdir(parents=True)
+            (app/'package.json').write_text('{"version": "1.0.0"}')
+            (app/'dist/bundle/cli.js').write_text('console.log(process.env.PI_CODING_AGENT_DIR)')
+            # A daemon restarted from an agent shell hands that agent's id to its catalog probe.
+            env = {**os.environ, 'PASEO_AGENT_ID': 'borrowed-agent-0001'}
+            run = lambda *args: subprocess.run(['node', str(root/'launch.mjs'), *args], capture_output=True, text=True, env=env)
+            probe = run('--mode', 'rpc')
+            self.assertEqual(probe.returncode, 0, probe.stderr)
+            self.assertTrue(os.path.samefile(probe.stdout.strip(), root/'agent'))
+            self.assertFalse((root/'agents').exists())
+            unresolved = run('--mode', 'rpc', '--extension', str(root/'x.mjs'))
+            self.assertNotEqual(unresolved.returncode, 0)
+            self.assertIn('concrete catalog model', unresolved.stderr)
+
     def test_service_tier_intent_eligibility_and_wire(self):
         script=r"""
 import assert from 'node:assert/strict';
