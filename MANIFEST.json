@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "a7fd7ddfc338ad48de2605f436d9672b97a1e47e",
+  "source_commit": "aad32a856f8e8b18236f88eaf7705c69a23fb791",
   "skill_count": 25,
   "file_count": 144,
   "files": [
@@ -520,8 +520,8 @@
       "path": "skills/orchestration/personal-skills/scripts/fleet.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 25169,
-      "sha256": "a0605b2e51d4b20685b27045a90d9474ebcad44ac5cf444d38dfc104bf1ca332"
+      "bytes": 25365,
+      "sha256": "9a7cd4aed4c71654ee2b476a9db59ebe32713be3d79a3b2182060ec9abd4185d"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/fleet_push_remote.js",
