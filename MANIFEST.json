@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "3e58ff2b3e26b8a1cd4d648bd49eb6afa97c831c",
+  "source_commit": "2857c062bbfd8ec9c4eac0c94b7e9148d5e7ca49",
   "skill_count": 26,
   "file_count": 148,
   "files": [
@@ -184,8 +184,8 @@
       "path": "skills/operations-integrations/wizard/SKILL.md",
       "category": "operations-integrations",
       "skill": "wizard",
-      "bytes": 6360,
-      "sha256": "31d857a7de0e267ed964412fe4bb0af90b12d7363396621992b8a571c9ddeb72"
+      "bytes": 6577,
+      "sha256": "47c4da40600bfdebca67ba63671cfd66e92fee91be53dbc76dc26e97e9f349ec"
     },
     {
       "path": "skills/operations-integrations/wizard/agents/openai.yaml",
@@ -198,8 +198,8 @@
       "path": "skills/operations-integrations/wizard/template.sh",
       "category": "operations-integrations",
       "skill": "wizard",
-      "bytes": 17202,
-      "sha256": "295fe45a45f5ae39cbc4595759c4bf332dcd1c92bb2b7bd0d50c414e8e53c852"
+      "bytes": 17972,
+      "sha256": "cb252a59564c96c48ea033559b02378d9ece6a9080637bf33d576ee8170c571b"
     },
     {
       "path": "skills/orchestration/dispatching-parallel-agents/SKILL.md",
