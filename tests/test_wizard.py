@@ -208,6 +208,15 @@ class WizardTest(unittest.TestCase):
         self.assertEqual(env_file.read_text(), 'API_KEY="keep-me"\nOTHER=x\n')
         self.assertFalse(self.gh_log.exists())
 
+    def test_eof_with_no_input_stops_before_any_write(self):
+        # Input ends before the key: once this wrote API_KEY= to .env.
+        for ask in ("ask", "ask_secret"):
+            with self.subTest(ask=ask):
+                done = self.run_wizard(self.project, "\n", KEY_STAGE.replace("ask_secret", ask))
+                self.assertNotEqual(done.returncode, 0, done.stdout)
+                self.assertFalse((self.project / ".env").exists())
+                self.assertFalse(self.gh_log.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
