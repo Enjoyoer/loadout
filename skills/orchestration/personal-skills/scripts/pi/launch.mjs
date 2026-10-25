@@ -1,6 +1,7 @@
 // Stock Paseo 0.10.3 interim: each real agent gets a private, scoped mcp.json.
 import { spawn } from 'node:child_process';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,8 +22,9 @@ requireCodemode(JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8
 //   settings.overlay.json  {"compaction"?: {"enabled"?: true|false, "reserveTokens"?: n, "keepRecentTokens"?: n,
 //                           "modelOverrides"?: {"<provider>/<model id>": {"reserveTokens"?: n, "keepRecentTokens"?: n}}},
 //                          "skillsExclude"?: ["<skill name>"]}
-// Each skillsExclude entry is unique and names a skill directory directly under the shared agent/skills; the launcher
-// appends Pi's exact exclusion "-<that directory>" to skills, so only that skill leaves the agent's index and commands.
+// Each skillsExclude entry is unique and names a skill directory directly under exactly one root Pi loads skills from
+// (skillRoots); the launcher appends Pi's exact exclusion "-<that directory>" to skills, so only that skill leaves the
+// agent's index and commands. A name in no root, or in two, refuses the launch.
 // For example, a 1M window for one model with a 40960-token compaction reserve:
 //   {"providers": {"fleet": {"models": [{"id": "<model id>", "contextWindow": 1000000}]}}}
 //   {"compaction": {"modelOverrides": {"fleet/<model id>": {"reserveTokens": 40960}}}}
@@ -55,21 +57,30 @@ function overlayModels(models, overlay) {
   }
   return models;
 }
-function overlaySettings(settings, overlay, models) {
+// Pi 1.0.0 loads skills from its settings' skills entries (the shared agent/skills), its agent dir's skills/ (here the
+// agent home) and ~/.agents/skills, where Paseo installs its own skills (HOME, else the OS home, as Pi resolves it).
+// Project .pi/skills and .agents/skills load only for a trusted project; RPC mode never asks and the fleet's
+// defaultProjectTrust is "never", so they are not roots here.
+const skillRoots = home => [join(root, 'agent', 'skills'), join(home, 'skills'),
+  join(process.env.HOME || homedir(), '.agents', 'skills')];
+function overlaySettings(settings, overlay, models, home) {
   only(overlay, ['compaction', 'skillsExclude'], 'the overlay');
   if (Object.hasOwn(overlay, 'skillsExclude')) {
-    const names = overlay.skillsExclude, dir = join(root, 'agent', 'skills');
+    const names = overlay.skillsExclude, roots = skillRoots(home);
     if (!Array.isArray(names) || !names.length) throw Error('skillsExclude must be a non-empty list');
-    if (!settings.skills?.includes(dir)) throw Error(`the shared settings do not load ${dir}`);
-    for (const name of names) {
+    if (!settings.skills?.includes(roots[0])) throw Error(`the shared settings do not load ${roots[0]}`);
+    const dirs = names.map(name => {
       // A plain skill name only: no separators, globs, dots or Pi pattern prefixes.
       if (typeof name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name))
         throw Error(`skillsExclude entry ${JSON.stringify(name)} must be a skill directory name`);
       if (names.indexOf(name) !== names.lastIndexOf(name)) throw Error(`skillsExclude lists "${name}" twice`);
-      if (!statSync(join(dir, name, 'SKILL.md'), { throwIfNoEntry: false })?.isFile())
-        throw Error(`skillsExclude has no shared skill "${name}"`);
-    }
-    settings = { ...settings, skills: [...settings.skills, ...names.map(name => '-' + join(dir, name))] };
+      const found = roots.map(dir => join(dir, name))
+        .filter(dir => statSync(join(dir, 'SKILL.md'), { throwIfNoEntry: false })?.isFile());
+      if (!found.length) throw Error(`skillsExclude has no skill "${name}" in ${roots.join(', ')}`);
+      if (found.length > 1) throw Error(`skillsExclude "${name}" is ambiguous: ${found.join(' and ')}`);
+      return found[0];
+    });
+    settings = { ...settings, skills: [...settings.skills, ...dirs.map(dir => '-' + dir)] };
   }
   if (!Object.hasOwn(overlay, 'compaction')) return settings;
   const compaction = only(overlay.compaction,
@@ -118,7 +129,7 @@ if (caller && !probe) {
     // Only a missing overlay is absent; an unreadable one refuses the launch.
     try { text = readFileSync(path, 'utf8'); } catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue; throw error; }
     try {
-      const merged = apply(JSON.parse(shared[file]), JSON.parse(text), JSON.parse(shared['models.json']));
+      const merged = apply(JSON.parse(shared[file]), JSON.parse(text), JSON.parse(shared['models.json']), home);
       if (file === 'settings.json') requireCodemode(merged);
       files[file] = JSON.stringify(merged, null, 2) + '\n';
     } catch (error) { throw Error(`invalid ${path}: ${error.message}`); }

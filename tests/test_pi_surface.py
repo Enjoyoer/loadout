@@ -207,19 +207,22 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
         with tempfile.TemporaryDirectory() as tmp:
             root = self.launcher_root(tmp)
             home = root/'agents/overlay-agent-0001'; home.mkdir(parents=True)
-            env = {**os.environ, 'PASEO_AGENT_ID': 'overlay-agent-0001'}
+            user = root/'user'  # HOME, whose .agents/skills Pi also loads
+            env = {**os.environ, 'PASEO_AGENT_ID': 'overlay-agent-0001', 'HOME': str(user)}
             run = lambda: subprocess.run(['node', str(root/'launch.mjs'), '--mode', 'rpc', '--model', 'fleet/current'], capture_output=True, text=True, env=env)
             shared = {name: (root/'agent'/name).read_bytes() for name in ('settings.json', 'models.json')}
             compaction = {'modelOverrides': {'fleet/current': {'reserveTokens': 40960}}}
-            for skill in ('kept', 'dropped'):
-                (root/'agent/skills'/skill).mkdir(parents=True); (root/'agent/skills'/skill/'SKILL.md').write_text(f'---\nname: {skill}\n---\n')
-            (home/'settings.overlay.json').write_text(json.dumps({'compaction': compaction, 'skillsExclude': ['dropped']}))
+            for skills, skill in [('agent/skills', 'kept'), ('agent/skills', 'dropped'), ('user/.agents/skills', 'user-dropped'),
+                                  ('agent/skills', 'both'), ('user/.agents/skills', 'both')]:
+                (root/skills/skill).mkdir(parents=True); (root/skills/skill/'SKILL.md').write_text(f'---\nname: {skill}\n---\n')
+            (home/'settings.overlay.json').write_text(json.dumps({'compaction': compaction, 'skillsExclude': ['dropped', 'user-dropped']}))
             (home/'models.overlay.json').write_text(json.dumps({'providers': {'fleet': {'models': [{'id': 'current', 'contextWindow': 1000000}]}}}))
             done = run()
             self.assertEqual(done.returncode, 0, done.stderr)
             settings = json.loads((home/'settings.json').read_text())
             base = json.loads(shared['settings.json'])
-            self.assertEqual(settings, {**base, 'compaction': compaction, 'skills': [*base['skills'], '-' + str(root/'agent/skills/dropped')]})
+            self.assertEqual(settings, {**base, 'compaction': compaction, 'skills': [
+                *base['skills'], '-' + str(root/'agent/skills/dropped'), '-' + str(user/'.agents/skills/user-dropped')]})
             rows = json.loads((home/'models.json').read_text())['providers']['fleet']['models']
             self.assertEqual([(row['id'], row['contextWindow']) for row in rows], [('current', 1000000), ('other', 272000)])
             for name in shared: (home/name.replace('.json', '.overlay.json')).unlink()
@@ -231,7 +234,8 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
                     ('settings', {'codemode': {'mode': 'off'}}, 'does not allow "codemode"'),
                     ('settings', {'packages': [{'source': str(root/'package'), 'extensions': ['index.ts']}]}, 'does not allow "packages"'),
                     ('settings', {'httpProxy': 'http://127.0.0.1:9'}, 'does not allow "httpProxy"'),
-                    ('settings', {'skillsExclude': ['missing']}, 'no shared skill "missing"'),
+                    ('settings', {'skillsExclude': ['missing']}, 'no skill "missing"'),
+                    ('settings', {'skillsExclude': ['both']}, '"both" is ambiguous'),
                     ('settings', {'skillsExclude': ['../skills/kept']}, 'must be a skill directory name'),
                     ('settings', {'skillsExclude': []}, 'skillsExclude must be a non-empty list'),
                     ('models', {'providers': []}, 'providers must be a non-empty object')]:
