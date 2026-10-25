@@ -14,7 +14,7 @@ EXTENSIONS = {"markdown": ".liteparse.md", "text": ".liteparse.txt", "json": ".l
 def main() -> int:
     parser = argparse.ArgumentParser(description="Parse a document with LiteParse.")
     parser.add_argument("input", type=Path)
-    parser.add_argument("--format", choices=sorted(EXTENSIONS), default="markdown")
+    parser.add_argument("--format", choices=sorted(EXTENSIONS), default="text")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--target-pages")
     parser.add_argument("--max-pages", type=int)
