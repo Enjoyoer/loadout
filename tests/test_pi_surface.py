@@ -211,12 +211,15 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
             run = lambda: subprocess.run(['node', str(root/'launch.mjs'), '--mode', 'rpc', '--model', 'fleet/current'], capture_output=True, text=True, env=env)
             shared = {name: (root/'agent'/name).read_bytes() for name in ('settings.json', 'models.json')}
             compaction = {'modelOverrides': {'fleet/current': {'reserveTokens': 40960}}}
-            (home/'settings.overlay.json').write_text(json.dumps({'compaction': compaction}))
+            for skill in ('kept', 'dropped'):
+                (root/'agent/skills'/skill).mkdir(parents=True); (root/'agent/skills'/skill/'SKILL.md').write_text(f'---\nname: {skill}\n---\n')
+            (home/'settings.overlay.json').write_text(json.dumps({'compaction': compaction, 'skillsExclude': ['dropped']}))
             (home/'models.overlay.json').write_text(json.dumps({'providers': {'fleet': {'models': [{'id': 'current', 'contextWindow': 1000000}]}}}))
             done = run()
             self.assertEqual(done.returncode, 0, done.stderr)
             settings = json.loads((home/'settings.json').read_text())
-            self.assertEqual(settings, {**json.loads(shared['settings.json']), 'compaction': compaction})
+            base = json.loads(shared['settings.json'])
+            self.assertEqual(settings, {**base, 'compaction': compaction, 'skills': [*base['skills'], '-' + str(root/'agent/skills/dropped')]})
             rows = json.loads((home/'models.json').read_text())['providers']['fleet']['models']
             self.assertEqual([(row['id'], row['contextWindow']) for row in rows], [('current', 1000000), ('other', 272000)])
             for name in shared: (home/name.replace('.json', '.overlay.json')).unlink()
@@ -228,6 +231,9 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
                     ('settings', {'codemode': {'mode': 'off'}}, 'does not allow "codemode"'),
                     ('settings', {'packages': [{'source': str(root/'package'), 'extensions': ['index.ts']}]}, 'does not allow "packages"'),
                     ('settings', {'httpProxy': 'http://127.0.0.1:9'}, 'does not allow "httpProxy"'),
+                    ('settings', {'skillsExclude': ['missing']}, 'no shared skill "missing"'),
+                    ('settings', {'skillsExclude': ['../skills/kept']}, 'must be a skill directory name'),
+                    ('settings', {'skillsExclude': []}, 'skillsExclude must be a non-empty list'),
                     ('models', {'providers': []}, 'providers must be a non-empty object')]:
                 for stale in home.glob('*.overlay.json'): stale.unlink()
                 (home/f'{name}.overlay.json').write_text(json.dumps(overlay))

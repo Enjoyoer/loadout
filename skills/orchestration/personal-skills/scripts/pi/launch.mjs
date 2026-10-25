@@ -1,6 +1,6 @@
 // Stock Paseo 0.10.3 interim: each real agent gets a private, scoped mcp.json.
 import { spawn } from 'node:child_process';
-import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,8 +18,11 @@ requireCodemode(JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8
 // JSON type, provider or model refuses the launch. Every object and list needs at least one entry, n is a positive
 // integer, and each provider, model id and "<provider>/<model id>" key must exist in the shared models.json:
 //   models.overlay.json    {"providers": {"<provider>": {"models": [{"id": "<model id>", "contextWindow"?: n, "maxTokens"?: n}]}}}
-//   settings.overlay.json  {"compaction": {"enabled"?: true|false, "reserveTokens"?: n, "keepRecentTokens"?: n,
-//                           "modelOverrides"?: {"<provider>/<model id>": {"reserveTokens"?: n, "keepRecentTokens"?: n}}}}
+//   settings.overlay.json  {"compaction"?: {"enabled"?: true|false, "reserveTokens"?: n, "keepRecentTokens"?: n,
+//                           "modelOverrides"?: {"<provider>/<model id>": {"reserveTokens"?: n, "keepRecentTokens"?: n}}},
+//                          "skillsExclude"?: ["<skill name>"]}
+// Each skillsExclude entry is unique and names a skill directory directly under the shared agent/skills; the launcher
+// appends Pi's exact exclusion "-<that directory>" to skills, so only that skill leaves the agent's index and commands.
 // For example, a 1M window for one model with a 40960-token compaction reserve:
 //   {"providers": {"fleet": {"models": [{"id": "<model id>", "contextWindow": 1000000}]}}}
 //   {"compaction": {"modelOverrides": {"fleet/<model id>": {"reserveTokens": 40960}}}}
@@ -53,7 +56,23 @@ function overlayModels(models, overlay) {
   return models;
 }
 function overlaySettings(settings, overlay, models) {
-  const compaction = only(only(overlay, ['compaction'], 'the overlay').compaction,
+  only(overlay, ['compaction', 'skillsExclude'], 'the overlay');
+  if (Object.hasOwn(overlay, 'skillsExclude')) {
+    const names = overlay.skillsExclude, dir = join(root, 'agent', 'skills');
+    if (!Array.isArray(names) || !names.length) throw Error('skillsExclude must be a non-empty list');
+    if (!settings.skills?.includes(dir)) throw Error(`the shared settings do not load ${dir}`);
+    for (const name of names) {
+      // A plain skill name only: no separators, globs, dots or Pi pattern prefixes.
+      if (typeof name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name))
+        throw Error(`skillsExclude entry ${JSON.stringify(name)} must be a skill directory name`);
+      if (names.indexOf(name) !== names.lastIndexOf(name)) throw Error(`skillsExclude lists "${name}" twice`);
+      if (!statSync(join(dir, name, 'SKILL.md'), { throwIfNoEntry: false })?.isFile())
+        throw Error(`skillsExclude has no shared skill "${name}"`);
+    }
+    settings = { ...settings, skills: [...settings.skills, ...names.map(name => '-' + join(dir, name))] };
+  }
+  if (!Object.hasOwn(overlay, 'compaction')) return settings;
+  const compaction = only(overlay.compaction,
     ['enabled', 'reserveTokens', 'keepRecentTokens', 'modelOverrides'], 'compaction');
   if (Object.hasOwn(compaction, 'enabled') && typeof compaction.enabled !== 'boolean')
     throw Error('compaction.enabled must be true or false');
