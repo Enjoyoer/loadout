@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "2857c062bbfd8ec9c4eac0c94b7e9148d5e7ca49",
+  "source_commit": "17405d6504d2b55f08ef1d3fe2aab80f025da776",
   "skill_count": 26,
   "file_count": 148,
   "files": [
@@ -877,22 +877,22 @@
       "path": "skills/research-docs/liteparse/SKILL.md",
       "category": "research-docs",
       "skill": "liteparse",
-      "bytes": 1910,
-      "sha256": "4871db8ff064fd6b13dac731fbfd92c514438911e2389459a7e2265cd789d694"
+      "bytes": 2424,
+      "sha256": "5919c3d33db4a6f8159a91a0b2cec94882d5fcb04175cab4612b80d75dd527db"
     },
     {
       "path": "skills/research-docs/liteparse/agents/openai.yaml",
       "category": "research-docs",
       "skill": "liteparse",
-      "bytes": 166,
-      "sha256": "0b238cfe472ec92ec39351541c3f0331f4446e8cd8f4cfe7d6559d32c7d20563"
+      "bytes": 229,
+      "sha256": "185ae2c43f236e7fc749e7d108b169769c4e8ca3a68bc8d6444d3b3949f46444"
     },
     {
       "path": "skills/research-docs/liteparse/scripts/parse_document.py",
       "category": "research-docs",
       "skill": "liteparse",
-      "bytes": 1307,
-      "sha256": "dd251242877431c931408e47d26ff872739975a854a39b51734d7f800310a6ef"
+      "bytes": 1303,
+      "sha256": "cfb1bbf04a7ba846b574a30d6a03539a648a6d3e6e1af528ec8fa6594e8e5da7"
     },
     {
       "path": "skills/research-docs/tco-search/SKILL.md",
