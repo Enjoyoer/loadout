@@ -1,4 +1,4 @@
 interface:
   display_name: "LiteParse"
-  short_description: "Fast local document parsing"
-  default_prompt: "Use $liteparse to extract clean markdown from this PDF."
+  short_description: "OCR scanned or image-only PDFs; text PDFs use pdftotext -layout"
+  default_prompt: "Use $liteparse to OCR this scanned PDF to plain text with lit parse --format text."

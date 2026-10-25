@@ -1,23 +1,37 @@
 ---
 name: liteparse
-description: Use when extracting or inspecting PDFs with LiteParse, especially scanned or image-heavy files, OCR candidates, page screenshots, markdown/text/JSON output, bounding boxes, or page coordinates. Use the bundled type-specific artifact skills for Office files and native PDF authoring/editing.
+description: Use when a PDF is scanned or image-only and needs OCR, or when you need page screenshots, bounding boxes, or page coordinates. Ordinary text PDFs use `pdftotext -layout` instead, not LiteParse. Use the bundled type-specific artifact skills for Office files and native PDF authoring/editing.
 ---
 
 # LiteParse
 
 ## Rule
 
-Use `lit` first for PDF extraction, OCR, screenshots, and coordinates. Route DOCX to `documents:documents`, XLSX/CSV to `spreadsheets:Spreadsheets`, PPTX to `presentations:Presentations`, and PDF authoring/editing or fillable forms to `pdf:pdf`. Use Browser or a structured HTML parser for web and HTML content.
+Use `pdftotext -layout` first for text PDFs. Use `lit` only when a PDF is scanned or image-only and needs OCR, and then use `lit parse --format text`, not markdown: markdown splits labels from values and table rows.
+
+`lit screenshot` and `lit parse --format json` (bounding boxes, page coordinates) stay fine for any PDF when you need rendered pages or positions.
+
+Route DOCX to `documents:documents`, XLSX/CSV to `spreadsheets:Spreadsheets`, PPTX to `presentations:Presentations`, and PDF authoring/editing or fillable forms to `pdf:pdf`. Use Browser or a structured HTML parser for web and HTML content.
 
 ## Commands
 
 Write output to a temp file, then read the file.
 
+Text PDF (`pdftotext` comes from poppler):
+
 ```powershell
-lit parse "input.pdf" --format markdown -o "input.extracted.md" --quiet
+pdftotext -layout "input.pdf" "input.extracted.txt"
+```
+
+Scanned or image-only PDF, screenshots, and coordinates:
+
+```powershell
+lit parse "input.pdf" --format text -o "input.extracted.txt" --quiet
 lit parse "input.pdf" --format json -o "input.extracted.json" --quiet
 lit screenshot "input.pdf" -o "screenshots" --target-pages 1 --quiet
 ```
+
+A text PDF is one where `pdftotext` returns the page's words; if it returns nothing or near nothing, treat the PDF as scanned.
 
 Useful options:
 
@@ -25,20 +39,18 @@ Useful options:
 |---|---|
 | `--target-pages 1,3-5` | Parse selected pages only. |
 | `--max-pages 20` | Bound large files. |
-| `--no-ocr` | Skip OCR for born-digital PDFs. |
 | `--ocr-language eng` | OCR language. |
-| `--image-mode placeholder` | Keep markdown light. |
-| `--image-mode embed --image-output-dir images` | Extract images next to markdown. |
+| `--no-ocr` | Skip OCR when you only need JSON coordinates from a text PDF. |
 
 ## Helper Script
 
 For repeatable extraction, run:
 
 ```powershell
-python "$env:USERPROFILE\.codex\skills\liteparse\scripts\parse_document.py" "input.pdf" --format markdown
+python "$env:USERPROFILE\.codex\skills\liteparse\scripts\parse_document.py" "input.pdf"
 ```
 
-The script writes an adjacent `.liteparse.md`, `.liteparse.txt`, or `.liteparse.json` file unless `--output` is provided.
+The script defaults to `--format text` and writes an adjacent `.liteparse.txt` file unless `--output` is provided. `--format json` and `--format markdown` stay selectable.
 
 ## Fallbacks
 
