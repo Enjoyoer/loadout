@@ -76,7 +76,7 @@ class PiSurfaceTest(unittest.TestCase):
         self.assertEqual([o['id'] for o in row['thinkingOptions']], ['low', 'medium', 'high', 'xhigh'])
         self.assertEqual([o['id'] for o in row['thinkingOptions'] if o.get('isDefault')], ['medium'])
         self.assertEqual(derive(source, pi)['catalog_model_id'], 'fleet/current')
-        keychain = {'kind': 'command', 'argv': [str(Path(sys.executable).with_name('security')), 'find-generic-password', '-s', 'example-gate', '-w']}
+        keychain = {'kind': 'command', 'argv': ['/usr/bin/security', 'find-generic-password', '-s', 'example-gate', '-w']}
         authed = build({**spec, 'directProviders': {'local': {**direct['local'], 'auth': {'credential': keychain}}}}, root)
         key = authed['agent/models.json']['providers']['local']['apiKey']
         self.assertTrue(key.startswith('!') and key.endswith(' "' + str(root / 'runtime.json') + '" "directProviders" "local" "auth" "credential"'), key)
