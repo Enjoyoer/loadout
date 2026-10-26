@@ -76,6 +76,23 @@ class PiSurfaceTest(unittest.TestCase):
         self.assertEqual([o['id'] for o in row['thinkingOptions']], ['low', 'medium', 'high', 'xhigh'])
         self.assertEqual([o['id'] for o in row['thinkingOptions'] if o.get('isDefault')], ['medium'])
         self.assertEqual(derive(source, pi)['catalog_model_id'], 'fleet/current')
+        keychain = {'kind': 'command', 'argv': [str(Path(sys.executable).with_name('security')), 'find-generic-password', '-s', 'example-gate', '-w']}
+        authed = build({**spec, 'directProviders': {'local': {**direct['local'], 'auth': {'credential': keychain}}}}, root)
+        key = authed['agent/models.json']['providers']['local']['apiKey']
+        self.assertTrue(key.startswith('!') and key.endswith(' "' + str(root / 'runtime.json') + '" "directProviders" "local" "auth" "credential"'), key)
+        self.assertEqual(authed['runtime.json']['directProviders']['local']['auth'], {'credential': keychain})
+        secret = 'f' * 64
+        bad_auth = [secret, 'Bearer ' + secret, {'credential': secret}, {'value': secret}, {'apiKey': secret},
+                    {'credential': {'kind': 'env', 'name': 'GATE_TOKEN', 'value': secret}},
+                    {'credential': {'kind': 'command', 'argv': ['/bin/echo', secret]}},
+                    {'credential': {'kind': 'command', 'argv': ['/usr/bin/security', 'add-generic-password', '-w', secret]}},
+                    {'credential': {'kind': 'command', 'argv': ['/usr/bin/python3', '-c', 'print(1)']}},
+                    {'credential': {'kind': 'command', 'argv': ['security', 'find-generic-password', '-w']}},
+                    {'credential': keychain, 'header': 'X-Api-Key'}, {'credential': {**keychain, 'prefix': 'Bearer '}},
+                    {'credential': {'kind': 'keyring', 'name': 'GATE_TOKEN'}}]
+        for bad in bad_auth:
+            with self.assertRaisesRegex(ValueError, 'direct provider'):
+                build({**spec, 'directProviders': {'local': {**direct['local'], 'auth': bad}}}, root)
         bad_provider = [{'local': {**direct['local'], 'apiKey': 'x'}}, {'local': {**direct['local'], 'auth': 'bearer'}},
                         {'local': {**direct['local'], 'api': 'openai-responses'}}, {'llama.cpp': direct['local']}, {'fleet': direct['local']},
                         {'local': {**direct['local'], 'models': [{**model, 'compat': {'x': True}}]}},
@@ -617,6 +634,14 @@ try{
             self.assertNotIn('first-key',''.join(p.read_text() for p in root.rglob('*') if p.is_file()))
             self.assertEqual(read_value(spec['credential']),'first-key');key.write_text('rotated-key')
             self.assertEqual(read_value(spec['credential']),'rotated-key')
+            helper = Path(tmp)/'token-helper.py'; helper.write_text('import pathlib,sys\nprint(pathlib.Path(sys.argv[2]).read_text())\n')
+            command = {'kind':'command','argv':[sys.executable,str(helper),'print',str(key)]}
+            self.assertEqual(read_value(command),'rotated-key')
+            for broken in ['', 'two\nlines']:
+                key.write_text(broken)
+                with self.assertRaisesRegex(ValueError,'invalid host credential'): read_value(command)
+            with self.assertRaisesRegex(ValueError,'credential helper failed'): read_value({**command,'argv':[*command['argv'][:3],str(Path(tmp)/'missing')]})
+            key.write_text('rotated-key')
             self.assertEqual(configure(spec,root)['changed'],[])
             spec['settings']['defaultThinkingLevel']='low';configure(spec,root)
             self.assertTrue(list((root/'agent').glob('settings.json.bak-*')))
