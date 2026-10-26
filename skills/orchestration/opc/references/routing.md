@@ -2,7 +2,7 @@
 
 ## Resolve
 
-An owner-named model, effort, or Fast wins and is never adjusted. Pi has Fast on GPT routes: `--owner-fast on` records it, and the Worker builder sets the `opc.service-tier` label that the composer's Fast pill shows. On Pi, Fast is the agent label `opc.service-tier=fast`, not a catalog model or thinking level, so the model catalog never lists it; outside the builder set it with `labels:{"opc.service-tier":"fast"}` on `create_agent` or `update_agent`, or on the CLI with `paseo run --label opc.service-tier=fast` or `paseo agent update <id> --label opc.service-tier=fast`, and read it back with `get_agent_status`. A Pi GPT route with no label runs Fast (the fleet default), so Fast off is `opc.service-tier=standard`, which the builder writes for a Fast-off GPT route. Never report Fast as unavailable on Pi, and never skip the builder with a raw `create_agent` for a Worker. Otherwise pick the task class below and resolve it with `resolveWorkerRoute` from `scripts/route.mjs`, or from a shell:
+An owner-named model, effort, or Fast wins and is never adjusted. Pi has Fast on GPT routes: `--owner-fast on` records it, and the Worker builder sets the `opc.service-tier` label that the composer's Fast pill shows. On Pi, Fast is the agent label `opc.service-tier=fast`, not a catalog model or thinking level, so the model catalog never lists it; outside the builder set it with `labels:{"opc.service-tier":"fast"}` on `create_agent` or `update_agent`, or on the CLI with `paseo run --label opc.service-tier=fast` or `paseo agent update <id> --label opc.service-tier=fast`, and read it back with `get_agent_status`. A Pi GPT route with no label runs Fast (the fleet default), so Fast off is `opc.service-tier=standard`, which the builder writes for a Fast-off GPT route. pi-fast-toggle applies the same label. Verify the label (`get_agent_status` or the Fast pill) before reporting a route. Never report Fast as unavailable on Pi, and never skip the builder with a raw `create_agent` for a Worker. Otherwise pick the task class below and resolve it with `resolveWorkerRoute` from `scripts/route.mjs`, or from a shell:
 
 `node scripts/route.mjs --class <class> [--task TASK_JSON --lane SLUG]`
 
@@ -78,4 +78,4 @@ The optional owner file `~/.config/opc/routing.json` tunes `behindPoints` (defau
 
 ## Errors
 
-Network and proxy errors, such as `Connection error` or a 502 `backend unavailable`, are retried on the same route by sending the same Worker a continue follow-up. They never change the model or effort. Rate limits and real launch failures still stop the lane.
+Network and proxy errors, such as `Connection error` or a 502 `backend unavailable`, are retried on the same route by sending the same Worker a continue follow-up. They never change the model or effort. Rate limits, unavailable capabilities, and real launch failures still stop the lane; substitution requires a new explicit owner decision.
