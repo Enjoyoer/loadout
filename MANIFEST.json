@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b6df428e5be3b555dedb4bc95a66de8a86161704",
+  "source_commit": "d262981efe44eb4433146ae5785a7f8c39b24f96",
   "skill_count": 26,
   "file_count": 148,
   "files": [
@@ -233,8 +233,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5496,
-      "sha256": "777e7ea7c4286450c9390e737a055e8bc60eb2c02c62251a09a81a6224300918"
+      "bytes": 5533,
+      "sha256": "808d95db994b73026c016e052fcbc2fb4c906015622a1a2c309409d8aaf3fd79"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -296,8 +296,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 12477,
-      "sha256": "c49670968a389317cf06676728c6ae77985ddd4faf7bdaef80db0d6866f6909b"
+      "bytes": 12632,
+      "sha256": "e38dfeb36fc7dd2a282ef510a5d591be0f888c52d17f0fbde0de68134e5111a3"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -359,8 +359,8 @@
       "path": "skills/orchestration/opc/scripts/paseo-worker.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 9483,
-      "sha256": "8da3ae2324fd14daadee6054288afd423b04283eae548ba38fdfe73c0517246f"
+      "bytes": 9624,
+      "sha256": "7204f6b857498a99d014509418036919fb932afac8e1a19f41d3f3a4312261d9"
     },
     {
       "path": "skills/orchestration/opc/scripts/planner.mjs",
@@ -464,8 +464,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 52450,
-      "sha256": "63ad5efd6c93b449ab5a17f3fef4f3b9435905530347b9ce6ea7776e56087dd4"
+      "bytes": 52881,
+      "sha256": "a8bf18f60594f1d0c85342ba437afd14eaea581b6a80ef22fbbe4372e8ebbf16"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -667,8 +667,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 12724,
-      "sha256": "03cd86d6335b7100724531f6a7c1bfd42adbff600e4b6d8af7bc5ca035966d73"
+      "bytes": 13122,
+      "sha256": "fc8586154ca10a2ce12cf9bf28002ad5d7be03cac29318452a6e10cc4c56afce"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
@@ -1074,8 +1074,8 @@
     {
       "path": "plugins/cache-aware-autocompact/README.md",
       "plugin": "cache-aware-autocompact",
-      "bytes": 16870,
-      "sha256": "d805a2d7e6b513ce1035438ae95679a49c6607e39ac69e468c7fb8ffb8d57028"
+      "bytes": 17262,
+      "sha256": "ab2382564e31e0e1d2d2df07d21f151998292dbe266b76af45ec7f01cf2f7ab5"
     },
     {
       "path": "plugins/cache-aware-autocompact/index.server.ts",
@@ -1087,13 +1087,13 @@
       "path": "plugins/cache-aware-autocompact/package-lock.json",
       "plugin": "cache-aware-autocompact",
       "bytes": 21229,
-      "sha256": "b2035b10a099a37135a46d3eb59e6a935a11d62a1085d39827e38d201694d832"
+      "sha256": "a176339a5da5cd998a0c91c0d2b8d873952c89dacbeff2d28bde566f4e22287c"
     },
     {
       "path": "plugins/cache-aware-autocompact/package.json",
       "plugin": "cache-aware-autocompact",
       "bytes": 900,
-      "sha256": "6562a0d3bc0383496539a0de66e1f694818e734d5d19bbbaa2a1428386dbd44a"
+      "sha256": "b6c44f9bb5066c82e5bcf2a739bf4856bc32778cfc18182eb1e8c6dc4d3ee6da"
     },
     {
       "path": "plugins/cache-aware-autocompact/paseo-plugin.json",
@@ -1146,8 +1146,8 @@
     {
       "path": "plugins/cache-aware-autocompact/server/runtime.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 28172,
-      "sha256": "28b8fa526a68d94e5455ee7eb8d917518764c3c09b4b6e02ddef8bea858b2ea1"
+      "bytes": 29793,
+      "sha256": "ab9b3141ca4051183725cf8eb8070146e224f0d644dcf5566cdf050f39c53bd8"
     },
     {
       "path": "plugins/cache-aware-autocompact/server/store.ts",
@@ -1458,8 +1458,8 @@
     {
       "path": "plugins/pi-fast-toggle/README.md",
       "plugin": "pi-fast-toggle",
-      "bytes": 15154,
-      "sha256": "2b700b59cc6cf632d80e3a41fdf21090295955714f3247461e454ce2c994abf6"
+      "bytes": 15456,
+      "sha256": "1e4d23edc04700938c5893085f3389503ce9c0cc4fcb0ff4e45349af2f503287"
     },
     {
       "path": "plugins/pi-fast-toggle/client/effort.tsx",
@@ -1501,13 +1501,13 @@
       "path": "plugins/pi-fast-toggle/package-lock.json",
       "plugin": "pi-fast-toggle",
       "bytes": 162275,
-      "sha256": "a0514f8597d6963187a38f26d3eea08c28099fad4eefb7ca585c9635388985de"
+      "sha256": "5490f20af03018ac9940a3232c6961f0377e5d0449ff1c0a2b23e43cb214afb2"
     },
     {
       "path": "plugins/pi-fast-toggle/package.json",
       "plugin": "pi-fast-toggle",
       "bytes": 719,
-      "sha256": "0e3de79278f4ec26509fb8c4d7cca4d2efbd017c53daca4141bce20523f08ee6"
+      "sha256": "ab31e1d0b7423ca2383a58d8524a05b486f0d9f961f352f063663b692e8fc0c3"
     },
     {
       "path": "plugins/pi-fast-toggle/paseo-plugin.json",
@@ -1542,14 +1542,14 @@
     {
       "path": "plugins/pi-fast-toggle/shared/model.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 633,
-      "sha256": "2ff07d8bef035fca6aa0aba5ec5570b20b188351b45f9542eef59411f5c03eee"
+      "bytes": 1074,
+      "sha256": "8a7a38cfc6c209a3dbc7d05b48f50e69808e4c4c4f740cb98e497b5e2df27b8b"
     },
     {
       "path": "plugins/pi-fast-toggle/test/model.test.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 1420,
-      "sha256": "86d969f04b00f368c0832a7a9dd78b875a0808086af50303b0c333c8ab25977a"
+      "bytes": 1740,
+      "sha256": "ae92471ce8f504b19577957a86954a09c1f7ef2acb8e9c1596842cd9f32130f3"
     },
     {
       "path": "plugins/pi-fast-toggle/test/pagination.test.ts",
@@ -1566,8 +1566,8 @@
     {
       "path": "plugins/pi-fast-toggle/test/server.test.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 6510,
-      "sha256": "3cc4ca0dd8bb93c8552ebbf8a47d59124176d4bcb999ea131ebd0b55eaf5c082"
+      "bytes": 6610,
+      "sha256": "9e5b327343b48797ae0631e3e28cac7ee6376ea19f24bdcfeaa33f22a52ff189"
     },
     {
       "path": "plugins/pi-fast-toggle/tsconfig.json",
@@ -1578,26 +1578,26 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 32268,
-      "sha256": "46cf00795b49c778297c0d8a48028ee0b0ff80ff698e18f0ad16c50d6e241157"
+      "bytes": 32982,
+      "sha256": "d13554ad85d1eb5b6eff54ae96483c45a270d0db1b3f660a7648be93e5f9867b"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 62637,
-      "sha256": "bc5938e0a0b72fc5578bdce564e5b7b719742f4d3aaf5c7d5fa5b4f8680e693d"
+      "bytes": 64507,
+      "sha256": "ad83ea6a39b975bd90d782711593179c911116b673443c8458c06555b942e4ac"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 21229,
-      "sha256": "5d65f1a02f46556be130584795602b31c37cf69a3b765d498d194ae202092fce"
+      "sha256": "13322e0bee5b4ab6f1d0b7237b326d45a225a07bc176bdfd639ba203311f8659"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 890,
-      "sha256": "521b45115ef1779444325291c017f310bba64e49634c69c97f76a136216c617d"
+      "sha256": "13d34b7cc835e31af58073db6feee7249e9b5ffa711cc62d8c187c86188c73a3"
     },
     {
       "path": "plugins/usage-limit-auto-resume/paseo-plugin.json",
