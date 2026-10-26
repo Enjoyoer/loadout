@@ -41,7 +41,7 @@ cp -R skills/planning-writing/grilling "${CODEX_HOME:-$HOME/.codex}/skills/"
 |---|---|
 | Claude Code | Current release with plugin marketplaces |
 | Codex | Current release with a `skills` folder |
-| Paseo plugins | Paseo `>=0.10.3 <0.12.0`, and `>=0.11.1 <0.12.0` for `pi-fast-toggle` (pinned in each `paseo-plugin.json`) |
+| Paseo plugins | Paseo `>=0.10.3 <0.14.0`, and `>=0.11.1 <0.14.0` for `pi-fast-toggle` (pinned in each `paseo-plugin.json`) |
 | Fleet sync and tests | Python 3 and Node on each host; CI runs Python 3.12 and Node 24 on Ubuntu, macOS and Windows |
 
 ## Set up your own agent fleet
@@ -151,7 +151,7 @@ A package may read an optional private `references/local.md` for host-specific s
 | [`usage-limit-auto-resume`](plugins/usage-limit-auto-resume/README.md) | Resumes an agent after a usage limit or a transient provider error, in the same session | Dry-run until `armed` |
 | [`orphan-project-sweeper`](plugins/orphan-project-sweeper/README.md) | Deletes Paseo project rows with no active workspace and a missing root path | Dry-run until `armed` |
 | [`workspace-folder-title`](plugins/workspace-folder-title/README.md) | Titles new workspaces with their folder name instead of a bare git branch name, without replacing caller-supplied titles | Active when installed |
-| [`pi-fast-toggle`](plugins/pi-fast-toggle/README.md) | Composer Fast shortcuts and per-agent thinking level menu (Paseo `>=0.11.1 <0.12.0`): Ctrl/Cmd+Shift+F toggles Fast for tier-capable Pi agents and Ctrl/Cmd+Shift+M opens the thinking level menu | Fast inactive until its `routing.json` setting exists |
+| [`pi-fast-toggle`](plugins/pi-fast-toggle/README.md) | Composer Fast shortcuts and per-agent thinking level menu (Paseo `>=0.11.1 <0.14.0`): Ctrl/Cmd+Shift+F toggles Fast for tier-capable Pi agents and Ctrl/Cmd+Shift+M opens the thinking level menu | Fast inactive until its `routing.json` setting exists |
 
 `plugins/_shared` is not a plugin. It holds the canonical source of code that several plugins vendor into their own folders, such as the fail-closed daemon endpoint resolver and the atomic JSON state writer; see [CONTRIBUTING.md](.github/CONTRIBUTING.md).
 
