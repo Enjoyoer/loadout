@@ -38,6 +38,12 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // The newest agent.closed this process saw per agent, set before any await so a send about to be claimed sees it
   // before its store write lands (see closeGate).
   const closes = new Map<string, AgentClose>();
+  // Bumped by every close and archive of an agent this process sees, the plugin's own profile swap included, from one
+  // counter, so a value is never seen twice. A turn-end read runs only while the value it began with holds
+  // (endedTimeline).
+  const lifecycles = new Map<string, number>();
+  let lastLifecycle = 0;
+  const endLifecycle = (agentId: string) => { lifecycles.set(agentId, ++lastLifecycle); };
   // Synchronous, so it is checked again right before each timeline read and claim: a close seen while the caller awaited
   // holds the record (closeGate decides it on the next sweep).
   const heldByClose = (record: ResumeRecord) => {
@@ -103,6 +109,11 @@ export default function contribute(server: PluginServerContext, openClient: () =
     return result?.agent ? result.agent as AgentSnapshot : null;
   }
 
+  // Open and loaded. A fetch never loads an agent: a loaded agent's snapshot carries activeTurn (null when idle), the
+  // stored snapshot of an unloaded one has none.
+  const loadedAndOpen = (agent: AgentSnapshot | null) =>
+    !!agent && agent.status !== "closed" && !agent.archivedAt && agent.activeTurn !== undefined;
+
   // The newest user row of a complete timeline page is the record's own latest message. An incomplete page proves
   // nothing.
   async function ownMessageIsLatest(api: PaseoApi, record: ResumeRecord): Promise<boolean> {
@@ -160,9 +171,9 @@ export default function contribute(server: PluginServerContext, openClient: () =
 
   // The tail of the agent's timeline, walked back until `enough` holds or it starts. `readable` is checked before each
   // read, since a read loads a closed agent again.
-  async function walkTimeline(api: PaseoApi, agentId: string, enough: (entries: TimelineEntry[]) => boolean, readable: () => boolean) {
+  async function walkTimeline(api: PaseoApi, agentId: string, enough: (entries: TimelineEntry[]) => boolean, readable: () => boolean | Promise<boolean>) {
     const timeline = api.agents.ref(agentId).timeline;
-    if (!readable()) throw new Error("agent-closed");
+    if (!(await readable())) throw new Error("agent-closed");
     let page = await timeline.refetch({ direction: "before", limit: 200 });
     if (page.error || page.gap || page.staleCursor || page.hasNewer) throw new Error("timeline-incomplete");
     const epoch = page.epoch;
@@ -170,7 +181,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
     while (!enough(entries) && page.hasOlder) {
       const cursor = page.startCursor;
       if (!cursor || cursor.epoch !== epoch) throw new Error("timeline-incomplete");
-      if (!readable()) throw new Error("agent-closed");
+      if (!(await readable())) throw new Error("agent-closed");
       page = await timeline.refetch({ direction: "before", cursor, limit: 200 });
       if (page.error || page.gap || page.staleCursor || page.epoch !== epoch || !page.entries.length ||
           (page.startCursor && page.startCursor.seq >= cursor.seq)) throw new Error("timeline-incomplete");
@@ -181,14 +192,20 @@ export default function contribute(server: PluginServerContext, openClient: () =
 
   // Paseo 0.13 sends agent.turn_ended with an empty timeline (0.11 sent the agent's in-memory one), so the tail is read
   // instead, back to its newest user row. Called before the handler's first await, so the read is as close to the end
-  // as it can be. A closed agent is never read, since the read loads it again: neither one whose snapshot is closed (a
-  // kill or a daemon shutdown ended the turn) nor one this process saw close since the event. A failed read is no
-  // timeline, as the empty event was, so only a failed outcome's own error can still make a record.
+  // as it can be. The read loads an unloaded agent again, so each page is read only right after a fetch (which never
+  // loads one) shows the agent loaded and open, and only while no close or archive was seen since the event, during
+  // that fetch included: a fetch answered before a close it was in flight with still shows the agent open. A failed or
+  // skipped read is no timeline, as the empty event was, so only a failed outcome's own error can still make a record.
   async function endedTimeline(api: PaseoApi, agentId: string): Promise<AgentTimelineItem[]> {
     const closeSeen = closes.get(agentId);
-    const agent = await fetchAgent(api, agentId).catch(() => null);
-    const open = () => !!agent && agent.status !== "closed" && closes.get(agentId) === closeSeen;
-    const entries = await walkTimeline(api, agentId, (rows) => rows.some((entry) => entry.item.type === "user_message"), open).catch(() => []);
+    const lifecycle = lifecycles.get(agentId);
+    const current = () => !stopped && closes.get(agentId) === closeSeen && lifecycles.get(agentId) === lifecycle;
+    const readable = async () => {
+      if (!current()) return false;
+      const agent = await fetchAgent(api, agentId).catch(() => null);
+      return current() && loadedAndOpen(agent);
+    };
+    const entries = await walkTimeline(api, agentId, (rows) => rows.some((entry) => entry.item.type === "user_message"), readable).catch(() => []);
     return entries.map((entry) => entry.item);
   }
 
@@ -892,6 +909,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
   };
 
   const removeArchived = server.on("agent.archived", (event) => {
+    endLifecycle(event.agent.id);
     cancelInFlight(event.agent.id, { state: "superseded", reason: "agent-archived" });
     track((async () => {
       const records = await store.read();
@@ -927,6 +945,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // yet, and closeGate decides on every later sweep: work of this agent is held, and ended once this run outlives the
   // close, while a new daemon run clears it.
   const removeClosed = server.on("agent.closed", (event) => {
+    // Any close, the swap's too, stops a turn-end read, since that read would load the agent again.
+    endLifecycle(event.agent.id);
     // The plugin's own profile swap reloads the agent, and a failed reload closes it. That is no one's close.
     if (fallback.isBusy(event.agent.id)) return;
     const close: AgentClose = { agentId: event.agent.id, at: new Date().toISOString(), daemon: daemon() };
