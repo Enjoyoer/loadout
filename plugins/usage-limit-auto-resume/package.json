@@ -1,7 +1,7 @@
 {
   "name": "usage-limit-auto-resume",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Safely resumes same-agent work after a recognized usage-limit failure.",
   "type": "module",
   "scripts": {

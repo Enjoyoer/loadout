@@ -69,6 +69,9 @@ function harness() {
   const hooks = new Map<string, (event: never, context: PluginHookContext) => unknown>();
   const logs: { action: string; data: Record<string, unknown> }[] = [];
   const sends: string[] = [];
+  // Agents the scheduler killed or archived to put them back after a history read loaded them again.
+  const kills: string[] = [];
+  const archives: string[] = [];
   const timers = new FakeTimers();
   const histories = new Map<string, FetchAgentTimelinePayload>();
   const historyErrors = new Map<string, Error>();
@@ -94,6 +97,7 @@ function harness() {
             return histories.get(id) ?? history(snapshots.find((a) => a.id === id)!);
           } },
           waitForFinish: async () => ({ status: "idle", final: null, error: null, lastMessage: null }),
+          archive: async () => { archives.push(id); return { archivedAt: endedAt }; },
           send: async (text: string) => {
             sends.push(text);
             await sendGate;
@@ -112,7 +116,7 @@ function harness() {
     hooks.set(name, callback); return () => { hooks.delete(name); };
   } } as unknown as PluginServerContext;
   return {
-    timers, logs, sends, histories, historyErrors, metrics, api,
+    timers, logs, sends, kills, archives, histories, historyErrors, metrics, api,
     setAgents(agents: PaseoAgent[]) { snapshots = agents; },
     setNow(value: number) { now = value; },
     failBootstrap() { bootstrapFails = true; },
@@ -133,6 +137,7 @@ function harness() {
       cleanup = startScheduler(server, { store, writeJson, timerApi: timers, metrics: { append: async (record) => { metrics.push(record); } },
         now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed, codexEnabled: true, piGptEnabled, extendIdleCompaction }),
         openApi: async () => { if (bootstrapFails) throw new Error("Unavailable"); return api; },
+        killAgent: async (agentId) => { kills.push(agentId); },
         log: (action, data) => { logs.push({ action, data }); } });
       stops.push(cleanup);
     },
@@ -668,6 +673,33 @@ describe("restart recovery", () => {
     assert.equal(f.timers.pending.size, 0);
     assert.deepEqual(f.sends, []);
   }));
+
+  it("puts back an agent stopped or archived while its recovery or evaluation history read loads it, and arms or sends nothing", async () => {
+    for (const read of ["recovery", "evaluate"]) for (const end of ["closed", "archived"] as const) await fixture(async (f) => {
+      if (read === "evaluate") { f.start(f.store); await f.recovered(); }
+      const reads = f.historyCalls();
+      let release = () => {};
+      f.pauseHistory(new Promise<void>((resolve) => { release = resolve; }));
+      if (read === "recovery") f.start(f.store);
+      else f.timers.fire();
+      await until(() => f.historyCalls() > reads);
+      // The stop or archive lands while the read is in flight, and the read loads the agent again (activeTurn: null).
+      const hooked = { ...agent(), workspaceId: "w1", parentAgentId: null };
+      if (end === "closed") f.event("agent.closed", { agent: hooked });
+      else {
+        f.setAgents([agent({ archivedAt: endedAt })]);
+        f.event("agent.archived", { agent: hooked, archivedAt: endedAt });
+      }
+      release();
+      await until(() => f.logs.some((line) => line.action === "read-raced-end"));
+      assert.deepEqual(f.logs.find((line) => line.action === "read-raced-end")?.data, { agentId: "a1", read, end, restored: end }, `${read} ${end}`);
+      assert.deepEqual(end === "closed" ? [f.kills, f.archives] : [f.archives, f.kills], [["a1"], []], `${read} ${end}`);
+      if (read === "recovery") await f.recovered();
+      assert.equal(f.timers.pending.size, 0, `${read} ${end}`);
+      assert.deepEqual(f.sends, [], `${read} ${end}`);
+      assert.ok(!f.logs.some((line) => line.action === "skip" || line.action === "would-compact"), `${read} ${end}: nothing is checkpointed`);
+    });
+  });
 
   it("treats a durable pre-send reservation as handled after restart", async () => fixture(async (f) => {
     await f.store.append({ key: "a1:t1", agentId: "a1", turnId: "t1", lastUserMessageAt: messageAt,
