@@ -1,4 +1,4 @@
-"""Per-host Pi deployment with a stock Paseo >=0.10.3 <0.12.0 version gate and guarded rollback.
+"""Per-host Pi deployment with a stock Paseo >=0.10.3 <0.14.0 version gate and guarded rollback.
 
 Default action is plan. Apply/rollback are for an explicitly approved host only.
 """
@@ -12,7 +12,7 @@ from credential import expand
 def sha(data): return hashlib.sha256(data).hexdigest()
 
 
-PASEO_RANGE = ((0, 10, 3), (0, 12, 0))  # >=0.10.3 <0.12.0, release versions only
+PASEO_RANGE = ((0, 10, 3), (0, 14, 0))  # >=0.10.3 <0.14.0, release versions only
 # The runtime files apply writes and rollback restores, relative to the runtime root. Rollback touches no other path.
 RUNTIME = ('runtime.json','credential.py','launch.mjs','mcp_bridge.py','fleet-routing.mjs','agent/models.json','agent/settings.json','agent/mcp.json')
 
@@ -38,7 +38,7 @@ def version_gate(home):
     result = subprocess.run([paseo_command(),'daemon','status','--json'], env=daemon_env(home), capture_output=True, text=True, check=True)
     status = json.loads(result.stdout)
     if not supported_paseo(status.get('daemonVersion')) or status.get('connectedDaemon') != 'reachable':
-        raise ValueError('a reachable stock Paseo >=0.10.3 <0.12.0 daemon is required')
+        raise ValueError('a reachable stock Paseo >=0.10.3 <0.14.0 daemon is required')
     return status
 
 
