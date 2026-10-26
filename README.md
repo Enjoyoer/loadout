@@ -10,7 +10,7 @@ Agent skills for Claude Code and Codex, a fleet sync that keeps them identical a
 
 - **27 skills** for multi-agent orchestration, project memory and handoffs, architecture and domain modeling, docs lookup, PDFs, total-cost shopping research, frontend design, browser automation, and interactive setup wizards.
 - **Fleet sync**: one command installs verified skills (every file checked against a SHA256 manifest) on every host over SSH, and never overwrites a local edit.
-- **6 Paseo plugins**: four server plugins that resume agents after usage limits, archive merged worker workspaces, compact idle agents to save prompt-cache cost, and clean up orphaned projects, each only logging what it would do until you arm it; plus `workspace-folder-title`, which titles new workspaces with their folder name, and `pi-fast-toggle`, composer Fast shortcuts and a per-agent thinking level menu.
+- **7 Paseo plugins**: four server plugins that resume agents after usage limits, archive merged worker workspaces, compact idle agents to save prompt-cache cost, and clean up orphaned projects, each only logging what it would do until you arm it; plus `workspace-folder-title`, which titles new workspaces with their folder name, `history-cwd-fallback`, which opens the history of archived agents whose working directory was deleted, and `pi-fast-toggle`, composer Fast shortcuts and a per-agent thinking level menu.
 
 Each skill lives at `skills/<category>/<name>` and installs flat as `<client skills directory>/<name>`. The repository contains no credentials or private host configuration.
 
@@ -143,7 +143,7 @@ A package may read an optional private `references/local.md` for host-specific s
 
 ## Paseo plugins
 
-`plugins/<id>` holds [Paseo](https://paseo.sh) plugins. Five are server-only; `pi-fast-toggle` also adds composer controls in the client. Each is trusted, unsandboxed code that runs inside a daemon, so read its README before installing it.
+`plugins/<id>` holds [Paseo](https://paseo.sh) plugins. Six are server-only; `pi-fast-toggle` also adds composer controls in the client. Each is trusted, unsandboxed code that runs inside a daemon, so read its README before installing it.
 
 | Plugin | Does | Default on a fresh install |
 |---|---|---|
@@ -152,6 +152,7 @@ A package may read an optional private `references/local.md` for host-specific s
 | [`usage-limit-auto-resume`](plugins/usage-limit-auto-resume/README.md) | Resumes an agent after a usage limit or a transient provider error, in the same session | Dry-run until `armed` |
 | [`orphan-project-sweeper`](plugins/orphan-project-sweeper/README.md) | Deletes Paseo project rows with no active workspace and a missing root path | Dry-run until `armed` |
 | [`workspace-folder-title`](plugins/workspace-folder-title/README.md) | Titles new workspaces with their folder name instead of a bare git branch name, without replacing caller-supplied titles | Active when installed |
+| [`history-cwd-fallback`](plugins/history-cwd-fallback/README.md) | Opens the timeline of an archived agent whose working directory was deleted, by giving that history load a brief link to an empty read-only directory; never lets a real turn run there | Active when installed |
 | [`pi-fast-toggle`](plugins/pi-fast-toggle/README.md) | Composer Fast shortcuts and per-agent thinking level menu (Paseo `>=0.11.1 <0.14.0`): Ctrl/Cmd+Shift+F toggles Fast for tier-capable Pi agents and Ctrl/Cmd+Shift+M opens the thinking level menu | Fast inactive until its `routing.json` setting exists |
 
 `plugins/_shared` is not a plugin. It holds the canonical source of code that several plugins vendor into their own folders, such as the fail-closed daemon endpoint resolver and the atomic JSON state writer; see [CONTRIBUTING.md](.github/CONTRIBUTING.md).
