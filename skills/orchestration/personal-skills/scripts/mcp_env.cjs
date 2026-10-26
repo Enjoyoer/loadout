@@ -56,12 +56,15 @@ try {
   } else { 'ok' }
 } finally { $fs.Dispose() }
 `;
+// Windows system programs by absolute path, never by bare name: a bare name would also find a planted program in the
+// harness's cwd, which Windows searches first.
+const system32 = exe => path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', exe);
 function windowsOwnerFile(target, read) {
   const env = { ...process.env, LOADOUT_OWNER_FILE: target };
   delete env.LOADOUT_OWNER_READ;
   if (read) env.LOADOUT_OWNER_READ = '1';
-  const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand',
-    Buffer.from(OWNER_SCRIPT, 'utf16le').toString('base64')], {
+  const out = execFileSync(system32('WindowsPowerShell\\v1.0\\powershell.exe'), ['-NoProfile', '-NonInteractive',
+    '-EncodedCommand', Buffer.from(OWNER_SCRIPT, 'utf16le').toString('base64')], {
     env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000, windowsHide: true }).trim();
   if (out.startsWith('unsafe:')) throw new Unsafe(out.slice(7));
   if (!read && out === 'ok') return true;
@@ -100,7 +103,7 @@ const safeValue = value => value && !/[\x00-\x1f\x7f]/.test(value);
 // failed or timed-out run, throws. A non-zero exit, which reg gives for no such value (or one it cannot read), gives
 // null, and so does an expanding value that names another variable, since reg prints it unexpanded.
 function readUserEnv(name) {
-  const done = spawnSync('reg.exe', ['query', 'HKCU\\Environment', '/v', name],
+  const done = spawnSync(system32('reg.exe'), ['query', 'HKCU\\Environment', '/v', name],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, windowsHide: true });
   if (done.error) throw done.error;
   if (done.status !== 0) return null;
@@ -113,10 +116,11 @@ function readUserEnv(name) {
 }
 // Windows: a Paseo daemon inherits the user environment once, when it starts, so after a token rotation its copy
 // is stale. Each enabled server's bearer variable, and no other, is read from the user environment at this launch
-// and replaces the inherited one, so a rotation needs no daemon restart. A value that is absent, empty or not
-// printable ASCII (as a bearer token is; reg's output code page could garble anything else), or a read that fails or
-// times out, keeps the inherited value, so at most that server fails to authenticate, as before. The notice names
-// only variables, never a value.
+// and replaces the inherited one, so a rotation needs no daemon restart. A value that is absent or empty, or shows a
+// character other than printable ASCII in reg's output, or a read that fails or times out, keeps the inherited value,
+// so at most that server fails to authenticate, as before. Values must be printable ASCII, as bearer tokens are: reg
+// prints in the console code page, so a character outside that page arrives already replaced (for example as ?) and
+// goes undetected. The notice names only variables, never a value.
 function windowsUserEnv(out, servers) {
   const names = [...new Set(servers.filter(s => s.enabled).map(s => s.bearerTokenEnvVar))];
   if (names.some(name => typeof name !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(name)))
