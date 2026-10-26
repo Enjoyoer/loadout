@@ -19,7 +19,7 @@ Test an idea against our own past work before adopting it. Do everything up to a
   - **Help cases:** the symptom happened.
   - **Harm cases:** the rule would have stopped something that turned out to be useful.
 - If a rule has no help cases at all, mark it Drop and stop working on it.
-- Listings are capped. If a host returns exactly the cap (200), page through with `--since` windows until you have the whole 14 days. List any agent whose log can't be read as a coverage gap.
+- Listings are capped. If a host returns exactly the cap (200), page through with `--since` windows and also read that host's own stored agent records under its Paseo home, until you have the whole 14 days. List any agent whose log can't be read as a coverage gap.
 - Touch a file in the trial folder at least every 5 days, so the 7-day scratch expiry doesn't delete the evidence.
 
 ## 3. Judge each case
@@ -31,7 +31,7 @@ Test an idea against our own past work before adopting it. Do everything up to a
 - Pick the most informative cases and rerun each from its original state, in a scratch copy under `~/.cache/fleet-scratch/<project>/trial-<topic>/`.
 - Use the same model and prompt each time: once with the current text and once with the proposed text.
 - Count only what you saw happen in those runs. A reasoned prediction is not a result.
-- Launch every replay agent with its cwd set explicitly to the scratch clone (no remote), and check the cwd before sending the prompt. A default cwd can land in the real repo.
+- Launch every replay agent with `--new-workspace` and its cwd set to the scratch clone (no remote); from inside an agent, `paseo run --cwd` is ignored without it. Check the agent's cwd before sending the prompt. A default cwd can land in the real repo.
 - During a replay:
   - never push, merge, message other agents, or touch live services or real accounts;
   - stop if the replay would need any of those.
