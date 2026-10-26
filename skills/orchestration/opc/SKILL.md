@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.54"
+  version: "7.55"
 ---
 
 # OPC
@@ -11,7 +11,7 @@ Each OPC turn, read `version:` first; if changed, reread this file and needed re
 
 The PM owns scope, topology, integration, verification, and publication. OPC implementation authorizes bounded Worker lanes, never subdelegation or route substitution. OPC ends with verified merge, required sync, and cleanup; earlier endpoints are ordinary scoped work. Local commits and PRs are internal stages.
 
-Follow this state machine, reading linked references only when their branch applies. Scripts enforce; task records and receipts are bookkeeping, not security boundaries.
+Follow this state machine, reading linked references only when their branch applies.
 
 ## 1. Scope
 
@@ -25,19 +25,17 @@ Enable browser review only when the initial request explicitly asks; the choice 
 
 ## 2. Optional scouting
 
-Choose minimal useful scouting topology, splitting only independent questions. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify the [planner](references/planner.md "branch:planning"). PMs delegate browser/research/scouting to GPT lanes, never themselves on Opus.
+Choose minimal useful scouting topology, splitting only independent questions. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify the [planner](references/planner.md "branch:planning").
 
 ## 3. Worker
 
 Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted.
 
-- On Pi, Fast (GPT routes only) is not a catalog model or thinking level: it is the agent label `opc.service-tier=fast`, which pi-fast-toggle applies and the composer's Fast pill shows. No label is Fast; Off is `standard`.
-- New agent: `create_agent({..., labels:{"opc.service-tier":"fast"}})` or the Worker builder via `--owner-fast on`; existing: `update_agent({agentId, labels:{"opc.service-tier":"fast"}})`.
-- Verify the label (`get_agent_status` or the Fast pill) before reporting a route.
+Implement one feature (one user-visible outcome whose spec, diff and checks fit one context) in one implementer lane: its server, UI, docs and tests together. Never split it across parallel workers by type of work (frontend, backend, tests) or by file. Use parallel lanes only for separable outcomes, or for work too large for one context (a port or rewrite) (provisional), cut by layer or crate with one owner per file; the PM writes any shared contract (flags, schemas, shared docs) before those lanes start. Use fresh agents only where a fresh context helps: a reviewer that gets only the spec and the diff, a verifier that gets only the user flows to check, and research questions that need no project context. One Worker lineage per lane; shared live resources serialize only live checks.
 
-Visual design (new screen, layout, component) gets one read-only Fable `high` `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`. Rate limits, unavailable capabilities, and launch failures stop the lane; substitution requires a new explicit owner decision. Parallelize separable outcomes, one Worker lineage per lane and owner per file; shared live resources serialize only live checks.
+Visual design (new screen, layout, component) gets one read-only Fable `high` `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`.
 
-All repository source and test edits, including small repairs, belong to Workers. No test-driven development: Workers add only owner- or PM-specified tests and keep existing tests and CI green. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
+All repository source and test edits, including small repairs, belong to Workers. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
 ## 4. Yield
 
