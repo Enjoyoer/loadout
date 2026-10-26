@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b418a0ad1e012a8a96cf40e65c46b8201c0eddcc",
+  "source_commit": "edec34d32223737d6f68ce9109e7ef07bd63567d",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -233,8 +233,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5581,
-      "sha256": "3e0064c6b4a72f0038fe5cad2143ce4940a49de0f2ae12172f666ba887156b76"
+      "bytes": 5552,
+      "sha256": "fd5cdb46e2d94d03e72e0b6a0d348ba9c1861da2345458d6b8134617acecc91d"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
