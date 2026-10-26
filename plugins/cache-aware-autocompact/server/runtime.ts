@@ -255,8 +255,11 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         if (finished.status !== "idle") {
           log("wait-for-finish", { agentId: checkpoint.agentId, status: finished.status, error: finished.error, strictnessTier: tier });
         }
+        // Each look is decided on the snapshot taken once the /compact turn settled, so a newer user message since then
+        // shows the owner opened the agent again, as on every other read.
+        const settled = finished.final;
         const watched = { refetch: async (options: Parameters<typeof handle.timeline.refetch>[0]) => {
-          const read = await watching.run(null, () => handle.timeline.refetch(options));
+          const read = await watching.run(settled, () => handle.timeline.refetch(options));
           if (read.ended) throw new ReadEnded();
           return read.value;
         } };
@@ -390,17 +393,24 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       const skip = (reason: string) => { skipped[reason] = (skipped[reason] ?? 0) + 1; };
       let cursor: string | undefined;
       do {
-        const page = await api.agents.list({ page: { limit: 200, cursor }, signal: lifetime.signal });
-        for (const { agent } of page.entries) {
+        // Watched from the list request on: a close or archive noted while the page is fetched, or while earlier entries
+        // are recovered, ends that agent's history read below. Every entry's watch opens as the page arrives, starting
+        // with what the listing noted, and is done when its entry is skipped or decided; a stop clears them (ends.clear).
+        const listing = ends.listing();
+        const { page, listed } = await api.agents.list({ page: { limit: 200, cursor }, signal: lifetime.signal }).then((page) => ({
+          page,
+          listed: page.entries.map(({ agent }) => {
+            const handle = api.agents.ref(agent.id);
+            return { agent, handle, watching: listing.watch(agent.id, "recovery", agentPort(handle)) };
+          }),
+        })).finally(listing.done);
+        for (const { agent, handle, watching } of listed) {
           if (stopped) return;
           const reason = rearmSkipReason(agent, config.extendIdleCompaction) ?? disabledReason(agent.provider, config, agent.model);
-          if (reason) { skip(reason); continue; }
-          if (timers.has(agent.id) || inFlightHasAgent(agent.id)) { skip("already-pending"); continue; }
+          if (reason) { skip(reason); watching.done(); continue; }
+          if (timers.has(agent.id) || inFlightHasAgent(agent.id)) { skip("already-pending"); watching.done(); continue; }
           expectedUserMessage.set(agent.id, agent.lastUserMessageAt ?? null);
           const generation = generations.get(agent.id) ?? 0;
-          const handle = api.agents.ref(agent.id);
-          // Watched from the listed snapshot on: a close or archive seen since then ends the history read below.
-          const watching = ends.watch(agent.id, "recovery", agentPort(handle));
           try {
             if (await recoveryCwdMissing(agent)) { skip("cwd-missing"); continue; }
             if (stopped) return;

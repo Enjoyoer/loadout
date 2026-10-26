@@ -75,14 +75,16 @@ export function endedReads(options: {
   readsClosed: boolean;
 }) {
   const watching = new Map<string, Set<Seen>>();
+  // Open listings: the closes and archives of every agent noted since each began.
+  const listings = new Set<Map<string, Seen>>();
 
   /**
    * Watches the agent from now until done(): a close or archive noted meanwhile ends every read decided after it.
    * `read` names the reads in the log. decide() runs after a read, on the snapshot the read was issued on (null when
-   * there is none); run() is one read followed by decide().
+   * there is none); run() is one read followed by decide(). `since` is what a listing noted before the watch opened.
    */
-  function watch<S extends EndedSnapshot>(agentId: string, read: string, port: AgentPort<S>) {
-    const seen: Seen = { closed: false, archived: false };
+  function watch<S extends EndedSnapshot>(agentId: string, read: string, port: AgentPort<S>, since?: Seen) {
+    const seen: Seen = { closed: since?.closed ?? false, archived: since?.archived ?? false };
     const set = watching.get(agentId) ?? new Set<Seen>();
     set.add(seen);
     watching.set(agentId, set);
@@ -161,12 +163,31 @@ export function endedReads(options: {
         watched.done();
       }
     },
+    /**
+     * Watches every agent from now until done(), for reads of agents not known yet, such as the entries of a list page
+     * being fetched: watch() opens one agent's watch that starts with any close or archive of it noted since. Watches
+     * it opened stay open until their own done().
+     */
+    listing() {
+      const noted = new Map<string, Seen>();
+      listings.add(noted);
+      return {
+        watch: <S extends EndedSnapshot>(agentId: string, read: string, port: AgentPort<S>) => watch(agentId, read, port, noted.get(agentId)),
+        done: () => { listings.delete(noted); },
+      };
+    },
     /** A close or archive of the agent, seen by the plugin: every read of it in flight ends. */
     note(agentId: string, end: "closed" | "archived") {
       for (const seen of watching.get(agentId) ?? []) seen[end] = true;
+      for (const noted of listings) {
+        const seen = noted.get(agentId) ?? { closed: false, archived: false };
+        seen[end] = true;
+        noted.set(agentId, seen);
+      }
     },
     clear() {
       watching.clear();
+      listings.clear();
     },
   };
 }
