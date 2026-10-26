@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "ad166cc32e625762d35ce658be792c0dd49b18ea",
+  "source_commit": "b6df428e5be3b555dedb4bc95a66de8a86161704",
   "skill_count": 26,
   "file_count": 148,
   "files": [
@@ -465,7 +465,7 @@
       "category": "orchestration",
       "skill": "personal-skills",
       "bytes": 52450,
-      "sha256": "356be058cf8fd906e7b2744eea695eca19983e90126a6f9b39ea86015ec52be8"
+      "sha256": "63ad5efd6c93b449ab5a17f3fef4f3b9435905530347b9ce6ea7776e56087dd4"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -605,7 +605,7 @@
       "category": "orchestration",
       "skill": "personal-skills",
       "bytes": 17722,
-      "sha256": "aea0c5209c1fdc25a3363d0827347fdf70f9cbe0bef32c8dd5c2bca42d8b8c38"
+      "sha256": "89edb6403e0f10cbdd27a873e87e583e3d4738ea9d8e4432ae18e539cb8feac3"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_reload_remote.js",
@@ -661,7 +661,7 @@
       "category": "orchestration",
       "skill": "personal-skills",
       "bytes": 11532,
-      "sha256": "a212d24329b137bc37a6f8a9146ff41934999fc6f649eeaea48eeb63745f3368"
+      "sha256": "23838119ff57dfe37c4b96ff2bec04ab5a661f32c95bf422b1ec96edb7a11f80"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",

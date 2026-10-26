@@ -199,10 +199,10 @@ try {
         ? spawnSync('paseo daemon status --json',{env,encoding:'utf8',shell:true})
         : spawnSync('paseo',['daemon','status','--json'],{env,encoding:'utf8'});
       const daemon=status.status===0 ? JSON.parse(status.stdout) : {};
-      // >=0.10.3 <0.12.0, release versions only.
+      // >=0.10.3 <0.14.0, release versions only.
       const got=/^(\d+)\.(\d+)\.(\d+)$/.exec(typeof daemon.daemonVersion==='string'?daemon.daemonVersion:'');
       const v=got?got.slice(1).map(Number):null, cmp=(a,b)=>a[0]-b[0]||a[1]-b[1]||a[2]-b[2];
-      if(!v||cmp(v,[0,10,3])<0||cmp(v,[0,12,0])>=0||daemon.connectedDaemon!=='reachable') throw Error('reachable stock Paseo >=0.10.3 <0.12.0 required for Pi sync');
+      if(!v||cmp(v,[0,10,3])<0||cmp(v,[0,14,0])>=0||daemon.connectedDaemon!=='reachable') throw Error('reachable stock Paseo >=0.10.3 <0.14.0 required for Pi sync');
     }
     const pkg = path.join(runtimeRoot, 'app/node_modules/@earendil-works/pi-coding-agent/package.json');
     if (!p.dry_run && (!fs.existsSync(pkg) || JSON.parse(fs.readFileSync(pkg)).version !== '1.0.0'))
