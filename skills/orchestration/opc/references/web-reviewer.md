@@ -2,6 +2,13 @@
 
 For the entrypoint's review branch, read [web lane](web-lane.md "runtime") and [Simplifier remit](simplifier-review.md "runtime"). The reviewer helper also works directly for initially authorized review without a Worker. UI work never uses the web reviewer: a UI task (`ui: true`) refuses browser review.
 
+## Review rules
+
+These rules bind every review of a candidate, browser or not, and other skills point here.
+
+- **R1 Review budget.** At most 3 review rounds per candidate. Extend to 5 only when the open finding is a security, permission or data-loss risk. Stop early when a round returns only nits. At the cap with blockers still open: stop, report NOT APPROVED and escalate to the owner; never self-fix and merge without a new independent verdict.
+- **R2 One reviewer.** One authoritative reviewer per candidate head at a time; reviewers never start their own reviewers. Exempt: owner-requested research panels and separately scoped audits.
+
 ## Prepare and launch
 
 Commit and publish the candidate through PM delivery. Supply `contextPack` to `prepareReviewLaunch(taskPath, {pr, contextPack, capabilities})` in `scripts/web-reviewer.mjs`:

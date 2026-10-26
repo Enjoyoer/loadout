@@ -2,7 +2,7 @@
 name: opn
 description: Own and coordinate durable non-code workstreams. Use for explicit OPN workflows or durable folder-owner coordination.
 metadata:
-  version: "1.1.1"
+  version: "1.2.0"
 ---
 
 # OPN Non-Code Orchestrator
@@ -69,7 +69,7 @@ Do not redo the Worker's substantive work. Keep direct collaboration with the us
 
 Map every applicable check to observable evidence and its source or provenance. State the outcome, what remains uncertain, and the next safe action. A Worker claim, generated artifact, file existence, or task status is not proof by itself.
 
-Before destructive non-code cleanup, the owner prepares an exact scoped manifest, confirms the source of truth, records rollback and post-checks, and obtains an independent read-only review when available. Unresolved findings or contradictions block only the action that depends on them. Execution still requires explicit user approval. Cleanup never grants archive or retirement authority.
+Before destructive non-code cleanup, the owner prepares an exact scoped manifest, confirms the source of truth, records rollback and post-checks, and obtains an independent read-only review when available, under OPC's [review rules](../opc/references/web-reviewer.md#review-rules). Unresolved findings or contradictions block only the action that depends on them. Execution still requires explicit user approval. Cleanup never grants archive or retirement authority.
 
 ## Memory and completion
 
