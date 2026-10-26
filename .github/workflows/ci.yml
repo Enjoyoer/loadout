@@ -110,7 +110,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        plugin: [cache-aware-autocompact, merged-worker-archiver, orphan-project-sweeper, pi-fast-toggle, usage-limit-auto-resume, workspace-folder-title]
+        plugin: [cache-aware-autocompact, history-cwd-fallback, merged-worker-archiver, orphan-project-sweeper, pi-fast-toggle, usage-limit-auto-resume, workspace-folder-title]
     defaults:
       run:
         working-directory: plugins/${{ matrix.plugin }}

@@ -21,10 +21,12 @@ SHARED = PLUGINS / "_shared"
 CONSUMERS = {
     "atomic-json.ts": (
         "cache-aware-autocompact",
+        "history-cwd-fallback",
         "usage-limit-auto-resume",
     ),
     "daemon-target.ts": (
         "cache-aware-autocompact",
+        "history-cwd-fallback",
         "merged-worker-archiver",
         "orphan-project-sweeper",
         "pi-fast-toggle",
@@ -36,6 +38,7 @@ CONSUMERS = {
     ),
     "fs-probe.ts": (
         "cache-aware-autocompact",
+        "history-cwd-fallback",
         "usage-limit-auto-resume",
     ),
 }

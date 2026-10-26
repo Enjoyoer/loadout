@@ -1,0 +1,22 @@
+{
+  "name": "history-cwd-fallback",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Paseo server-only plugin that lets an archived agent whose working directory was deleted open its history.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "esbuild index.server.ts --bundle --platform=node --format=cjs --target=node20 --outfile=node_modules/.cache/history-cwd-fallback/index.server.cjs --external:@getpaseo/client --external:@getpaseo/plugin --external:@getpaseo/plugin/server --external:@getpaseo/protocol --log-level=warning && echo build ok",
+    "check": "npm run typecheck && npm run build"
+  },
+  "dependencies": {
+    "@getpaseo/client": "0.11.1"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.11.1",
+    "@getpaseo/protocol": "0.11.1",
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3"
+  }
+}

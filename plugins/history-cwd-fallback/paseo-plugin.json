@@ -1,0 +1,7 @@
+{
+  "id": "history-cwd-fallback",
+  "description": "Opens the history of an archived agent whose working directory was deleted, by giving that one history load an empty read-only stand-in directory.",
+  "requirements": {
+    "paseo": ">=0.10.3 <0.14.0"
+  }
+}
