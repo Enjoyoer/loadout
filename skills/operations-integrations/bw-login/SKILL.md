@@ -11,17 +11,18 @@ Sign in with the `bw-paste` helper. Values never appear in output, logs, files, 
 
 | Browser | Method |
 | --- | --- |
-| Paseo `browser_*` tools | Path a only when the checks below pass; otherwise a Playwright browser on your host with path c, or stop |
+| Paseo `browser_*` tools | Open the site in a Playwright browser on your own host and use path c, or stop. Never paste: Paseo's key events carry no modifier keys, so Cmd+V and Ctrl+V never paste there |
 | Codex app Browser Use | Path b |
 | Desktop browser (Chrome, Edge, Safari) | Path a only when the checks below pass; otherwise stop |
 | Playwright, `playwright-cli` or another Chromium this task launched | Path c |
 | Firefox or WebKit automation | Stop |
 
-A browser's paste reads the clipboard of the desktop it runs on; a Paseo tab runs in the owner's Paseo desktop app, which may be another machine. `bw-paste` copies elsewhere in two cases: on Linux it always copies to the Mac's clipboard, and over SSH on Windows to that SSH logon's clipboard, not the desktop's. Path a is allowed only when all of these hold:
+Revisit the Paseo row when Paseo sends modifier keys or adds a paste tool.
+
+A browser's paste reads the clipboard of the desktop it runs on. `bw-paste` copies elsewhere in two cases: on Linux it always copies to the Mac's clipboard, and over SSH on Windows to that SSH logon's clipboard, not the desktop's. Path a is allowed only when all of these hold:
 
 1. Your shell is on Mac or Windows. On Linux, never use path a, even for a browser on the same Linux host: use path c or stop.
-2. You know independently that your shell runs on the browser's machine, in the desktop session the owner is logged into, not over SSH (for example, the owner told you, or the app and your shell share the hostname and `SSH_CONNECTION` is unset).
-3. For a Paseo tab, `browser_evaluate` of `navigator.platform` matches your OS (`MacIntel` for Mac, `Win32` for Windows). This only filters out a mismatch; it never proves the same machine, since every Windows PC says `Win32`.
+2. You know independently that your shell runs on the browser's machine, in the desktop session the owner is logged into, not over SSH (for example, the owner told you, or the browser and your shell share the hostname and `SSH_CONNECTION` is unset).
 
 If any check fails or you are unsure, do not paste: open the site in a Playwright browser on your own host and use path c, or stop.
 
@@ -59,7 +60,7 @@ Only when the Pick the path checks pass. Before the first real paste, probe with
 
 For each field: clear a prefilled value with an empty fill and check its length is 0. Run `bw-paste <id> username` or `bw-paste <id> password`. It copies the value to the OS clipboard and clears it after 20 seconds. Click the field and press Cmd+V on Mac or Ctrl+V elsewhere within 20 seconds, then check its length is above 0 (hard stop). Then submit (Enter, or the submit ref from your pre-fill snapshot) and run the section 2 length check.
 
-Paseo `browser_*` tools expose no DevTools endpoint, so path c does not apply to them. If a paste fills nothing, clear the field, stop and report.
+If a paste fills nothing, clear the field, stop and report.
 
 ### b. Codex app Browser Use (its own virtual clipboard)
 
