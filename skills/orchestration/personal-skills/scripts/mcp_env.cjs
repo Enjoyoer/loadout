@@ -1,9 +1,10 @@
 // Launch a harness with fleet credentials in memory only. Never source shell code.
 // mcp-env.json holds {servers, providers}: MCP servers whose env files load for every wrapped harness, and per
 // provider launch settings (`tokenFiles`, `args`) for the harness named by `--provider <id>`. A bare array is the
-// servers list from before provider settings.
+// servers list from before provider settings. On Windows a server has no env file: its token is a user environment
+// variable, read afresh at each launch.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const { spawn, execFileSync } = require('node:child_process');
+const { spawn, spawnSync, execFileSync } = require('node:child_process');
 const file = path.join(__dirname, 'mcp-env.json');
 const windows = process.platform === 'win32';
 // Only these codes mean a path is absent; any other error propagates.
@@ -94,9 +95,48 @@ function tokenFileProblem(name) {
   catch (e) { if (e instanceof Unsafe) return e.message; if (absent(e)) return 'missing'; throw e; }
 }
 const safeValue = value => value && !/[\x00-\x1f\x7f]/.test(value);
+// One variable as the current user's environment holds it now (HKCU\Environment), not as this process inherited
+// it: reg.exe, without a shell. Its output must be a blank line, the key and that one value line; anything else, or a
+// failed or timed-out run, throws. A non-zero exit, which reg gives for no such value (or one it cannot read), gives
+// null, and so does an expanding value that names another variable, since reg prints it unexpanded.
+function readUserEnv(name) {
+  const done = spawnSync('reg.exe', ['query', 'HKCU\\Environment', '/v', name],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, windowsHide: true });
+  if (done.error) throw done.error;
+  if (done.status !== 0) return null;
+  const lines = done.stdout.replace(/(\r?\n)+$/, '').split(/\r?\n/);
+  const m = lines.length === 3 && lines[0] === '' && lines[1] === 'HKEY_CURRENT_USER\\Environment'
+    && /^ {4}(\S+) {4}(REG_SZ|REG_EXPAND_SZ)(?: {4}(.*))?$/.exec(lines[2]);
+  if (!m || m[1].toUpperCase() !== name) throw Error('unexpected reg output');
+  const value = m[3] || '';
+  return m[2] === 'REG_SZ' || !value.includes('%') ? value : null;
+}
+// Windows: a Paseo daemon inherits the user environment once, when it starts, so after a token rotation its copy
+// is stale. Each enabled server's bearer variable, and no other, is read from the user environment at this launch
+// and replaces the inherited one, so a rotation needs no daemon restart. A value that is absent, empty or not
+// printable ASCII (as a bearer token is; reg's output code page could garble anything else), or a read that fails or
+// times out, keeps the inherited value, so at most that server fails to authenticate, as before. The notice names
+// only variables, never a value.
+function windowsUserEnv(out, servers) {
+  const names = [...new Set(servers.filter(s => s.enabled).map(s => s.bearerTokenEnvVar))];
+  if (names.some(name => typeof name !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(name)))
+    throw Error('invalid MCP bearer env name in mcp-env.json');
+  const kept = [];
+  for (const name of names) {
+    let value;
+    try { value = readUserEnv(name); } catch (e) { kept.push(name + ' (' + (e.code || e.message) + ')'); continue; }
+    if (!value || !/^[\x20-\x7e]+$/.test(value)) { kept.push(name); continue; }
+    // Windows env names ignore case, so no other spelling of the name may linger beside it.
+    for (const key of Object.keys(out)) if (key.toUpperCase() === name) delete out[key];
+    out[name] = value;
+  }
+  if (kept.length)
+    process.stderr.write('MCP user env has no usable ' + kept.join(', ') + '; keeping any inherited value\n');
+}
 function loadEnv(servers, env = process.env, provider = {}) {
   const out = { ...env };
-  for (const s of servers.filter(s => s.enabled && s.envFile)) {
+  if (windows) windowsUserEnv(out, servers);
+  else for (const s of servers.filter(s => s.enabled && s.envFile)) {
     const key = s.bearerTokenEnvVar;
     try {
       const lines = ownerFile(s.envFile, true).split(/\r?\n/).filter(line => line.trim() && !line.startsWith('#'));

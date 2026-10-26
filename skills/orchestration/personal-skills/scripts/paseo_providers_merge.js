@@ -64,7 +64,9 @@ try {
     ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData/Roaming'), 'loadout')
     : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'loadout');
   const launcher = path.join(envRoot, 'mcp-env.cjs');
-  const envServers = servers.filter(s => s.envFile);
+  // The servers the launcher loads: on POSIX each one's env file; on Windows, which has none, each one's user
+  // environment variable, read afresh at each launch.
+  const envServers = process.platform === 'win32' ? servers : servers.filter(s => s.envFile);
   // Per provider launch settings, read by the launcher for the harness it names: token files and leading args.
   const launch = p.launch || {};
   // The shipped launcher, loaded from the payload without running its launch.
@@ -114,7 +116,7 @@ try {
       const {execFileSync} = require('child_process');
       const script = '$v=[Environment]::GetEnvironmentVariable(' + JSON.stringify(s.bearerTokenEnvVar) + ',"User"); if($null -eq $v){0}else{$v.Length}';
       const length = Number(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim());
-      result.mcp.push(s.bearerTokenEnvVar + ' user env length=' + length + '; restart earlier daemons to inherit');
+      result.mcp.push(s.bearerTokenEnvVar + ' user env length=' + length + '; read at each launch');
       if (!length && !p.dry_run) throw Error('MCP user env missing for ' + s.bearerTokenEnvVar);
     }
   }
