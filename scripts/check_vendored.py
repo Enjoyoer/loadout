@@ -30,6 +30,10 @@ CONSUMERS = {
         "pi-fast-toggle",
         "usage-limit-auto-resume",
     ),
+    "ended-read.ts": (
+        "cache-aware-autocompact",
+        "usage-limit-auto-resume",
+    ),
     "fs-probe.ts": (
         "cache-aware-autocompact",
         "usage-limit-auto-resume",

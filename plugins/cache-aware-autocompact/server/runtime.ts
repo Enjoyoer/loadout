@@ -1,4 +1,4 @@
-import type { PaseoApi, PaseoClient } from "@getpaseo/client";
+import type { PaseoAgentHandle, PaseoApi, PaseoClient } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { AutoCompactConfig } from "./config.ts";
@@ -12,6 +12,7 @@ import { openDaemonClient } from "./daemon.ts";
 import { recoverTurn, recoveryDelay, rearmSkipReason, recoveryHistory, recoveryCwdMissing } from "./recovery.ts";
 
 import { compactionResult } from "./compaction.ts";
+import { endedReads, killAgent } from "./vendor/ended-read.ts";
 
 const COMMAND = "/compact";
 
@@ -36,6 +37,15 @@ function loadedAndOpen(agent: { status: string; archivedAt?: string | null; acti
   return !!agent && agent.status !== "closed" && !agent.archivedAt && agent.activeTurn !== undefined;
 }
 
+/** A watched read's fetch and archive, on the handle the read uses. */
+const agentPort = (handle: PaseoAgentHandle) => ({
+  fetch: async () => (await handle.refresh())?.agent ?? null,
+  archive: () => handle.archive(),
+});
+
+/** Thrown by a watched compaction read whose agent ended; the read already put the agent back and logged it. */
+class ReadEnded extends Error {}
+
 export function startScheduler(server: PluginServerContext, dependencies: {
   readConfig: () => Promise<AutoCompactConfig | null>;
   store?: StateStore;
@@ -44,6 +54,8 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   metrics?: Pick<MetricsLog, "append">;
   timerApi?: TimerApi;
   openApi?: () => Promise<PaseoClient>;
+  /** Closes an agent the way a user's kill does; the daemon's kill_agent unless a test passes one. */
+  killAgent?: (agentId: string) => Promise<void>;
   now?: () => number;
   random?: () => number;
   log?: (action: string, data: Record<string, unknown>) => void;
@@ -74,6 +86,15 @@ export function startScheduler(server: PluginServerContext, dependencies: {
 
   const log = dependencies.log ?? ((action: string, data: Record<string, unknown>) => {
     console.log(`[cache-aware-autocompact] ${JSON.stringify({ action, ...data })}`);
+  });
+  // Every timeline read loads an unloaded agent, so each one is watched: a close or archive seen while it is in flight,
+  // or a fetch after it showing the agent closed, archived or gone, ends the read. The agent it loaded again is put back
+  // as the user left it, and the read's work is dropped: nothing is checkpointed, armed or sent for it. This plugin never
+  // means to load a closed agent, so a read issued on a closed snapshot raced a close too.
+  const ends = endedReads({
+    kill: dependencies.killAgent ?? ((agentId: string) => killAgent(agentId)),
+    log: (agentId, read, ended) => log("read-raced-end", { agentId, read, end: ended.end, restored: ended.restored, ...(ended.reason ? { reason: ended.reason } : {}) }),
+    readsClosed: false,
   });
 
   const stateKey = (checkpoint: Checkpoint, terminal = false): string => {
@@ -156,12 +177,15 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         log("skip", { agentId: checkpoint.agentId, reason: "cache-expired", retryCount: checkpoint.retryCount });
         return;
       }
-      const baseline = await handle.timeline.refetch({ direction: "tail", limit: 200, projection: "canonical" }).catch(async error => {
+      const read = await ends.read(agent.id, "evaluate", agentPort(handle), agent,
+        () => handle.timeline.refetch({ direction: "tail", limit: 200, projection: "canonical" })).catch(async error => {
         await record(checkpoint, "compaction-failed", safeError(error), config);
         log("compaction-failed", { agentId: agent.id, reason: safeError(error) });
         return null;
       });
-      if (!baseline) return;
+      // The agent ended while its tail was read (put back and logged by ends), or a turn started or ended meanwhile.
+      if (!read || read.ended || stopped || generation !== (generations.get(checkpoint.agentId) ?? 0)) return;
+      const baseline = read.value;
       if (baseline.error || baseline.gap || baseline.staleCursor) {
         await record(checkpoint, "skip", "timeline-unavailable", config);
         log("skip", { agentId: agent.id, reason: "timeline-unavailable" });
@@ -202,6 +226,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         return;
       }
       const attemptedAt = new Date(now()).toISOString();
+      let unwatch = () => {};
       try {
         // Reserve durably before sending, including a crash between send and acknowledgement.
         await record(checkpoint, "compact-requested", "send-reserved", config, true, attemptedAt);
@@ -222,12 +247,23 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         // One window covers the settled-turn wait and the compaction row, both measured from the send.
         const windowMs = config.compactionWindowMinutes * 60_000;
         const sentAt = Date.now();
+        // From the send on, a stop or archive is watched, and each look at the timeline is decided like the read above.
+        const watching = ends.watch(checkpoint.agentId, "compaction", agentPort(handle));
+        unwatch = watching.done;
         await handle.send(COMMAND);
         const finished = await handle.waitForFinish(windowMs);
         if (finished.status !== "idle") {
           log("wait-for-finish", { agentId: checkpoint.agentId, status: finished.status, error: finished.error, strictnessTier: tier });
         }
-        const observed = await compactionResult(handle.timeline, afterSeq, lifetime.signal, Math.max(0, windowMs - (Date.now() - sentAt)));
+        // Each look is decided on the snapshot taken once the /compact turn settled, so a newer user message since then
+        // shows the owner opened the agent again, as on every other read.
+        const settled = finished.final;
+        const watched = { refetch: async (options: Parameters<typeof handle.timeline.refetch>[0]) => {
+          const read = await watching.run(settled, () => handle.timeline.refetch(options));
+          if (read.ended) throw new ReadEnded();
+          return read.value;
+        } };
+        const observed = await compactionResult(watched, afterSeq, lifetime.signal, Math.max(0, windowMs - (Date.now() - sentAt)));
         if (observed === "unconfirmed") {
           // No completed row and no error by the end of the window. Backed off like a failure, but not reported as one.
           const reason = `no completed compaction row within ${config.compactionWindowMinutes}m and no error`;
@@ -239,12 +275,16 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         void metrics.append({ event: "compacted", agentId: checkpoint.agentId, provider: agent.provider, model: agent.model ?? null, usage: agent.lastUsage ?? null });
         log("compacted", { agentId: checkpoint.agentId, reason: decision.reason, command: COMMAND, strictnessTier: tier });
       } catch (error) {
+        // The agent ended while the compaction was observed: it is put back, and nothing more is written for it.
+        if (error instanceof ReadEnded) return;
         if (stopped) {
           log("compaction-abandoned", { agentId: checkpoint.agentId, reason: `plugin stopped: ${safeError(error)}`, strictnessTier: tier });
           return;
         }
         await record(checkpoint, "compaction-failed", safeError(error), config, true, attemptedAt);
         log("compaction-failed", { agentId: checkpoint.agentId, reason: safeError(error), strictnessTier: tier });
+      } finally {
+        unwatch();
       }
     } finally {
       inFlight.delete(checkpoint.key);
@@ -323,12 +363,17 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   // unloaded agent again, so it is issued only right after a fetch (which never loads one) shows the agent loaded and
   // open, and only while `current` holds: the turn's generation is unchanged, so no close, archive or new turn was seen
   // during that fetch. A fetch answered before a close it was in flight with still shows the agent open; the close
-  // changed the generation, so the read is skipped.
-  const endedTimeline = async (api: PaseoApi, agentId: string, current: () => boolean): Promise<AgentTimelineItem[]> => {
+  // changed the generation, so the read is skipped. The read itself still loads an agent closed or archived while it
+  // is in flight, so such an agent is put back (ends), and the turn is dropped: null, so nothing is checkpointed, armed
+  // or sent for it.
+  const endedTimeline = async (api: PaseoApi, agentId: string, current: () => boolean): Promise<AgentTimelineItem[] | null> => {
     const handle = api.agents.ref(agentId);
     const snapshot = current() ? await handle.refresh().catch(() => null) : null;
     if (!current() || !loadedAndOpen(snapshot?.agent)) return [];
-    const page = await handle.timeline.refetch({ direction: "before", limit: 200 }).catch(() => null);
+    const read = await ends.read(agentId, "turn-end", agentPort(handle), snapshot!.agent!,
+      () => handle.timeline.refetch({ direction: "before", limit: 200 }).catch(() => null));
+    if (read.ended) return null;
+    const page = read.value;
     return !page || page.error ? [] : checkpointTimeline(page.entries.map((entry) => entry.item));
   };
 
@@ -348,22 +393,34 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       const skip = (reason: string) => { skipped[reason] = (skipped[reason] ?? 0) + 1; };
       let cursor: string | undefined;
       do {
-        const page = await api.agents.list({ page: { limit: 200, cursor }, signal: lifetime.signal });
-        for (const { agent } of page.entries) {
+        // Watched from the list request on: a close or archive noted while the page is fetched, or while earlier entries
+        // are recovered, ends that agent's history read below. Every entry's watch opens as the page arrives, starting
+        // with what the listing noted, and is done when its entry is skipped or decided; a stop clears them (ends.clear).
+        const listing = ends.listing();
+        const { page, listed } = await api.agents.list({ page: { limit: 200, cursor }, signal: lifetime.signal }).then((page) => ({
+          page,
+          listed: page.entries.map(({ agent }) => {
+            const handle = api.agents.ref(agent.id);
+            return { agent, handle, watching: listing.watch(agent.id, "recovery", agentPort(handle)) };
+          }),
+        })).finally(listing.done);
+        for (const { agent, handle, watching } of listed) {
           if (stopped) return;
           const reason = rearmSkipReason(agent, config.extendIdleCompaction) ?? disabledReason(agent.provider, config, agent.model);
-          if (reason) { skip(reason); continue; }
-          if (timers.has(agent.id) || inFlightHasAgent(agent.id)) { skip("already-pending"); continue; }
+          if (reason) { skip(reason); watching.done(); continue; }
+          if (timers.has(agent.id) || inFlightHasAgent(agent.id)) { skip("already-pending"); watching.done(); continue; }
           expectedUserMessage.set(agent.id, agent.lastUserMessageAt ?? null);
           const generation = generations.get(agent.id) ?? 0;
           try {
             if (await recoveryCwdMissing(agent)) { skip("cwd-missing"); continue; }
             if (stopped) return;
-            const handle = api.agents.ref(agent.id);
-            const history = await recoveryHistory(handle.timeline);
+            const read = await watching.run(agent, () => recoveryHistory(handle.timeline));
             if (stopped) return;
+            if (read.ended) { skip(read.end === "gone" ? "agent-unavailable" : "ended-during-read"); continue; }
+            const history = read.value;
             if (!history) { skip("timeline-unavailable"); continue; }
-            const fresh = (await handle.refresh())?.agent;
+            // The fetch made after the read is the fresh snapshot; it is made again only if it failed.
+            const fresh = read.after ?? (await handle.refresh())?.agent;
             if (stopped) return;
             if (!fresh) { skip("agent-unavailable"); continue; }
             const freshReason = rearmSkipReason(fresh, config.extendIdleCompaction);
@@ -408,6 +465,8 @@ export function startScheduler(server: PluginServerContext, dependencies: {
               failures.add(message);
               recoveryFailures.set(agent.id, failures);
             }
+          } finally {
+            watching.done();
           }
         }
         cursor = page.pageInfo.hasMore ? page.pageInfo.nextCursor ?? undefined : undefined;
@@ -452,6 +511,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     removeLocalSubscription = api.agents.subscribe((update) => {
       if (!active || update.kind !== "upsert") return;
       if (update.agent.archivedAt || update.agent.status === "closed") {
+        ends.note(update.agent.id, update.agent.archivedAt ? "archived" : "closed");
         forgetAgent(update.agent.id);
         return;
       }
@@ -507,14 +567,15 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     }
     // Paseo 0.13 sends an empty timeline, so the tail is read instead. A turn start, close or archive seen before the
     // read supersedes this turn and skips the read (endedTimeline), and one seen while it is read drops its result, as
-    // it cancels a timer. A canceled turn is not read: a kill, delete, archive or daemon
-    // shutdown cancels the turn just before it unloads the agent, and a read landing after that loads it again.
+    // it cancels a timer; an agent the read loaded again after that close or archive is put back. A canceled turn is not
+    // read: a kill, delete, archive or daemon shutdown cancels the turn just before it unloads the agent, and a read
+    // landing after that loads it again.
     const generation = generations.get(event.agent.id) ?? 0;
     const current = () => !stopped && generation === (generations.get(event.agent.id) ?? 0);
-    const read: Promise<AgentTimelineItem[]> = event.outcome.kind === "canceled" ? Promise.resolve([])
+    const read: Promise<AgentTimelineItem[] | null> = event.outcome.kind === "canceled" ? Promise.resolve([])
       : endedTimeline(context.paseo, event.agent.id, current);
     void read.then((timeline) => {
-      if (!current()) return;
+      if (!timeline || !current()) return;
       return primeAndArm({ agent: event.agent, turnId: event.turnId, timeline }, context.paseo);
     }).catch(armFailed);
   });
@@ -532,11 +593,13 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     ensureSubscription(context.paseo);
   });
   const removeArchived = server.on("agent.archived", (event) => {
+    ends.note(event.agent.id, "archived");
     forgetAgent(event.agent.id);
   });
   // Paseo emits this hook with the agent's closed state update, which forgets the agent too. Whichever arrives first
   // ends the turn, so a turn-end read still waiting on its fetch is skipped even before the list update lands.
   const removeClosed = server.on("agent.closed", (event) => {
+    ends.note(event.agent.id, "closed");
     forgetAgent(event.agent.id);
   });
 
@@ -570,6 +633,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     expectedUserMessage.clear();
     recoveryFailures.clear();
     generations.clear();
+    ends.clear();
     // A store passed in belongs to the caller. Ours drops every later write, and teardown
     // waits for the one in flight, so a reloaded instance never races this one's writes.
     if (!dependencies.store) await store.close();

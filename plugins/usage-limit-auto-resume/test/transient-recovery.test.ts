@@ -75,6 +75,11 @@ async function setup() {
   // The daemon run the plugin sees; a test that restarts the daemon changes it.
   let daemonRun = "daemon-run-1";
   const held: Array<() => void> = [];
+  // The plugin's kills and archives of the agent, made to put it back after a timeline read loaded it again.
+  const kills: string[] = [];
+  const archives: string[] = [];
+  // Holds the timeline read numbered `at` (counting from when it was set) until released.
+  let readHold: { at: number; barrier: Promise<void>; reached: boolean } | null = null;
   const api = {
     getConnectionState: () => ({ status: "connected" }),
     close: async () => undefined,
@@ -84,6 +89,10 @@ async function setup() {
         return { agent: await beforeRefresh?.() === "before" ? taken : { ...snapshot } };
       },
       timeline: { refetch: async (options: { cursor?: { epoch: string; seq: number }; limit: number }) => {
+        if (readHold && --readHold.at === 0) {
+          readHold.reached = true;
+          await readHold.barrier;
+        }
         const end = options.cursor ? options.cursor.seq - 1 : entries.length;
         const start = Math.max(0, end - options.limit);
         if (options.cursor) olderReads++;
@@ -102,6 +111,10 @@ async function setup() {
         snapshot.lastError = undefined;
         handlers.get("agent.turn_started")!({ agent: { id: snapshot.id }, turnId });
       },
+      archive: async () => {
+        archives.push(snapshot.id);
+        return { archivedAt: new Date().toISOString() };
+      },
     }) },
   } as unknown as PaseoClient;
   const server = {
@@ -109,10 +122,20 @@ async function setup() {
     on: (name: string, handler: (event: unknown, context?: unknown) => void) => { handlers.set(name, handler); return () => undefined; },
   } as unknown as PluginServerContext;
   // The host's real pq never decides these quota-blind cases.
-  const plugin = contribute(server, async () => api, new QuotaReader(async () => ({ error: "pq disabled in tests" })), undefined, undefined, () => daemonRun);
+  const plugin = contribute(server, async () => api, new QuotaReader(async () => ({ error: "pq disabled in tests" })), undefined, undefined, () => daemonRun,
+    async (agentId) => { kills.push(agentId); });
   await plugin.idle();
   return {
-    config, store, snapshot, sends, plugin, append,
+    config, store, snapshot, sends, plugin, append, kills, archives,
+    /** Holds the timeline read numbered `at` from now; the lane releases it at cleanup too. */
+    holdRead(at: number) {
+      let release!: () => void;
+      const barrier = new Promise<void>((resolve) => { release = resolve; });
+      held.push(release);
+      const hold = { at, barrier, reached: false };
+      readHold = hold;
+      return { reached: () => hold.reached, release };
+    },
     olderReads: () => olderReads,
     closedReads: () => closedReads,
     beforeRefresh: (action: (() => void | Promise<void>) | null) => { beforeRefresh = action; },
@@ -561,6 +584,34 @@ it("a close that lands while a failed turn's handler reads the agent stops its t
       assert.equal(record?.terminalReason, "agent-closed", `${closed}: the close ends the record`);
       assert.equal(lane.closedReads(), 0);
       assert.equal(lane.sends.length, 0);
+    });
+  }
+});
+
+it("a stop or archive while a failed turn's timeline is read, at its end or before its retry, puts the agent back and sends nothing", async () => {
+  // Read 1 binds the failure to its user row at the turn end; read 2 is the retry's own check before its send. The
+  // stop or archive lands while the read is in flight, and the read loads the agent again (activeTurn: null).
+  for (const [at, read] of [[1, "turn-end-bind"], [2, "transient"]] as const) for (const end of ["closed", "archived"] as const) {
+    await recoveryLane(async (lane) => {
+      const id = lane.snapshot.id;
+      const label = `${read} ${end}`;
+      lane.snapshot.activeTurn = null;
+      const hold = lane.holdRead(at);
+      lane.emit("agent.turn_ended", { agent: { id }, turnId: "source-turn", outcome: { kind: "failed", error: { message: OVERLOADED } }, timeline: lane.timeline() });
+      await settles(hold.reached, `the ${read} read`);
+      if (end === "closed") lane.emit("agent.closed", { agent: { id } });
+      else {
+        lane.snapshot.archivedAt = new Date().toISOString();
+        lane.emit("agent.archived", { agent: { id }, archivedAt: lane.snapshot.archivedAt });
+      }
+      hold.release();
+      await lane.plugin.idle();
+      assert.ok(laneLogs.includes(`[usage-limit-auto-resume] read-raced-end agentId=${id} read=${read} end=${end} restored=${end}`), label);
+      assert.deepEqual([lane.kills, lane.archives], end === "closed" ? [[id], []] : [[], [id]], label);
+      assert.equal(lane.sends.length, 0, label);
+      await lane.sweep(START + 6 * 3600_000);
+      assert.equal(lane.sends.length, 0, `${label}: nothing is sent afterwards`);
+      assert.equal((await lane.store.read()).filter(isActive).length, 0, `${label}: no record is left waiting`);
     });
   }
 });

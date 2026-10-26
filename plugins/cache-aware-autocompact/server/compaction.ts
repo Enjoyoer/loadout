@@ -7,7 +7,7 @@ export type CompactionObservation = "completed" | "unconfirmed";
  * Error output rejects. A window that ends with neither a completed row nor an error
  * gets one more look, then resolves "unconfirmed": a slow summary is not a failure.
  */
-export async function compactionResult(timeline: PaseoAgentTimelineHandle, afterSeq: number, signal: AbortSignal,
+export async function compactionResult(timeline: Pick<PaseoAgentTimelineHandle, "refetch">, afterSeq: number, signal: AbortSignal,
   timeoutMs: number, pollMs = 1_000): Promise<CompactionObservation> {
   const deadline = Date.now() + timeoutMs;
   while (!signal.aborted) {
@@ -22,7 +22,7 @@ export async function compactionResult(timeline: PaseoAgentTimelineHandle, after
   throw new Error("Compaction observation canceled");
 }
 
-async function completedRow(timeline: PaseoAgentTimelineHandle, afterSeq: number): Promise<boolean> {
+async function completedRow(timeline: Pick<PaseoAgentTimelineHandle, "refetch">, afterSeq: number): Promise<boolean> {
   const page = await timeline.refetch({ direction: "tail", limit: 200, projection: "canonical" });
   if (page.error || page.gap || page.staleCursor) throw new Error("Compaction result unavailable");
   const fresh = page.entries.filter(entry => entry.seqEnd > afterSeq);
