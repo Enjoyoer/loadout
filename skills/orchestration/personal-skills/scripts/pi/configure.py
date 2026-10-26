@@ -3,7 +3,7 @@ import argparse, copy, csv, io, json, os, re, shutil, stat, subprocess, sys, tom
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
-from credential import expand
+from credential import check_source, expand
 
 FILES = ("credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs")
 
@@ -35,16 +35,28 @@ def gmail_server(cfg):
             "env": {"GOOGLE_CLIENT_SECRET_PATH": str(home / "client_secret.json"), "WORKSPACE_MCP_CREDENTIALS_DIR": str(home / "credentials"),
                     "USER_GOOGLE_EMAIL": cfg["email"], "WORKSPACE_MCP_HOST": "127.0.0.1", "WORKSPACE_MCP_PORT": str(port)}}
 
-# Optional direct providers: unauthenticated OpenAI-compatible endpoints (for example a
-# local model gate) that bypass the router. Each model is listed once here; the Paseo
-# picker rows derive from the same list. No credentials, headers or compat flags.
+# Optional direct providers: OpenAI-compatible endpoints (for example a local model gate)
+# that bypass the router. Each model is listed once here; the Paseo picker rows derive from
+# the same list. auth is "none" or a credential source reference; no headers or compat flags.
 DIRECT_API = "openai-completions"
 DIRECT_NO_AUTH_KEY = "local-no-auth"  # dummy key Pi needs to list the model; the endpoint ignores it
 LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 DIRECT_MODEL_KEYS = {"id", "name", "reasoning", "input", "contextWindow", "maxTokens", "cost", "thinkingLevelMap"}
 RESERVED_PROVIDERS = {"fleet", "opencode", "llama.cpp", "llama-cpp", "llamacpp"}
 
-def direct_providers(spec):
+def direct_key(name, auth, helper):
+    """Pi's apiKey: the dummy key, or a !command that runs credential.py on this provider's source for each
+    request. Pi sends the value as Authorization: Bearer on this provider's requests only, and a failed read
+    fails only those requests."""
+    if auth == "none": return DIRECT_NO_AUTH_KEY
+    if not isinstance(auth, dict) or set(auth) != {"credential"}:
+        raise ValueError("direct provider auth must be none or exactly a credential source")
+    try: check_source(auth["credential"])
+    except ValueError as error: raise ValueError("direct provider " + str(error)) from None
+    return " ".join([helper, *(quote(key) for key in ("directProviders", name, "auth", "credential"))])
+
+def direct_providers(spec, helper=""):
+    """models.json entries for the direct providers; helper is build's credential.py !command (catalog reads only models)."""
     providers = spec.get("directProviders", {})
     if not isinstance(providers, dict): raise ValueError("directProviders must be an object")
     out = {}
@@ -55,7 +67,7 @@ def direct_providers(spec):
             raise ValueError("direct provider needs exactly baseUrl, api, auth and models")
         if not re.fullmatch(r"https?://[^\s/]+(/\S*)?", cfg["baseUrl"]): raise ValueError("direct provider baseUrl invalid")
         if cfg["api"] != DIRECT_API: raise ValueError("direct provider api must be " + DIRECT_API)
-        if cfg["auth"] != "none": raise ValueError("direct provider auth must be none")
+        key = direct_key(name, cfg["auth"], helper)
         models = cfg["models"]
         if not isinstance(models, list) or not models: raise ValueError("direct provider models required")
         rows = []
@@ -71,7 +83,7 @@ def direct_providers(spec):
                 raise ValueError("direct model reasoning must match its thinking levels")
             rows.append(copy.deepcopy(model))
         if len({m["id"] for m in rows}) != len(rows): raise ValueError("duplicate direct model id")
-        out[name] = {"baseUrl": cfg["baseUrl"], "api": DIRECT_API, "apiKey": DIRECT_NO_AUTH_KEY, "models": rows}
+        out[name] = {"baseUrl": cfg["baseUrl"], "api": DIRECT_API, "apiKey": key, "models": rows}
     return out
 
 def validate_settings(settings):
@@ -121,7 +133,7 @@ def build(spec, root):
     headers = {name: helper for name in spec.get("credentialHeaders", [])}
     model = {"providers": {spec.get("modelProvider", "fleet"): {"baseUrl": base, "apiKey": helper,
         "headers": headers, "api": "openai-responses", "models": models}}}
-    model["providers"].update(direct_providers(spec))
+    model["providers"].update(direct_providers(spec, helper))
     mcp = {"autoEnableCodemode": True, "mcpServers": {"paseo": {
            "command": spec.get("python", sys.executable), "args": [str(root / "mcp_bridge.py")], "exposure": "codemode",
            "env": {"LOADOUT_PI_MCP_URL": "${LOADOUT_PI_MCP_URL}", "LOADOUT_PI_PARENT_MODEL": "${LOADOUT_PI_PARENT_MODEL}", "LOADOUT_PI_PARENT_THINKING": "${LOADOUT_PI_PARENT_THINKING}"}}}}

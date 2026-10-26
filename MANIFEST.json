@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "5dc6e74f12a0552a1336bf4f12c4a1ee97a52c90",
+  "source_commit": "6f3d4e37a9d3c1f08901ec2c01cdc787003b77bf",
   "skill_count": 26,
   "file_count": 148,
   "files": [
@@ -464,8 +464,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 52881,
-      "sha256": "a8bf18f60594f1d0c85342ba437afd14eaea581b6a80ef22fbbe4372e8ebbf16"
+      "bytes": 56241,
+      "sha256": "a21932d4be7b397222422d76c372c009c4ce18c8d05c5f093375b566c44bb7b5"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -520,8 +520,8 @@
       "path": "skills/orchestration/personal-skills/fleet/example/pi-provider-overlay.json",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 723,
-      "sha256": "8137171cd7b7817e67a538813ce3289d171a80957e798ff7cdf0f86f631d7df8"
+      "bytes": 1985,
+      "sha256": "57758fb55f20ca7ac972a9deddd01a44bc3f5731bc765206176cc3d6793e277a"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/routed-launch-overlay.json",
@@ -646,15 +646,15 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/configure.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 13194,
-      "sha256": "d4edff7a303c334b4ef530a1daa3e6a5b9ff8122d65e88f36095da56d5eb4d18"
+      "bytes": 14056,
+      "sha256": "d694ced5d403b845a2c32715646f67e418f18aec922128fe8341c536ff503ef9"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/credential.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 1403,
-      "sha256": "0782ebedef235bba33f07797658e9cae54630cbd7a31c947faa26e629dd810b5"
+      "bytes": 4532,
+      "sha256": "0c976e18acd621f534f9efdb4b4f829935042bb822885d67c6503c1ccf628508"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/deploy.py",
