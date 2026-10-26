@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "f72fae7391faf86d5c5b67d37b74033f6b2b4d4f",
+  "source_commit": "9da66e022ede9848bd9698953407f1fa98ef4bb2",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -1056,11 +1056,15 @@
       "sha256": "6b0fbd210ee2c2ff81840169f5f533bb1b71ab42f6747b5ec9c451b6587ef848"
     }
   ],
-  "plugin_count": 6,
-  "plugin_file_count": 117,
+  "plugin_count": 7,
+  "plugin_file_count": 127,
   "plugins": [
     {
       "id": "cache-aware-autocompact",
+      "paseo": ">=0.10.3 <0.14.0"
+    },
+    {
+      "id": "history-cwd-fallback",
       "paseo": ">=0.10.3 <0.14.0"
     },
     {
@@ -1246,6 +1250,66 @@
       "plugin": "cache-aware-autocompact",
       "bytes": 465,
       "sha256": "b1d7ee66aa92807b0ae9b6fdb74ec20d99d5453c3b39d14dd69a0d7a5610cea5"
+    },
+    {
+      "path": "plugins/history-cwd-fallback/README.md",
+      "plugin": "history-cwd-fallback",
+      "bytes": 2993,
+      "sha256": "6942b0c23545039df133945988998d3be73ef2864df7569e5a622aae252393f3"
+    },
+    {
+      "path": "plugins/history-cwd-fallback/index.server.ts",
+      "plugin": "history-cwd-fallback",
+      "bytes": 1313,
+      "sha256": "aa508348e47de7b6144d083e3d32c5cba7196dae0bb99ffc1fce0adb0995c446"
+    },
+    {
+      "path": "plugins/history-cwd-fallback/package-lock.json",
+      "plugin": "history-cwd-fallback",
+      "bytes": 21198,
+      "sha256": "32c9d6da5c33efb745374ff42817487a1822f917b1e5ac7263bd7f85d23308a4"
+    },
+    {
+      "path": "plugins/history-cwd-fallback/package.json",
+      "plugin": "history-cwd-fallback",
+      "bytes": 888,
+      "sha256": "5a9acf9fb6b486e638c1fd51f5b9ba49169c18da6a94f183cf472d79a86c2651"
+    },
+    {
+      "path": "plugins/history-cwd-fallback/paseo-plugin.json",
+      "plugin": "history-cwd-fallback",
+      "bytes": 259,
+      "sha256": "c3ddb3493a1eb4d5097cf5a1e34033b97bc22d12186828b07ebbf73a9d1ea8ec"
+    },
+    {
+      "path": "plugins/history-cwd-fallback/server/bridge.ts",
+      "plugin": "history-cwd-fallback",
+      "bytes": 9533,
+      "sha256": "9a23954b6176719508796d94fc76e0b5d9dbd399f5d04196eb382913b332da24"
+    },
+    {
+      "path": "plugins/history-cwd-fallback/server/vendor/atomic-json.ts",
+      "plugin": "history-cwd-fallback",
+      "bytes": 5779,
+      "sha256": "72826d243ab105ed64cfa5ec5160b8b593027565945506c71f8d2a1291658788"
+    },
+    {
+      "path": "plugins/history-cwd-fallback/server/vendor/daemon-target.ts",
+      "plugin": "history-cwd-fallback",
+      "bytes": 2548,
+      "sha256": "75deb48944f5b7cba479246550378784e7d5d056092f948e87ac784e9534bcd7"
+    },
+    {
+      "path": "plugins/history-cwd-fallback/server/vendor/fs-probe.ts",
+      "plugin": "history-cwd-fallback",
+      "bytes": 1000,
+      "sha256": "d2533899f9deff38dffd4a1f259e57e90b1fea6b0eba6e738ba4076aeb03e562"
+    },
+    {
+      "path": "plugins/history-cwd-fallback/tsconfig.json",
+      "plugin": "history-cwd-fallback",
+      "bytes": 488,
+      "sha256": "83695bbed350671a5930fca385962425b85dcfcc08581f6f42d6214da9e20d15"
     },
     {
       "path": "plugins/merged-worker-archiver/README.md",
