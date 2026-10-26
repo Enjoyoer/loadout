@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "99bd759ad4c6203b49122ac9cb2439ecd0569524",
-  "skill_count": 26,
-  "file_count": 148,
+  "source_commit": "b418a0ad1e012a8a96cf40e65c46b8201c0eddcc",
+  "skill_count": 27,
+  "file_count": 150,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -233,8 +233,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5533,
-      "sha256": "808d95db994b73026c016e052fcbc2fb4c906015622a1a2c309409d8aaf3fd79"
+      "bytes": 5581,
+      "sha256": "3e0064c6b4a72f0038fe5cad2143ce4940a49de0f2ae12172f666ba887156b76"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -331,8 +331,8 @@
       "path": "skills/orchestration/opc/references/web-reviewer.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 3803,
-      "sha256": "a89a79cbb3f3591f2fda189a377d53bd8df09ae4aa061034f33cc96bcea752f1"
+      "bytes": 4446,
+      "sha256": "8a424644d55795e6a91cefcdec2f214ba76d3ef1715b8aaaf876c66376530c74"
     },
     {
       "path": "skills/orchestration/opc/references/worktree-lifecycle.md",
@@ -408,8 +408,8 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 8585,
-      "sha256": "94aa22a471323295c663243358357e4060c5ef2872749e3f8572e1ec15f759ac"
+      "bytes": 8661,
+      "sha256": "85c8e593f541939e4b71ae745cdb5d81d78a6737e66cd8b74d1ed13840986e56"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
@@ -790,11 +790,25 @@
       "sha256": "fd60fa18204967eff3b4056e85a0ea25b1139135e52cbc3ff4d188a580b4bd85"
     },
     {
+      "path": "skills/orchestration/trial/SKILL.md",
+      "category": "orchestration",
+      "skill": "trial",
+      "bytes": 3405,
+      "sha256": "c5de8408fd18d70b4de474aaef93887b2408984648eb11dbcea1013e18a7cb0f"
+    },
+    {
+      "path": "skills/orchestration/trial/agents/openai.yaml",
+      "category": "orchestration",
+      "skill": "trial",
+      "bytes": 210,
+      "sha256": "350fda60572e820c6f2c9b41802452fe5c0b37f96ebfe5a8a8f178f478de1b2e"
+    },
+    {
       "path": "skills/orchestration/unstuck/SKILL.md",
       "category": "orchestration",
       "skill": "unstuck",
-      "bytes": 3442,
-      "sha256": "e8b02c43736f528458e7e13cc2a4936c09eaee9c9e2f0b05822d6c026c3a8a8d"
+      "bytes": 3575,
+      "sha256": "12dd03d30fa396d0071b279a35f8a49be4ad9cf7758f3ee5ee2da3567c89ff19"
     },
     {
       "path": "skills/orchestration/unstuck/agents/openai.yaml",
