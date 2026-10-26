@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "d262981efe44eb4433146ae5785a7f8c39b24f96",
+  "source_commit": "5dc6e74f12a0552a1336bf4f12c4a1ee97a52c90",
   "skill_count": 26,
   "file_count": 148,
   "files": [
@@ -1074,8 +1074,8 @@
     {
       "path": "plugins/cache-aware-autocompact/README.md",
       "plugin": "cache-aware-autocompact",
-      "bytes": 17262,
-      "sha256": "ab2382564e31e0e1d2d2df07d21f151998292dbe266b76af45ec7f01cf2f7ab5"
+      "bytes": 17575,
+      "sha256": "47c5b0a445bd77e6e94417c5296eeb00e6566d285147d3900ebeaad6e6e2372b"
     },
     {
       "path": "plugins/cache-aware-autocompact/index.server.ts",
@@ -1146,8 +1146,8 @@
     {
       "path": "plugins/cache-aware-autocompact/server/runtime.ts",
       "plugin": "cache-aware-autocompact",
-      "bytes": 29793,
-      "sha256": "ab9b3141ca4051183725cf8eb8070146e224f0d644dcf5566cdf050f39c53bd8"
+      "bytes": 31154,
+      "sha256": "33c2e89a622db132d4414ad80ee2358c6f9d95ec787036e9c50e7ea6664f4b3b"
     },
     {
       "path": "plugins/cache-aware-autocompact/server/store.ts",
@@ -1578,14 +1578,14 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 32982,
-      "sha256": "d13554ad85d1eb5b6eff54ae96483c45a270d0db1b3f660a7648be93e5f9867b"
+      "bytes": 33239,
+      "sha256": "8b7a60b1a1f9f0cfc40a20eee675b3b06214a117de1ef5febbaf903f08aac556"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 64507,
-      "sha256": "ad83ea6a39b975bd90d782711593179c911116b673443c8458c06555b942e4ac"
+      "bytes": 65782,
+      "sha256": "ce9c9a2bf7b81960f2605b8db2c9d6dcf3b58e57e1082f2411e39a152508db38"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
