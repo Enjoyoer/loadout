@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "389e13a37f3c7eda02d69fd2486e5066524d8d5c",
+  "source_commit": "b535bbc2583942f91d9eaea33693f6e03a47df0c",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -1254,14 +1254,14 @@
     {
       "path": "plugins/history-cwd-fallback/README.md",
       "plugin": "history-cwd-fallback",
-      "bytes": 4814,
-      "sha256": "9d58e2cd7071bd2f14e31e3fda424961563112b9638976aac12ff131d6428eb1"
+      "bytes": 7633,
+      "sha256": "7931acb5114e786a129a43a55aa2b0e8ed9ae779d7b549c9e965d1d36c63e6d2"
     },
     {
       "path": "plugins/history-cwd-fallback/index.server.ts",
       "plugin": "history-cwd-fallback",
-      "bytes": 1445,
-      "sha256": "226b7b71486e26ae7898620ff2f4046936128e1db843b5354ca3f7058523dfb5"
+      "bytes": 2068,
+      "sha256": "0578625915606f139b1df3b47867dfad357bf001dd3334f42a5c69b62249bff5"
     },
     {
       "path": "plugins/history-cwd-fallback/package-lock.json",
@@ -1284,8 +1284,8 @@
     {
       "path": "plugins/history-cwd-fallback/server/bridge.ts",
       "plugin": "history-cwd-fallback",
-      "bytes": 13464,
-      "sha256": "9518af10fc59c40b263d4f471de91afc360fc5e3811cf2bc747e2576d29e3855"
+      "bytes": 13501,
+      "sha256": "bac66eda4adff10502895525b3fb55d99acd6ece8c99a48a10671d9aac461c78"
     },
     {
       "path": "plugins/history-cwd-fallback/server/vendor/atomic-json.ts",
