@@ -4,7 +4,7 @@
 // (purpose "history"). When that worktree was deleted, the spawn fails with ENOENT before the
 // provider runs. A plugin hook cannot change the cwd Paseo spawns in, so for that open the bridge
 // puts a link at the missing path that points to an empty, read-only directory, and removes the
-// link shortly after. The provider keeps running in the empty directory, which stays valid; the
+// link a few seconds later, once the provider has started. The provider keeps running in the empty directory, which stays valid; the
 // agent's stored cwd is never changed.
 //
 // It links only a path strictly inside Paseo's worktrees root whose parent already exists as a real
