@@ -147,6 +147,37 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertIn('write unchanged', out)
         self.assertEqual(self.config('laptop')['agents']['providers']['codex']['command'], command)
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows user-env launch wiring')
+    def test_mcp_user_env_is_read_at_each_windows_launch(self):
+        name = f'LOADOUT_TEST_MCP_TOKEN_{os.getpid()}'
+        reg = lambda *args: subprocess.run(['reg.exe', *args, '/f'], check=True, capture_output=True)
+        user_env = lambda value: reg('add', r'HKCU\Environment', '/v', name, '/t', 'REG_SZ', '/d', value)
+        self.addCleanup(subprocess.run, ['reg.exe', 'delete', r'HKCU\Environment', '/v', name, '/f'], capture_output=True)
+        user_env('first-fixture')
+        hosts = json.loads((self.fleet / 'hosts.json').read_text())
+        hosts['hosts'][0].update(os='windows', sync=[*hosts['hosts'][0]['sync'], 'client-config'])
+        (self.fleet / 'hosts.json').write_text(json.dumps(hosts))
+        (self.fleet / 'client-config.json').write_text(json.dumps({'mcpServers': {'ebay-analyze': {
+            'url': 'http://192.0.2.40:8766/mcp', 'bearerTokenEnvVar': name, 'hosts': {'laptop': True}}}}))
+        code, out = self.run_sync('--host', 'laptop')
+        self.assertEqual(code, 0, out)
+        self.assertIn(name + ' user env length=13; read at each launch', out)
+        command = self.config('laptop')['agents']['providers']['codex']['command']
+        self.assertEqual(command[2:], ['--', 'codex'])
+        self.assertNotIn('first-fixture', self.config_path('laptop').read_text() + out)
+        # The codex slot launched with node in place of codex, under a daemon that inherited a stale value.
+        probe = lambda: subprocess.run([*command[:3], 'node', '-e', f'console.log(process.env.{name}.length)'],
+                                       env={**self.env, name: 'stale'}, capture_output=True, text=True, timeout=60)
+        self.assertEqual(probe().stdout.strip(), '13')
+        # A rotation reaches the next launch with no daemon restart.
+        user_env('rotated-fixture-value')
+        self.assertEqual(probe().stdout.strip(), '21')
+        # A deleted value keeps the inherited one and names only the variable.
+        reg('delete', r'HKCU\Environment', '/v', name)
+        done = probe()
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, '5'), done.stderr)
+        self.assertIn('no usable ' + name, done.stderr)
+
     def test_launch_settings_route_paseo_harnesses_with_an_owner_only_token_file(self):
         catalog = json.loads((self.fleet / 'paseo-providers.json').read_text())
         overlay = json.loads((EXAMPLE / 'routed-launch-overlay.json').read_text())
