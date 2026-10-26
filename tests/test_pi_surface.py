@@ -264,8 +264,11 @@ assert.deepEqual(D(R({'opc.service-tier':'fast'}),sol,cat),{status:'explicit',wi
 assert.deepEqual(D(R({'opc.service-tier':'standard'}),sol,cat),{status:'explicit',wire:'default',header:'standard'});
 for(const c of [[],null,['priority']])assert.deepEqual(D(R({'opc.service-tier':'standard'}),sol,c),{status:'explicit',wire:'default',header:'standard'});
 assert.deepEqual(D(R({'opc.fast-requested':'false'}),sol,[]),{status:'explicit',wire:'default',header:'standard'});
-assert.deepEqual(D(R({}),sol,cat),{status:'inherited',header:'inherit'});
+// No choice (absent or inherit) is Fast on a route whose catalog lists priority; Standard still wins.
+for(const labels of [{},{'opc.service-tier':'inherit'}])assert.deepEqual(D(R(labels),sol,cat),{status:'fleet-default-fast',wire:'priority',header:'fast'});
+for(const c of [[],null])assert.deepEqual(D(R({}),sol,c),{status:'inherited',header:'inherit'});
 assert.deepEqual(D(R({}),opus,null),{status:'inherited',header:undefined});
+assert.deepEqual(D(R({}),web,null),{status:'inherited',header:undefined});
 assert.equal(D(R({'opc.service-tier':'ultrafast'}),sol,cat).status,'unsupported');
 assert.equal(D(R({'opc.service-tier':'fast'}),sol,[]).status,'unsupported');
 for(const t of ['standard','fast'])assert.deepEqual(D(R({'opc.service-tier':t}),opus,null),{status:'ignored-untiered'});
@@ -274,7 +277,8 @@ assert.equal(D(R({'opc.service-tier':'fast'}),sol,null).status,'explicit-unverif
 assert.equal(D(R({'opc.service-tier':'turbo'}),sol,cat).status,'invalid');
 const base={model:'gpt-6.1-sol',input:[],reasoning:{effort:'medium'},service_tier:'priority'};
 const ctx={model:sol,sessionId:'s',turnId:'t',cwd:'/w',requestId:'r1'};
-const inherit=m.preparePayload(base,{...ctx,tier:D(R({}),sol,cat)});
+assert.equal(m.preparePayload({...base,service_tier:'default'},{...ctx,tier:D(R({}),sol,cat)}).service_tier,'priority');
+const inherit=m.preparePayload(base,{...ctx,tier:D(R({}),sol,null)});
 assert.equal('service_tier' in inherit,false);assert.equal(inherit.reasoning.effort,'medium');
 assert.equal(inherit.client_metadata['x-fleet-request-id'],'r1');
 assert.equal(m.preparePayload(base,{...ctx,tier:D(R({'opc.service-tier':'standard'}),sol,cat)}).service_tier,'default');
@@ -444,6 +448,8 @@ assert.equal(ownerSurface.provider,'pi/fleet/gpt-6.1-sol');assert.equal(ownerSur
 const ownerReq=build({route:owner});
 assert.equal(ownerReq.request.provider,'pi/fleet/gpt-6.1-sol');assert.deepEqual(ownerReq.request.settings,{thinkingOptionId:'high'});
 assert.equal(ownerReq.request.labels['opc.service-tier'],'fast');assert.equal(ownerReq.request.labels['opc.route-source'],'owner-explicit');
+// Fast off on a GPT route is an explicit Standard, since no label there is the fleet default Fast.
+assert.equal(build({route:{...owner,fastMode:false}}).request.labels['opc.service-tier'],'standard');
 // Other kinds ask the owner; a missing label or thinking level stops the lane.
 assert.throws(()=>r.selectWorkerRoute({catalog}),/ask the owner/);
 assert.throws(()=>r.selectWorkerRoute({taskKind:'docs',catalog}),/ask the owner/);

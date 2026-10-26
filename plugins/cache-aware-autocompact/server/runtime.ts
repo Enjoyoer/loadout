@@ -30,6 +30,12 @@ function safeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Open and loaded. A fetch never loads an agent: a loaded agent's snapshot carries activeTurn (null when idle), the stored
+// snapshot of an unloaded one has none.
+function loadedAndOpen(agent: { status: string; archivedAt?: string | null; activeTurn?: unknown } | null | undefined) {
+  return !!agent && agent.status !== "closed" && !agent.archivedAt && agent.activeTurn !== undefined;
+}
+
 export function startScheduler(server: PluginServerContext, dependencies: {
   readConfig: () => Promise<AutoCompactConfig | null>;
   store?: StateStore;
@@ -313,9 +319,24 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     });
   };
 
+  // The checkpoint items of the agent's last 200 timeline rows, read once and never kept whole. The read loads an
+  // unloaded agent again, so it is issued only right after a fetch (which never loads one) shows the agent loaded and
+  // open, and only while `current` holds: the turn's generation is unchanged, so no close, archive or new turn was seen
+  // during that fetch. A fetch answered before a close it was in flight with still shows the agent open; the close
+  // changed the generation, so the read is skipped.
+  const endedTimeline = async (api: PaseoApi, agentId: string, current: () => boolean): Promise<AgentTimelineItem[]> => {
+    const handle = api.agents.ref(agentId);
+    const snapshot = current() ? await handle.refresh().catch(() => null) : null;
+    if (!current() || !loadedAndOpen(snapshot?.agent)) return [];
+    const page = await handle.timeline.refetch({ direction: "before", limit: 200 }).catch(() => null);
+    return !page || page.error ? [] : checkpointTimeline(page.entries.map((entry) => entry.item));
+  };
+
   const deferredTurns = new Map<string, { event: Parameters<typeof primeAndArm>[0]; api: PaseoApi }>();
   const generations = new Map<string, number>();
-  const invalidate = (agentId: string) => generations.set(agentId, (generations.get(agentId) ?? 0) + 1);
+  // One counter for every agent: an agent's generation never takes a value it had before, even after forgetAgent drops it.
+  let lastGeneration = 0;
+  const invalidate = (agentId: string) => generations.set(agentId, ++lastGeneration);
   let recoveryQueue = Promise.resolve();
   const recover = (api: PaseoApi, trigger: string) => {
     recoveryQueue = recoveryQueue.then(async () => {
@@ -477,9 +498,25 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     recoveryFailures.delete(event.agent.id);
     timers.cancel(event.agent.id);
     log("turn-ended", { agentId: event.agent.id, turnId: event.turnId, outcome: event.outcome.kind });
-    // The event's timeline is the agent's whole in-memory timeline. Nothing past this handler holds it.
-    const ended = { agent: event.agent, turnId: event.turnId, timeline: checkpointTimeline(event.timeline) };
-    void primeAndArm(ended, context.paseo).catch((error) => log("arm-failed", { agentId: event.agent.id, reason: safeError(error) }));
+    const armFailed = (error: unknown) => log("arm-failed", { agentId: event.agent.id, reason: safeError(error) });
+    if (event.timeline?.length) {
+      // Paseo 0.11: the event's timeline is the agent's whole in-memory timeline. Nothing past this handler holds it.
+      const ended = { agent: event.agent, turnId: event.turnId, timeline: checkpointTimeline(event.timeline) };
+      void primeAndArm(ended, context.paseo).catch(armFailed);
+      return;
+    }
+    // Paseo 0.13 sends an empty timeline, so the tail is read instead. A turn start, close or archive seen before the
+    // read supersedes this turn and skips the read (endedTimeline), and one seen while it is read drops its result, as
+    // it cancels a timer. A canceled turn is not read: a kill, delete, archive or daemon
+    // shutdown cancels the turn just before it unloads the agent, and a read landing after that loads it again.
+    const generation = generations.get(event.agent.id) ?? 0;
+    const current = () => !stopped && generation === (generations.get(event.agent.id) ?? 0);
+    const read: Promise<AgentTimelineItem[]> = event.outcome.kind === "canceled" ? Promise.resolve([])
+      : endedTimeline(context.paseo, event.agent.id, current);
+    void read.then((timeline) => {
+      if (!current()) return;
+      return primeAndArm({ agent: event.agent, turnId: event.turnId, timeline }, context.paseo);
+    }).catch(armFailed);
   });
   const removeTurnStarted = server.on("agent.turn_started", (event, context) => {
     ensureSubscription(context.paseo);
@@ -495,6 +532,11 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     ensureSubscription(context.paseo);
   });
   const removeArchived = server.on("agent.archived", (event) => {
+    forgetAgent(event.agent.id);
+  });
+  // Paseo emits this hook with the agent's closed state update, which forgets the agent too. Whichever arrives first
+  // ends the turn, so a turn-end read still waiting on its fetch is skipped even before the list update lands.
+  const removeClosed = server.on("agent.closed", (event) => {
     forgetAgent(event.agent.id);
   });
 
@@ -521,6 +563,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     removePermissionRequested();
     removePermissionResolved();
     removeArchived();
+    removeClosed();
     removeAgentSubscription?.();
     timers.cancelAll();
     deferredTurns.clear();
