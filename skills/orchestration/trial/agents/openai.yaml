@@ -1,0 +1,4 @@
+interface:
+  display_name: "Trial"
+  short_description: "Test an idea against past work before adopting it"
+  default_prompt: "Use $trial to test this idea against our past work and report a verdict per rule."

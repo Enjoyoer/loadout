@@ -60,4 +60,5 @@ Reply with a short report: the numbers table, the timeline, the one-line cause, 
 - First PR: delete down to the proven core. Next PR: thin glue to the adopted tool.
 - Add no new guard layers until the core cycle has run end to end once, live.
 - Keep review loops short: merge on green and send findings to follow-up lanes instead of another round.
+- Every review follows OPC's [review rules](../opc/references/web-reviewer.md#review-rules): a round cap and one reviewer at a time.
 - Then take over with `$reassign-pm`, or keep reviewing if the owner says so.

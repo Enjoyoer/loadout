@@ -39,7 +39,8 @@
         "./skills/orchestration/repo-lessons",
         "./skills/orchestration/reassign-pm",
         "./skills/orchestration/wo",
-        "./skills/orchestration/unstuck"
+        "./skills/orchestration/unstuck",
+        "./skills/orchestration/trial"
       ]
     },
     {
