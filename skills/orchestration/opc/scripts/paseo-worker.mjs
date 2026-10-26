@@ -1,4 +1,4 @@
-import { resolveWorkerSurface } from './agent-routing.mjs';
+import { isGptOrWebRoute, resolveWorkerSurface } from './agent-routing.mjs';
 import { createHash } from 'node:crypto';
 
 const lanePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -135,10 +135,11 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
       initialPrompt: prompt,
       notifyOnFinish: true,
       settings: { ...requestedSettings, ...(modeId ? { modeId } : {}) },
-      // Fast is the Pi Fast toggle label; Off leaves it absent, as the toggle shows Off.
-      // An explicit Standard label would refuse every turn on a route without service tiers.
+      // Fast is the Pi Fast toggle label. A GPT route with no label runs Fast (the fleet default), so Off on a GPT
+      // route is an explicit Standard; other routes have no service tier and get no label.
       labels: { ...labels(workerLabels), role: 'worker', 'opc.worker-task': taskId, 'opc.worker-lane': lane,
-        ...(pi && route?.fastMode === true ? { 'opc.service-tier': 'fast' } : {}),
+        ...(pi && route?.fastMode === true ? { 'opc.service-tier': 'fast' }
+          : pi && isGptOrWebRoute(route, capabilities?.models) ? { 'opc.service-tier': 'standard' } : {}),
         ...(role === 'worker' && typeof route?.source === 'string' ? { 'opc.route-source': route.source } : {}) },
     }),
   });

@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.53.3"
+  version: "7.53.4"
 ---
 
 # OPC
@@ -31,7 +31,7 @@ Choose minimal useful scouting topology, splitting only independent questions. T
 
 Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted.
 
-- On Pi, Fast (GPT routes only) is not a catalog model or thinking level: it is the agent label `opc.service-tier=fast`, which pi-fast-toggle applies and the composer's Fast pill shows.
+- On Pi, Fast (GPT routes only) is not a catalog model or thinking level: it is the agent label `opc.service-tier=fast`, which pi-fast-toggle applies and the composer's Fast pill shows. No label is Fast; Off is `standard`.
 - New agent: `create_agent({..., labels:{"opc.service-tier":"fast"}})` or the Worker builder via `--owner-fast on`; existing: `update_agent({agentId, labels:{"opc.service-tier":"fast"}})`.
 - Verify the label (`get_agent_status` or the Fast pill) before reporting a route.
 

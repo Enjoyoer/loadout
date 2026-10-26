@@ -313,6 +313,15 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     });
   };
 
+  // The checkpoint items of the agent's last 200 timeline rows, read once and never kept whole. A closed agent is not
+  // read (a kill or a daemon shutdown ended the turn), since the read loads it again.
+  const endedTimeline = async (api: PaseoApi, agentId: string): Promise<AgentTimelineItem[]> => {
+    const snapshot = await api.agents.ref(agentId).refresh().catch(() => null);
+    if (!snapshot?.agent || snapshot.agent.status === "closed" || snapshot.agent.archivedAt) return [];
+    const page = await api.agents.ref(agentId).timeline.refetch({ direction: "before", limit: 200 }).catch(() => null);
+    return !page || page.error ? [] : checkpointTimeline(page.entries.map((entry) => entry.item));
+  };
+
   const deferredTurns = new Map<string, { event: Parameters<typeof primeAndArm>[0]; api: PaseoApi }>();
   const generations = new Map<string, number>();
   const invalidate = (agentId: string) => generations.set(agentId, (generations.get(agentId) ?? 0) + 1);
@@ -477,9 +486,22 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     recoveryFailures.delete(event.agent.id);
     timers.cancel(event.agent.id);
     log("turn-ended", { agentId: event.agent.id, turnId: event.turnId, outcome: event.outcome.kind });
-    // The event's timeline is the agent's whole in-memory timeline. Nothing past this handler holds it.
-    const ended = { agent: event.agent, turnId: event.turnId, timeline: checkpointTimeline(event.timeline) };
-    void primeAndArm(ended, context.paseo).catch((error) => log("arm-failed", { agentId: event.agent.id, reason: safeError(error) }));
+    const armFailed = (error: unknown) => log("arm-failed", { agentId: event.agent.id, reason: safeError(error) });
+    if (event.timeline?.length) {
+      // Paseo 0.11: the event's timeline is the agent's whole in-memory timeline. Nothing past this handler holds it.
+      const ended = { agent: event.agent, turnId: event.turnId, timeline: checkpointTimeline(event.timeline) };
+      void primeAndArm(ended, context.paseo).catch(armFailed);
+      return;
+    }
+    // Paseo 0.13 sends an empty timeline, so the tail is read instead. A turn start or a close while it is read
+    // supersedes this turn, as it cancels a timer. A canceled turn is not read: a kill, delete, archive or daemon
+    // shutdown cancels the turn just before it unloads the agent, and a read landing after that loads it again.
+    const generation = generations.get(event.agent.id) ?? 0;
+    const read: Promise<AgentTimelineItem[]> = event.outcome.kind === "canceled" ? Promise.resolve([]) : endedTimeline(context.paseo, event.agent.id);
+    void read.then((timeline) => {
+      if (stopped || generation !== (generations.get(event.agent.id) ?? 0)) return;
+      return primeAndArm({ agent: event.agent, turnId: event.turnId, timeline }, context.paseo);
+    }).catch(armFailed);
   });
   const removeTurnStarted = server.on("agent.turn_started", (event, context) => {
     ensureSubscription(context.paseo);
