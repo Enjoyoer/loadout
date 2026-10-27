@@ -14,6 +14,11 @@ BUNDLE = '''const c=()=>null,u=()=>null,e={};
 e.buildProviderSelectorProviders=function(o){return o.providerDefinitions.map(n=>({id:n.id,label:n.label,modelSelection:c(n.id,n.label,o.modelsByProvider.has(n.id)?o.modelsByProvider.get(n.id)??[]:null)}))};
 e.buildSelectableProviderSelectorProviders=function(o){return(o??[]).filter(o=>o.enabled).map(o=>{const n=o.label??o.provider;return{id:o.provider,label:n,modelSelection:u(o,n)}})};
 '''
+# Paseo 0.13.0's builder takes a second parameter defaulted to true and passes it on to the model selection.
+BUNDLE_013 = BUNDLE.replace(
+    'function(o){return(o??[]).filter(o=>o.enabled).map(o=>{const n=o.label??o.provider;return{id:o.provider,label:n,modelSelection:u(o,n)}})}',
+    'function(o,n=!0){return(o??[]).filter(o=>o.enabled).map(o=>{const t=o.label??o.provider;return{id:o.provider,label:t,modelSelection:u(o,t,n)}})}')
+assert BUNDLE_013 != BUNDLE
 PROFILE_BROWSER = '''const I={isWeb:true};
 e.useModelBrowser=function(t){const {autoFocusSearch:h,profiles:v,serverId:b}=t,y=void 0===h?I.isWeb:h,P=void 0===v?null:v,S=void 0===b?null:b,{t:x}={t:()=>""};return P};
 '''
@@ -65,16 +70,22 @@ if(e.useModelBrowser({profiles:null})!==null)throw Error('loading profiles chang
             self.assertEqual(entry.read_text(),before);self.assertEqual(p.read_text(),BUNDLE+PROFILE_BROWSER)
 
     def test_client_filters_only_native_rows_without_changing_inputs(self):
-        script = picker.patch_text(BUNDLE) + '''
+        for name,bundle in (('0.11',BUNDLE),('0.13',BUNDLE_013)):
+            with self.subTest(bundle=name):
+                script = picker.patch_text(bundle.replace('u=()=>null','u=(row,label,flag)=>flag')) + '''
 const ids=['pi','codex','claude','opencode'];const definitions=ids.map(id=>({id,label:id}));
 const snapshots=ids.map(provider=>({provider,enabled:true}));const before=JSON.stringify([definitions,snapshots]);
 const a=e.buildProviderSelectorProviders({providerDefinitions:definitions,modelsByProvider:new Map()});
 const b=e.buildSelectableProviderSelectorProviders(snapshots);
 if(JSON.stringify(a.map(x=>x.id))!=='["pi","opencode"]'||JSON.stringify(b.map(x=>x.id))!=='["pi","opencode"]')throw Error('visibility');
 if(JSON.stringify([definitions,snapshots])!==before)throw Error('provider input mutation');
+// 0.13's second parameter still defaults to true and reaches the model selection unchanged.
+const flags=[b,e.buildSelectableProviderSelectorProviders(snapshots,false)].map(rows=>rows.map(x=>x.modelSelection));
+const expected=''' + ('[[true,true],[false,false]]' if name=='0.13' else '[[null,null],[null,null]]') + ''';
+if(JSON.stringify(flags)!==JSON.stringify(expected))throw Error('second parameter changed: '+JSON.stringify(flags));
 '''
-        r=subprocess.run(['node','--input-type=module','-e',script],capture_output=True,text=True)
-        self.assertEqual(r.returncode,0,r.stderr)
+                r=subprocess.run(['node','--input-type=module','-e',script],capture_output=True,text=True)
+                self.assertEqual(r.returncode,0,r.stderr)
 
     def test_update_reapply_and_guarded_byte_rollback(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -136,5 +147,9 @@ if(JSON.stringify([definitions,snapshots])!==before)throw Error('provider input 
             with self.assertRaisesRegex(ValueError,'Unsupported'):picker.run(root,'apply')
             self.assertEqual(p.read_bytes(),before)
             self.assertFalse((root/'.loadout-picker-patch.json').exists())
+        # Only 0.13's exact second parameter, defaulted to true, is accepted; any other builder shape is refused.
+        for shape in ('(o,n)','(o,n=!1)','(o,n=!0,t=!0)','(o,...n)','(o=[],n=!0)'):
+            with self.subTest(shape=shape),self.assertRaisesRegex(ValueError,'expected exactly one picker builder'):
+                picker.patch_text(BUNDLE_013.replace('function(o,n=!0)','function'+shape))
 
 if __name__=='__main__':unittest.main()

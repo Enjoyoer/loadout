@@ -165,7 +165,27 @@ export function validateManagedWorkerLaunch(prepared, created) {
   });
 }
 
-export function buildManagedWorkerFollowupRequest({ agentId, prompt,
+// The arguments a follow-up may send, read from send_agent_prompt's advertised input schema (MCP tools/list
+// inputSchema). Paseo 0.11 lists background (async for agent callers); 0.13 removed it and queues every agent send.
+// A strict schema refuses unknown arguments (the Pi MCP bridge does), so background goes only where it is advertised.
+function followupArguments(inputSchema) {
+  const properties = inputSchema?.properties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    throw Error('advertised send_agent_prompt inputSchema required: its tools/list inputSchema, ' +
+      'or {properties} keyed by the argument names its declaration lists');
+  }
+  const missing = ['agentId', 'prompt', 'notifyOnFinish'].find(name => !Object.hasOwn(properties, name));
+  if (missing) throw Error(`send_agent_prompt advertises no ${missing}; a notified follow-up cannot be sent`);
+  const background = Object.hasOwn(properties, 'background');
+  const supplied = ['agentId', 'prompt', 'notifyOnFinish', ...(background ? ['background'] : [])];
+  const requiredNames = inputSchema.required ?? [];
+  if (!Array.isArray(requiredNames)) throw Error('send_agent_prompt inputSchema required must be a list');
+  const unsupplied = requiredNames.filter(name => !supplied.includes(name));
+  if (unsupplied.length) throw Error(`send_agent_prompt requires unsupported argument(s): ${unsupplied.join(', ')}`);
+  return { background };
+}
+
+export function buildManagedWorkerFollowupRequest({ agentId, prompt, inputSchema,
   fireAndForget = false, fireAndForgetAuthorization = null }) {
   const id = required(agentId, 'Worker agent id');
   const message = required(prompt, 'Worker follow-up prompt');
@@ -173,11 +193,32 @@ export function buildManagedWorkerFollowupRequest({ agentId, prompt,
   if (fireAndForget && fireAndForgetAuthorization !== 'owner-explicit') {
     throw Error('fire-and-forget requires an explicit owner request');
   }
+  const { background } = followupArguments(inputSchema);
   return Object.freeze({
     agentId: id,
     prompt: message,
-    background: true,
+    ...(background ? { background: true } : {}),
     notifyOnFinish: !fireAndForget,
+  });
+}
+
+// Accepted means Paseo took the follow-up for delivery: 0.13 answers an agent caller with deliveryStatus queued before
+// any dispatch, 0.11 once the turn is sent. Neither proves the Worker started or finished; the finish callback does.
+export function validateManagedWorkerFollowup(prepared, sent) {
+  if (!prepared?.agentId || typeof prepared.notifyOnFinish !== 'boolean') {
+    throw Error('prepared MCP send_agent_prompt request required');
+  }
+  if (sent?.isError === true) throw Error('Paseo send_agent_prompt refused the follow-up');
+  const result = sent?.structuredContent ?? sent;
+  if (result?.success !== true) throw Error('Paseo send_agent_prompt did not accept the follow-up');
+  if (result.deliveryStatus != null && result.deliveryStatus !== 'queued') {
+    throw Error(`Paseo send_agent_prompt returned unknown deliveryStatus ${String(result.deliveryStatus)}`);
+  }
+  return Object.freeze({
+    agentId: prepared.agentId,
+    delivery: result.deliveryStatus === 'queued' ? 'queued' : 'sent',
+    messageId: typeof result.messageId === 'string' ? result.messageId : null,
+    notifyOnFinish: prepared.notifyOnFinish,
   });
 }
 

@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "fcb1fc6ef99a8e791e607b77931e22b138ed1254",
+  "source_commit": "d5b5c1296da907c28d2844cc729c6c1c13df7ea0",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -234,7 +234,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5318,
-      "sha256": "31339c4c86651e6afeb3f2a46da944c7a87a2379dda3654caf000a828b539f5b"
+      "sha256": "198c29a48eb558c91566ae3018e44ef657d4c2d75d9928d2d34c7bf8e3ecb75a"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -261,8 +261,8 @@
       "path": "skills/orchestration/opc/references/imp-execution.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4424,
-      "sha256": "6aa94b50b0f01e5e6d1e305ed1666b272439f253713e1505fde1b67d15f1bc63"
+      "bytes": 4504,
+      "sha256": "057ca17c99c9a685a34bcc0b85430c32696c157e39e4766869ceedaa016c7153"
     },
     {
       "path": "skills/orchestration/opc/references/maintenance.md",
@@ -359,8 +359,8 @@
       "path": "skills/orchestration/opc/scripts/paseo-worker.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 9624,
-      "sha256": "7204f6b857498a99d014509418036919fb932afac8e1a19f41d3f3a4312261d9"
+      "bytes": 12320,
+      "sha256": "8ceb57ca606f302e67d80043d465f57b206dfaa3fb5fc5395db95d0cc6ea9f23"
     },
     {
       "path": "skills/orchestration/opc/scripts/planner.mjs",
@@ -394,8 +394,8 @@
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5840,
-      "sha256": "5deeb515fe1350e73677f13341669ea8496745400bd9bae082da1c0b9854f3f7"
+      "bytes": 5873,
+      "sha256": "20edfedf685367dd6ffe7355788669e394cbd2decebc10ccfc5ff115733bcf33"
     },
     {
       "path": "skills/orchestration/opc/scripts/web-reviewer.mjs",
@@ -695,8 +695,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/picker-patch.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 8142,
-      "sha256": "2255c2561ce373f82fbba1c8f7cd0b6e082c04a9f326dbdd11e847d861ed0f27"
+      "bytes": 8271,
+      "sha256": "865190c4577dc4f2b1d50774457443734695085270285e6fd45649d0f8918aed"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/plugins_sync.py",

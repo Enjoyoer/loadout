@@ -86,7 +86,7 @@ export async function validatePackage(root = defaultRoot) {
       'recordReviewLaunchFailure', 'collectReview', 'requireReviewApproval', 'requireReviewDelivery'],
     'paseo-worker.mjs': ['managedWorkerNames', 'selectUnattendedMode', 'buildManagedWorkspaceRequest',
       'buildManagedWorkerRequest', 'validateManagedWorkerLaunch', 'buildManagedWorkerFollowupRequest',
-      'archiveManagedWorkerWorkspace'],
+      'validateManagedWorkerFollowup', 'archiveManagedWorkerWorkspace'],
   };
   for (const [file, names] of Object.entries(contracts)) {
     const module = await import(pathToFileURL(resolve(root, 'scripts', file)));
