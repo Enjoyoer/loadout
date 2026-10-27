@@ -566,6 +566,60 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(unserved["request"], {"error": "claude-opus-5-5[1m] is a Claude model and never runs as a native Codex "
                                                         "Worker; an authorized native Claude Code Worker takes the claude surface"})
 
+    def test_followup_payload_follows_the_advertised_send_schema(self):
+        # send_agent_prompt input schemas as Paseo advertises them to an agent caller (descriptions dropped).
+        common = {"agentId": {"type": "string"}, "prompt": {"type": "string"}, "sessionMode": {"type": "string"},
+                  "notifyOnFinish": {"default": True, "type": "boolean"}}
+        schemas = {
+            "0.11.1": {"type": "object", "properties": {**common, "background": {"default": True, "type": "boolean"}},
+                       "required": ["agentId", "prompt"]},
+            "0.13.0": {"type": "object", "properties": {**common, "activeTurnBehavior": {"type": "string",
+                       "enum": ["interrupt", "steer", "defer"]}, "serverId": {"type": "string", "minLength": 1}},
+                       "required": ["agentId", "prompt"]},
+        }
+        missing_notify = {"properties": {k: v for k, v in common.items() if k != "notifyOnFinish"}}
+        extra_required = {**schemas["0.13.0"], "required": ["agentId", "prompt", "serverId"]}
+        sent = {
+            "queued": {"content": [], "structuredContent": {"success": True, "deliveryStatus": "queued",
+                                                           "messageId": "msg-1", "status": "idle"}},
+            "sent": {"success": True, "status": "running", "lastMessage": None, "permission": None},
+            "refused": {"content": [{"type": "text", "text": "Agent missing not found"}], "isError": True},
+            "failed": {"structuredContent": {"success": False, "status": "error"}},
+            "unknown": {"structuredContent": {"success": True, "deliveryStatus": "dispatched", "status": "idle"}},
+        }
+        done = run("node", "--input-type=module", "-e", f"""
+            import {{ buildManagedWorkerFollowupRequest as build, validateManagedWorkerFollowup as validate }}
+              from {json.dumps((SCRIPTS / 'paseo-worker.mjs').as_uri())};
+            const attempt = make => {{ try {{ return make(); }} catch (error) {{ return {{ error: error.message }}; }} }};
+            const schemas = {json.dumps(schemas)}, sent = {json.dumps(sent)};
+            const base = {{ agentId: 'worker-1', prompt: 'Repair the lane' }};
+            const built = Object.fromEntries(Object.entries(schemas).map(([v, inputSchema]) => [v, build({{ ...base, inputSchema }})]));
+            console.log(JSON.stringify({{ built,
+              fireAndForget: build({{ ...base, inputSchema: schemas['0.13.0'], fireAndForget: true,
+                fireAndForgetAuthorization: 'owner-explicit' }}),
+              noSchema: attempt(() => build(base)),
+              missingNotify: attempt(() => build({{ ...base, inputSchema: {json.dumps(missing_notify)} }})),
+              extraRequired: attempt(() => build({{ ...base, inputSchema: {json.dumps(extra_required)} }})),
+              results: Object.fromEntries(Object.entries(sent).map(([k, v]) => [k, attempt(() => validate(built['0.13.0'], v))])),
+            }}));
+        """)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        out = json.loads(done.stdout)
+        self.assertEqual(out["built"]["0.11.1"], {**out["built"]["0.13.0"], "background": True})
+        self.assertEqual(out["built"]["0.13.0"], {"agentId": "worker-1", "prompt": "Repair the lane", "notifyOnFinish": True})
+        for version, schema in schemas.items():
+            self.assertLessEqual(set(out["built"][version]), set(schema["properties"]), version)
+        self.assertIs(out["fireAndForget"]["notifyOnFinish"], False)
+        self.assertEqual(out["noSchema"], {"error": "advertised send_agent_prompt inputSchema required: its tools/list inputSchema, or {properties} keyed by the argument names its declaration lists"})
+        self.assertEqual(out["missingNotify"], {"error": "send_agent_prompt advertises no notifyOnFinish; a notified follow-up cannot be sent"})
+        self.assertEqual(out["extraRequired"], {"error": "send_agent_prompt requires unsupported argument(s): serverId"})
+        results = out["results"]
+        self.assertEqual(results["queued"], {"agentId": "worker-1", "delivery": "queued", "messageId": "msg-1", "notifyOnFinish": True})
+        self.assertEqual(results["sent"], {"agentId": "worker-1", "delivery": "sent", "messageId": None, "notifyOnFinish": True})
+        self.assertEqual(results["refused"], {"error": "Paseo send_agent_prompt refused the follow-up"})
+        self.assertEqual(results["failed"], {"error": "Paseo send_agent_prompt did not accept the follow-up"})
+        self.assertEqual(results["unknown"], {"error": "Paseo send_agent_prompt returned unknown deliveryStatus dispatched"})
+
     def test_task_default_code_route_with_non_opus_claude_model_is_refused_without_catalog(self):
         sonnet = {**PRE_730_CODE_ROUTE, "model": "fleet/claude-sonnet-5-5", "effort": "medium"}
         fresh = self.launch(self.task, "sonnet-lane", json.dumps(sonnet), None, record_lane="sonnet-lane", task_class="code")

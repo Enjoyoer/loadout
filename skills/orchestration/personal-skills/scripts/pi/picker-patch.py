@@ -20,7 +20,8 @@ def patched(row):
 
 def patch_text(text):
     patterns = [
-        (r'(buildSelectableProviderSelectorProviders=function\((\w+)\)\{return\(\2\?\?\[\]\)\.filter\((\w+)=>\3\.enabled)(\)\.map)',
+        # Paseo 0.13 adds a second parameter defaulted to true, (o,n=!0); only that exact form is accepted and kept.
+        (r'(buildSelectableProviderSelectorProviders=function\((\w+)(?:,\w+=!0)?\)\{return\(\2\?\?\[\]\)\.filter\((\w+)=>\3\.enabled)(\)\.map)',
          lambda m: m[1]+'&&!['+'"codex","claude"'+'].includes('+m[3]+'.provider)'+m[4]),
         (r'(buildProviderSelectorProviders=function\((\w+)\)\{return \2\.providerDefinitions)(\.map)',
          lambda m: m[1]+'.filter(p=>!["codex","claude"].includes(p.id))'+m[3]),

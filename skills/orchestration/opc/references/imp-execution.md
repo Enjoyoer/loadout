@@ -20,7 +20,7 @@ Use `scripts/paseo-worker.mjs` pure request builders; call MCP yourself:
 
 Record agent/workspace IDs, path, branch, base, and parentage. A failed placement stops the lane; preserve any created workspace for reconciliation. Permission requests require checking placement/settings, not accepting weaker permissions.
 
-Repairs use `buildManagedWorkerFollowupRequest` with direct `send_agent_prompt`. Only an explicit owner fire-and-forget request may disable notification.
+Repairs: pass `send_agent_prompt`'s advertised `inputSchema` to `buildManagedWorkerFollowupRequest`, send directly, then `validateManagedWorkerFollowup` (queued is accepted). Only owner-explicit fire-and-forget disables notification.
 
 ## Worker brief
 
