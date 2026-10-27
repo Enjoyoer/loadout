@@ -128,10 +128,15 @@ class ProviderSyncTest(unittest.TestCase):
         env_file.parent.mkdir(parents=True)
         env_file.write_text('EBAY_ANALYZE_MCP_TOKEN=fixture-only\n')
         env_file.chmod(0o600)
+        # A Pi row as the Pi deploy writes it, so the round trip below covers both writers of its command.
+        node, pi_root = shutil.which('node'), self.root / 'pi-runtime'
+        existing = json.loads(json.dumps(EXISTING))
+        existing['agents']['providers']['pi'] = {'command': [node, str(pi_root / 'launch.mjs')]}
+        self.config_path('laptop').write_text(json.dumps(existing, indent=2))
         code, out = self.run_sync('--host', 'laptop', '--dry-run')
         self.assertEqual(code, 0, out)
         self.assertFalse((home / '.config/loadout/mcp-env.cjs').exists())
-        self.assertEqual(self.config('laptop'), EXISTING)
+        self.assertEqual(self.config('laptop'), existing)
         code, out = self.run_sync('--host', 'laptop')
         self.assertEqual(code, 0, out)
         command = self.config('laptop')['agents']['providers']['codex']['command']
@@ -142,10 +147,19 @@ class ProviderSyncTest(unittest.TestCase):
                                env={**self.env, 'HOME': str(home)}, capture_output=True, text=True)
         self.assertEqual(probe.returncode, 0, probe.stderr)
         self.assertEqual(probe.stdout.strip(), '12')
+        wrapped = self.config('laptop')['agents']['providers']['pi']['command']
+        self.assertEqual(wrapped, [*command[:3], node, str(pi_root / 'launch.mjs')])
+        # Pi deploy apply after the providers step keeps the launcher, and the next providers step changes nothing.
+        sys.path.insert(0, str(SCRIPTS / 'pi'))
+        import deploy
+        with patch.object(deploy.shutil, 'which', return_value=node):
+            self.config_path('laptop').write_bytes(deploy.merged(self.config_path('laptop').read_bytes(), pi_root, {}))
+        self.assertEqual(self.config('laptop')['agents']['providers']['pi']['command'], wrapped)
         code, out = self.run_sync('--host', 'laptop')
         self.assertEqual(code, 0, out)
         self.assertIn('write unchanged', out)
         self.assertEqual(self.config('laptop')['agents']['providers']['codex']['command'], command)
+        self.assertEqual(self.config('laptop')['agents']['providers']['pi']['command'], wrapped)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows user-env launch wiring')
     def test_mcp_user_env_is_read_at_each_windows_launch(self):

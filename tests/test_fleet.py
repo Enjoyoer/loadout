@@ -94,11 +94,11 @@ class ValidateTest(unittest.TestCase):
         by_name = {h["name"]: h for h in got["hosts"]}
         self.assertEqual(got["schema_version"], 2)
         self.assertEqual(by_name["laptop"]["sync"], ["skills", "plugins", "providers", "client-config", "mds-bye"])
-        self.assertEqual(by_name["desktop"]["sync"], ["skills", "plugins", "client-config"])
+        self.assertEqual(by_name["desktop"]["sync"], ["skills", "plugins", "providers", "client-config"])
         self.assertEqual(by_name["devbox"]["sync"], ["skills"])
         self.assertEqual(by_name["tablet"]["transport"], "paseo-relay")
         self.assertEqual([h["name"] for h in fleet.hosts_for(got, "skills")], ["laptop", "desktop", "devbox"])
-        self.assertEqual([h["name"] for h in fleet.hosts_for(got, "providers")], ["laptop", "tablet"])
+        self.assertEqual([h["name"] for h in fleet.hosts_for(got, "providers")], ["laptop", "desktop", "tablet"])
 
     def test_version_1_keeps_free_text_transport_and_default_sync(self):
         paseo = {"plugin_root": None, "stage": [], "install": []}

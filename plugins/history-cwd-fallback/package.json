@@ -1,7 +1,7 @@
 {
   "name": "history-cwd-fallback",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Paseo server-only plugin that lets an archived agent whose working directory was deleted open its history.",
   "type": "module",
   "scripts": {

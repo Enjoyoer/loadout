@@ -48,7 +48,8 @@ export class CwdBridge {
   private readonly pathApi: typeof path.posix;
   /** Links this run made and has not removed, by path. Timers and stop act on these, not on the ledger. */
   private readonly live = new Map<string, LinkRecord>();
-  private readonly timers = new Map<string, NodeJS.Timeout>();
+  /** Each link's current lease. A history open replaces it; only the current lease's expiry may remove the link. */
+  private readonly leases = new Map<string, { timer: NodeJS.Timeout }>();
   private queue: Promise<unknown> = Promise.resolve();
   private stopped = false;
 
@@ -135,8 +136,8 @@ export class CwdBridge {
   /** At plugin stop: remove every link this run made and every recorded one, now. */
   stop(): Promise<void> {
     this.stopped = true;
-    for (const timer of this.timers.values()) clearTimeout(timer);
-    this.timers.clear();
+    for (const lease of this.leases.values()) clearTimeout(lease.timer);
+    this.leases.clear();
     return this.serial(async () => {
       const kept: LinkRecord[] = [];
       for (const record of this.live.values()) if (!(await this.removeRecord(record))) kept.push(record);
@@ -150,21 +151,27 @@ export class CwdBridge {
     });
   }
 
+  /** Start a new lease on the link, replacing its current one. */
   private schedule(link: string): void {
-    const old = this.timers.get(link);
-    if (old) clearTimeout(old);
-    const timer = setTimeout(() => {
-      this.timers.delete(link);
-      void this.serial(async () => {
-        const record = this.live.get(link);
-        if (!record || !(await this.removeRecord(record))) return;
-        this.live.delete(link);
-        const ledger = await this.readLedger();
-        await this.writeLedger(ledger.links.filter((entry) => entry.link !== link));
-      });
-    }, this.options.holdMs);
-    timer.unref?.();
-    this.timers.set(link, timer);
+    const old = this.leases.get(link);
+    if (old) clearTimeout(old.timer);
+    const lease = {
+      timer: setTimeout(() => {
+        void this.serial(async () => {
+          // An open that ran after this timer fired, ahead of this queued step, renewed the lease, and the stop
+          // clears all leases: the link is then that lease's, or the stop's, to remove.
+          if (this.leases.get(link) !== lease) return;
+          this.leases.delete(link);
+          const record = this.live.get(link);
+          if (!record || !(await this.removeRecord(record))) return;
+          this.live.delete(link);
+          const ledger = await this.readLedger();
+          await this.writeLedger(ledger.links.filter((entry) => entry.link !== link));
+        });
+      }, this.options.holdMs),
+    };
+    lease.timer.unref?.();
+    this.leases.set(link, lease);
   }
 
   /** Remove the path only while it is still our link to our stand-in. True when nothing of ours is left there. */

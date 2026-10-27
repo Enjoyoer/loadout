@@ -2,7 +2,7 @@
 
 Default action is plan. Apply/rollback are for an explicitly approved host only.
 """
-import argparse, base64, hashlib, json, os, re, secrets, shutil, stat, subprocess, sys
+import argparse, base64, hashlib, json, ntpath, os, re, secrets, shutil, stat, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
 from configure import configure, link_like, runtime_contents, safe_target
@@ -68,12 +68,30 @@ def replace(path, data):
     stage(path, data).replace(path)
 
 
+def launch_command(previous, command):
+    """command, run through the mcp-env.cjs launcher when the Pi row's `previous` command already is.
+
+    The providers step (paseo_providers_merge.js) wraps the Pi command as `<node> <dir>/mcp-env.cjs -- <command>` or
+    `<node> <dir>/mcp-env.cjs --provider pi -- <command>`, so MCP tokens and launch token files load at each launch.
+    That wrapper, recognized by the same shape (the launcher second, then `--` or `--provider <id> --`), is kept as
+    is and only the command after `--` is replaced, so a reapply never drops it and the next providers step reads it
+    back unchanged. The launcher is matched by file name, so it is kept whatever directory that step resolved.
+    """
+    if not (isinstance(previous, list) and len(previous) > 2 and all(isinstance(arg, str) for arg in previous)
+            and ntpath.basename(previous[1]) == 'mcp-env.cjs'):
+        return command
+    if previous[2] == '--': return previous[:3] + command
+    if previous[2] == '--provider' and len(previous) > 4 and previous[4] == '--': return previous[:5] + command
+    return command
+
+
 def merged(before, root, pi):
     """The daemon config revision `before` with the Pi provider and daemon MCP applied."""
     cfg = json.loads(before)
     providers = cfg.setdefault('agents', {}).setdefault('providers', {})
-    providers['pi'] = {**providers.get('pi', {}), **pi,
-        'command':[shutil.which('node') or 'node', str(root / 'launch.mjs')]}
+    previous = providers.get('pi', {})
+    providers['pi'] = {**previous, **pi, 'command':launch_command(previous.get('command'),
+        [shutil.which('node') or 'node', str(root / 'launch.mjs')])}
     daemon = cfg.setdefault('daemon', {})
     daemon['mcp'] = {**daemon.get('mcp', {}), 'enabled':True, 'injectIntoAgents':True}
     return (json.dumps(cfg, indent=2)+'\n').encode()
