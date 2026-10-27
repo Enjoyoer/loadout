@@ -24,6 +24,7 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1, options:
   const removed: string[] = [];
   const logs: string[] = [];
   const calls: string[] = [];
+  const fetchOptions: Parameters<SweeperApi["fetchWorkspaces"]>[0][] = [];
   let listCalls = 0;
   let fetchCalls = 0;
   const state = {
@@ -31,6 +32,9 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1, options:
     beforeList: async (_call: number) => {},
     beforeFetch: async (_call: number) => {},
     active: [] as { projectId: string }[],
+    // Like Paseo 0.12+, the daemon lists background workspaces only when the request asks for them.
+    background: [] as { projectId: string }[],
+    backgroundSupported: true,
     pageInfo: { nextCursor: null } as { nextCursor: string | null; hasMore?: boolean },
     failDelete: false,
     forgetProjects() { projects = []; },
@@ -41,10 +45,15 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1, options:
       await state.beforeList(++listCalls);
       return { projects, requestId: "test" };
     },
-    async fetchWorkspaces() {
+    supportsBackgroundWorkspaces: () => state.backgroundSupported,
+    async fetchWorkspaces(options) {
       calls.push("fetch");
+      fetchOptions.push(options);
+      // The real client refuses the filter when the daemon does not advertise background workspaces.
+      if (options?.filter?.includeBackground && !state.backgroundSupported) throw new Error("Update the host to use background workspaces.");
       await state.beforeFetch(++fetchCalls);
-      return { entries: state.active, pageInfo: state.pageInfo } as Awaited<ReturnType<SweeperApi["fetchWorkspaces"]>>;
+      const entries = [...state.active, ...(options?.filter?.includeBackground ? state.background : [])];
+      return { entries, pageInfo: state.pageInfo } as Awaited<ReturnType<SweeperApi["fetchWorkspaces"]>>;
     },
     async removeProject(id) {
       calls.push(`remove:${id}`);
@@ -60,7 +69,7 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1, options:
     ...(options.host ? { host: options.host } : {}),
   });
   t.after(() => sweeper.stop());
-  return { sweeper, state, removed, logs, calls, root };
+  return { sweeper, state, removed, logs, calls, fetchOptions, root };
 }
 
 type FakeEntry = { kind: "dir" | "file" | "junction"; dev?: number };
@@ -232,6 +241,29 @@ it("an incomplete workspace listing aborts an armed sweep instead of deleting", 
   f.state.pageInfo = { hasMore: true, nextCursor: "cursor-1" };
   await assert.rejects(f.sweeper.sweep(), /repeated cursor/);
   assert.deepEqual(f.removed, []);
+});
+
+it("a background workspace on any listing page keeps its project, and every page asks for background workspaces", async (t) => {
+  const f = await fixture(t, { armed: true });
+  // Each listing has two pages; the background workspace is on the second.
+  f.state.beforeFetch = async (call) => {
+    f.state.pageInfo = call % 2 === 1 ? { hasMore: true, nextCursor: `cursor-${call}` } : { nextCursor: null };
+    f.state.background = call % 2 === 0 ? [{ projectId: "project-0" }] : [];
+  };
+  await f.sweeper.sweep();
+  assert.deepEqual(f.removed, []);
+  assert.ok(f.logs.some((line) => line.includes("decision=skip") && line.includes("projectId=project-0") && line.includes("reason=active-workspaces activeWorkspaces=1")), f.logs.join("\n"));
+  assert.equal(f.fetchOptions.length, 2);
+  assert.ok(f.fetchOptions.every((options) => options?.filter?.includeBackground === true), JSON.stringify(f.fetchOptions));
+  assert.equal(f.fetchOptions[1]?.page?.cursor, "cursor-1");
+});
+
+it("a daemon without background workspaces gets no background filter, and its orphan is still deleted", async (t) => {
+  const f = await fixture(t, { armed: true });
+  f.state.backgroundSupported = false;
+  await f.sweeper.sweep();
+  assert.deepEqual(f.removed, ["project-0"]);
+  assert.ok(f.fetchOptions.length > 0 && f.fetchOptions.every((options) => options?.filter === undefined), JSON.stringify(f.fetchOptions));
 });
 
 for (const armed of [false, true]) {
