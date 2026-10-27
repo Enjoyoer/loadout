@@ -41,6 +41,10 @@ CONSUMERS = {
         "history-cwd-fallback",
         "usage-limit-auto-resume",
     ),
+    "turn-input.ts": (
+        "cache-aware-autocompact",
+        "usage-limit-auto-resume",
+    ),
 }
 
 

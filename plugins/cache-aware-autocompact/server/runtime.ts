@@ -13,6 +13,7 @@ import { recoverTurn, recoveryDelay, rearmSkipReason, recoveryHistory, recoveryC
 
 import { compactionResult } from "./compaction.ts";
 import { endedReads, killAgent } from "./vendor/ended-read.ts";
+import { lastInput, turnInput } from "./vendor/turn-input.ts";
 
 const COMMAND = "/compact";
 
@@ -23,6 +24,11 @@ export type Checkpoint = {
   /** Only the items checkpointTimeline keeps, never the whole timeline. */
   timeline: readonly AgentTimelineItem[];
   lastUserMessageAt: string | null;
+  /**
+   * The message ID of the turn's input when it is a Paseo 0.13 agent message, which does not move lastUserMessageAt.
+   * Restart recovery tells such turns apart by it (recover). Absent for a human prompt and on Paseo 0.11.
+   */
+  inputId?: string;
   retryCount: number;
   endedAt: string;
 };
@@ -117,6 +123,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       agentId: checkpoint.agentId,
       turnId: checkpoint.turnId,
       lastUserMessageAt: checkpoint.lastUserMessageAt,
+      ...(checkpoint.inputId ? { inputId: checkpoint.inputId } : {}),
       createdAt: new Date(now()).toISOString(),
       ...(attemptedAt ? { attemptedAt } : {}),
       outcome,
@@ -194,9 +201,11 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       const attempts = (await store.read()).filter(entry => entry.agentId === agent.id &&
         ["compact-requested", "compaction-failed", "compaction-unconfirmed", "send-failed"].includes(entry.outcome));
       const lastAttempt = attempts.at(-1);
-      const latestUser = baseline.entries.findLast(entry => entry.item.type === "user_message");
-      const realUserAfterAttempt = lastAttempt && latestUser?.item.type === "user_message" &&
-        latestUser.item.text.trim() !== COMMAND && Date.parse(latestUser.timestamp) > Date.parse(lastAttempt.attemptedAt ?? lastAttempt.createdAt);
+      // The latest turn input: a user message, or a Paseo 0.13 agent message (turnInput). Either is new work.
+      const latestUser = baseline.entries.findLast(entry => turnInput(entry.item) !== null);
+      const latestInput = latestUser ? turnInput(latestUser.item) : null;
+      const realUserAfterAttempt = lastAttempt && latestInput &&
+        latestInput.text.trim() !== COMMAND && Date.parse(latestUser!.timestamp) > Date.parse(lastAttempt.attemptedAt ?? lastAttempt.createdAt);
       // Snapshot timestamps alone cannot distinguish a real turn from /compact.
       // Missing user history stays backed off rather than guessing that a turn is real.
       if (lastAttempt && !realUserAfterAttempt) {
@@ -296,9 +305,10 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   };
 
   const primeAndArm = async (event: { agent: { id: string; provider: string; model?: string | null }; turnId: string | null; timeline: readonly AgentTimelineItem[] }, api: PaseoApi) => {
-    // Automatic compact turns must not create a fresh timer, including failed turns.
-    const latestUser = event.timeline.findLast(item => item.type === "user_message");
-    if (latestUser?.type === "user_message" && latestUser.text.trim() === COMMAND) return;
+    // Automatic compact turns must not create a fresh timer, including failed turns. The turn's own input decides: a later
+    // Paseo 0.13 agent message is a turn input too (turnInput), so the /compact row before it is an earlier turn's.
+    const latestUser = lastInput(event.timeline);
+    if (latestUser && latestUser.text.trim() === COMMAND) return;
     if (inFlightHasAgent(event.agent.id)) {
       deferredTurns.set(event.agent.id, { event, api });
       return;
@@ -335,6 +345,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       key: checkpointKey(event.agent.id, event.turnId, event.timeline),
       timeline: event.timeline,
       lastUserMessageAt: refreshed.agent.lastUserMessageAt ?? null,
+      ...(latestUser?.source && latestUser.messageId ? { inputId: latestUser.messageId } : {}),
       retryCount: 0,
       endedAt,
     };
@@ -429,9 +440,11 @@ export function startScheduler(server: PluginServerContext, dependencies: {
             const recovered = recoverTurn(fresh, history, remembered);
             if (!recovered) { skip("no-ended-turn"); continue; }
             const entries = await store.read();
+            // Without a turn ID (provider history after a restart), the same input marks the same turn: the same
+            // lastUserMessageAt, and on Paseo 0.13 the same agent message, which does not move it.
             if (entries.some((entry) => entry.agentId === agent.id && (entry.key === recovered.key ||
               (!entry.key.match(/:retry-\d+$/) && (Date.parse(entry.createdAt) >= Date.parse(recovered.endedAt) ||
-                (!recovered.turnId && entry.lastUserMessageAt === recovered.lastUserMessageAt)))))) {
+                (!recovered.turnId && entry.lastUserMessageAt === recovered.lastUserMessageAt && (entry.inputId ?? null) === (recovered.inputId ?? null))))))) {
               skip("checkpointed"); continue;
             }
             const retries = entries.filter((entry) => entry.key.startsWith(`${recovered.key}:retry-`));

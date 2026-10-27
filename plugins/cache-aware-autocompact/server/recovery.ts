@@ -4,6 +4,7 @@ import type { AutoCompactConfig } from "./config.ts";
 import { cacheFamily, checkpointKey, checkpointTimeline, providerDelayMinutes } from "./model.ts";
 import type { Checkpoint } from "./runtime.ts";
 import { probe } from "./vendor/fs-probe.ts";
+import { lastInput, lastInputIndex, turnInput } from "./vendor/turn-input.ts";
 
 // Overdue but still warm timers are spread independently over a small window.
 export const REARM_JITTER_MIN_MS = 2_000;
@@ -50,7 +51,8 @@ export function recoverTurn(agent: PaseoAgent, history: FetchAgentTimelinePayloa
   let entries = history.entries;
   if (turnId) entries = entries.filter((entry) => entry.turnId === turnId);
   else {
-    const userIndex = entries.findLastIndex((entry) => entry.item.type === "user_message");
+    // The latest turn input: a user message, or a Paseo 0.13 agent message (turnInput).
+    const userIndex = lastInputIndex(entries);
     if (userIndex >= 0) entries = entries.slice(userIndex);
   }
   // 0.9.2 has no lastTurnEndedAt field. For pre-upgrade turns, use finished
@@ -60,8 +62,10 @@ export function recoverTurn(agent: PaseoAgent, history: FetchAgentTimelinePayloa
   if (!Number.isFinite(Date.parse(endedAt)) ||
     Date.parse(endedAt) < Date.parse(agent.lastUserMessageAt ?? "1970-01-01T00:00:00Z")) return null;
   const timeline = entries.map((entry) => entry.item);
+  // An agent message keeps its ID across a restart, so it still marks the turn when the turn ID is gone.
+  const input = lastInput(timeline);
   return { agentId: agent.id, turnId, key: checkpointKey(agent.id, turnId, timeline), timeline: checkpointTimeline(timeline),
-    lastUserMessageAt: agent.lastUserMessageAt ?? null, retryCount: 0, endedAt };
+    lastUserMessageAt: agent.lastUserMessageAt ?? null, ...(input?.source && input.messageId ? { inputId: input.messageId } : {}), retryCount: 0, endedAt };
 }
 
 /** Fetch the whole latest turn, so a running tool cannot be hidden by a tail page. */
@@ -72,7 +76,7 @@ export async function recoveryHistory(timeline: PaseoAgentTimelineHandle): Promi
   let page = history;
   const cursors = new Set<string>();
   while (page.hasOlder && history.entries.length > 0 &&
-    !history.entries.some((entry) => entry.item.type === "user_message" || (turnId && entry.turnId !== turnId))) {
+    !history.entries.some((entry) => turnInput(entry.item) !== null || (turnId && entry.turnId !== turnId))) {
     if (!page.startCursor) return null;
     const cursor = JSON.stringify(page.startCursor);
     if (cursors.has(cursor)) return null;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { MAX_KEPT_ATTEMPTS, afterTransientFailure, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, isTransientErrorMessage, configFingerprint, continuationPrompt, failureSignature, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, shouldResume, transientDelaySeconds, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
+import { MAX_KEPT_ATTEMPTS, afterTransientFailure, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, endedTurnRows, isTransientErrorMessage, configFingerprint, continuationPrompt, failureSignature, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, shouldResume, transientDelaySeconds, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { quotaDecision, scheduleUsage } from "../server/model.ts";
 import { agentPool, poolQuota, QuotaReader, runPq, type PqResult } from "../server/quota.ts";
@@ -133,6 +133,17 @@ describe("completed-turn transient classification", () => {
     assert.equal(buildTransientRecord(agent(), [{ type: "assistant_message", text: RATE_LIMIT }], config, NOW, "turn-1"), null);
     assert.equal(buildTransientRecord(agent(), timeline(RATE_LIMIT), config, NOW, null), null);
     assert.equal(turnText([...timeline(RATE_LIMIT), { type: "user_message", text: "New task" }]).assistant, null);
+    // Paseo 0.13: another agent's message is a turn input, and moves no lastUserMessageAt. No other tool row's text is.
+    const toolRow = (status = "completed", name = "agent_message", callId = "paseo-agent-message:pm-1") => ({ type: "tool_call", callId, name, status, error: null,
+      detail: { type: "plain_text", text: "Delegated task", icon: "bot" }, agentMessage: { event: "message", text: "Delegated task" } }) as unknown as AgentTimelineItem;
+    const worker = agent({ lastUserMessageAt: null });
+    const delegated = buildTransientRecord(worker, [toolRow(), { type: "assistant_message", text: RATE_LIMIT }], config, NOW, "turn-1");
+    assert.deepEqual([delegated?.retryPrompt, delegated?.expectedUserMessageId, delegated?.lastUserMessageAt], ["Delegated task", "pm-1", null]);
+    assert.equal(buildTransientRecord(agent(), [...timeline("Done."), toolRow(), { type: "assistant_message", text: RATE_LIMIT }], config, NOW, "turn-1")?.retryPrompt, "Delegated task");
+    for (const other of [toolRow("running"), toolRow("completed", "shell"), toolRow("completed", "agent_message", "tool-1")]) {
+      assert.equal(buildTransientRecord(worker, [other, { type: "assistant_message", text: RATE_LIMIT }], config, NOW, "turn-1"), null);
+      assert.equal(buildTransientRecord(agent(), [timeline("")[0]!, other, { type: "assistant_message", text: RATE_LIMIT }], config, NOW, "turn-1")?.retryPrompt, "Fix the bug exactly.");
+    }
   });
 
   it("retries immediately, then after 2, 5, and 15 minutes, then every 30 minutes, with no attempt cap", () => {
@@ -201,6 +212,18 @@ describe("failed-turn transient classification", () => {
     assert.ok(buildFailedTransientRecord(agent(), failedTimeline, { message: "invalid API key" }, config, NOW, "turn-1"), "any failed turn resumes");
     assert.equal(buildFailedTransientRecord(agent(), failedTimeline, { message: "usage_limit_exceeded" }, config, NOW, "turn-1"), null);
     assert.equal(buildFailedTransientRecord(agent(), [], { message: CAPACITY }, config, NOW, "turn-1"), null);
+  });
+
+  it("keeps only the ended turn's own rows of a tail read after it ended, and calls it stale once newer input is all the tail holds", () => {
+    const row = (item: AgentTimelineItem, turnId?: string) => ({ item, ...(turnId ? { turnId } : {}) });
+    const own = [row(failedTimeline[0]!, "t1"), row({ type: "assistant_message", text: `[System Error] ${CAPACITY}` }, "t1")];
+    const newer = [row({ type: "user_message", text: "New task", messageId: "user-2" }, "t2"), row({ type: "assistant_message", text: "Done." }, "t2")];
+    assert.deepEqual(endedTurnRows([...own, ...newer], "t1"), { rows: own, done: true, newer: false });
+    assert.deepEqual(endedTurnRows(newer, "t1"), { rows: [], done: true, newer: true });
+    // No turn ID on the event, or none on the rows (provider history after a restart): the rows as they are.
+    for (const [rows, turnId] of [[[...own, ...newer], null], [[row(failedTimeline[0]!), row({ type: "assistant_message", text: "x" })], "t1"]] as const) {
+      assert.deepEqual(endedTurnRows(rows, turnId), { rows, done: true, newer: false });
+    }
   });
 
   it("never exhausts failed-turn records, backing off at the last step", () => {

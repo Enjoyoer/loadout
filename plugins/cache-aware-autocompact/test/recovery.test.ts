@@ -32,6 +32,11 @@ function history(a: PaseoAgent, turnId: string | undefined = "t1"): FetchAgentTi
     entries: [{ provider: a.provider, item: { type: "assistant_message", text: "Work completed." },
       turnId, timestamp: endedAt, seqStart: 1, seqEnd: 1, sourceSeqRanges: [], collapsed: [] }] };
 }
+/** A Paseo 0.13 agent-message row: a prompt from another agent, which does not move lastUserMessageAt. */
+function agentMessage(id: string, text: string) {
+  return { type: "tool_call", callId: `paseo-agent-message:${id}`, name: "agent_message", status: "completed", error: null,
+    detail: { type: "plain_text", text, icon: "bot" }, agentMessage: { event: "message", sender: { id: "pm", serverId: "s1", title: "pm" }, text } } as never;
+}
 class FakeTimers implements TimerApi {
   next = 0;
   pending = new Map<number, { callback: () => void; ms: number }>();
@@ -208,6 +213,30 @@ describe("Pi scheduler", () => {
     await until(() => f.timers.pending.size === 1); f.timers.fire();
     await until(() => f.logs.filter(l => l.action === "compaction-failed").length === 2);
     assert.equal(f.sends.length, 2);
+  }));
+  it("re-arms and clears the backoff after an agent-message turn that follows its own /compact, but never for that /compact", async () => fixture(async (f) => {
+    // Paseo 0.13: the turn ends with an empty timeline, and its input is another agent's message, not a user row.
+    const a = agent({ provider: "pi", model: "fleet/claude-opus-5-5" });
+    f.setAgents([a]); f.start(f.store); await f.recovered();
+    f.timers.fire(); await until(() => f.logs.some(l => l.action === "compacted"));
+    assert.deepEqual(f.sends, ["/compact"]);
+    const at = (minutes: number) => new Date(endedMs + minutes * 60_000).toISOString();
+    const row = (item: never, turnId: string, minutes: number, seq: number) => ({ ...history(a).entries[0]!, item, turnId, timestamp: at(minutes), seqStart: seq, seqEnd: seq });
+    const page = history(a);
+    page.entries = [row({ type: "user_message", text: "/compact" } as never, "compact-turn", 30, 2), row({ type: "compaction", status: "completed" } as never, "compact-turn", 30, 3),
+      row(agentMessage("pm-1", "Next delegated task"), "agent-turn", 40, 4), row({ type: "assistant_message", text: "Done." } as never, "agent-turn", 41, 5)];
+    f.histories.set(a.id, page);
+    f.setNow(endedMs + 41 * 60_000);
+    f.event("agent.turn_ended", { agent: { ...a, parentAgentId: null }, turnId: "agent-turn", timeline: [], outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"]);
+    await until(() => f.timers.pending.size === 1);
+    f.setNow(endedMs + 100 * 60_000);
+    f.timers.fire(); await until(() => f.logs.filter(l => l.action === "compacted").length === 2);
+    assert.deepEqual(f.sends, ["/compact", "/compact"]);
+    // The plugin's own /compact after it is the newest input again: that turn arms nothing.
+    page.entries.push(row({ type: "user_message", text: "/compact" } as never, "compact-turn-2", 100, 7));
+    f.event("agent.turn_ended", { agent: { ...a, parentAgentId: null }, turnId: "compact-turn-2", timeline: [], outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"]);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(f.timers.pending.size, 0);
   }));
   it("recovers both cache families and skips web routes", async () => fixture(async (f) => {
     f.setAgents([agent({ provider: "pi", model: "fleet/claude-opus-5-5" }),
@@ -509,6 +538,21 @@ describe("restart recovery", () => {
     assert.deepEqual(f.sends, ["/compact"]);
     assert.equal((f.logs.find((line) => line.action === "rearm-summary")?.data.skipped as Record<string, number>).checkpointed, 1);
   }));
+
+  it("after a restart, tells turns without IDs apart by their agent-message input when lastUserMessageAt did not move", async () => {
+    for (const input of ["pm-1", "pm-2"]) await fixture(async (f) => {
+      const a = agent({ attentionTimestamp: "2026-09-26T08:10:00Z" });
+      f.setAgents([a]);
+      // Provider history after a restart: no turn IDs.
+      const h = history(a); h.entries[0]!.turnId = undefined;
+      h.entries.unshift({ ...h.entries[0]!, item: agentMessage(input, "Delegated task") });
+      f.histories.set("a1", h);
+      await f.store.append({ key: "a1:old", agentId: "a1", turnId: null, lastUserMessageAt: messageAt, inputId: "pm-1",
+        createdAt: "2026-09-26T08:05:00Z", outcome: "compacted", reason: "safe-boundary" }, 100);
+      f.start(f.store); await f.recovered();
+      assert.equal(f.timers.pending.size, input === "pm-1" ? 0 : 1, `${input}: only a newer agent message is a new turn`);
+    });
+  });
 
   it("honors a pre-upgrade checkpoint when restored history omits turn identity", async () => fixture(async (f) => {
     const a = agent({ attentionTimestamp: "2026-09-26T08:10:00Z" });
