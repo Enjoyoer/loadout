@@ -142,7 +142,8 @@ function harness() {
       cleanup = startScheduler(server, { store, writeJson, timerApi: timers, metrics: { append: async (record) => { metrics.push(record); } },
         now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed, codexEnabled: true, piGptEnabled, extendIdleCompaction }),
         openApi: async () => { if (bootstrapFails) throw new Error("Unavailable"); return api; },
-        killAgent: async (agentId) => { kills.push(agentId); },
+        // kill_agent closes the agent, so the daemon lists it closed from then on, as a later recovery's list shows.
+        killAgent: async (agentId) => { kills.push(agentId); snapshots = snapshots.map((a) => a.id === agentId ? { ...a, status: "closed" as const } : a); },
         log: (action, data) => { logs.push({ action, data }); } });
       stops.push(cleanup);
     },
@@ -738,7 +739,9 @@ describe("restart recovery", () => {
       await until(() => f.logs.some((line) => line.action === "read-raced-end"));
       assert.deepEqual(f.logs.find((line) => line.action === "read-raced-end")?.data, { agentId: "a1", read, end, restored: end }, `${read} ${end}`);
       assert.deepEqual(end === "closed" ? [f.kills, f.archives] : [f.archives, f.kills], [["a1"], []], `${read} ${end}`);
-      if (read === "recovery") await f.recovered();
+      // Startup queues a second recovery behind this one (the list subscription's first snapshot). It lists the agent
+      // after the kill or archive and must arm nothing either, so the checks below wait for it rather than race it.
+      if (read === "recovery") await until(() => f.logs.some((line) => line.action === "rearm-summary" && line.data.trigger === "connection-snapshot"));
       assert.equal(f.timers.pending.size, 0, `${read} ${end}`);
       assert.deepEqual(f.sends, [], `${read} ${end}`);
       assert.ok(!f.logs.some((line) => line.action === "skip" || line.action === "would-compact"), `${read} ${end}: nothing is checkpointed`);
