@@ -3,7 +3,7 @@ import path from "node:path";
 import { withDaemon, type DaemonClient } from "./daemon.ts";
 import { readConfig, type SweeperConfig } from "./config.ts";
 
-export type SweeperApi = Pick<DaemonClient, "listProjects" | "removeProject"> & {
+export type SweeperApi = Pick<DaemonClient, "listProjects" | "removeProject" | "supportsBackgroundWorkspaces"> & {
   // This plugin uses paginated reads only, never the subscription overload.
   fetchWorkspaces(options?: Parameters<DaemonClient["fetchWorkspaces"]>[0]): ReturnType<DaemonClient["fetchWorkspaces"]>;
 };
@@ -233,15 +233,20 @@ async function findAbsentMount(target: string, host: SweeperHost): Promise<Mount
  * Count active (non-archived) workspaces per project id. The daemon's workspace
  * fetch already excludes archived workspaces; workspaces that are mid-archive
  * (archivingAt set) are still counted as active on purpose. Joins on projectId only.
+ * Paseo 0.12 and later leave background workspaces out of the listing unless every page asks
+ * for them, and removing the project would archive them, so every page asks when the daemon
+ * advertises background workspaces. Older daemons have none, and the client refuses the filter there.
  * An incomplete listing could hide a project's active workspace, so it throws instead of
  * returning partial counts: more pages without a cursor, a repeated cursor, or too many pages.
  */
 async function countActiveWorkspaces(client: SweeperApi): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   const seen = new Set<string>();
+  const filter = client.supportsBackgroundWorkspaces() ? { filter: { includeBackground: true } } : {};
   let cursor: string | undefined;
   for (let page = 0; page < WORKSPACE_MAX_PAGES; page += 1) {
     const payload = await client.fetchWorkspaces({
+      ...filter,
       page: { limit: WORKSPACE_PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
     });
     for (const workspace of payload.entries) {

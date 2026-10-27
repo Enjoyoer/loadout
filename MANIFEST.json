@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "d5b5c1296da907c28d2844cc729c6c1c13df7ea0",
+  "source_commit": "ceeebb267ae46bc69d5bd076e3188ccfb0810d0a",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -1458,8 +1458,8 @@
     {
       "path": "plugins/orphan-project-sweeper/README.md",
       "plugin": "orphan-project-sweeper",
-      "bytes": 10651,
-      "sha256": "f398c1ead9f9d9268538f62c09232065ca059520720db0c8359a98a1145cb95c"
+      "bytes": 11054,
+      "sha256": "d2a1b79ee82590c885ab5710a78c5c2492e83c8b4ec31581535d8dc8c27ad5ac"
     },
     {
       "path": "plugins/orphan-project-sweeper/index.server.ts",
@@ -1470,14 +1470,14 @@
     {
       "path": "plugins/orphan-project-sweeper/package-lock.json",
       "plugin": "orphan-project-sweeper",
-      "bytes": 21227,
-      "sha256": "d18cbc6f436845cff8fe6f282aa353bb5b3397bdb731e2c90ce173f8960da32c"
+      "bytes": 23597,
+      "sha256": "53dd0031a8033f7396c33265674a940be5aab5e622edd5ac8ff5ed2e34850aeb"
     },
     {
       "path": "plugins/orphan-project-sweeper/package.json",
       "plugin": "orphan-project-sweeper",
       "bytes": 964,
-      "sha256": "9cbf05d1c9f3e7b3fceff8d2fec7706545dfbe4070ec95ddc53d4bdc04cf8644"
+      "sha256": "f73a92e285dc0faae3a1f34d8bdd0ea9f83293226cd9d524d5bc06242e573918"
     },
     {
       "path": "plugins/orphan-project-sweeper/paseo-plugin.json",
@@ -1506,8 +1506,8 @@
     {
       "path": "plugins/orphan-project-sweeper/server/sweeper.ts",
       "plugin": "orphan-project-sweeper",
-      "bytes": 24446,
-      "sha256": "daa09927ed673a696d3e1816efd04207dc47e2ac4068dcf1b95de23d78a6a38f"
+      "bytes": 24889,
+      "sha256": "1975e5ffa88bdf7c7caf0edf9356b08de073ea7657a186aab70ec6f9a99878b0"
     },
     {
       "path": "plugins/orphan-project-sweeper/server/vendor/daemon-target.ts",
@@ -1530,8 +1530,8 @@
     {
       "path": "plugins/orphan-project-sweeper/test/sweeper.test.ts",
       "plugin": "orphan-project-sweeper",
-      "bytes": 15504,
-      "sha256": "f2065e2396848c9a6122f49c3f6e3f6a9c1570ea5a550c7ea00eac5fb0aaf645"
+      "bytes": 17613,
+      "sha256": "746f96df2459322ab8dd614e97cbb0382e84213a86993d9e2fdb705d5d457574"
     },
     {
       "path": "plugins/orphan-project-sweeper/tsconfig.json",
