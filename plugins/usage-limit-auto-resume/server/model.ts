@@ -295,21 +295,15 @@ export function turnText(timeline: readonly AgentTimelineItem[]): { assistant: s
  * A failed turn's own rows in a tail read after its end, for Paseo 0.13, whose turn_ended carries no timeline. A live
  * turn's rows, its input included, carry its turn ID; once a newer turn began, the tail also holds that turn's input and
  * answer, which are never this turn's. So the rows end at the turn's last row (`done` once they hold an input to bind).
- * When none of the rows read so far is the turn's but an input of another turn is among them, the turn's rows are older
- * than that input: newer work took over (`newer`). Without a turn ID, or when the input has no turn ID (provider history
- * after a restart), the rows are taken as they are, up to the newest input, as before.
+ * A turn can have no row of its own: Paseo drops a schedule or heartbeat prompt from the timeline and appends a failed
+ * outcome's error row without a turn ID. Such a turn, a turn without an ID, and rows without IDs (provider history after
+ * a restart) take the rows as they are, up to the newest input, as before. Another turn's input alone never shows that a
+ * newer turn ran; only a turn start seen after this turn ended does (index.server.ts, newerTurn).
  */
-export function endedTurnRows<Entry extends { item: AgentTimelineItem; turnId?: string }>(entries: readonly Entry[], turnId: string | null): { rows: readonly Entry[]; done: boolean; newer: boolean } {
-  const any = { rows: entries, done: entries.some((entry) => !!turnInput(entry.item)), newer: false };
-  if (!turnId) return any;
-  const end = entries.findLastIndex((entry) => entry.turnId === turnId);
-  if (end >= 0) {
-    const rows = entries.slice(0, end + 1);
-    return { rows, done: rows.some((entry) => !!turnInput(entry.item)), newer: false };
-  }
-  const input = entries.findLast((entry) => !!turnInput(entry.item));
-  if (input?.turnId) return { rows: [], done: true, newer: true };
-  return any;
+export function endedTurnRows<Entry extends { item: AgentTimelineItem; turnId?: string }>(entries: readonly Entry[], turnId: string | null): { rows: readonly Entry[]; done: boolean } {
+  const end = turnId ? entries.findLastIndex((entry) => entry.turnId === turnId) : -1;
+  const rows = end >= 0 ? entries.slice(0, end + 1) : entries;
+  return { rows, done: rows.some((entry) => !!turnInput(entry.item)) };
 }
 
 export function transientDelaySeconds(config: ResumeConfig, attempts: number): number {

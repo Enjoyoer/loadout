@@ -67,10 +67,11 @@ async function setup(input: AgentTimelineItem = { type: "user_message", text: "F
     lastUserMessageAt: input.type === "user_message" ? new Date(START - 1000).toISOString() : null, updatedAt: new Date(START).toISOString(),
     persistence: { provider: "pi", sessionId: "retry-session", nativeHandle: "retry-session.jsonl" },
   };
-  type Entry = { item: AgentTimelineItem; timestamp: string; turnId: string; seqStart: number; seqEnd: number };
+  type Entry = { item: AgentTimelineItem; timestamp: string; turnId?: string; seqStart: number; seqEnd: number };
   let entries: Entry[] = [];
-  const append = (item: AgentTimelineItem, turnId = "source-turn") => {
-    entries.push({ item, turnId, timestamp: new Date().toISOString(), seqStart: entries.length + 1, seqEnd: entries.length + 1 });
+  // A null turn ID appends a row without one, as Paseo 0.13 appends a failed outcome's error row.
+  const append = (item: AgentTimelineItem, turnId: string | null = "source-turn") => {
+    entries.push({ item, ...(turnId ? { turnId } : {}), timestamp: new Date().toISOString(), seqStart: entries.length + 1, seqEnd: entries.length + 1 });
   };
   append(input);
   append({ type: "assistant_message", text: `[System Error] ${OVERLOADED}` });
@@ -353,6 +354,27 @@ it("on Paseo 0.13 an agent message is the turn's input: a delegated worker retri
       assert.equal(lane.sends.length, newer ? 0 : 1, newer ? "newer work supersedes the usage record" : "the worker resumes");
       if (newer) assert.equal((await lane.store.read())[0]?.state, "superseded");
     }, agentMessage("pm-task", "Delegated task"));
+  }
+});
+
+it("on Paseo 0.13 a failed heartbeat turn, which has no row of its own, is retried or resumed as before", async () => {
+  // Paseo drops a heartbeat's prompt from the timeline and appends the failed outcome's error row with no turn ID, so the
+  // tail's newest input is the previous turn's. No turn started since the end, so the failure is not stale.
+  for (const kind of ["transient", "usage"] as const) {
+    await recoveryLane(async (lane) => {
+      const id = lane.snapshot.id;
+      const message = kind === "usage" ? "usage_limit_exceeded" : OVERLOADED;
+      mock.timers.setTime(START + 60_000);
+      lane.append({ type: "assistant_message", text: `[System Error] ${message}` }, null);
+      Object.assign(lane.snapshot, { status: "error", activeTurn: null, lastError: message, updatedAt: new Date().toISOString() });
+      lane.emit("agent.turn_ended", { agent: { id }, turnId: "heartbeat-turn", outcome: { kind: "failed", error: { message } }, timeline: [] });
+      await lane.plugin.idle();
+      assert.ok(!laneLogs.some((line) => line.includes("stale-turn-end")), kind);
+      assert.equal((await lane.store.read())[0]?.sourceTurnId, "heartbeat-turn", `${kind}: the heartbeat failure has its record`);
+      if (kind === "usage") await lane.sweep(START + 6 * 3600_000);
+      assert.equal(lane.sends.length, 1, `${kind}: the heartbeat failure is retried or resumed`);
+      if (kind === "transient") assert.equal(lane.sends[0]!.prompt, "continue");
+    });
   }
 });
 

@@ -214,15 +214,18 @@ describe("failed-turn transient classification", () => {
     assert.equal(buildFailedTransientRecord(agent(), [], { message: CAPACITY }, config, NOW, "turn-1"), null);
   });
 
-  it("keeps only the ended turn's own rows of a tail read after it ended, and calls it stale once newer input is all the tail holds", () => {
+  it("keeps only the ended turn's own rows of a tail read after it ended, and all rows for a turn with none of its own", () => {
     const row = (item: AgentTimelineItem, turnId?: string) => ({ item, ...(turnId ? { turnId } : {}) });
     const own = [row(failedTimeline[0]!, "t1"), row({ type: "assistant_message", text: `[System Error] ${CAPACITY}` }, "t1")];
     const newer = [row({ type: "user_message", text: "New task", messageId: "user-2" }, "t2"), row({ type: "assistant_message", text: "Done." }, "t2")];
-    assert.deepEqual(endedTurnRows([...own, ...newer], "t1"), { rows: own, done: true, newer: false });
-    assert.deepEqual(endedTurnRows(newer, "t1"), { rows: [], done: true, newer: true });
+    assert.deepEqual(endedTurnRows([...own, ...newer], "t1"), { rows: own, done: true });
+    // A heartbeat turn on Paseo 0.13: its prompt is not in the timeline and its error row has no turn ID, so the newest
+    // input is the previous turn's. That alone is no newer turn: the rows are taken as they are.
+    const heartbeat = [...own, row({ type: "assistant_message", text: "[System Error] usage_limit_exceeded" })];
+    assert.deepEqual(endedTurnRows(heartbeat, "t3"), { rows: heartbeat, done: true });
     // No turn ID on the event, or none on the rows (provider history after a restart): the rows as they are.
     for (const [rows, turnId] of [[[...own, ...newer], null], [[row(failedTimeline[0]!), row({ type: "assistant_message", text: "x" })], "t1"]] as const) {
-      assert.deepEqual(endedTurnRows(rows, turnId), { rows, done: true, newer: false });
+      assert.deepEqual(endedTurnRows(rows, turnId), { rows, done: true });
     }
   });
 

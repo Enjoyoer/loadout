@@ -225,8 +225,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // skipped read is no timeline, as the empty event was, so only a failed outcome's own error can still make a record.
   // A read still loads an agent closed or archived while it is in flight, so such an agent is put back (ends) and the
   // turn is dropped: null, so no record is made, resumed or sent for it. A turn of the agent that began since this one
-  // ended (`newerTurn`), or another turn's input newer than every row of this one, is newer work: this turn is stale
-  // and dropped too.
+  // ended (`newerTurn`) is newer work: this turn is stale and dropped too. Paseo dispatches a turn's end before the next
+  // turn can start, so every such turn is counted; another turn's input in the tail alone proves nothing.
   async function endedTimeline(api: PaseoApi, agentId: string, turnId: string | null, newerTurn: () => boolean): Promise<AgentTimelineItem[] | null> {
     const closeSeen = closes.get(agentId);
     const lifecycle = lifecycles.get(agentId);
@@ -247,9 +247,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
       // Nothing was read.
       if (!before) return newerTurn() ? stale() : [];
       if ((await watching.decide(before)).ended) return null;
-      const own = endedTurnRows(entries, turnId);
-      if (own.newer || newerTurn()) return stale();
-      return own.rows.map((entry) => entry.item);
+      if (newerTurn()) return stale();
+      return endedTurnRows(entries, turnId).rows.map((entry) => entry.item);
     } finally {
       watching.done();
     }
