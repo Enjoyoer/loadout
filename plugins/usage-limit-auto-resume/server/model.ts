@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { agentPool, quotaHold, usageResumeAt, type PoolQuota, type QuotaHold, type QuotaPool, type QuotaSettings } from "./quota.ts";
+import { lastInput, turnInput, type TurnInput } from "./vendor/turn-input.ts";
+
+export { lastInput, turnInput, type TurnInput };
 
 export type ResumeState = "detected" | "parked" | "resuming" | "verifying" | "done" | "exhausted" | "opted-out" | "superseded" | "uncertain";
 
@@ -23,6 +26,9 @@ export type ResumeRecord = {
   // Usage failures also leave Pi in error, but retain the usage delay.
   usageFailedOutcome?: boolean;
   retryPrompt?: string;
+  // The turn input the record checks (a user row, or on Paseo 0.13 an agent message; see turnInput). A transient record
+  // always names it. A usage record names it only when detected on Paseo 0.13, where an agent message does not move
+  // lastUserMessageAt, so each send first checks that input is still the newest (verifyUsageInput).
   expectedUserText?: string;
   expectedUserMessageId?: string | null;
   failedAssistantText?: string;
@@ -95,26 +101,27 @@ export function closeDecision(close: AgentClose | null, record: Pick<ResumeRecor
 }
 
 /**
- * The user message a failed turn ran on, by identity: the latest user row of its turn_ended event, else the
- * predecessor record's own last send. Null when neither has an ID.
+ * The input a failed turn ran on, by identity: the latest turn input (a user row, or an agent message) of its own
+ * timeline, else the predecessor record's own last send. Null when neither has an ID.
  */
 export type BoundUser = { id: string; text: string | null };
 
-export function boundUser(user: Extract<AgentTimelineItem, { type: "user_message" }> | null, predecessor: Pick<ResumeRecord, "attempts"> | null): BoundUser | null {
+export function boundUser(user: TurnInput | null, predecessor: Pick<ResumeRecord, "attempts"> | null): BoundUser | null {
   const id = user ? user.messageId ?? user.clientMessageId : undefined;
   if (user && id) return { id, text: user.text };
   const own = predecessor?.attempts.at(-1)?.messageId;
   return own ? { id: own, text: null } : null;
 }
 
-const userItem = (entry: TimelineEntry) => entry.item.type === "user_message" ? entry.item : null;
+const userItem = (entry: TimelineEntry) => turnInput(entry.item);
 const userId = (entry: TimelineEntry) => { const user = userItem(entry); return user ? user.messageId ?? user.clientMessageId ?? null : null; };
 
 /**
  * Whether a failed turn is stale, decided from a timeline read after its handler's awaits. Only daemon evidence counts,
- * never the plugin's clock. The failure is stale when the latest user row is a different message from the bound one
- * (another ID, and not that row rebuilt with a new ID by the isExpectedUser rule: same text, no clientMessageId, the
- * agent's lastUserMessageAt unchanged since the predecessor) and is later than it: after it in the daemon's timeline,
+ * never the plugin's clock. The failure is stale when the latest input row (a user row or an agent message) is a
+ * different message from the bound one (another ID, and not that row rebuilt with a new ID by the isExpectedUser rule:
+ * same text, no clientMessageId, the agent's lastUserMessageAt unchanged since the predecessor; an agent message keeps
+ * its ID) and is later than it: after it in the daemon's timeline,
  * and stamped no earlier, since rows of the same millisecond share a stamp. Newer work then took over, and a record for
  * the old turn would take that work's time.
  *
@@ -269,24 +276,34 @@ export function isTransientErrorMessage(message: string, code?: string): boolean
   return TRANSIENT_ERROR_PATTERN.test(text);
 }
 
-export function lastUserMessage(timeline: readonly AgentTimelineItem[]): Extract<AgentTimelineItem, { type: "user_message" }> | null {
-  const user = timeline.findLast((item) => item.type === "user_message");
-  return user?.type === "user_message" ? user : null;
-}
-
 export function isUsageLimitAssistantText(message: string): boolean {
   const text = message.trim();
   return (/^API Error:/i.test(text) || /^(?:Your weekly limit reached|You are out of credits|(?:5|five)[- ]hour limit reached)/i.test(text)) && failureSignature(text) !== null;
 }
 
-export function turnText(timeline: readonly AgentTimelineItem[]): { assistant: string | null; user: Extract<AgentTimelineItem, { type: "user_message" }> | null } {
+/** The turn's final assistant text and the turn input before it (a user row, or an agent message). */
+export function turnText(timeline: readonly AgentTimelineItem[]): { assistant: string | null; user: TurnInput | null } {
   const last = timeline.at(-1);
   if (!last || last.type !== "assistant_message") return { assistant: null, user: null };
   let firstAssistant = timeline.length - 1;
   while (firstAssistant > 0 && timeline[firstAssistant - 1]?.type === "assistant_message") firstAssistant--;
   const assistant = timeline.slice(firstAssistant).map((item) => item.type === "assistant_message" ? item.text : "").join("");
-  const user = timeline.slice(0, firstAssistant).findLast((item) => item.type === "user_message");
-  return { assistant, user: user?.type === "user_message" ? user : null };
+  return { assistant, user: lastInput(timeline.slice(0, firstAssistant)) };
+}
+
+/**
+ * A failed turn's own rows in a tail read after its end, for Paseo 0.13, whose turn_ended carries no timeline. A live
+ * turn's rows, its input included, carry its turn ID; once a newer turn began, the tail also holds that turn's input and
+ * answer, which are never this turn's. So the rows end at the turn's last row (`done` once they hold an input to bind).
+ * A turn can have no row of its own: Paseo drops a schedule or heartbeat prompt from the timeline and appends a failed
+ * outcome's error row without a turn ID. Such a turn, a turn without an ID, and rows without IDs (provider history after
+ * a restart) take the rows as they are, up to the newest input, as before. Another turn's input alone never shows that a
+ * newer turn ran; only a turn start seen after this turn ended does (index.server.ts, newerTurn).
+ */
+export function endedTurnRows<Entry extends { item: AgentTimelineItem; turnId?: string }>(entries: readonly Entry[], turnId: string | null): { rows: readonly Entry[]; done: boolean } {
+  const end = turnId ? entries.findLastIndex((entry) => entry.turnId === turnId) : -1;
+  const rows = end >= 0 ? entries.slice(0, end + 1) : entries;
+  return { rows, done: rows.some((entry) => !!turnInput(entry.item)) };
 }
 
 export function transientDelaySeconds(config: ResumeConfig, attempts: number): number {
@@ -422,9 +439,11 @@ export function quotaDecision(record: ResumeRecord, quota: PoolQuota, settings: 
 }
 
 export function buildTransientRecord(agent: AgentSnapshot, timeline: readonly AgentTimelineItem[], config: ResumeConfig, now = Date.now(), sourceTurnId?: string | null): ResumeRecord | null {
-  if (!sourceTurnId || isOptedOut(agent, config) || agent.archivedAt || !agent.persistence?.sessionId || !agent.lastUserMessageAt) return null;
+  if (!sourceTurnId || isOptedOut(agent, config) || agent.archivedAt || !agent.persistence?.sessionId) return null;
   const { assistant, user } = turnText(timeline);
   if (!assistant || !isTransientAssistantText(assistant) || !user) return null;
+  // A human prompt moves lastUserMessageAt; an agent message does not, so a worker only other agents prompted has none.
+  if (!agent.lastUserMessageAt && !user.source) return null;
   const model = agent.model ?? agent.persistence.metadata?.model;
   if (typeof model !== "string" || !model) return null;
   const detectedAt = new Date(now).toISOString();
@@ -436,7 +455,7 @@ export function buildTransientRecord(agent: AgentSnapshot, timeline: readonly Ag
     modeId: agent.currentModeId ?? null, thinkingOptionId: agent.thinkingOptionId ?? null,
     cwd: agent.cwd, persistenceSessionId: agent.persistence.sessionId,
     nativeHandle: agent.persistence.nativeHandle ?? null, configFingerprint: identity,
-    detectedAt, lastUserMessageAt: agent.lastUserMessageAt, originUserMessageAt: agent.lastUserMessageAt,
+    detectedAt, lastUserMessageAt: agent.lastUserMessageAt ?? null, originUserMessageAt: agent.lastUserMessageAt ?? null,
     failureSignature: createHash("sha256").update(assistant).digest("hex").slice(0, 24),
     failedAssistantText: assistant, expectedUserText: user.text,
     expectedUserMessageId: user.messageId ?? user.clientMessageId ?? null,
@@ -463,10 +482,12 @@ export function isRpcPromptTimeout(message: string, provider = "pi"): boolean {
 }
 
 export function buildFailedTransientRecord(agent: AgentSnapshot, timeline: readonly AgentTimelineItem[], error: { message: string; code?: string }, config: ResumeConfig, now = Date.now(), sourceTurnId?: string | null): ResumeRecord | null {
-  if (!sourceTurnId || isOptedOut(agent, config) || agent.archivedAt || !agent.persistence?.sessionId || !agent.lastUserMessageAt) return null;
+  if (!sourceTurnId || isOptedOut(agent, config) || agent.archivedAt || !agent.persistence?.sessionId) return null;
   if (failureSignature(error.message, error.code)) return null;
-  const user = lastUserMessage(timeline);
+  const user = lastInput(timeline);
   if (!user) return null;
+  // As buildTransientRecord: an agent message does not move lastUserMessageAt.
+  if (!agent.lastUserMessageAt && !user.source) return null;
   const rpcTimeout = isRpcPromptTimeout(error.message, agent.provider);
   // Nothing to resend: the timeline keeps only a user message's text, so an attachment-only message is not replayed.
   if (rpcTimeout && !user.text.trim()) return null;
@@ -482,7 +503,7 @@ export function buildFailedTransientRecord(agent: AgentSnapshot, timeline: reado
     modeId: agent.currentModeId ?? null, thinkingOptionId: agent.thinkingOptionId ?? null,
     cwd: agent.cwd, persistenceSessionId: agent.persistence.sessionId,
     nativeHandle: agent.persistence.nativeHandle ?? null, configFingerprint: identity,
-    detectedAt, lastUserMessageAt: agent.lastUserMessageAt, originUserMessageAt: agent.lastUserMessageAt,
+    detectedAt, lastUserMessageAt: agent.lastUserMessageAt ?? null, originUserMessageAt: agent.lastUserMessageAt ?? null,
     failureSignature: createHash("sha256").update(failure).digest("hex").slice(0, 24),
     failedAssistantText: failure, expectedUserText: user.text,
     expectedUserMessageId: user.messageId ?? user.clientMessageId ?? null,
@@ -499,11 +520,12 @@ export function buildFailedTransientRecord(agent: AgentSnapshot, timeline: reado
 }
 
 /**
- * The timeline's newest user row is the one the record checked: the original human message before the first send, or
- * the record's own last send after a failed retry. `lastUserMessageAt` is the agent's, read with or before the timeline.
+ * The timeline's newest turn input is the one the record checked: the original message (a human's, or another agent's)
+ * before the first send, or the record's own last send after a failed retry. `lastUserMessageAt` is the agent's, read
+ * with or before the timeline.
  */
 export function verifyTransientTimeline(record: ResumeRecord, timeline: readonly AgentTimelineItem[], lastUserMessageAt: string | null | undefined): { ok: true } | { ok: false; reason: string } {
-  const { assistant, user } = record.failedOutcome ? { assistant: record.failedAssistantText ?? null, user: lastUserMessage(timeline) } : turnText(timeline);
+  const { assistant, user } = record.failedOutcome ? { assistant: record.failedAssistantText ?? null, user: lastInput(timeline) } : turnText(timeline);
   if (!assistant || assistant !== record.failedAssistantText) return { ok: false, reason: "failure-text-changed" };
   if (!user) return { ok: false, reason: "user-prompt-missing" };
   if (!isExpectedUser(record, user, lastUserMessageAt)) return { ok: false, reason: "newer-user-message" };
@@ -515,9 +537,9 @@ export function verifyTransientTimeline(record: ResumeRecord, timeline: readonly
  * after a daemon restart, the same message by its time. A rebuild gives every user row a new ID and no clientMessageId,
  * so the ID of the original human message and of the plugin's own sends no longer match. Any newer user message moves
  * the agent's lastUserMessageAt, so an unchanged lastUserMessageAt, not the ID, proves it is the same message. A row that
- * still carries a clientMessageId is a live row, whose ID must match.
+ * still carries a clientMessageId is a live row, whose ID must match; an agent message (turnInput) always is one.
  */
-export function isExpectedUser(record: Pick<ResumeRecord, "expectedUserText" | "expectedUserMessageId" | "lastUserMessageAt">, user: Extract<AgentTimelineItem, { type: "user_message" }>, lastUserMessageAt: string | null | undefined): boolean {
+export function isExpectedUser(record: Pick<ResumeRecord, "expectedUserText" | "expectedUserMessageId" | "lastUserMessageAt">, user: TurnInput, lastUserMessageAt: string | null | undefined): boolean {
   if (user.text !== record.expectedUserText) return false;
   const id = user.messageId ?? user.clientMessageId ?? null;
   if (!record.expectedUserMessageId || id === record.expectedUserMessageId) return true;
@@ -554,9 +576,9 @@ export function rpcTimeoutDecision(record: ResumeRecord, agent: AgentSnapshot, t
   if (agent.activeTurn || agent.status === "running") return { act: "stop", state: "superseded", reason: "agent-resumed-itself" };
   if (agent.status !== "idle" && agent.status !== "error") return { act: "wait", reason: `agent-status=${agent.status}` };
   if (!timeline) return { act: "wait", reason: "timeline-unavailable" };
-  const start = timeline.findLastIndex((entry) => entry.item.type === "user_message");
-  const user = timeline[start]?.item;
-  if (user?.type !== "user_message" || !isExpectedUser(record, user, agent.lastUserMessageAt)) {
+  const start = timeline.findLastIndex((entry) => !!turnInput(entry.item));
+  const user = start >= 0 ? turnInput(timeline[start]!.item) : null;
+  if (!user || !isExpectedUser(record, user, agent.lastUserMessageAt)) {
     return { act: "stop", state: "superseded", reason: "newer-user-message" };
   }
   const after = timeline.slice(start + 1).filter((entry) => entry.item.type !== "plugin");
@@ -589,7 +611,7 @@ export function attemptCount(record: ResumeRecord): number {
  * failure without its code keeps the record's evidence as it is, on the pool it came from; carried evidence never moves
  * to another pool.
  */
-export function afterTransientFailure(record: ResumeRecord, assistant: string, userText: string, userMessageId: string, lastUserMessageAt: string, config: ResumeConfig, now = Date.now(), failure: { message: string; code?: string; textOnly?: boolean } | null = null): ResumeRecord {
+export function afterTransientFailure(record: ResumeRecord, assistant: string, userText: string, userMessageId: string, lastUserMessageAt: string | null, config: ResumeConfig, now = Date.now(), failure: { message: string; code?: string; textOnly?: boolean } | null = null): ResumeRecord {
   const signature = createHash("sha256").update(assistant).digest("hex").slice(0, 24);
   const same = signature === record.failureSignature;
   const recognized = !!record.failedOutcome && !!failure && !failure.textOnly && isQuotaError(failure.message, failure.code);
@@ -734,11 +756,18 @@ export function releaseClaim(current: ResumeRecord, before: ResumeRecord, claime
   };
 }
 
-/** A distinct turn on a newer external message replaces the old work, not its failure signature or retry attempt. */
+/**
+ * A distinct turn on a newer external message replaces the old work, not its failure signature or retry attempt. A human
+ * message moves lastUserMessageAt. An agent message (Paseo 0.13) does not, so a turn whose own input is an agent message
+ * other than the one the record checks is newer work too.
+ */
 export function supersedeForNewUserTurn(record: ResumeRecord, agent: AgentSnapshot, turnId: string | null | undefined, timeline: readonly AgentTimelineItem[], now = Date.now()): ResumeRecord {
   if (!isActive(record) || !turnId || turnId === record.sourceTurnId || turnId === record.resumeTurnId) return record;
-  if (!isSameAgentAndSession(record, agent) || !agent.lastUserMessageAt || agent.lastUserMessageAt === record.lastUserMessageAt) return record;
-  const user = lastUserMessage(timeline);
+  if (!isSameAgentAndSession(record, agent)) return record;
+  const user = lastInput(timeline);
+  const newerHuman = !!agent.lastUserMessageAt && agent.lastUserMessageAt !== record.lastUserMessageAt;
+  const newerAgent = !!user?.source && (user.messageId ?? null) !== (record.expectedUserMessageId ?? null);
+  if (!newerHuman && !newerAgent) return record;
   // The plugin's own send also advances lastUserMessageAt. A missing start observation must not turn its failure
   // into an unrelated record or reset its backoff/attempt count. Incomplete evidence keeps the old recovery path.
   if (!user || isOwnLatestMessage(record, user)) return record;
@@ -768,6 +797,17 @@ export function rebindRecord(record: ResumeRecord, agent: AgentSnapshot, now = D
     notBefore: record.kind === "transient" ? record.notBefore : new Date(Math.min(Date.parse(record.notBefore), now)).toISOString(),
     updatedAt: new Date(now).toISOString(),
   };
+}
+
+/**
+ * A usage record that names its input (Paseo 0.13) still resumes that input: the newest turn input is the named one, or
+ * the record's own last send. Any other input is newer work, from a human or another agent, and ends the record. A
+ * timeline with no input at all shows nothing newer.
+ */
+export function verifyUsageInput(record: ResumeRecord, timeline: readonly AgentTimelineItem[], lastUserMessageAt: string | null | undefined): { ok: true } | { ok: false; reason: string } {
+  const user = lastInput(timeline);
+  if (!user || isOwnLatestMessage(record, user) || isExpectedUser(record, user, lastUserMessageAt)) return { ok: true };
+  return { ok: false, reason: "newer-user-message" };
 }
 
 export function shouldResume(record: ResumeRecord, agent: AgentSnapshot, config: ResumeConfig, now = Date.now()): { ok: true } | { ok: false; reason: string } {
@@ -818,8 +858,8 @@ export function resumePrompt(record: ResumeRecord): string {
   return record.kind === "transient" ? record.retryPrompt! : continuationPrompt(record);
 }
 
-// True when the newest user row is the record's latest automatic message: its stable ID and the exact text it sent.
-export function isOwnLatestMessage(record: ResumeRecord, user: Extract<AgentTimelineItem, { type: "user_message" }> | null): boolean {
+// True when the newest turn input is the record's latest automatic message: its stable ID and the exact text it sent.
+export function isOwnLatestMessage(record: ResumeRecord, user: TurnInput | null): boolean {
   const sent = record.attempts.at(-1);
   return !!sent && !!user && (user.messageId ?? user.clientMessageId) === sent.messageId && user.text === resumePrompt(record);
 }

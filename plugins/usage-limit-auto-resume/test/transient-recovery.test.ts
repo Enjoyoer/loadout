@@ -19,7 +19,14 @@ const AUTH_UNAVAILABLE = "fleet API error (503): auth_unavailable: no auth avail
 // What the plugin logged in the current lane.
 let laneLogs: string[] = [];
 
-async function recoveryLane(run: (lane: Awaited<ReturnType<typeof setup>>) => Promise<void>) {
+/** A Paseo 0.13 agent-message row: a prompt from another agent (create_agent, send_agent_prompt), or a notification. */
+const agentMessage = (id: string, text: string, event = "message") => ({
+  type: "tool_call", callId: `paseo-agent-message:${id}`, name: "agent_message", status: "completed",
+  detail: { type: "plain_text", text, icon: "bot" }, error: null,
+  agentMessage: { event, sender: { id: "pm-agent", serverId: "server-1", title: "pm" }, text },
+}) as unknown as AgentTimelineItem;
+
+async function recoveryLane(run: (lane: Awaited<ReturnType<typeof setup>>) => Promise<void>, input?: AgentTimelineItem) {
   const scratch = path.join(homedir(), ".cache", "fleet-scratch", "loadout", "autoresume-regression");
   await mkdir(scratch, { recursive: true });
   const home = await mkdtemp(path.join(scratch, "lane-"));
@@ -31,7 +38,7 @@ async function recoveryLane(run: (lane: Awaited<ReturnType<typeof setup>>) => Pr
   mock.timers.enable({ apis: ["Date", "setInterval"], now: START });
   let lane: Awaited<ReturnType<typeof setup>> | undefined;
   try {
-    lane = await setup();
+    lane = await setup(input);
     await run(lane);
   } finally {
     try {
@@ -49,21 +56,24 @@ async function recoveryLane(run: (lane: Awaited<ReturnType<typeof setup>>) => Pr
   }
 }
 
-async function setup() {
+// `input` is the source turn's input: a human's row unless a test gives another agent's message.
+async function setup(input: AgentTimelineItem = { type: "user_message", text: "Finish the task", messageId: "human-original" }) {
   const config = ConfigSchema.parse({ armed: true });
   const store = new ResumeStore();
   const snapshot: AgentSnapshot = {
     id: "retry-agent", provider: "pi", model: "fleet/gpt-6.1-sol", thinkingOptionId: "xhigh", cwd: "/repo",
     status: "error", lastError: OVERLOADED, requiresAttention: true, attentionReason: "error",
-    lastUserMessageAt: new Date(START - 1000).toISOString(), updatedAt: new Date(START).toISOString(),
+    // Only a human prompt moves lastUserMessageAt (Paseo 0.13): a worker only another agent prompted has none.
+    lastUserMessageAt: input.type === "user_message" ? new Date(START - 1000).toISOString() : null, updatedAt: new Date(START).toISOString(),
     persistence: { provider: "pi", sessionId: "retry-session", nativeHandle: "retry-session.jsonl" },
   };
-  type Entry = { item: AgentTimelineItem; timestamp: string; turnId: string; seqStart: number; seqEnd: number };
+  type Entry = { item: AgentTimelineItem; timestamp: string; turnId?: string; seqStart: number; seqEnd: number };
   let entries: Entry[] = [];
-  const append = (item: AgentTimelineItem, turnId = "source-turn") => {
-    entries.push({ item, turnId, timestamp: new Date().toISOString(), seqStart: entries.length + 1, seqEnd: entries.length + 1 });
+  // A null turn ID appends a row without one, as Paseo 0.13 appends a failed outcome's error row.
+  const append = (item: AgentTimelineItem, turnId: string | null = "source-turn") => {
+    entries.push({ item, ...(turnId ? { turnId } : {}), timestamp: new Date().toISOString(), seqStart: entries.length + 1, seqEnd: entries.length + 1 });
   };
-  append({ type: "user_message", text: "Finish the task", messageId: "human-original" });
+  append(input);
   append({ type: "assistant_message", text: `[System Error] ${OVERLOADED}` });
   const sends: Array<{ prompt: string; messageId: string }> = [];
   const handlers = new Map<string, (event: unknown, context?: unknown) => void>();
@@ -301,6 +311,97 @@ async function settles(check: () => boolean | Promise<boolean>, what: string) {
 
 /** The close handler logs once its store write has landed; waiting on the log reads no file. */
 const closeStored = (id: string) => () => laneLogs.some((line) => line.includes(`agent-closed agentId=${id} `));
+
+it("on Paseo 0.13 an agent message is the turn's input: a delegated worker retries its own task, a mixed conversation the agent's", async () => {
+  // Paseo 0.13 ends a turn with an empty timeline, so the plugin reads the tail. A worker whose only inputs are the PM's
+  // messages, and a human conversation whose newest turn came from another agent, both retry the failed turn's input.
+  for (const kind of ["delegated", "mixed"] as const) {
+    await recoveryLane(async (lane) => {
+      const id = lane.snapshot.id;
+      lane.append(agentMessage("pm-task", "Delegated task"), "agent-turn");
+      lane.append({ type: "assistant_message", text: "API Error: 529 overloaded" }, "agent-turn");
+      Object.assign(lane.snapshot, { status: "idle", activeTurn: null, lastError: undefined, requiresAttention: false, attentionReason: undefined });
+      lane.emit("agent.turn_ended", { agent: { id }, turnId: "agent-turn", outcome: { kind: "completed" }, timeline: [] });
+      await lane.plugin.idle();
+      assert.ok(laneLogs.some((line) => line.includes(`detected kind=transient agentId=${id} `) && line.includes(" input=agent-message ")), kind);
+      assert.deepEqual(lane.sends.map((send) => send.prompt), ["Delegated task"], `${kind}: the agent message is retried, never an older request`);
+      await lane.complete(START + 10_000);
+      await lane.plugin.idle();
+      assert.equal((await lane.store.read()).filter(isActive).length, 0, kind);
+    }, kind === "delegated" ? agentMessage("pm-first", "First delegated task") : undefined);
+  }
+  // A delegated worker that hits a usage limit resumes once the limit resets, unless newer work from the PM came first.
+  for (const newer of [false, true]) {
+    await recoveryLane(async (lane) => {
+      const id = lane.snapshot.id;
+      Object.assign(lane.snapshot, { activeTurn: null, lastError: "usage_limit_exceeded" });
+      lane.emit("agent.turn_ended", { agent: { id }, turnId: "source-turn", outcome: { kind: "failed", error: { message: "usage_limit_exceeded" } }, timeline: [] });
+      await lane.plugin.idle();
+      const [record] = await lane.store.read();
+      assert.deepEqual([record?.kind, record?.expectedUserText, record?.expectedUserMessageId], [undefined, "Delegated task", "pm-task"]);
+      if (newer) {
+        // The PM's next message runs and succeeds before the reset. It does not move lastUserMessageAt.
+        mock.timers.setTime(START + 5_000);
+        lane.append(agentMessage("pm-next", "Newer task"), "newer-turn");
+        Object.assign(lane.snapshot, { status: "running", activeTurn: { turnId: "newer-turn" }, lastError: undefined });
+        lane.emit("agent.turn_started", { agent: { id }, turnId: "newer-turn" });
+        lane.append({ type: "assistant_message", text: "Done." }, "newer-turn");
+        Object.assign(lane.snapshot, { status: "idle", activeTurn: null, requiresAttention: false, attentionReason: undefined });
+        lane.emit("agent.turn_ended", { agent: { id }, turnId: "newer-turn", outcome: { kind: "completed" }, timeline: [] });
+        await lane.plugin.idle();
+      }
+      await lane.sweep(START + 6 * 3600_000);
+      assert.equal(lane.sends.length, newer ? 0 : 1, newer ? "newer work supersedes the usage record" : "the worker resumes");
+      if (newer) assert.equal((await lane.store.read())[0]?.state, "superseded");
+    }, agentMessage("pm-task", "Delegated task"));
+  }
+});
+
+it("on Paseo 0.13 a failed heartbeat turn, which has no row of its own, is retried or resumed as before", async () => {
+  // Paseo drops a heartbeat's prompt from the timeline and appends the failed outcome's error row with no turn ID, so the
+  // tail's newest input is the previous turn's. No turn started since the end, so the failure is not stale.
+  for (const kind of ["transient", "usage"] as const) {
+    await recoveryLane(async (lane) => {
+      const id = lane.snapshot.id;
+      const message = kind === "usage" ? "usage_limit_exceeded" : OVERLOADED;
+      mock.timers.setTime(START + 60_000);
+      lane.append({ type: "assistant_message", text: `[System Error] ${message}` }, null);
+      Object.assign(lane.snapshot, { status: "error", activeTurn: null, lastError: message, updatedAt: new Date().toISOString() });
+      lane.emit("agent.turn_ended", { agent: { id }, turnId: "heartbeat-turn", outcome: { kind: "failed", error: { message } }, timeline: [] });
+      await lane.plugin.idle();
+      assert.ok(!laneLogs.some((line) => line.includes("stale-turn-end")), kind);
+      assert.equal((await lane.store.read())[0]?.sourceTurnId, "heartbeat-turn", `${kind}: the heartbeat failure has its record`);
+      if (kind === "usage") await lane.sweep(START + 6 * 3600_000);
+      assert.equal(lane.sends.length, 1, `${kind}: the heartbeat failure is retried or resumed`);
+      if (kind === "transient") assert.equal(lane.sends[0]!.prompt, "continue");
+    });
+  }
+});
+
+it("on Paseo 0.13 a failed turn whose tail is read after a newer turn began is stale and sends nothing", async () => {
+  // The turn ends with an empty timeline. Its read is held before the agent read or before the timeline read, while
+  // the owner's next request runs and succeeds; the old failure must not bind that request and send a stale continue.
+  for (const held of ["agent-read", "timeline-read"] as const) {
+    await recoveryLane(async (lane) => {
+      const id = lane.snapshot.id;
+      lane.snapshot.activeTurn = null;
+      const hold = held === "agent-read" ? lane.holdNextRefresh() : lane.holdRead(1);
+      lane.emit("agent.turn_ended", { agent: { id }, turnId: "source-turn", outcome: { kind: "failed", error: { message: OVERLOADED } }, timeline: [] });
+      await settles(hold.reached, `the ${held}`);
+      mock.timers.setTime(START + 1_000);
+      lane.append({ type: "user_message", text: "New work", messageId: "human-new" }, "human-turn");
+      Object.assign(lane.snapshot, { status: "running", activeTurn: { turnId: "human-turn" }, lastError: undefined, lastUserMessageAt: new Date().toISOString() });
+      lane.emit("agent.turn_started", { agent: { id }, turnId: "human-turn" });
+      await lane.complete(START + 2_000);
+      hold.release();
+      await lane.plugin.idle();
+      assert.ok(laneLogs.includes(`[usage-limit-auto-resume] stale-turn-end agentId=${id} turnId=source-turn reason=newer-turn`), held);
+      await lane.sweep(START + 3600_000);
+      assert.equal(lane.sends.length, 0, `${held}: no stale continue`);
+      assert.equal((await lane.store.read()).length, 0, `${held}: no record for the old turn`);
+    });
+  }
+});
 
 it("a rebuilt timeline keeps a waiting retry, before its first send or after its own continue, until a newer user message", async () => {
   // Quota held the first retry, so nothing was sent; the daemon restarts and rebuilds the original human row.

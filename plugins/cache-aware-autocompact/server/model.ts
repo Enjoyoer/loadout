@@ -1,6 +1,7 @@
 import type { AgentTimelineItem, ToolCallTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import type { AutoCompactConfig } from "./config.ts";
+import { turnInput } from "./vendor/turn-input.ts";
 
 export type AgentSnapshot = AgentSnapshotPayload;
 export type Decision = { ok: true; reason: string } | { ok: false; reason: string };
@@ -116,13 +117,13 @@ export function guardDecision(
 
 /**
  * The part of a timeline a checkpoint keeps: every unsettled tool call (the boundary guard), the
- * latest user message (the automatic-compact check) and the last three items (the key of a turn
- * without an ID). A turn-end hook carries the agent's whole in-memory timeline, so keeping all of it
- * held every tool output of every agent with a pending timer. The guard, the key and the compact
- * check read the same values from this subset as from the whole timeline.
+ * latest turn input, a user message or a Paseo 0.13 agent message (the automatic-compact check), and
+ * the last three items (the key of a turn without an ID). A turn-end hook carries the agent's whole
+ * in-memory timeline, so keeping all of it held every tool output of every agent with a pending timer.
+ * The guard, the key and the compact check read the same values from this subset as from the whole timeline.
  */
 export function checkpointTimeline(timeline: readonly AgentTimelineItem[]): AgentTimelineItem[] {
-  const latestUser = timeline.findLastIndex((item) => item.type === "user_message");
+  const latestUser = timeline.findLastIndex((item) => turnInput(item) !== null);
   const tail = timeline.length - 3;
   return timeline.filter((item, index) => index >= tail || index === latestUser || unsettledTool(item));
 }

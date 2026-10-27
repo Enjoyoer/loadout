@@ -42,6 +42,8 @@ describe("StateStore", () => {
     await store.append({ key: "a:t3", agentId: "a", turnId: "t3", lastUserMessageAt: null, createdAt: "4", outcome: "skip", reason: "q" }, 2);
     const entries = await store.read();
     assert.deepEqual(entries.map((entry) => entry.key), ["a:t2", "a:t3"]);
+    await store.append({ ...entry("a:t4"), inputId: "agent-message-1" }, 2);
+    assert.equal((await store.read()).at(-1)?.inputId, "agent-message-1");
   });
 
   it("rejects malformed records instead of acting on them, and leaves the file alone", async () => {
@@ -52,6 +54,8 @@ describe("StateStore", () => {
       { version: 1, entries: [null] },
       { version: 1, entries: [{ ...entry("a:t1"), outcome: "deleted" }] },
       { version: 1, entries: [{ ...entry("a:t1"), createdAt: "not-a-date" }] },
+      { version: 1, entries: [{ ...entry("a:t1"), inputId: 7 }] },
+      { version: 1, entries: [], turns: [{ ...turn, inputId: null }] },
       { version: 1, entries: [], turns: "a:t1" },
       { version: 1, entries: [], turns: [{ ...turn, endedAt: "not-a-date" }] },
       { version: 1, entries: [], turns: [{ ...turn, timeline: [{ type: "tool_call" }] }] },

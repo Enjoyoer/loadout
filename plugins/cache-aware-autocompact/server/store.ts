@@ -10,6 +10,8 @@ export type StateEntry = {
   agentId: string;
   turnId: string | null;
   lastUserMessageAt: string | null;
+  /** The checkpoint's inputId: its turn's Paseo 0.13 agent-message input. */
+  inputId?: string;
   createdAt: string;
   /** Original request time, retained when a late result replaces the reservation. */
   attemptedAt?: string;
@@ -30,7 +32,8 @@ function isEntry(value: unknown): value is StateEntry {
   if (typeof value !== "object" || value === null) return false;
   const entry = value as Record<string, unknown>;
   return typeof entry.key === "string" && typeof entry.agentId === "string" && isOptionalString(entry.turnId) &&
-    isOptionalString(entry.lastUserMessageAt) && isTime(entry.createdAt) && (entry.attemptedAt === undefined || isTime(entry.attemptedAt)) &&
+    isOptionalString(entry.lastUserMessageAt) && (entry.inputId === undefined || typeof entry.inputId === "string") &&
+    isTime(entry.createdAt) && (entry.attemptedAt === undefined || isTime(entry.attemptedAt)) &&
     typeof entry.outcome === "string" && Object.hasOwn(OUTCOMES, entry.outcome) && typeof entry.reason === "string";
 }
 
@@ -45,7 +48,8 @@ function isTurn(value: unknown): value is Checkpoint {
   const turn = value as Record<string, unknown>;
   return typeof turn.agentId === "string" && isOptionalString(turn.turnId) && typeof turn.key === "string" &&
     Array.isArray(turn.timeline) && turn.timeline.every(isRememberedTool) &&
-    isOptionalString(turn.lastUserMessageAt) && Number.isSafeInteger(turn.retryCount) && (turn.retryCount as number) >= 0 && isTime(turn.endedAt);
+    isOptionalString(turn.lastUserMessageAt) && (turn.inputId === undefined || typeof turn.inputId === "string") &&
+    Number.isSafeInteger(turn.retryCount) && (turn.retryCount as number) >= 0 && isTime(turn.endedAt);
 }
 
 // The same home the daemon endpoint resolver uses, so state lives with the daemon it serves.
