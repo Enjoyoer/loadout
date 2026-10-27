@@ -13,8 +13,9 @@ import type { AgentView, Decision, WorkspaceView } from "./types.ts";
 //   requires a clean tree. Otherwise it is kept and reported to its PM once.
 //
 // Stale means no activity for at least staleWorkspaceMinutes, where activity is the latest of the
-// timestamps Paseo exposes for the workspace and for every agent it ever held (archived included):
-// see lastActivity().
+// timestamps Paseo exposes for the workspace and for every agent it ever held (archived included),
+// leaving out the ones an agent's archive stamps, plus a worktree's HEAD committer date: see
+// lastActivity() and evaluateCleanup().
 
 /** Merge-test results that mean "unmerged or dirty": kept, and the PM is told once. */
 const NOTIFY_REASONS = [
@@ -64,21 +65,36 @@ function parse(value: string | null | undefined): number | null {
 /**
  * Latest activity Paseo exposes for a workspace: its creation, status entry, activity and last user
  * message times, and for every agent it ever held (archived included) creation, update, last user
- * message, attention and archive times. Scripts and terminals expose no times; a running one blocks
- * cleanup instead. The workspace record's own updatedAt is not exposed. Null when there is none.
+ * message and attention times. Archiving is not activity: an agent's archive stamps its archivedAt
+ * and its updatedAt with the same moment, and when the last busy agent leaves, Paseo stamps the
+ * workspace's statusEnteredAt with that moment too. So archivedAt never counts, an archived agent's
+ * updatedAt counts only when it is earlier than its archivedAt, and statusEnteredAt counts only when
+ * it is earlier than the newest archivedAt. Scripts and terminals expose no times; a running one
+ * blocks cleanup instead. The workspace record's own updatedAt is not exposed. Null when there is none.
  */
 export function lastActivity(workspace: WorkspaceView, history: readonly AgentView[]): number | null {
-  const values = [
-    workspace.createdAt,
-    workspace.statusEnteredAt,
-    workspace.activityAt,
-    workspace.lastUserMessageAt,
-    ...history.flatMap((agent) => [agent.createdAt, agent.updatedAt, agent.lastUserMessageAt, agent.attentionTimestamp, agent.archivedAt]),
+  let newestArchive: number | null = null;
+  for (const agent of history) {
+    const archivedAt = parse(agent.archivedAt);
+    if (archivedAt !== null && (newestArchive === null || archivedAt > newestArchive)) newestArchive = archivedAt;
+  }
+  const statusEnteredAt = parse(workspace.statusEnteredAt);
+  const values: Array<number | null> = [
+    parse(workspace.createdAt),
+    statusEnteredAt !== null && (newestArchive === null || statusEnteredAt < newestArchive) ? statusEnteredAt : null,
+    parse(workspace.activityAt),
+    parse(workspace.lastUserMessageAt),
   ];
+  for (const agent of history) {
+    values.push(parse(agent.createdAt), parse(agent.lastUserMessageAt), parse(agent.attentionTimestamp));
+    const updatedAt = parse(agent.updatedAt);
+    const archivedAt = parse(agent.archivedAt);
+    // An archived agent whose archive time cannot be read keeps its updatedAt (counts as more recent).
+    if (updatedAt !== null && (!agent.archivedAt || archivedAt === null || updatedAt < archivedAt)) values.push(updatedAt);
+  }
   let latest: number | null = null;
   for (const value of values) {
-    const parsed = parse(value);
-    if (parsed !== null && (latest === null || parsed > latest)) latest = parsed;
+    if (value !== null && (latest === null || value > latest)) latest = value;
   }
   return latest;
 }
@@ -87,11 +103,15 @@ function hasNoArchiveWorkspaceLabel(workspace: WorkspaceView): boolean {
   return (workspace.labels ?? []).some((label) => label.split(/[=:]/, 1)[0]!.trim().toLowerCase() === "noarchive");
 }
 
-/** Short git facts for a report: `<sha7> <committer date> <subject>`, or null when git cannot tell. */
-async function lastCommit(directory: string, ctx: CleanupContext): Promise<string | null> {
+/**
+ * A worktree's HEAD commit: `<sha7> <committer date> <subject>` for the report, and the committer
+ * date as activity (work committed after the last message). Null when git cannot tell.
+ */
+async function headCommit(directory: string, ctx: CleanupContext): Promise<{ line: string; at: number } | null> {
   const result = await ctx.deps.merge.run("git", ["log", "-1", "--format=%h %cI %s"], directory, ctx.config.commandTimeoutSeconds * 1000);
-  const line = result.code === 0 ? result.stdout.trim().split("\n")[0]?.trim() : "";
-  return line ? line.slice(0, 200) : null;
+  const line = result.code === 0 ? result.stdout.trim().split("\n")[0]?.trim() ?? "" : "";
+  const at = parse(/^\S+ (\S+)/.exec(line)?.[1]);
+  return line && at !== null ? { line: line.slice(0, 200), at } : null;
 }
 
 /** Decide one agentless workspace that isCleanupEntry() handed over. */
@@ -125,7 +145,16 @@ export async function evaluateCleanup(workspace: WorkspaceView, ctx: CleanupCont
   if (runningScript) return decision("skip", `script-${runningScript.lifecycle}(${runningScript.scriptName})`);
   if (ctx.terminals > 0) return decision("skip", `terminals(${ctx.terminals})`);
 
-  const latest = lastActivity(workspace, ctx.history);
+  const directory = workspace.workspaceDirectory;
+  const isDirectory = await ctx.deps.fs.isDirectory(directory);
+  if (isDirectory === false) return decision("skip", "path-missing(left to Paseo)");
+  if (isDirectory === null) return decision("skip", "ambiguous(path not statable)");
+
+  // A worktree's HEAD committer date is activity too; a worktree whose HEAD git cannot read is skipped.
+  const head = worktree ? await headCommit(directory, ctx) : null;
+  if (worktree && !head) return decision("skip", "ambiguous(HEAD commit unreadable)");
+  const paseoLatest = lastActivity(workspace, ctx.history);
+  const latest = head && (paseoLatest === null || head.at > paseoLatest) ? head.at : paseoLatest;
   if (latest === null) return decision("skip", "ambiguous(no activity timestamp)");
   lastActivityAt = new Date(latest).toISOString();
   const idleMinutes = Math.floor((ctx.deps.now() - latest) / 60_000);
@@ -133,11 +162,6 @@ export async function evaluateCleanup(workspace: WorkspaceView, ctx: CleanupCont
     return decision("skip", `recent(idle=${Math.max(0, idleMinutes)}m, stale after ${ctx.config.staleWorkspaceMinutes}m)`);
   }
   const idle = `idle=${formatAge(idleMinutes * 60_000)}`;
-
-  const directory = workspace.workspaceDirectory;
-  const isDirectory = await ctx.deps.fs.isDirectory(directory);
-  if (isDirectory === false) return decision("skip", "path-missing(left to Paseo)");
-  if (isDirectory === null) return decision("skip", "ambiguous(path not statable)");
 
   if (!worktree) {
     // Paseo removes a directory on archive only for a Paseo-owned worktree; a record that claims one is left alone.
@@ -156,7 +180,7 @@ export async function evaluateCleanup(workspace: WorkspaceView, ctx: CleanupCont
   if (!ctx.notified) return decision("skip", `${merge.reason}; notify-state-unreadable`, facts);
   const earlier = ctx.notified.get(workspace.id);
   if (earlier) return decision("skip", `${merge.reason}; already-notified(${earlier.at} ${earlier.status})`, facts);
-  return decision("notify", `${merge.reason}; ${idle}`, { ...facts, lastCommit: await lastCommit(directory, ctx) });
+  return decision("notify", `${merge.reason}; ${idle}`, { ...facts, lastCommit: head?.line ?? null });
 }
 
 export type OwnerResolution =

@@ -213,7 +213,10 @@ it("workspace cleanup previews until armWorkspaceCleanup is also on, then archiv
         return { archivedAt: new Date(NOW).toISOString(), error: null };
       },
     },
-    agents: { list: async () => page(agents.map((entry) => ({ agent: entry }))) },
+    agents: {
+      list: async (options) => page(agents.filter((entry) => options?.filter?.includeArchived || !entry.archivedAt).map((entry) => ({ agent: entry }))),
+      get: async (agentId) => agents.find((entry) => entry.id === agentId) ?? null,
+    },
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
     supportsBackgroundWorkspaces: () => false,
@@ -260,4 +263,48 @@ it("workspace cleanup previews until armWorkspaceCleanup is also on, then archiv
   // Once per worktree: the next armed sweep keeps it and sends nothing.
   assert.deepEqual(await sweep({ armed: true, armWorkspaceCleanup: true }), ["skip wks_pm", "skip wks_wt"]);
   assert.equal(sends.length, 1);
+});
+
+it("an agent history listing that fails leaves out workspace cleanup only: the worker sweep still archives", async () => {
+  const page = <T>(entries: T[]) => ({ entries, pageInfo: { nextCursor: null, hasMore: false } });
+  const workspaces = [workspace({ id: "wks_worker" }), workspace({ id: "wks_local", workspaceKind: "local_checkout", workspaceDirectory: "/checkout" })];
+  const archiveCalls: string[] = [];
+  const api: ArchiverApi = {
+    workspaces: {
+      list: async () => page(workspaces.filter((ws) => !archiveCalls.includes(ws.id))),
+      archive: async (workspaceId) => {
+        archiveCalls.push(workspaceId);
+        return { archivedAt: new Date(NOW).toISOString(), error: null };
+      },
+    },
+    agents: {
+      list: async (options) => {
+        if (options?.filter?.includeArchived) throw new Error("agent history exceeded 50 pages");
+        return page([{ agent: agent({ id: "agent-worker", workspaceId: "wks_worker" }) }]);
+      },
+    },
+    projects: { list: async () => ({ projects: [] }) },
+    terminals: { list: async () => ({ entries: [] }) },
+    supportsBackgroundWorkspaces: () => false,
+  };
+  const s = scenario({ ancestors: { "refs/heads/main": 0 } });
+  const fs = fakeFs(s);
+  const lines: string[] = [];
+  const notifyStore = memoryNotifyStore();
+  const sweeper = new Sweeper({
+    acquireApi: async () => ({ api, release: async () => undefined }),
+    log: (line) => lines.push(line),
+    fs,
+    merge: { run: fakeRunner(s), fs },
+    resolveCommonDir: async () => null,
+    now: () => NOW,
+    notifyStore,
+  });
+  const result = await sweeper.sweep(defaultConfig({ armed: true, armWorkspaceCleanup: true, staleWorkspaceMinutes: 60 }), { trigger: "test" });
+  assert.equal(result.error, null);
+  assert.deepEqual(archiveCalls, ["wks_worker"]);
+  assert.ok(lines.some((line) => line.startsWith("[merged-worker-archiver] cleanup-skipped ") && line.includes("agent history exceeded 50 pages")));
+  const done = JSON.parse(lines.find((line) => line.includes("sweep-done"))!.replace(/^\[merged-worker-archiver\] sweep-done /, ""));
+  assert.equal(done.cleanupSkipped, "agent history exceeded 50 pages");
+  assert.equal(notifyStore.writes, 0);
 });

@@ -20,6 +20,8 @@ export interface ArchiverApi {
   };
   agents: {
     list(options?: PageRequest & { filter?: { includeBackground?: boolean; includeArchived?: boolean } }): Promise<Page<{ agent: AgentView }>>;
+    /** One agent by id, archived included; null when there is none. Read just before a PM report is sent. */
+    get?(agentId: string): Promise<AgentView | null>;
   };
   projects: {
     list(): Promise<{ projects: ReadonlyArray<{ projectRootPath?: string | null }> }>;
@@ -33,8 +35,11 @@ export interface ArchiverApi {
    * agent listing must then ask for; older daemons have none, and the client refuses the filter there.
    */
   supportsBackgroundWorkspaces(): boolean;
-  /** Prompt an agent; the daemon keeps a receipt per (agent, messageId) and never delivers one twice. */
-  sendAgentMessage?(agentId: string, text: string, options: { messageId: string }): Promise<unknown>;
+  /**
+   * Prompt an agent; the daemon keeps a receipt per (agent, messageId) and never delivers one twice.
+   * "steer" adds the text to a turn that started meanwhile where the provider can steer.
+   */
+  sendAgentMessage?(agentId: string, text: string, options: { messageId: string; activeTurnBehavior: "steer" }): Promise<unknown>;
 }
 
 export interface ApiLease {
@@ -125,12 +130,18 @@ interface Snapshot {
   workspaces: WorkspaceView[];
   /** Non-archived agents per workspace. */
   agentsByWorkspace: Map<string, AgentView[]>;
-  projectRoots: string[];
-  /** Workspace cleanup only (full sweeps): every agent per workspace, archived included. */
-  historyByWorkspace: Map<string, AgentView[]>;
-  /** Workspace cleanup only: every non-archived agent on the daemon. */
+  /** Every non-archived agent on the daemon. */
   liveAgents: AgentView[];
-  /** Workspace cleanup only: live terminals per workspace. */
+  projectRoots: string[];
+  /** What workspace cleanup reads, when asked for; null when it could not be read (see cleanupError). */
+  cleanup: CleanupData | null;
+  cleanupError: string | null;
+}
+
+interface CleanupData {
+  /** Every agent per workspace, archived included. */
+  historyByWorkspace: Map<string, AgentView[]>;
+  /** Live terminals per workspace. */
   terminalsByWorkspace: Map<string, number>;
 }
 
@@ -142,37 +153,55 @@ function group<T>(map: Map<string, T[]>, key: string, value: T): void {
 
 /**
  * Live state. Background workspaces and their agents are listed whenever the daemon has them; a
- * client that cannot say whether it does aborts the sweep. `cleanup` also lists archived agents and
- * terminals, which only workspace cleanup reads.
+ * client that cannot say whether it does aborts the sweep, as does a failed or incomplete workspace,
+ * agent or project list. `withCleanup` also lists every agent with archived ones (a separate, larger
+ * listing) and the terminals, which only workspace cleanup reads: if either fails or is incomplete,
+ * only cleanup is left out (`cleanup` null), never the worker sweep.
  */
-async function snapshot(api: ArchiverApi, cleanup: boolean): Promise<Snapshot> {
+async function snapshot(api: ArchiverApi, withCleanup: boolean): Promise<Snapshot> {
   if (typeof api.supportsBackgroundWorkspaces !== "function") throw new Error("daemon client cannot tell whether background workspaces exist");
   const background = api.supportsBackgroundWorkspaces() === true;
-  const workspaceFilter = background ? { filter: { includeBackground: true } } : {};
-  const agentFilter = background || cleanup ? { filter: { ...(background ? { includeBackground: true } : {}), ...(cleanup ? { includeArchived: true } : {}) } } : {};
+  const backgroundFilter = background ? { includeBackground: true } : {};
   const page = (cursor?: string) => ({ page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) } });
-  const workspaces = await listAll((cursor) => api.workspaces.list({ ...workspaceFilter, ...page(cursor) }), "workspaces");
-  const agentEntries = await listAll((cursor) => api.agents.list({ ...agentFilter, ...page(cursor) }), "agents");
+  const workspaces = await listAll((cursor) => api.workspaces.list({ ...(background ? { filter: backgroundFilter } : {}), ...page(cursor) }), "workspaces");
+  const agentEntries = await listAll((cursor) => api.agents.list({ ...(background ? { filter: backgroundFilter } : {}), ...page(cursor) }), "agents");
   const agentsByWorkspace = new Map<string, AgentView[]>();
-  const historyByWorkspace = new Map<string, AgentView[]>();
   const liveAgents: AgentView[] = [];
   for (const { agent } of agentEntries) {
-    if (!agent.archivedAt) liveAgents.push(agent);
-    if (!agent.workspaceId) continue;
-    if (cleanup) group(historyByWorkspace, agent.workspaceId, agent);
-    if (!agent.archivedAt) group(agentsByWorkspace, agent.workspaceId, agent);
+    if (agent.archivedAt) continue;
+    liveAgents.push(agent);
+    if (agent.workspaceId) group(agentsByWorkspace, agent.workspaceId, agent);
   }
-  const terminalsByWorkspace = new Map<string, number>();
-  if (cleanup) {
-    if (typeof api.terminals?.list !== "function") throw new Error("terminal list unavailable");
-    const { entries } = await api.terminals.list();
-    if (!Array.isArray(entries)) throw new Error("terminal list malformed");
-    for (const terminal of entries) {
-      if (!terminal.workspaceId) throw new Error(`terminal ${terminal.id} has no workspace`);
-      terminalsByWorkspace.set(terminal.workspaceId, (terminalsByWorkspace.get(terminal.workspaceId) ?? 0) + 1);
+  const roots = await projectRoots(api);
+  let cleanup: CleanupData | null = null;
+  let cleanupError: string | null = null;
+  if (withCleanup) {
+    try {
+      cleanup = await cleanupData(api, backgroundFilter, page);
+    } catch (error) {
+      cleanupError = error instanceof Error ? error.message : String(error);
     }
   }
-  return { workspaces, agentsByWorkspace, projectRoots: await projectRoots(api), historyByWorkspace, liveAgents, terminalsByWorkspace };
+  return { workspaces, agentsByWorkspace, liveAgents, projectRoots: roots, cleanup, cleanupError };
+}
+
+async function cleanupData(
+  api: ArchiverApi,
+  backgroundFilter: { includeBackground?: boolean },
+  page: (cursor?: string) => PageRequest,
+): Promise<CleanupData> {
+  const history = await listAll((cursor) => api.agents.list({ filter: { ...backgroundFilter, includeArchived: true }, ...page(cursor) }), "agent history");
+  const historyByWorkspace = new Map<string, AgentView[]>();
+  for (const { agent } of history) if (agent.workspaceId) group(historyByWorkspace, agent.workspaceId, agent);
+  if (typeof api.terminals?.list !== "function") throw new Error("terminal list unavailable");
+  const { entries } = await api.terminals.list();
+  if (!Array.isArray(entries)) throw new Error("terminal list malformed");
+  const terminalsByWorkspace = new Map<string, number>();
+  for (const terminal of entries) {
+    if (!terminal.workspaceId) throw new Error(`terminal ${terminal.id} has no workspace`);
+    terminalsByWorkspace.set(terminal.workspaceId, (terminalsByWorkspace.get(terminal.workspaceId) ?? 0) + 1);
+  }
+  return { historyByWorkspace, terminalsByWorkspace };
 }
 
 export function formatDecision(decision: Decision, action: string, extra: Record<string, unknown> = {}): string {
@@ -189,7 +218,10 @@ export function formatDecision(decision: Decision, action: string, extra: Record
   })}`;
 }
 
-/** The worker decision, or for a full sweep the workspace cleanup decision it hands over to. */
+/**
+ * The worker decision, or for a full sweep the workspace cleanup decision it hands over to. Without
+ * cleanup data in the snapshot the worker decision stands.
+ */
 async function decide(
   workspace: WorkspaceView,
   state: Snapshot,
@@ -199,13 +231,13 @@ async function decide(
 ): Promise<Decision> {
   const agents = state.agentsByWorkspace.get(workspace.id) ?? [];
   const decision = await evaluateWorkspace(workspace, agents, config, deps, state.projectRoots);
-  if (!cleanup || !isCleanupEntry(decision)) return decision;
+  if (!cleanup || !state.cleanup || !isCleanupEntry(decision)) return decision;
   return evaluateCleanup(workspace, {
     config,
     deps,
     agents,
-    history: state.historyByWorkspace.get(workspace.id) ?? [],
-    terminals: state.terminalsByWorkspace.get(workspace.id) ?? 0,
+    history: state.cleanup.historyByWorkspace.get(workspace.id) ?? [],
+    terminals: state.cleanup.terminalsByWorkspace.get(workspace.id) ?? 0,
     notified: cleanup.notified,
   });
 }
@@ -289,15 +321,20 @@ export class Sweeper {
     const archived: string[] = [];
     try {
       const state = await snapshot(lease.api, fullSweep);
+      // Cleanup data that cannot be read leaves out workspace cleanup only; the worker sweep goes on.
+      const cleanupRuns = fullSweep && state.cleanup !== null;
+      if (fullSweep && !cleanupRuns) {
+        log(`[merged-worker-archiver] cleanup-skipped reason=${JSON.stringify(state.cleanupError)} (worker sweep continues; workspace cleanup waits for the next full sweep)`);
+      }
       let notified: Map<string, NotifiedEntry> | null = null;
-      if (fullSweep) {
+      if (cleanupRuns) {
         try {
           notified = await this.deps.notifyStore.read();
         } catch (error) {
           log(`[merged-worker-archiver] notify-state-unreadable reason=${JSON.stringify(error instanceof Error ? error.message : String(error))} (no PM report is sent until it is fixed or removed)`);
         }
       }
-      const cleanupInput = fullSweep ? { notified } : null;
+      const cleanupInput = cleanupRuns ? { notified } : null;
       const inScope = options.triggerWorkspaceIds
         ? await this.scope(state.workspaces, options.triggerWorkspaceIds)
         : state.workspaces;
@@ -370,6 +407,10 @@ export class Sweeper {
           log(formatDecision({ ...decision, reason: "recheck: workspace gone" }, "skip"));
           continue;
         }
+        if (decision.cleanup && !fresh.cleanup) {
+          log(formatDecision({ ...decision, reason: `recheck: cleanup data unavailable: ${fresh.cleanupError}` }, "skip"));
+          continue;
+        }
         const recheck = await decide(freshWorkspace, fresh, config, this.deps, decision.cleanup ? cleanupInput : null);
         if (recheck.action !== "archive" || recheck.cleanup !== decision.cleanup) {
           log(formatDecision({ ...recheck, reason: `recheck: ${recheck.reason}` }, "skip"));
@@ -393,7 +434,7 @@ export class Sweeper {
         log(formatDecision({ ...recheck, reason: `${recheck.reason}; ${failure}; back-off ${sweeps} sweep(s)` }, "archive-failed"));
       }
       const reported = await this.report(lease.api, toNotify, state, notified, config, cleanupDryRun);
-      if (fullSweep && notified && !cleanupDryRun) await this.pruneNotified(notified, state);
+      if (cleanupRuns && notified && !cleanupDryRun) await this.pruneNotified(notified, state);
       const counts = decisions.reduce<Record<string, number>>((acc, decision) => {
         const key = !decision.candidate
           ? "nonCandidate"
@@ -419,7 +460,9 @@ export class Sweeper {
         `[merged-worker-archiver] sweep-done ${JSON.stringify({
           trigger: options.trigger,
           mode: dryRun ? "dry-run" : "armed",
-          ...(fullSweep ? { cleanupMode: cleanupDryRun ? "dry-run" : "armed", cleanup, reports: reported } : {}),
+          ...(fullSweep
+            ? { cleanupMode: cleanupDryRun ? "dry-run" : "armed", cleanup, reports: reported, ...(cleanupRuns ? {} : { cleanupSkipped: state.cleanupError }) }
+            : {}),
           evaluated: decisions.length,
           nonCandidates,
           counts,
@@ -442,10 +485,12 @@ export class Sweeper {
 
   /**
    * Tell each kept worktree's PM about it, once. Armed: live state is re-read, every gate re-run and
-   * the PM resolved again just before sending; one message per PM, at most MAX_REPORT_ITEMS worktrees
-   * each. A worktree is recorded as reported before the message goes out, so it is never reported
-   * twice: a refusal before delivery (the PM is mid-turn, or gone) removes the record again, any other
-   * failure keeps it as `unconfirmed`. Returns the worktrees reported (or, in dry-run, that would be).
+   * the PM resolved again, and right before each send the PM's own status is read again (only an
+   * idle or closed, unarchived PM without a pending permission is sent to, with "steer"); one message
+   * per PM, at most MAX_REPORT_ITEMS worktrees each. A worktree is recorded as reported before the
+   * message goes out, so it is never reported twice: a refusal before delivery (the PM is gone)
+   * removes the record again, any other failure keeps it as `unconfirmed`. Returns the worktrees
+   * reported (or, in dry-run, that would be).
    */
   private async report(
     api: ArchiverApi,
@@ -461,6 +506,12 @@ export class Sweeper {
     let confirmed = candidates;
     if (!wouldOnly) {
       current = await snapshot(api, true);
+      if (!current.cleanup) {
+        for (const candidate of candidates) {
+          log(formatDecision(candidate, "notify-deferred", { why: `cleanup data unavailable, next full sweep: ${current.cleanupError}` }));
+        }
+        return [];
+      }
       confirmed = [];
       for (const candidate of candidates) {
         const workspace = current.workspaces.find((entry) => entry.id === candidate.workspaceId);
@@ -475,7 +526,7 @@ export class Sweeper {
     const groups = new Map<string, Array<{ decision: Decision; directory: string; via: string }>>();
     for (const decision of confirmed) {
       const workspace = current.workspaces.find((entry) => entry.id === decision.workspaceId)!;
-      const owner = resolveOwner(workspace, current.historyByWorkspace.get(workspace.id) ?? [], current.liveAgents);
+      const owner = resolveOwner(workspace, current.cleanup?.historyByWorkspace.get(workspace.id) ?? [], current.liveAgents);
       const directory = workspace.workspaceDirectory ?? "";
       if (owner.kind !== "agent") {
         const detail = owner.kind === "none" ? `no owner: ${owner.detail}` : `several owners: ${owner.agentIds.join(",")}`;
@@ -501,15 +552,25 @@ export class Sweeper {
         }
         continue;
       }
-      // A message to an agent in a turn interrupts it, and it clears a pending permission request: wait for a quiet PM.
-      const owner = current.liveAgents.find((agent) => agent.id === agentId);
-      const busy = !owner
-        ? "not live"
-        : owner.status === "running" || owner.status === "initializing"
-          ? owner.status
-          : (owner.pendingPermissions?.length ?? 0) > 0
-            ? "pending permission"
-            : null;
+      // Send only to a quiet PM, read again right here: the rechecks above can take tens of seconds.
+      // A message to an agent in a turn interrupts or steers it, one with a pending permission request
+      // clears it, and one to an archived agent unarchives it.
+      let busy: string | null;
+      try {
+        if (typeof api.agents.get !== "function") throw new Error("agent lookup unavailable");
+        const owner = await api.agents.get(agentId);
+        busy = !owner
+          ? "gone"
+          : owner.archivedAt
+            ? "archived"
+            : owner.status === "running" || owner.status === "initializing"
+              ? owner.status
+              : (owner.pendingPermissions?.length ?? 0) > 0
+                ? "pending permission"
+                : null;
+      } catch (error) {
+        busy = `status unreadable (${error instanceof Error ? error.message : String(error)})`;
+      }
       if (busy) {
         for (const item of batch) log(lineFor(item, "notify-deferred", { why: `PM ${busy}; next full sweep` }));
         continue;
@@ -529,7 +590,7 @@ export class Sweeper {
       let outcome: { status: NotifiedEntry["status"] | "retry"; why?: string };
       try {
         if (typeof api.sendAgentMessage !== "function") throw new Error("agent messaging unavailable");
-        await api.sendAgentMessage(agentId, text, { messageId });
+        await api.sendAgentMessage(agentId, text, { messageId, activeTurnBehavior: "steer" });
         outcome = { status: "sent" };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

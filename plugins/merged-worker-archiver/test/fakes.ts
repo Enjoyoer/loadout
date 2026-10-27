@@ -24,6 +24,8 @@ export interface GitScenario {
   ahead: number;
   gh: Partial<CommandResult> | null;
   prHeadAncestor: number;
+  /** Committer date of HEAD (`git log -1`). */
+  commitDate: string;
   /** Make the git call whose args include this token time out. */
   timeoutOn?: string;
   /** Make the git call whose args include this token fail with exit 128. */
@@ -44,6 +46,7 @@ export function scenario(overrides: Partial<GitScenario> = {}): GitScenario {
     ahead: 2,
     gh: null,
     prHeadAncestor: 0,
+    commitDate: "2026-09-22T10:00:00Z",
     ...overrides,
   };
 }
@@ -101,6 +104,8 @@ export function fakeRunner(s: GitScenario, calls: Recorded[] = []): CommandRunne
       }
       case "rev-list":
         return ok(`${s.ahead}\n`);
+      case "log":
+        return ok(`${s.head.slice(0, 7)} ${s.commitDate} work\n`);
     }
     return fail(129, `unexpected git ${args.join(" ")}`);
   };

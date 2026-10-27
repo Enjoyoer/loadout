@@ -194,18 +194,33 @@ Both paths first need all of these, else the line is `skip` with the reason show
 
 ### Activity
 
-Last activity is the newest of these timestamps, as Paseo exposes them:
+Last activity is the newest of these timestamps, as Paseo and git expose them:
 
-- the workspace: `createdAt` (0.13), `statusEnteredAt`, `activityAt` and `lastUserMessageAt` (0.13);
-- every agent the workspace ever held, archived ones included: `createdAt`, `updatedAt`,
-  `lastUserMessageAt`, `attentionTimestamp` and `archivedAt`.
+- the workspace: `createdAt` (0.13), `statusEnteredAt` (see below), `activityAt` and
+  `lastUserMessageAt` (0.13);
+- every agent the workspace ever held, archived ones included: `createdAt`,
+  `lastUserMessageAt`, `attentionTimestamp`, and `updatedAt` (see below);
+- for a worktree, the committer date of its HEAD commit (`git log -1`), which covers work
+  committed after the last message. A worktree whose HEAD git cannot read is skipped as
+  `ambiguous(HEAD commit unreadable)`.
+
+Archiving an agent is not activity, so the times it stamps are left out. Paseo stamps an
+agent's archive time on both `archivedAt` and `updatedAt`. When the last busy agent of a
+workspace goes, it also stamps that moment on the workspace's `statusEnteredAt`. Without
+these rules an agentless workspace would date from its last agent's archive, which often
+comes days after the last work. So:
+
+- `archivedAt` never counts;
+- an archived agent's `updatedAt` counts only when it is earlier than its `archivedAt`;
+- `statusEnteredAt` counts only when it is earlier than the newest `archivedAt` of the
+  workspace's agents. This also drops a status change from terminal use after that archive.
+  A terminal that still exists blocks cleanup anyway.
 
 Paseo does not expose the workspace record's `updatedAt`, and scripts report only their
 `lifecycle`, with no start or stop time, so neither can count; a running script or a live
 terminal blocks cleanup instead. On 0.11.1 and 0.13.0 `activityAt` is always null. Paseo keeps
 `statusEnteredAt` in memory, and after a daemon restart it falls back to the workspace's
-`createdAt`. File edits and commits made outside Paseo are not activity; for an agentless
-worktree the PM message shows the last commit.
+`createdAt`. File edits made outside Paseo and not committed are not activity.
 
 ### What archiving a record does
 
@@ -235,9 +250,13 @@ when that parent is a live agent. Otherwise it is the one live agent labelled `r
 whose `project` label matches, case-insensitively, the last agent's `project` label or the
 workspace's project name. The owner is resolved again just before sending. With no owner or
 several, the plugin logs `notify-unrouted` and sends nothing. Each PM gets one message per
-sweep listing at most 20 worktrees (`notify-deferred` for the rest), and only while it is
-idle or closed without a pending permission: a message to a PM in a turn would interrupt it
-(`notify-deferred`, retried at the next full sweep).
+sweep listing at most 20 worktrees (`notify-deferred` for the rest). Right before each send
+the plugin reads that PM's status again, and sends only while it is idle or closed, not
+archived, and without a pending permission. Otherwise it logs `notify-deferred` and tries
+again at the next full sweep: a message would interrupt a turn, clear a pending permission
+request, or unarchive the PM. The message is sent with `activeTurnBehavior: "steer"`, so a
+turn that starts in the moment between that check and the send gets the text added where
+the provider can steer, instead of being replaced.
 
 Reported worktrees are kept in `<PASEO_HOME>/plugin-state/merged-worker-archiver/notified.json`
 (owner-only), written before the message goes out, so a worktree is never reported twice:
@@ -259,6 +278,17 @@ sets `filter.includeBackground`. Every sweep asks the daemon whether it has back
 workspaces (`supportsBackgroundWorkspaces()`, from the server info) and then includes them,
 as `orphan-project-sweeper` 0.2.1 does; 0.11.1 has none. A client that cannot answer aborts
 the sweep, so nothing is decided from a list that may be missing workspaces or agents.
+
+### Listings that only cleanup reads
+
+Cleanup also needs every agent with the archived ones (for activity and the owner) and the
+terminal list. Full sweeps read them in a separate listing, capped like the others at 50
+pages of 200 agents. If that listing or the terminal list fails or is incomplete, the sweep
+logs `cleanup-skipped` (also as `cleanupSkipped` in `sweep-done`) and runs only the worker
+path; cleanup waits for the next full sweep. An armed cleanup archive or report whose fresh
+re-read fails is skipped or deferred the same way. A failed workspace, live agent or project
+list still aborts the whole sweep. A daemon with more than 10,000 agents, archived ones
+included, skips cleanup at every full sweep until the cap is raised.
 
 ### Arming
 
@@ -449,7 +479,12 @@ got one message, routed by the parent label for one and by `role=pm` plus `proje
 the others. Workspaces with an agent, a running script, a terminal or recent activity were
 kept. A plugin reload and a daemon restart each ran another sweep that sent nothing more.
 A worktree whose project has no PM, and one whose project has two, logged
-`notify-unrouted` and nothing was recorded for them.
+`notify-unrouted` and nothing was recorded for them. A second round on both versions
+checked the activity and send rules. An agent archived just before the sweep left its
+workspace stale, and the record was archived with its files intact. A commit made just
+before the sweep kept a worktree `recent`. A worktree whose HEAD commit was its newest
+activity was reported with that age. A report to a PM in a running turn logged
+`notify-deferred` (`PM running`) and was sent at the next sweep, once the PM was idle.
 
 Paseo compiles the plugin from source with esbuild and bundles `@getpaseo/client`
 (with `@getpaseo/protocol`), about 8.4 MB, so `npm install` must have run here before

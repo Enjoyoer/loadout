@@ -1,6 +1,6 @@
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { ArchiverApi } from "./sweeper.ts";
-import type { TerminalView } from "./types.ts";
+import type { AgentView, TerminalView } from "./types.ts";
 import { resolveDaemonTarget } from "./vendor/daemon-target.ts";
 
 export { resolveDaemonTarget, type DaemonTarget } from "./vendor/daemon-target.ts";
@@ -43,6 +43,7 @@ export async function openDaemonClient(env: NodeJS.ProcessEnv = process.env): Pr
     },
     agents: {
       list: async (options) => (await client.fetchAgents(options)) as unknown as Awaited<ReturnType<ArchiverApi["agents"]["list"]>>,
+      get: async (agentId) => ((await client.fetchAgent({ agentId }))?.agent ?? null) as unknown as AgentView | null,
     },
     projects: {
       list: () => client.listProjects(),

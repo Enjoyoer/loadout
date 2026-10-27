@@ -222,14 +222,14 @@ describe("workspace and agent skip rules", () => {
 
 describe("workspace cleanup gates", () => {
   // An agentless local checkout, idle for two hours, against a one-hour stale window.
-  const cleanup = async (ws: Partial<WorkspaceView>, extra: { terminals?: number; directory?: boolean | null } = {}) => {
-    const s = scenario();
+  const cleanup = async (ws: Partial<WorkspaceView>, extra: { terminals?: number; directory?: boolean | null; history?: AgentView[]; git?: Partial<GitScenario> } = {}) => {
+    const s = scenario(extra.git);
     const fs = fakeFs(s, { directory: extra.directory });
     const decision = await evaluateCleanup(workspace({ workspaceKind: "local_checkout", ...ws }), {
       config: defaultConfig({ staleWorkspaceMinutes: 60 }),
       deps: { merge: { run: fakeRunner(s), fs }, fs, now: () => NOW },
       agents: [],
-      history: [],
+      history: extra.history ?? [],
       terminals: extra.terminals ?? 0,
       notified: new Map(),
     });
@@ -244,5 +244,16 @@ describe("workspace cleanup gates", () => {
     assert.equal(await cleanup({ pinnedAt: new Date(NOW).toISOString() }), "skip pinned");
     assert.equal(await cleanup({ worktreeSlug: "kept" }), "skip paseo-owned-worktree-record");
     assert.equal(await cleanup({}, { directory: false }), "skip path-missing(left to Paseo)");
+  });
+
+  it("an agent's archive is not activity, a worktree's HEAD commit is", async () => {
+    const tenMinutesAgo = new Date(NOW - 10 * 60_000).toISOString();
+    // Archived 10 minutes ago: archivedAt, the updatedAt it stamped and the statusEnteredAt it stamped do not count.
+    const archived = agent({ archivedAt: tenMinutesAgo, updatedAt: tenMinutesAgo });
+    assert.equal(await cleanup({ statusEnteredAt: tenMinutesAgo }, { history: [archived] }), "archive stale-record(idle=2h)");
+    assert.equal(await cleanup({}, { history: [{ ...archived, lastUserMessageAt: tenMinutesAgo }] }), "skip recent(idle=10m, stale after 60m)");
+    const worktree = { workspaceKind: "worktree" as const };
+    assert.equal(await cleanup(worktree, { git: { commitDate: tenMinutesAgo } }), "skip recent(idle=10m, stale after 60m)");
+    assert.equal(await cleanup(worktree, { git: { failOn: "--format=%h %cI %s" } }), "skip ambiguous(HEAD commit unreadable)");
   });
 });
