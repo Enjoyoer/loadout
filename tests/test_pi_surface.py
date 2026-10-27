@@ -722,14 +722,17 @@ vm.runInNewContext(appDefaultsScript('route/example','high',true),{localStorage}
             find.assert_called_once_with('paseo.cmd')
         with patch.object(deploy.shutil, 'which', return_value=None):
             with self.assertRaisesRegex(ValueError, 'CLI is unavailable'): deploy.paseo_command()
-        # Apply keeps the mcp-env.cjs launcher the providers step wrapped Pi in, replacing only the command after `--`.
+        # Apply keeps the mcp-env.cjs launcher the providers step wrapped Pi in. The command after `--` stays byte for
+        # byte while it runs this root's launch.mjs with node, and otherwise becomes the providers step's own command.
         node, launcher = r'C:\Node\node.exe', r'C:\Users\example\AppData\Roaming\loadout\mcp-env.cjs'
         pi_row = lambda command: json.dumps({'agents': {'providers': {'pi': {'command': command, 'env': {'KEEP': '1'}}}}})
-        applied = lambda before: json.loads(deploy.merged(before, PureWindowsPath(r'C:\Pi'), {'models': []}))['agents']['providers']['pi']
+        applied = lambda before: json.loads(deploy.merged(before, PureWindowsPath(r'C:\Pi'), {'models': []}, r'C:\Pi'))['agents']['providers']['pi']
         with patch.object(deploy.shutil, 'which', return_value=node):
             for wrapper in ([node, launcher, '--'], [node, launcher, '--provider', 'pi', '--']):
-                pi = applied(pi_row([*wrapper, 'node', r'C:\Old\launch.mjs']))
-                self.assertEqual(pi, {'command': [*wrapper, node, r'C:\Pi\launch.mjs'], 'env': {'KEEP': '1'}, 'models': []})
+                for current in (['node', r'C:\Pi/launch.mjs'], [node, r'C:\Pi\launch.mjs'], ['NODE', r'c:\pi\.\Launch.mjs']):
+                    self.assertEqual(applied(pi_row([*wrapper, *current])), {'command': [*wrapper, *current], 'env': {'KEEP': '1'}, 'models': []})
+                for stale in (['node', r'C:\Old\launch.mjs'], [node, r'C:\Pi\launch.mjs', '--extra'], ['bun', r'C:\Pi\launch.mjs']):
+                    self.assertEqual(applied(pi_row([*wrapper, *stale]))['command'], [*wrapper, 'node', r'C:\Pi/launch.mjs'])
             # A command that is not that wrapper is replaced whole, as before.
             for other in (['node', r'C:\Old\launch.mjs'], [node, r'C:\Old\mcp-env.cjs', '--provider', 'pi'], 'pi'):
                 self.assertEqual(applied(pi_row(other))['command'], [node, r'C:\Pi\launch.mjs'])

@@ -2,9 +2,10 @@
 
 Default action is plan. Apply/rollback are for an explicitly approved host only.
 """
-import argparse, base64, hashlib, json, ntpath, os, re, secrets, shutil, stat, subprocess, sys
+import argparse, base64, hashlib, json, ntpath, os, posixpath, re, secrets, shutil, stat, subprocess, sys
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+from catalog import PI_COMMAND
 from configure import configure, link_like, runtime_contents, safe_target
 from credential import expand
 
@@ -68,30 +69,46 @@ def replace(path, data):
     stage(path, data).replace(path)
 
 
-def launch_command(previous, command):
-    """command, run through the mcp-env.cjs launcher when the Pi row's `previous` command already is.
+def providers_root(text):
+    """pi.root as the providers step's merge expands it into ${LOADOUT_PI_ROOT}: a leading ~ becomes the home directory
+    and each %NAME% that environment variable, nothing else, so both writers build the same string."""
+    text = re.sub(r'^~(?=[/\\]|$)', lambda _: os.path.expanduser('~'), text)
+    return re.sub(r'%([^%]+)%', lambda match: os.environ.get(match.group(1), match.group(0)), text)
 
-    The providers step (paseo_providers_merge.js) wraps the Pi command as `<node> <dir>/mcp-env.cjs -- <command>` or
-    `<node> <dir>/mcp-env.cjs --provider pi -- <command>`, so MCP tokens and launch token files load at each launch.
-    That wrapper, recognized by the same shape (the launcher second, then `--` or `--provider <id> --`), is kept as
-    is and only the command after `--` is replaced, so a reapply never drops it and the next providers step reads it
-    back unchanged. The launcher is matched by file name, so it is kept whatever directory that step resolved.
+
+def launch_command(previous, root, root_text):
+    """The Pi provider command apply writes over the row's `previous` command.
+
+    Unwrapped, it is `<node> <root>/launch.mjs`. The providers step (paseo_providers_merge.js) may have wrapped the
+    command as `<node> <dir>/mcp-env.cjs -- <command>` or `<node> <dir>/mcp-env.cjs --provider pi -- <command>`, so MCP
+    tokens and launch token files load at each launch. That wrapper, recognized by the same shape (the launcher
+    second, matched by file name, then `--` or `--provider <id> --`), is always kept. So is the command after `--`,
+    byte for byte, when it already runs this root's launch.mjs with node. Any other command after `--` becomes the one
+    the providers step builds: PI_COMMAND with ${LOADOUT_PI_ROOT} replaced by root_text, the expanded pi.root, with
+    its `/launch.mjs` separator. Either way the next providers step finds the same command and writes nothing.
     """
+    direct = [shutil.which('node') or 'node', str(root / 'launch.mjs')]
     if not (isinstance(previous, list) and len(previous) > 2 and all(isinstance(arg, str) for arg in previous)
             and ntpath.basename(previous[1]) == 'mcp-env.cjs'):
-        return command
-    if previous[2] == '--': return previous[:3] + command
-    if previous[2] == '--provider' and len(previous) > 4 and previous[4] == '--': return previous[:5] + command
-    return command
+        return direct
+    if previous[2] == '--': wrapper = previous[:3]
+    elif previous[2] == '--provider' and len(previous) > 4 and previous[4] == '--': wrapper = previous[:5]
+    else: return direct
+    inner = previous[len(wrapper):]
+    paths = ntpath if isinstance(root, PureWindowsPath) else posixpath
+    same = lambda a, b: paths.normcase(paths.normpath(a)) == paths.normcase(paths.normpath(b))
+    if len(inner) == 2 and ntpath.basename(inner[0]).lower() in {'node', 'node.exe'} and same(inner[1], str(root / 'launch.mjs')):
+        return previous
+    return wrapper + [arg.replace('${LOADOUT_PI_ROOT}', root_text) for arg in PI_COMMAND]
 
 
-def merged(before, root, pi):
-    """The daemon config revision `before` with the Pi provider and daemon MCP applied."""
+def merged(before, root, pi, root_text):
+    """The daemon config revision `before` with the Pi provider and daemon MCP applied. root_text is pi.root as the
+    providers step expands it (providers_root)."""
     cfg = json.loads(before)
     providers = cfg.setdefault('agents', {}).setdefault('providers', {})
     previous = providers.get('pi', {})
-    providers['pi'] = {**previous, **pi, 'command':launch_command(previous.get('command'),
-        [shutil.which('node') or 'node', str(root / 'launch.mjs')])}
+    providers['pi'] = {**previous, **pi, 'command':launch_command(previous.get('command'), root, root_text)}
     daemon = cfg.setdefault('daemon', {})
     daemon['mcp'] = {**daemon.get('mcp', {}), 'enabled':True, 'injectIntoAgents':True}
     return (json.dumps(cfg, indent=2)+'\n').encode()
@@ -173,7 +190,7 @@ def main():
     pi = proposal['provider']
     if proposal['catalog_model_id'] not in {row['id'] for row in pi.get('models', [])}:
         raise ValueError('proposal must use the catalog model ID verbatim')
-    after = merged(before, root, pi)
+    after = merged(before, root, pi, providers_root(proposal['root']))
     plan = configure(spec, root, dry_run=True)
     if args.action == 'plan':
         print(json.dumps({'daemonVersion':status['daemonVersion'], 'config_changed':before != after,
@@ -209,7 +226,7 @@ def main():
         regular(config)
         current = config.read_bytes()
         if current != before:
-            before, after = current, merged(current, root, pi)
+            before, after = current, merged(current, root, pi, providers_root(proposal['root']))
             record.update(backup=str(back_up(config, before)), before_sha256=sha(before), after_sha256=sha(after))
             replace(state, (json.dumps(record,indent=2)+'\n').encode())
         temp = stage(config, after)
