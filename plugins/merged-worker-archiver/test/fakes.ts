@@ -1,3 +1,5 @@
+import type { NotifiedEntry } from "../server/cleanup.ts";
+import type { NotifyStateStore } from "../server/notify-store.ts";
 import type { CommandResult, CommandRunner, FileSystem } from "../server/types.ts";
 import type { AgentView, WorkspaceView } from "../server/types.ts";
 
@@ -172,3 +174,19 @@ export const mergedPr = (overrides: Record<string, unknown> = {}) => ({
     ...overrides,
   }),
 });
+
+/** In-memory reported-worktree state; `writes` counts persisted writes. */
+export function memoryNotifyStore(initial: Record<string, NotifiedEntry> = {}): NotifyStateStore & { entries: Map<string, NotifiedEntry>; writes: number } {
+  const store = {
+    entries: new Map(Object.entries(initial)),
+    writes: 0,
+    async read() {
+      return new Map(store.entries);
+    },
+    async write(entries: ReadonlyMap<string, NotifiedEntry>) {
+      store.writes += 1;
+      store.entries = new Map(entries);
+    },
+  };
+  return store;
+}

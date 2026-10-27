@@ -3,8 +3,11 @@ import { it } from "node:test";
 import { ConfigSchema, defaultConfig } from "../server/config.ts";
 import { resolveDaemonTarget } from "../server/daemon.ts";
 
-it("defaults to dry-run", () => {
+it("defaults to dry-run, with workspace cleanup armed separately", () => {
   assert.equal(defaultConfig().armed, false);
+  assert.equal(defaultConfig().armWorkspaceCleanup, false);
+  assert.equal(ConfigSchema.safeParse({ armed: true }).data?.armWorkspaceCleanup, false);
+  assert.equal(defaultConfig().staleWorkspaceMinutes, 3 * 24 * 60);
 });
 
 it("loads a live settings file that sets maxArchivesPerSweep and keeps its value", () => {

@@ -6,14 +6,27 @@ export interface WorkspaceView {
   id: string;
   name: string;
   projectId?: string;
+  projectDisplayName?: string;
+  projectRootPath?: string;
   workspaceKind: string;
   workspaceDirectory?: string;
+  /** Present only for a Paseo-owned worktree (the basename of its root). */
+  worktreeSlug?: string;
   status: string;
   archivingAt?: string | null;
   activityAt: string | null;
   statusEnteredAt?: string | null;
+  /** 0.12 and later. */
+  createdAt?: string;
+  /** 0.12 and later. */
+  lastUserMessageAt?: string | null;
+  /** 0.12 and later: a workspace setup script's state. */
+  setupStatus?: string | null;
+  pinnedAt?: string | null;
+  labels?: ReadonlyArray<string>;
+  background?: boolean;
   scripts?: ReadonlyArray<{ scriptName: string; lifecycle: string }>;
-  gitRuntime?: { currentBranch?: string | null } | null;
+  gitRuntime?: { currentBranch?: string | null; isPaseoOwnedWorktree?: boolean } | null;
 }
 
 export interface AgentView {
@@ -26,9 +39,17 @@ export interface AgentView {
   requiresAttention?: boolean;
   attentionReason?: string | null;
   attentionTimestamp?: string | null;
+  createdAt?: string;
   updatedAt?: string;
   lastUserMessageAt?: string | null;
   archivedAt?: string | null;
+}
+
+/** A live terminal as `list_terminals` reports it. */
+export interface TerminalView {
+  id: string;
+  workspaceId?: string | null;
+  cwd?: string;
 }
 
 export interface CommandResult {
@@ -62,7 +83,11 @@ export interface FileSystem {
   readText(path: string): Promise<string | null>;
 }
 
-export type DecisionAction = "archive" | "skip";
+/** `notify` reports an agentless worktree to its PM once; only workspace cleanup decides it. */
+export type DecisionAction = "archive" | "skip" | "notify";
+
+/** Which workspace cleanup rule decided (absent for the worker paths). */
+export type CleanupPath = "stale-record" | "agentless-worktree";
 
 export interface Decision {
   workspaceId: string;
@@ -74,4 +99,10 @@ export interface Decision {
   reason: string;
   /** False for workspaces that are never candidates (non-worktree kinds). */
   candidate: boolean;
+  /** Set when workspace cleanup decided. */
+  cleanup?: CleanupPath;
+  /** Workspace cleanup: the latest activity used for the stale test (ISO), when known. */
+  lastActivityAt?: string | null;
+  /** Workspace cleanup, notify only: `<sha7> <date> <subject>` of HEAD, or null when git cannot tell. */
+  lastCommit?: string | null;
 }

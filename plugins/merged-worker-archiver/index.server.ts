@@ -1,11 +1,11 @@
 import { defineSettings } from "@getpaseo/plugin";
-import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type ArchiverConfig } from "./server/config.ts";
 import { openDaemonClient, resolveDaemonTarget } from "./server/daemon.ts";
 import { createCommonDirResolver, nodeFileSystem, runCommand } from "./server/io.ts";
+import { NotifyStore } from "./server/notify-store.ts";
 import { EventScheduler, realTimers } from "./server/scheduler.ts";
-import { Sweeper, type ApiLease, type ArchiverApi } from "./server/sweeper.ts";
+import { Sweeper, type ApiLease } from "./server/sweeper.ts";
 
 // Server-only plugin. Archives worktree workspaces (and, through Paseo's own workspace
 // archive, their agents) once the worker branch is merged into its base. Dry-run unless
@@ -13,7 +13,8 @@ import { Sweeper, type ApiLease, type ArchiverApi } from "./server/sweeper.ts";
 //
 // Triggers: every agent.turn_ended (any agent, PMs included) evaluates the worktrees of
 // that agent's project and repository within seconds; a slow periodic sweep is only a
-// backstop for merges made outside Paseo.
+// backstop for merges made outside Paseo. Workspace cleanup (stale agentless workspaces)
+// runs in the full sweeps only, and acts only when armed and armWorkspaceCleanup are both true.
 
 const STARTUP_DELAY_MS = 30_000;
 
@@ -23,14 +24,11 @@ export default function contribute(server: PluginServerContext) {
   );
   const log = (line: string) => console.log(line);
 
-  // The subprocess-wide PaseoApi handed to hooks lives as long as this subprocess
-  // (documented), so once any hook fires sweeps reuse it instead of a socket.
-  let hookApi: PaseoApi | null = null;
-
+  // Each sweep opens its own connection: only the daemon client tells whether background
+  // workspaces exist, and every listing must ask for them when they do (see server/daemon.ts).
   const acquireApi = async (): Promise<ApiLease> => {
-    if (hookApi) return { api: hookApi satisfies ArchiverApi, release: async () => undefined };
-    const client = await openDaemonClient();
-    return { api: client satisfies ArchiverApi, release: () => client.close() };
+    const connection = await openDaemonClient();
+    return { api: connection.api, release: () => connection.close() };
   };
 
   let lastTimeoutMs = 15_000;
@@ -41,6 +39,7 @@ export default function contribute(server: PluginServerContext) {
     merge: { run: runCommand, fs: nodeFileSystem },
     resolveCommonDir: createCommonDirResolver(runCommand, () => lastTimeoutMs),
     now: () => Date.now(),
+    notifyStore: new NotifyStore(),
   });
 
   const loadConfig = async (): Promise<ArchiverConfig | null> => {
@@ -98,8 +97,7 @@ export default function contribute(server: PluginServerContext) {
   };
 
   // Record and return: hooks abort after 30 s, so the evaluation runs later, coalesced.
-  const removeTurnEnded = server.on("agent.turn_ended", (event, context) => {
-    hookApi = context.paseo;
+  const removeTurnEnded = server.on("agent.turn_ended", (event) => {
     const workspaceId = event.agent.workspaceId;
     if (!workspaceId || stopped) return;
     log(
@@ -113,18 +111,25 @@ export default function contribute(server: PluginServerContext) {
     );
     scheduler.noteEvent(workspaceId);
   });
-  const removeArchived = server.on("agent.archived", (event, context) => {
-    hookApi = context.paseo;
+  const removeArchived = server.on("agent.archived", (event) => {
     if (event.agent.workspaceId && !stopped) scheduler.noteEvent(event.agent.workspaceId);
   });
 
-  const target = resolveDaemonTarget();
+  // Logged only. Each sweep resolves the daemon again, so a home whose paseo.pid is not written yet
+  // when the plugin loads (a fresh non-default home) still works once the daemon is listening.
+  let target: ReturnType<typeof resolveDaemonTarget> | string;
+  try {
+    target = resolveDaemonTarget();
+  } catch (error) {
+    target = `unresolved at load: ${error instanceof Error ? error.message : String(error)}`;
+  }
   void loadConfig().then((config) => {
     log(
       `[merged-worker-archiver] started ${JSON.stringify({
         mode: config ? (config.armed ? "armed" : "dry-run") : "config-invalid",
+        cleanupMode: config ? (config.armed && config.armWorkspaceCleanup ? "armed" : "dry-run") : "config-invalid",
         config,
-        fallbackDaemon: target,
+        daemon: target,
       })}`,
     );
   });
@@ -136,6 +141,5 @@ export default function contribute(server: PluginServerContext) {
     removeArchived();
     scheduler.stop();
     if (sweepTimer) clearTimeout(sweepTimer);
-    hookApi = null;
   };
 }

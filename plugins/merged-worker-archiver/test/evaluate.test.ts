@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { defaultConfig, type ArchiverConfig } from "../server/config.ts";
+import { evaluateCleanup } from "../server/cleanup.ts";
 import { evaluateWorkspace } from "../server/evaluate.ts";
 import type { AgentView, WorkspaceView } from "../server/types.ts";
 import { agent, CWD, fakeFs, fakeRunner, mergedPr, NOW, scenario, workspace, type GitScenario, type Recorded } from "./fakes.ts";
@@ -216,5 +217,32 @@ describe("workspace and agent skip rules", () => {
   it("defaults to a zero grace period: a just-finished agent's merged worktree is archivable", async () => {
     const { decision } = await decide({ git: merged, agents: [agent({ updatedAt: "2026-09-22T11:59:59.000Z" })] });
     assert.equal(decision.action, "archive");
+  });
+});
+
+describe("workspace cleanup gates", () => {
+  // An agentless local checkout, idle for two hours, against a one-hour stale window.
+  const cleanup = async (ws: Partial<WorkspaceView>, extra: { terminals?: number; directory?: boolean | null } = {}) => {
+    const s = scenario();
+    const fs = fakeFs(s, { directory: extra.directory });
+    const decision = await evaluateCleanup(workspace({ workspaceKind: "local_checkout", ...ws }), {
+      config: defaultConfig({ staleWorkspaceMinutes: 60 }),
+      deps: { merge: { run: fakeRunner(s), fs }, fs, now: () => NOW },
+      agents: [],
+      history: [],
+      terminals: extra.terminals ?? 0,
+      notified: new Map(),
+    });
+    return `${decision.action} ${decision.reason}`;
+  };
+
+  it("archives only an idle record with no terminal, running script, pin or Paseo-owned worktree claim", async () => {
+    assert.equal(await cleanup({}), "archive stale-record(idle=2h)");
+    assert.equal(await cleanup({}, { terminals: 1 }), "skip terminals(1)");
+    assert.equal(await cleanup({ scripts: [{ scriptName: "dev", lifecycle: "running" }] as WorkspaceView["scripts"] }), "skip script-running(dev)");
+    assert.equal(await cleanup({ statusEnteredAt: new Date(NOW - 10 * 60_000).toISOString() }), "skip recent(idle=10m, stale after 60m)");
+    assert.equal(await cleanup({ pinnedAt: new Date(NOW).toISOString() }), "skip pinned");
+    assert.equal(await cleanup({ worktreeSlug: "kept" }), "skip paseo-owned-worktree-record");
+    assert.equal(await cleanup({}, { directory: false }), "skip path-missing(left to Paseo)");
   });
 });

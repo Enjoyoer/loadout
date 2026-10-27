@@ -1,9 +1,13 @@
 import { readFile } from "node:fs/promises";
-import type { PaseoClient } from "@getpaseo/client";
-import { ConfigSchema, defaultConfig, type ArchiverConfig } from "../server/config.ts";
-import { openDaemonClient, resolveDaemonTarget } from "../server/daemon.ts";
+import { ConfigSchema, type ArchiverConfig } from "../server/config.ts";
+import { openDaemonClient } from "../server/daemon.ts";
 import { createCommonDirResolver, nodeFileSystem, runCommand } from "../server/io.ts";
+import { NotifyStore, type NotifyStateStore } from "../server/notify-store.ts";
 import { Sweeper, type ArchiverApi } from "../server/sweeper.ts";
+
+// Read-only preview of one full sweep. Nothing is archived, sent, or written: the sweep runs with
+// forceDryRun, and the API and state store it gets refuse every write as a second guard.
+//   npm run dry-run -- [--host <host:port>] [--config <values.json>] [--grace <minutes>] [--cleanup-only]
 
 function argValue(name: string): string | null {
   const index = process.argv.indexOf(name);
@@ -23,8 +27,12 @@ async function readConfig(path: string | null, graceOverride: number | null): Pr
   return result.data;
 }
 
-function clientApi(client: PaseoClient): ArchiverApi {
-  return client as unknown as ArchiverApi;
+function readOnly(api: ArchiverApi): ArchiverApi {
+  return {
+    ...api,
+    workspaces: { list: (options) => api.workspaces.list(options), archive: async () => { throw new Error("dry-run never archives"); } },
+    sendAgentMessage: async () => { throw new Error("dry-run never sends"); },
+  };
 }
 
 async function run(): Promise<void> {
@@ -33,25 +41,30 @@ async function run(): Promise<void> {
   const graceText = argValue("--grace");
   const grace = graceText === null ? null : Number(graceText);
   if (grace !== null && (!Number.isFinite(grace) || grace < 0)) throw new Error("--grace must be a non-negative number");
+  const cleanupOnly = process.argv.includes("--cleanup-only");
   const config = await readConfig(argValue("--config"), grace);
-  const target = resolveDaemonTarget();
-  const client = await openDaemonClient();
+  const connection = await openDaemonClient();
+  const store = new NotifyStore();
+  const notifyStore: NotifyStateStore = { read: () => store.read(), write: async () => { throw new Error("dry-run never writes state"); } };
   const sweeper = new Sweeper({
-    acquireApi: async () => ({ api: clientApi(client), release: async () => client.close() }),
-    log: (line) => console.log(line),
+    acquireApi: async () => ({ api: readOnly(connection.api), release: async () => undefined }),
+    log: (line) => {
+      if (!cleanupOnly || line.includes('"cleanup":"') || line.includes("sweep-done") || line.includes("sweep-aborted") || line.includes("notify-state")) console.log(line);
+    },
     merge: { run: runCommand, fs: nodeFileSystem },
     fs: nodeFileSystem,
     now: () => Date.now(),
     resolveCommonDir: createCommonDirResolver(runCommand, () => config.commandTimeoutSeconds * 1000),
+    notifyStore,
   });
   try {
-    const result = await sweeper.sweep({ ...config, armed: false }, { trigger: "cli-dry-run", forceDryRun: true });
+    const result = await sweeper.sweep({ ...config, armed: false, armWorkspaceCleanup: false }, { trigger: "cli-dry-run", forceDryRun: true });
     if (result.error) {
       console.error(`dry-run failed: ${result.error}`);
       process.exitCode = 1;
     }
   } finally {
-    await client.close().catch(() => undefined);
+    await connection.close().catch(() => undefined);
   }
 }
 

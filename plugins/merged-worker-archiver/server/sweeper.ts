@@ -1,23 +1,40 @@
+import { createHash } from "node:crypto";
+import { evaluateCleanup, formatNotification, isCleanupEntry, resolveOwner, type NotifiedEntry } from "./cleanup.ts";
 import type { ArchiverConfig } from "./config.ts";
 import { evaluateWorkspace, type EvaluateDeps } from "./evaluate.ts";
-import type { AgentView, CommonDirResolver, Decision, WorkspaceView } from "./types.ts";
+import type { NotifyStateStore } from "./notify-store.ts";
+import type { AgentView, CommonDirResolver, Decision, TerminalView, WorkspaceView } from "./types.ts";
 
-// The slice of the public PaseoApi (@getpaseo/client 0.9.1) this plugin uses.
+// The slice of the Paseo daemon client this plugin uses (see daemon.ts).
 interface Page<T> {
   entries: T[];
   pageInfo: { nextCursor: string | null; hasMore: boolean };
 }
+interface PageRequest {
+  page?: { limit: number; cursor?: string };
+}
 export interface ArchiverApi {
   workspaces: {
-    list(options?: { page?: { limit: number; cursor?: string } }): Promise<Page<WorkspaceView>>;
+    list(options?: PageRequest & { filter?: { includeBackground?: boolean } }): Promise<Page<WorkspaceView>>;
     archive(workspaceId: string): Promise<{ archivedAt: string | null; error: string | null }>;
   };
   agents: {
-    list(options?: { page?: { limit: number; cursor?: string } }): Promise<Page<{ agent: AgentView }>>;
+    list(options?: PageRequest & { filter?: { includeBackground?: boolean; includeArchived?: boolean } }): Promise<Page<{ agent: AgentView }>>;
   };
   projects: {
     list(): Promise<{ projects: ReadonlyArray<{ projectRootPath?: string | null }> }>;
   };
+  /** Every live terminal on the daemon. Workspace cleanup only. */
+  terminals?: {
+    list(): Promise<{ entries: ReadonlyArray<TerminalView> }>;
+  };
+  /**
+   * True when the daemon has background workspaces (Paseo 0.12 and later), which every workspace and
+   * agent listing must then ask for; older daemons have none, and the client refuses the filter there.
+   */
+  supportsBackgroundWorkspaces(): boolean;
+  /** Prompt an agent; the daemon keeps a receipt per (agent, messageId) and never delivers one twice. */
+  sendAgentMessage?(agentId: string, text: string, options: { messageId: string }): Promise<unknown>;
 }
 
 export interface ApiLease {
@@ -29,6 +46,8 @@ export interface SweeperDeps extends EvaluateDeps {
   acquireApi(): Promise<ApiLease>;
   log(line: string): void;
   resolveCommonDir: CommonDirResolver;
+  /** Worktrees already reported to their PM (workspace cleanup). */
+  notifyStore: NotifyStateStore;
 }
 
 export interface SweepOptions {
@@ -40,7 +59,7 @@ export interface SweepOptions {
   triggerWorkspaceIds?: ReadonlySet<string>;
   /** When the first coalesced event arrived (ms epoch), for the latency log. */
   eventAt?: number;
-  /** Force log-only mode regardless of config.armed. */
+  /** Force log-only mode regardless of config.armed: nothing is archived, sent, or written. */
   forceDryRun?: boolean;
 }
 
@@ -86,6 +105,9 @@ async function listAll<T>(fetchPage: (cursor?: string) => Promise<Page<T>>, labe
   throw new Error(`${label} exceeded ${MAX_PAGES} pages`);
 }
 
+/** At most this many worktrees go into one PM report; the rest wait for the next full sweep. */
+const MAX_REPORT_ITEMS = 20;
+
 /**
  * Every project's root path. A missing project API, a failed call, or any project without a root path
  * throws, which aborts the sweep (nothing is archived), like an incomplete agent list.
@@ -99,20 +121,61 @@ async function projectRoots(api: ArchiverApi): Promise<string[]> {
   return roots;
 }
 
-async function snapshot(api: ArchiverApi): Promise<{ workspaces: WorkspaceView[]; agentsByWorkspace: Map<string, AgentView[]>; projectRoots: string[] }> {
-  const workspaces = await listAll((cursor) => api.workspaces.list({ page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) } }), "workspaces");
-  const agentEntries = await listAll((cursor) => api.agents.list({ page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) } }), "agents");
-  const agentsByWorkspace = new Map<string, AgentView[]>();
-  for (const { agent } of agentEntries) {
-    if (!agent.workspaceId || agent.archivedAt) continue;
-    const list = agentsByWorkspace.get(agent.workspaceId) ?? [];
-    list.push(agent);
-    agentsByWorkspace.set(agent.workspaceId, list);
-  }
-  return { workspaces, agentsByWorkspace, projectRoots: await projectRoots(api) };
+interface Snapshot {
+  workspaces: WorkspaceView[];
+  /** Non-archived agents per workspace. */
+  agentsByWorkspace: Map<string, AgentView[]>;
+  projectRoots: string[];
+  /** Workspace cleanup only (full sweeps): every agent per workspace, archived included. */
+  historyByWorkspace: Map<string, AgentView[]>;
+  /** Workspace cleanup only: every non-archived agent on the daemon. */
+  liveAgents: AgentView[];
+  /** Workspace cleanup only: live terminals per workspace. */
+  terminalsByWorkspace: Map<string, number>;
 }
 
-export function formatDecision(decision: Decision, action: string): string {
+function group<T>(map: Map<string, T[]>, key: string, value: T): void {
+  const list = map.get(key) ?? [];
+  list.push(value);
+  map.set(key, list);
+}
+
+/**
+ * Live state. Background workspaces and their agents are listed whenever the daemon has them; a
+ * client that cannot say whether it does aborts the sweep. `cleanup` also lists archived agents and
+ * terminals, which only workspace cleanup reads.
+ */
+async function snapshot(api: ArchiverApi, cleanup: boolean): Promise<Snapshot> {
+  if (typeof api.supportsBackgroundWorkspaces !== "function") throw new Error("daemon client cannot tell whether background workspaces exist");
+  const background = api.supportsBackgroundWorkspaces() === true;
+  const workspaceFilter = background ? { filter: { includeBackground: true } } : {};
+  const agentFilter = background || cleanup ? { filter: { ...(background ? { includeBackground: true } : {}), ...(cleanup ? { includeArchived: true } : {}) } } : {};
+  const page = (cursor?: string) => ({ page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) } });
+  const workspaces = await listAll((cursor) => api.workspaces.list({ ...workspaceFilter, ...page(cursor) }), "workspaces");
+  const agentEntries = await listAll((cursor) => api.agents.list({ ...agentFilter, ...page(cursor) }), "agents");
+  const agentsByWorkspace = new Map<string, AgentView[]>();
+  const historyByWorkspace = new Map<string, AgentView[]>();
+  const liveAgents: AgentView[] = [];
+  for (const { agent } of agentEntries) {
+    if (!agent.archivedAt) liveAgents.push(agent);
+    if (!agent.workspaceId) continue;
+    if (cleanup) group(historyByWorkspace, agent.workspaceId, agent);
+    if (!agent.archivedAt) group(agentsByWorkspace, agent.workspaceId, agent);
+  }
+  const terminalsByWorkspace = new Map<string, number>();
+  if (cleanup) {
+    if (typeof api.terminals?.list !== "function") throw new Error("terminal list unavailable");
+    const { entries } = await api.terminals.list();
+    if (!Array.isArray(entries)) throw new Error("terminal list malformed");
+    for (const terminal of entries) {
+      if (!terminal.workspaceId) throw new Error(`terminal ${terminal.id} has no workspace`);
+      terminalsByWorkspace.set(terminal.workspaceId, (terminalsByWorkspace.get(terminal.workspaceId) ?? 0) + 1);
+    }
+  }
+  return { workspaces, agentsByWorkspace, projectRoots: await projectRoots(api), historyByWorkspace, liveAgents, terminalsByWorkspace };
+}
+
+export function formatDecision(decision: Decision, action: string, extra: Record<string, unknown> = {}): string {
   return `[merged-worker-archiver] ${JSON.stringify({
     action,
     workspaceId: decision.workspaceId,
@@ -121,7 +184,35 @@ export function formatDecision(decision: Decision, action: string): string {
     branch: decision.branch,
     base: decision.base,
     reason: decision.reason,
+    ...(decision.cleanup ? { cleanup: decision.cleanup, lastActivityAt: decision.lastActivityAt ?? null } : {}),
+    ...extra,
   })}`;
+}
+
+/** The worker decision, or for a full sweep the workspace cleanup decision it hands over to. */
+async function decide(
+  workspace: WorkspaceView,
+  state: Snapshot,
+  config: ArchiverConfig,
+  deps: EvaluateDeps,
+  cleanup: { notified: ReadonlyMap<string, NotifiedEntry> | null } | null,
+): Promise<Decision> {
+  const agents = state.agentsByWorkspace.get(workspace.id) ?? [];
+  const decision = await evaluateWorkspace(workspace, agents, config, deps, state.projectRoots);
+  if (!cleanup || !isCleanupEntry(decision)) return decision;
+  return evaluateCleanup(workspace, {
+    config,
+    deps,
+    agents,
+    history: state.historyByWorkspace.get(workspace.id) ?? [],
+    terminals: state.terminalsByWorkspace.get(workspace.id) ?? 0,
+    notified: cleanup.notified,
+  });
+}
+
+/** The daemon refused before delivery, so the report may be sent again later. */
+function isRetryableSendError(message: string): boolean {
+  return /^Agent not found: /.test(message) || message === "agent messaging unavailable";
 }
 
 export class Sweeper {
@@ -181,6 +272,9 @@ export class Sweeper {
 
   private async runSweep(config: ArchiverConfig, options: SweepOptions): Promise<SweepResult> {
     const dryRun = options.forceDryRun === true || config.armed !== true;
+    // Workspace cleanup runs in full sweeps only and acts only when both switches are on.
+    const fullSweep = !options.triggerWorkspaceIds;
+    const cleanupDryRun = dryRun || config.armWorkspaceCleanup !== true;
     const log = this.deps.log;
     const sweepNumber = ++this.sweepCount;
     let lease: ApiLease;
@@ -194,7 +288,16 @@ export class Sweeper {
     const decisions: Decision[] = [];
     const archived: string[] = [];
     try {
-      const state = await snapshot(lease.api);
+      const state = await snapshot(lease.api, fullSweep);
+      let notified: Map<string, NotifiedEntry> | null = null;
+      if (fullSweep) {
+        try {
+          notified = await this.deps.notifyStore.read();
+        } catch (error) {
+          log(`[merged-worker-archiver] notify-state-unreadable reason=${JSON.stringify(error instanceof Error ? error.message : String(error))} (no PM report is sent until it is fixed or removed)`);
+        }
+      }
+      const cleanupInput = fullSweep ? { notified } : null;
       const inScope = options.triggerWorkspaceIds
         ? await this.scope(state.workspaces, options.triggerWorkspaceIds)
         : state.workspaces;
@@ -215,13 +318,13 @@ export class Sweeper {
       let remaining = config.maxArchivesPerSweep;
       const deferred = new Set<string>();
       const backedOff = new Set<string>();
+      const toNotify: Decision[] = [];
       for (const workspace of ordered) {
         // Dry-run attempts nothing, so only an armed sweep moves the queue; a workspace stays
         // queued, keeping its place, only while the cap keeps deferring it.
         const waitingSince = this.waitingSince.get(workspace.id);
         if (!dryRun) this.waitingSince.delete(workspace.id);
-        const agents = state.agentsByWorkspace.get(workspace.id) ?? [];
-        const decision = await evaluateWorkspace(workspace, agents, config, this.deps, state.projectRoots);
+        const decision = await decide(workspace, state, config, this.deps, cleanupInput);
         decisions.push(decision);
         if (!decision.candidate) {
           nonCandidates += 1;
@@ -230,6 +333,15 @@ export class Sweeper {
         }
         if (decision.action === "skip") {
           log(formatDecision(decision, "skip"));
+          continue;
+        }
+        if (decision.action === "notify") {
+          toNotify.push(decision);
+          continue;
+        }
+        if (decision.cleanup && cleanupDryRun && !dryRun) {
+          // Worker archiving is armed but workspace cleanup is not: a preview that takes no armed slot.
+          log(formatDecision(decision, "would-archive"));
           continue;
         }
         const backoff = this.backoffs.get(workspace.id);
@@ -252,14 +364,14 @@ export class Sweeper {
           continue;
         }
         // Re-read live state and re-run every gate immediately before acting.
-        const fresh = await snapshot(lease.api);
+        const fresh = await snapshot(lease.api, Boolean(decision.cleanup));
         const freshWorkspace = fresh.workspaces.find((candidate) => candidate.id === workspace.id);
         if (!freshWorkspace) {
           log(formatDecision({ ...decision, reason: "recheck: workspace gone" }, "skip"));
           continue;
         }
-        const recheck = await evaluateWorkspace(freshWorkspace, fresh.agentsByWorkspace.get(workspace.id) ?? [], config, this.deps, fresh.projectRoots);
-        if (recheck.action !== "archive") {
+        const recheck = await decide(freshWorkspace, fresh, config, this.deps, decision.cleanup ? cleanupInput : null);
+        if (recheck.action !== "archive" || recheck.cleanup !== decision.cleanup) {
           log(formatDecision({ ...recheck, reason: `recheck: ${recheck.reason}` }, "skip"));
           continue;
         }
@@ -280,6 +392,8 @@ export class Sweeper {
         const { sweeps } = this.noteArchiveFailure(workspace.id);
         log(formatDecision({ ...recheck, reason: `${recheck.reason}; ${failure}; back-off ${sweeps} sweep(s)` }, "archive-failed"));
       }
+      const reported = await this.report(lease.api, toNotify, state, notified, config, cleanupDryRun);
+      if (fullSweep && notified && !cleanupDryRun) await this.pruneNotified(notified, state);
       const counts = decisions.reduce<Record<string, number>>((acc, decision) => {
         const key = !decision.candidate
           ? "nonCandidate"
@@ -291,10 +405,30 @@ export class Sweeper {
         acc[key] = (acc[key] ?? 0) + 1;
         return acc;
       }, {});
+      const cleanup = fullSweep
+        ? decisions.reduce<Record<string, number>>((acc, decision) => {
+          if (!decision.cleanup) return acc;
+          const key = decision.action === "skip" ? (decision.reason.includes("already-notified(") ? "alreadyNotified" : "skip") : decision.action;
+          acc[key] = (acc[key] ?? 0) + 1;
+          return acc;
+        }, {})
+        : undefined;
       const pendingMerge = decisions.filter(isPendingMerge).map((decision) => decision.workspaceId);
       const latencyMs = options.eventAt === undefined ? undefined : this.deps.now() - options.eventAt;
       log(
-        `[merged-worker-archiver] sweep-done ${JSON.stringify({ trigger: options.trigger, mode: dryRun ? "dry-run" : "armed", evaluated: decisions.length, nonCandidates, counts, archived, deferred: deferred.size, backoff: backedOff.size, pendingMerge, latencyMs })}`,
+        `[merged-worker-archiver] sweep-done ${JSON.stringify({
+          trigger: options.trigger,
+          mode: dryRun ? "dry-run" : "armed",
+          ...(fullSweep ? { cleanupMode: cleanupDryRun ? "dry-run" : "armed", cleanup, reports: reported } : {}),
+          evaluated: decisions.length,
+          nonCandidates,
+          counts,
+          archived,
+          deferred: deferred.size,
+          backoff: backedOff.size,
+          pendingMerge,
+          latencyMs,
+        })}`,
       );
       return { decisions, archived, pendingMerge, error: null };
     } catch (error) {
@@ -303,6 +437,134 @@ export class Sweeper {
       return { decisions, archived, pendingMerge: [], error: message };
     } finally {
       await lease.release().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Tell each kept worktree's PM about it, once. Armed: live state is re-read, every gate re-run and
+   * the PM resolved again just before sending; one message per PM, at most MAX_REPORT_ITEMS worktrees
+   * each. A worktree is recorded as reported before the message goes out, so it is never reported
+   * twice: a refusal before delivery (the PM is mid-turn, or gone) removes the record again, any other
+   * failure keeps it as `unconfirmed`. Returns the worktrees reported (or, in dry-run, that would be).
+   */
+  private async report(
+    api: ArchiverApi,
+    candidates: Decision[],
+    state: Snapshot,
+    notified: Map<string, NotifiedEntry> | null,
+    config: ArchiverConfig,
+    wouldOnly: boolean,
+  ): Promise<string[]> {
+    const log = this.deps.log;
+    if (candidates.length === 0 || !notified) return [];
+    let current = state;
+    let confirmed = candidates;
+    if (!wouldOnly) {
+      current = await snapshot(api, true);
+      confirmed = [];
+      for (const candidate of candidates) {
+        const workspace = current.workspaces.find((entry) => entry.id === candidate.workspaceId);
+        const recheck = workspace ? await decide(workspace, current, config, this.deps, { notified }) : null;
+        if (!recheck || recheck.action !== "notify") {
+          log(formatDecision({ ...(recheck ?? candidate), reason: `recheck: ${recheck ? recheck.reason : "workspace gone"}` }, "skip"));
+          continue;
+        }
+        confirmed.push(recheck);
+      }
+    }
+    const groups = new Map<string, Array<{ decision: Decision; directory: string; via: string }>>();
+    for (const decision of confirmed) {
+      const workspace = current.workspaces.find((entry) => entry.id === decision.workspaceId)!;
+      const owner = resolveOwner(workspace, current.historyByWorkspace.get(workspace.id) ?? [], current.liveAgents);
+      const directory = workspace.workspaceDirectory ?? "";
+      if (owner.kind !== "agent") {
+        const detail = owner.kind === "none" ? `no owner: ${owner.detail}` : `several owners: ${owner.agentIds.join(",")}`;
+        log(formatDecision(decision, "notify-unrouted", { path: directory, lastCommit: decision.lastCommit ?? null, owner: detail }));
+        continue;
+      }
+      const list = groups.get(owner.agentId) ?? [];
+      list.push({ decision, directory, via: owner.via });
+      groups.set(owner.agentId, list);
+    }
+    const reported: string[] = [];
+    for (const [agentId, items] of groups) {
+      const batch = items.slice(0, MAX_REPORT_ITEMS);
+      for (const item of items.slice(MAX_REPORT_ITEMS)) {
+        log(formatDecision(item.decision, "notify-deferred", { owner: agentId, why: `more than ${MAX_REPORT_ITEMS} worktrees for one PM; next sweep` }));
+      }
+      const lineFor = (item: (typeof items)[number], action: string, extra: Record<string, unknown> = {}) =>
+        formatDecision(item.decision, action, { path: item.directory, lastCommit: item.decision.lastCommit ?? null, owner: agentId, via: item.via, ...extra });
+      if (wouldOnly) {
+        for (const item of batch) {
+          log(lineFor(item, "would-notify"));
+          reported.push(item.decision.workspaceId);
+        }
+        continue;
+      }
+      // A message to an agent in a turn interrupts it, and it clears a pending permission request: wait for a quiet PM.
+      const owner = current.liveAgents.find((agent) => agent.id === agentId);
+      const busy = !owner
+        ? "not live"
+        : owner.status === "running" || owner.status === "initializing"
+          ? owner.status
+          : (owner.pendingPermissions?.length ?? 0) > 0
+            ? "pending permission"
+            : null;
+      if (busy) {
+        for (const item of batch) log(lineFor(item, "notify-deferred", { why: `PM ${busy}; next full sweep` }));
+        continue;
+      }
+      const at = new Date(this.deps.now()).toISOString();
+      for (const item of batch) notified.set(item.decision.workspaceId, { at, agentId, status: "sending" });
+      try {
+        await this.deps.notifyStore.write(notified);
+      } catch (error) {
+        for (const item of batch) notified.delete(item.decision.workspaceId);
+        for (const item of batch) log(lineFor(item, "notify-failed", { why: `state not written, nothing sent: ${error instanceof Error ? error.message : String(error)}` }));
+        continue;
+      }
+      const ids = batch.map((item) => item.decision.workspaceId).sort();
+      const messageId = `merged-worker-archiver-report-${createHash("sha256").update(`${agentId}\n${ids.join("\n")}`).digest("hex").slice(0, 32)}`;
+      const text = formatNotification(batch, config.staleWorkspaceMinutes, this.deps.now());
+      let outcome: { status: NotifiedEntry["status"] | "retry"; why?: string };
+      try {
+        if (typeof api.sendAgentMessage !== "function") throw new Error("agent messaging unavailable");
+        await api.sendAgentMessage(agentId, text, { messageId });
+        outcome = { status: "sent" };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        outcome = isRetryableSendError(message) ? { status: "retry", why: message } : { status: "unconfirmed", why: message };
+      }
+      for (const item of batch) {
+        if (outcome.status === "retry") notified.delete(item.decision.workspaceId);
+        else notified.set(item.decision.workspaceId, { at, agentId, status: outcome.status });
+      }
+      try {
+        await this.deps.notifyStore.write(notified);
+      } catch (error) {
+        log(`[merged-worker-archiver] notify-state-write-failed reason=${JSON.stringify(error instanceof Error ? error.message : String(error))} (entries stay marked sending, never resent)`);
+      }
+      for (const item of batch) {
+        if (outcome.status === "sent") {
+          log(lineFor(item, "notified", { messageId }));
+          reported.push(item.decision.workspaceId);
+        } else if (outcome.status === "retry") log(lineFor(item, "notify-deferred", { why: `refused before delivery, retried next full sweep: ${outcome.why}` }));
+        else log(lineFor(item, "notify-failed", { why: `delivery unknown, not resent: ${outcome.why}` }));
+      }
+    }
+    return reported;
+  }
+
+  /** Armed workspace cleanup only: forget reported worktrees that are no longer listed. */
+  private async pruneNotified(notified: Map<string, NotifiedEntry>, state: Snapshot): Promise<void> {
+    const listed = new Set(state.workspaces.map((workspace) => workspace.id));
+    const gone = [...notified.keys()].filter((workspaceId) => !listed.has(workspaceId));
+    if (gone.length === 0) return;
+    for (const workspaceId of gone) notified.delete(workspaceId);
+    try {
+      await this.deps.notifyStore.write(notified);
+    } catch (error) {
+      this.deps.log(`[merged-worker-archiver] notify-state-write-failed reason=${JSON.stringify(error instanceof Error ? error.message : String(error))}`);
     }
   }
 }
