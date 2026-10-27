@@ -1,3 +1,5 @@
+import base64
+import gzip
 import json
 import os
 import shutil
@@ -8,7 +10,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import Mock, patch
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills/orchestration/personal-skills/scripts"
@@ -128,6 +130,22 @@ class ProviderSyncTest(unittest.TestCase):
         env_file.parent.mkdir(parents=True)
         env_file.write_text('EBAY_ANALYZE_MCP_TOKEN=fixture-only\n')
         env_file.chmod(0o600)
+        # A Pi-configured providers fleet, as on a real Pi host: the providers step generates the Pi row and runs
+        # its runtime step against an installed Pi and a stock daemon.
+        node, pi_root = shutil.which('node'), home / 'pi'
+        package = pi_root / 'app/node_modules/@earendil-works/pi-coding-agent/package.json'
+        package.parent.mkdir(parents=True)
+        package.write_text('{"version":"1.0.0"}')
+        daemon_bin = self.root / 'daemon-bin'
+        daemon_bin.mkdir()
+        (daemon_bin / 'paseo').write_text("#!/bin/sh\necho '{\"daemonVersion\":\"0.10.3\",\"connectedDaemon\":\"reachable\"}'\n")
+        (daemon_bin / 'paseo').chmod(0o755)
+        self.env['PATH'] = str(daemon_bin) + os.pathsep + self.env['PATH']
+        catalog = json.loads((self.fleet / 'paseo-providers.json').read_text())
+        catalog['pi'] = {'root': str(pi_root), 'runtime': {'baseUrl': 'https://router.example.test/v1',
+                         'credential': {'kind': 'env', 'name': 'EXISTING_KEY'},
+                         'paseoMcp': {'url': 'http://127.0.0.1:6767/mcp/agents'}}}
+        (self.fleet / 'paseo-providers.json').write_text(json.dumps(catalog))
         code, out = self.run_sync('--host', 'laptop', '--dry-run')
         self.assertEqual(code, 0, out)
         self.assertFalse((home / '.config/loadout/mcp-env.cjs').exists())
@@ -142,10 +160,55 @@ class ProviderSyncTest(unittest.TestCase):
                                env={**self.env, 'HOME': str(home)}, capture_output=True, text=True)
         self.assertEqual(probe.returncode, 0, probe.stderr)
         self.assertEqual(probe.stdout.strip(), '12')
+        wrapped = self.config('laptop')['agents']['providers']['pi']['command']
+        self.assertEqual(wrapped, [*command[:3], 'node', str(pi_root) + '/launch.mjs'])
+        # Pi deploy apply after the providers step, with the proposal that step derived and node resolved to its
+        # absolute path, keeps the wrapped command byte for byte, and the next providers step writes nothing.
+        sys.path.insert(0, str(SCRIPTS / 'pi'))
+        import deploy
+        config = paseo_providers.load_for_hosts(fleet.load(self.fleet), self.fleet)
+        proposal = paseo_providers.payload(config, 'laptop', 'test', False)['pi']
+        apply = lambda path, root: path.write_bytes(deploy.merged(path.read_bytes(), root, proposal['provider'],
+                                                                  deploy.providers_root(proposal['root'])))
+        with patch.object(deploy.shutil, 'which', return_value=node):
+            apply(self.config_path('laptop'), deploy.expand(proposal['root']))
+        self.assertEqual(self.config('laptop')['agents']['providers']['pi']['command'], wrapped)
         code, out = self.run_sync('--host', 'laptop')
         self.assertEqual(code, 0, out)
         self.assertIn('write unchanged', out)
         self.assertEqual(self.config('laptop')['agents']['providers']['codex']['command'], command)
+        self.assertEqual(self.config('laptop')['agents']['providers']['pi']['command'], wrapped)
+        # The same round trip with a Windows Pi root, through the real merge program: the providers step builds
+        # `<root>/launch.mjs` with a forward slash. The runtime step is left out, since that root is not on this host.
+        win_root = r'C:\Users\example\AppData\Local\loadout-pi'
+        config['pi']['root'] = win_root
+        data = paseo_providers.payload(config, 'laptop', 'test', False)
+        proposal, data['pi'] = data['pi'], None
+        win_config = self.root / 'win-config.json'
+        data['config_path'] = str(win_config)
+        program = self.root / 'merge.js'
+        program.write_text(fleet.COMMON_JS.read_text() + '\n' + (SCRIPTS / 'paseo_providers_merge.js').read_text())
+        packed = base64.b64encode(gzip.compress(json.dumps(data).encode())).decode()
+        merge = lambda: paseo_providers.parse_result(subprocess.run(['node', str(program), packed], env=self.env,
+                                                                    capture_output=True, text=True).stdout)
+        win_pi = lambda: json.loads(win_config.read_text())['agents']['providers']['pi']['command']
+        win_config.write_text('{"agents":{"providers":{}}}')
+        got = merge()
+        self.assertEqual((got['error'], got['wrote']), (None, True))
+        windows = win_pi()
+        self.assertEqual(windows, [*command[:3], 'node', win_root + '/launch.mjs'])
+        # Apply over the providers step's command, and over one an earlier apply left with another root: both end
+        # as the providers step's bytes, so the next merge changes nothing.
+        stale = json.loads(win_config.read_text())
+        stale['agents']['providers']['pi']['command'] = [*command[:3], node, r'C:\Old\pi\launch.mjs']
+        for before in (win_config.read_text(), json.dumps(stale)):
+            win_config.write_text(before)
+            with patch.object(deploy.shutil, 'which', return_value=r'C:\Node\node.exe'):
+                apply(win_config, PureWindowsPath(win_root))
+            self.assertEqual(win_pi(), windows)
+            got = merge()
+            self.assertEqual((got['error'], got['changed'], got['wrote']), (None, False, False))
+            self.assertEqual(win_pi(), windows)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows user-env launch wiring')
     def test_mcp_user_env_is_read_at_each_windows_launch(self):

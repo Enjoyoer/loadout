@@ -5,6 +5,9 @@ from configure import LEVELS, direct_providers
 
 CANONICAL = {'Opus','Sonnet','Fable','Haiku','Astra','Sol','Luna','Web Extra','Web Pro'}
 LEVEL_LABELS = {'off':'Off','minimal':'Minimal','low':'Low','medium':'Medium','high':'High','xhigh':'Extra High','max':'Max'}
+# The Pi provider command. The providers step replaces ${LOADOUT_PI_ROOT} with the host's expanded pi.root, and the
+# Pi deploy builds the same command inside an mcp-env.cjs wrapper (deploy.launch_command).
+PI_COMMAND = ('node', '${LOADOUT_PI_ROOT}/launch.mjs')
 
 
 def derive(providers, pi):
@@ -98,5 +101,5 @@ def derive(providers, pi):
     settings=runtime.setdefault('settings',{})
     settings.update(defaultProvider=namespace,defaultModel=source.get('apiModelId',source['id']),defaultThinkingLevel=thinking or 'off')
     runtime['models']=models
-    return {'provider':{'enabled':True,'command':['node','${LOADOUT_PI_ROOT}/launch.mjs'],'models':rows},
+    return {'provider':{'enabled':True,'command':list(PI_COMMAND),'models':rows},
             'root':pi['root'],'runtime':runtime,'catalog_model_id':row['id']}

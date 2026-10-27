@@ -60,8 +60,11 @@ def validate(servers, fleet_doc, providers_path=None):
                 _check_url(value.get('url'), 'mcpServers.' + name + '.hosts.' + str(host) + '.url')
             if host not in hosts or not (type(value) is bool or isinstance(value, dict)):
                 raise fleet.FleetError('mcpServers.' + name + '.hosts needs client-config hosts and boolean or {"url": ...} values')
-            if hosts[host]['os'] != 'windows' and 'providers' not in hosts[host].get('sync', []):
-                raise fleet.FleetError('POSIX MCP hosts need the providers scope for env-file launch wiring')
+            # The providers step installs the launcher that loads each token at launch: the env file on POSIX, the
+            # user environment on Windows, where without it agents keep the daemon's start-time value until a restart.
+            if 'providers' not in hosts[host].get('sync', []):
+                raise fleet.FleetError('mcpServers.' + name + ' lists host ' + host + ' without the providers scope; '
+                                       'MCP hosts need it for launch wiring')
         if normalized == 'gmail':
             # Any listed host, even false, gets a Pi mcp.json entry that would replace the built-in server.
             clash = sorted(_pi_gmail_hosts(providers_path, enabled))

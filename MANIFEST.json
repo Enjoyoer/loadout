@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b535bbc2583942f91d9eaea33693f6e03a47df0c",
+  "source_commit": "fcb1fc6ef99a8e791e607b77931e22b138ed1254",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -114,8 +114,8 @@
       "path": "skills/operations-integrations/bw-login/SKILL.md",
       "category": "operations-integrations",
       "skill": "bw-login",
-      "bytes": 22011,
-      "sha256": "993601a3832bbd562518c9c17b5554fa38b895ba8463481b8545a8ba8487398f"
+      "bytes": 22010,
+      "sha256": "a3db938fcb8da69212eaabfdf5d89c8bc6f924e2665a8f7de54431cca5b803e5"
     },
     {
       "path": "skills/operations-integrations/bw-login/agents/openai.yaml",
@@ -450,8 +450,8 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 26381,
-      "sha256": "1ba07db0e35271247f588f5dd5e81b3e18fcdd0d59b93998cadf0498b0acc943"
+      "bytes": 26454,
+      "sha256": "7c3cad881c92830292a84ede95d414627cff23ae5cfbd542e49ed23b80bf78be"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
@@ -464,8 +464,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 57458,
-      "sha256": "55ae7aa0bde2d33ebae6a61e999acdeeb67dbf270d00f69200586cb4d9f1d136"
+      "bytes": 58469,
+      "sha256": "1cc621ffc7053b8e3f3c13b5cee7ddb9e85acdc1d6f996dd3053d15bc307feda"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -492,8 +492,8 @@
       "path": "skills/orchestration/personal-skills/fleet/example/hosts.json",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 1240,
-      "sha256": "46758af6cdb633a3dadb7956b23586bf99e9cc27bd77f79faac7c0e6bd4fe7fc"
+      "bytes": 1253,
+      "sha256": "94db768f602bdd17f5b455b3371d88f6990d79dc10c67f90f9b1238e6891f549"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/mcp-servers-overlay.json",
@@ -562,8 +562,8 @@
       "path": "skills/orchestration/personal-skills/scripts/mcp_config.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 4929,
-      "sha256": "209587ba57fd510643f273c133b76260fb3e74553028476945c424d95fa6eb5c"
+      "bytes": 5215,
+      "sha256": "08893b9a4680d0b9f46d38d6b59179156022e518a26cb4114cb101c241a6cd7a"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/mcp_env.cjs",
@@ -639,8 +639,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/catalog.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 7525,
-      "sha256": "25872f7242332010a49ccb0fd040af267ca94933d40a23c298860a95444b1d62"
+      "bytes": 7763,
+      "sha256": "3d09eed05383d5cc657a2b0c00eba05b2eb2d59b217e2c15698cc4368f1c9b66"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/configure.py",
@@ -660,8 +660,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/deploy.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 11532,
-      "sha256": "23838119ff57dfe37c4b96ff2bec04ab5a661f32c95bf422b1ec96edb7a11f80"
+      "bytes": 14041,
+      "sha256": "d4138719d2671d3a3ab1674358d6102e06e234d1be22d2ad3cddef818f622aca"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
@@ -1267,13 +1267,13 @@
       "path": "plugins/history-cwd-fallback/package-lock.json",
       "plugin": "history-cwd-fallback",
       "bytes": 21198,
-      "sha256": "32c9d6da5c33efb745374ff42817487a1822f917b1e5ac7263bd7f85d23308a4"
+      "sha256": "092dab93eb5b7b5b4ab4b2b38f86211601801ddbf437c32ef512ac856dc7a502"
     },
     {
       "path": "plugins/history-cwd-fallback/package.json",
       "plugin": "history-cwd-fallback",
       "bytes": 888,
-      "sha256": "5a9acf9fb6b486e638c1fd51f5b9ba49169c18da6a94f183cf472d79a86c2651"
+      "sha256": "abc3d11e711586f99e3d517661dc976eef403f3783d524af3008ba763fd2e134"
     },
     {
       "path": "plugins/history-cwd-fallback/paseo-plugin.json",
@@ -1284,8 +1284,8 @@
     {
       "path": "plugins/history-cwd-fallback/server/bridge.ts",
       "plugin": "history-cwd-fallback",
-      "bytes": 13501,
-      "sha256": "bac66eda4adff10502895525b3fb55d99acd6ece8c99a48a10671d9aac461c78"
+      "bytes": 14013,
+      "sha256": "61c796fd1be8475a4f1a6a4da2c82a1dded70b6a64261264e4a8e9f67bb674fd"
     },
     {
       "path": "plugins/history-cwd-fallback/server/vendor/atomic-json.ts",
