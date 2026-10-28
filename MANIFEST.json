@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "2cfc744586d0248d92e0c6565c97b6aacec440a0",
+  "source_commit": "1cf89410d4e0f26793eea55b3154d430197580e7",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -408,29 +408,29 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 8661,
-      "sha256": "85c8e593f541939e4b71ae745cdb5d81d78a6737e66cd8b74d1ed13840986e56"
+      "bytes": 4485,
+      "sha256": "99859bfed7d7eb0faf77ee28e5b1a231e0c159b12469eeeafa7fdbd7048af365"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 312,
-      "sha256": "ae201e83972f08a61c62f5d0deee411329feed8d2a5f9929f70b6e46e8d92115"
+      "bytes": 304,
+      "sha256": "1db67f2f98105c6d71cab3704e104d51a06c1017a7af627e868c5e0789384977"
     },
     {
       "path": "skills/orchestration/opn/evals.json",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 10052,
-      "sha256": "116ef27b7587c8edafb630f969695ba6e7f11e592a2af240e91570b040df1424"
+      "bytes": 11223,
+      "sha256": "3a886e00bb0fe584e4b5d8871ab93eb1ca1427386f5586a9eafc1481e4c09232"
     },
     {
       "path": "skills/orchestration/opn/references/host-adapters.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 3931,
-      "sha256": "b21665ce440bea5cb69e99e8710b6dbd9feaa380dbb59f04c23be9121649d6ba"
+      "bytes": 1784,
+      "sha256": "12c5efc5e9e3ba03fd23536c5aa6a2cc594285c669703f786871a47fe901634c"
     },
     {
       "path": "skills/orchestration/opn/scripts/test_validate_opn.py",
