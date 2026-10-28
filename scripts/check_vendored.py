@@ -22,6 +22,7 @@ CONSUMERS = {
     "atomic-json.ts": (
         "cache-aware-autocompact",
         "history-cwd-fallback",
+        "merged-worker-archiver",
         "usage-limit-auto-resume",
     ),
     "daemon-target.ts": (
@@ -39,6 +40,7 @@ CONSUMERS = {
     "fs-probe.ts": (
         "cache-aware-autocompact",
         "history-cwd-fallback",
+        "merged-worker-archiver",
         "usage-limit-auto-resume",
     ),
     "turn-input.ts": (

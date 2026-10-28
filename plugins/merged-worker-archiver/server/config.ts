@@ -30,6 +30,15 @@ export const ConfigSchema = z
     archiveFinishedWithoutPr: z.boolean().default(true),
     finishedGraceMinutes: z.number().min(0).max(7 * 24 * 60).default(120),
     logNonCandidates: z.boolean().default(false),
+    /**
+     * Workspace cleanup (full sweeps only): stale agentless workspace records are archived, merged
+     * clean agentless worktrees are archived, and unmerged or dirty agentless worktrees are reported
+     * to their PM once. It acts only when both `armed` and this are true; otherwise it logs
+     * would-archive and would-notify lines.
+     */
+    armWorkspaceCleanup: z.boolean().default(false),
+    /** No activity for at least this long makes an agentless workspace stale (default 3 days). */
+    staleWorkspaceMinutes: z.number().min(1).max(365 * 24 * 60).default(3 * 24 * 60),
   })
   .strict();
 

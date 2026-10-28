@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { defaultConfig } from "../server/config.ts";
 import { Sweeper, type ArchiverApi } from "../server/sweeper.ts";
 import type { WorkspaceView } from "../server/types.ts";
-import { agent, fakeFs, fakeRunner, NOW, scenario, workspace } from "./fakes.ts";
+import { agent, fakeFs, fakeRunner, LONG_AGO, memoryNotifyStore, NOW, scenario, workspace } from "./fakes.ts";
 
 it("with the default cap, one sweep over 7 eligible candidates archives 5 and reports 2 deferred; the next sweep archives the 2", async () => {
   const workspaces = Array.from({ length: 7 }, (_, i) => workspace({ id: `wks_${i}`, name: `worker-${i}` }));
@@ -21,6 +21,8 @@ it("with the default cap, one sweep over 7 eligible candidates archives 5 and re
     },
     agents: { list: async () => page(live().map((ws) => ({ agent: agent({ id: `agent-${ws.id}`, workspaceId: ws.id }) }))) },
     projects: { list: async () => ({ projects: [] }) },
+    terminals: { list: async () => ({ entries: [] }) },
+    supportsBackgroundWorkspaces: () => false,
   };
   const s = scenario({ ancestors: { "refs/heads/main": 0 } });
   const fs = fakeFs(s);
@@ -32,6 +34,7 @@ it("with the default cap, one sweep over 7 eligible candidates archives 5 and re
     merge: { run: fakeRunner(s), fs },
     resolveCommonDir: async () => null,
     now: () => NOW,
+    notifyStore: memoryNotifyStore(),
   });
   const actions = () => lines.filter((line) => !line.includes("sweep-done")).map((line) => JSON.parse(line.replace(/^\[merged-worker-archiver\] /, "")).action);
   const sweepDone = () => JSON.parse(lines.find((line) => line.includes("sweep-done"))!.replace(/^\[merged-worker-archiver\] sweep-done /, ""));
@@ -84,6 +87,8 @@ function armedSweeps(workspaces: WorkspaceView[], failure: (workspaceId: string)
     },
     agents: { list: async () => page(live().map((ws) => ({ agent: agent({ id: `agent-${ws.id}`, workspaceId: ws.id }) }))) },
     projects: { list: async () => ({ projects: [] }) },
+    terminals: { list: async () => ({ entries: [] }) },
+    supportsBackgroundWorkspaces: () => false,
   };
   const s = scenario({ ancestors: { "refs/heads/main": 0 } });
   const fs = fakeFs(s);
@@ -95,6 +100,7 @@ function armedSweeps(workspaces: WorkspaceView[], failure: (workspaceId: string)
     merge: { run: fakeRunner(s), fs },
     resolveCommonDir: async () => null,
     now: () => NOW,
+    notifyStore: memoryNotifyStore(),
   });
   return async () => {
     lines.length = 0;
@@ -184,4 +190,121 @@ it("with the cap at 5, 45 always-failing candidates listed ahead of 1 healthy on
     }
   }
   assert.ok(attemptedIn !== null, `the healthy workspace was not attempted within ${bound} sweeps`);
+});
+
+it("workspace cleanup previews until armWorkspaceCleanup is also on, then archives the stale record and tells the PM about the kept worktree once", async () => {
+  const page = <T>(entries: T[]) => ({ entries, pageInfo: { nextCursor: null, hasMore: false } });
+  const workspaces = [
+    workspace({ id: "wks_pm", name: "pm-home", workspaceKind: "local_checkout", workspaceDirectory: "/pm" }),
+    workspace({ id: "wks_local", name: "old-checkout", workspaceKind: "local_checkout", workspaceDirectory: "/checkout" }),
+    workspace({ id: "wks_wt", name: "kept-worktree" }),
+  ];
+  const agents = [
+    agent({ id: "pm-0001", workspaceId: "wks_pm", labels: { role: "pm", project: "demo" } }),
+    agent({ id: "worker-0001", workspaceId: "wks_wt", archivedAt: LONG_AGO, labels: { role: "worker", "paseo.parent-agent-id": "pm-0001" } }),
+  ];
+  const archivedIds = new Set<string>();
+  const sends: Array<{ agentId: string; messageId: string }> = [];
+  const api: ArchiverApi = {
+    workspaces: {
+      list: async () => page(workspaces.filter((ws) => !archivedIds.has(ws.id))),
+      archive: async (workspaceId) => {
+        archivedIds.add(workspaceId);
+        return { archivedAt: new Date(NOW).toISOString(), error: null };
+      },
+    },
+    agents: {
+      list: async (options) => page(agents.filter((entry) => options?.filter?.includeArchived || !entry.archivedAt).map((entry) => ({ agent: entry }))),
+      get: async (agentId) => agents.find((entry) => entry.id === agentId) ?? null,
+    },
+    projects: { list: async () => ({ projects: [] }) },
+    terminals: { list: async () => ({ entries: [] }) },
+    supportsBackgroundWorkspaces: () => false,
+    sendAgentMessage: async (agentId, _text, options) => {
+      sends.push({ agentId, messageId: options.messageId });
+    },
+  };
+  const s = scenario();
+  const fs = fakeFs(s);
+  const notifyStore = memoryNotifyStore();
+  const lines: string[] = [];
+  const sweeper = new Sweeper({
+    acquireApi: async () => ({ api, release: async () => undefined }),
+    log: (line) => lines.push(line),
+    fs,
+    merge: { run: fakeRunner(s), fs },
+    resolveCommonDir: async () => null,
+    now: () => NOW,
+    notifyStore,
+  });
+  const sweep = async (overrides: Record<string, unknown>) => {
+    lines.length = 0;
+    await sweeper.sweep(defaultConfig({ useGh: false, staleWorkspaceMinutes: 60, logNonCandidates: true, ...overrides }), { trigger: "test" });
+    return lines
+      .filter((line) => line.startsWith("[merged-worker-archiver] {"))
+      .map((line) => JSON.parse(line.replace(/^\[merged-worker-archiver\] /, "")))
+      .filter((entry) => entry.cleanup)
+      .map((entry) => `${entry.action} ${entry.workspaceId}`);
+  };
+
+  // Dry-run by default, and arming worker archiving alone does not arm cleanup.
+  for (const overrides of [{}, { armed: true }]) {
+    assert.deepEqual(await sweep(overrides), ["skip wks_pm", "would-archive wks_local", "would-notify wks_wt"]);
+    assert.deepEqual([...archivedIds], []);
+    assert.deepEqual(sends, []);
+    assert.equal(notifyStore.writes, 0);
+  }
+
+  assert.deepEqual(await sweep({ armed: true, armWorkspaceCleanup: true }), ["skip wks_pm", "archived wks_local", "notified wks_wt"]);
+  assert.deepEqual([...archivedIds], ["wks_local"]);
+  assert.deepEqual(sends.map((send) => send.agentId), ["pm-0001"]);
+  assert.equal(notifyStore.entries.get("wks_wt")?.status, "sent");
+
+  // Once per worktree: the next armed sweep keeps it and sends nothing.
+  assert.deepEqual(await sweep({ armed: true, armWorkspaceCleanup: true }), ["skip wks_pm", "skip wks_wt"]);
+  assert.equal(sends.length, 1);
+});
+
+it("an agent history listing that fails leaves out workspace cleanup only: the worker sweep still archives", async () => {
+  const page = <T>(entries: T[]) => ({ entries, pageInfo: { nextCursor: null, hasMore: false } });
+  const workspaces = [workspace({ id: "wks_worker" }), workspace({ id: "wks_local", workspaceKind: "local_checkout", workspaceDirectory: "/checkout" })];
+  const archiveCalls: string[] = [];
+  const api: ArchiverApi = {
+    workspaces: {
+      list: async () => page(workspaces.filter((ws) => !archiveCalls.includes(ws.id))),
+      archive: async (workspaceId) => {
+        archiveCalls.push(workspaceId);
+        return { archivedAt: new Date(NOW).toISOString(), error: null };
+      },
+    },
+    agents: {
+      list: async (options) => {
+        if (options?.filter?.includeArchived) throw new Error("agent history exceeded 50 pages");
+        return page([{ agent: agent({ id: "agent-worker", workspaceId: "wks_worker" }) }]);
+      },
+    },
+    projects: { list: async () => ({ projects: [] }) },
+    terminals: { list: async () => ({ entries: [] }) },
+    supportsBackgroundWorkspaces: () => false,
+  };
+  const s = scenario({ ancestors: { "refs/heads/main": 0 } });
+  const fs = fakeFs(s);
+  const lines: string[] = [];
+  const notifyStore = memoryNotifyStore();
+  const sweeper = new Sweeper({
+    acquireApi: async () => ({ api, release: async () => undefined }),
+    log: (line) => lines.push(line),
+    fs,
+    merge: { run: fakeRunner(s), fs },
+    resolveCommonDir: async () => null,
+    now: () => NOW,
+    notifyStore,
+  });
+  const result = await sweeper.sweep(defaultConfig({ armed: true, armWorkspaceCleanup: true, staleWorkspaceMinutes: 60 }), { trigger: "test" });
+  assert.equal(result.error, null);
+  assert.deepEqual(archiveCalls, ["wks_worker"]);
+  assert.ok(lines.some((line) => line.startsWith("[merged-worker-archiver] cleanup-skipped ") && line.includes("agent history exceeded 50 pages")));
+  const done = JSON.parse(lines.find((line) => line.includes("sweep-done"))!.replace(/^\[merged-worker-archiver\] sweep-done /, ""));
+  assert.equal(done.cleanupSkipped, "agent history exceeded 50 pages");
+  assert.equal(notifyStore.writes, 0);
 });

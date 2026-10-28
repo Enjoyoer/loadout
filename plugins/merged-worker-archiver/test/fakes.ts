@@ -1,3 +1,5 @@
+import type { NotifiedEntry } from "../server/cleanup.ts";
+import type { NotifyStateStore } from "../server/notify-store.ts";
 import type { CommandResult, CommandRunner, FileSystem } from "../server/types.ts";
 import type { AgentView, WorkspaceView } from "../server/types.ts";
 
@@ -22,6 +24,8 @@ export interface GitScenario {
   ahead: number;
   gh: Partial<CommandResult> | null;
   prHeadAncestor: number;
+  /** Committer date of HEAD (`git log -1`). */
+  commitDate: string;
   /** Make the git call whose args include this token time out. */
   timeoutOn?: string;
   /** Make the git call whose args include this token fail with exit 128. */
@@ -42,6 +46,7 @@ export function scenario(overrides: Partial<GitScenario> = {}): GitScenario {
     ahead: 2,
     gh: null,
     prHeadAncestor: 0,
+    commitDate: "2026-09-22T10:00:00Z",
     ...overrides,
   };
 }
@@ -99,6 +104,8 @@ export function fakeRunner(s: GitScenario, calls: Recorded[] = []): CommandRunne
       }
       case "rev-list":
         return ok(`${s.ahead}\n`);
+      case "log":
+        return ok(`${s.head.slice(0, 7)} ${s.commitDate} work\n`);
     }
     return fail(129, `unexpected git ${args.join(" ")}`);
   };
@@ -172,3 +179,19 @@ export const mergedPr = (overrides: Record<string, unknown> = {}) => ({
     ...overrides,
   }),
 });
+
+/** In-memory reported-worktree state; `writes` counts persisted writes. */
+export function memoryNotifyStore(initial: Record<string, NotifiedEntry> = {}): NotifyStateStore & { entries: Map<string, NotifiedEntry>; writes: number } {
+  const store = {
+    entries: new Map(Object.entries(initial)),
+    writes: 0,
+    async read() {
+      return new Map(store.entries);
+    },
+    async write(entries: ReadonlyMap<string, NotifiedEntry>) {
+      store.writes += 1;
+      store.entries = new Map(entries);
+    },
+  };
+  return store;
+}

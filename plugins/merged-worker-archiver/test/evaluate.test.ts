@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { defaultConfig, type ArchiverConfig } from "../server/config.ts";
+import { evaluateCleanup } from "../server/cleanup.ts";
 import { evaluateWorkspace } from "../server/evaluate.ts";
 import type { AgentView, WorkspaceView } from "../server/types.ts";
 import { agent, CWD, fakeFs, fakeRunner, mergedPr, NOW, scenario, workspace, type GitScenario, type Recorded } from "./fakes.ts";
@@ -216,5 +217,50 @@ describe("workspace and agent skip rules", () => {
   it("defaults to a zero grace period: a just-finished agent's merged worktree is archivable", async () => {
     const { decision } = await decide({ git: merged, agents: [agent({ updatedAt: "2026-09-22T11:59:59.000Z" })] });
     assert.equal(decision.action, "archive");
+  });
+});
+
+describe("workspace cleanup gates", () => {
+  // An agentless local checkout, idle for two hours, against a one-hour stale window.
+  const cleanup = async (ws: Partial<WorkspaceView>, extra: { terminals?: number; directory?: boolean | null; history?: AgentView[]; git?: Partial<GitScenario>; deliveries?: Map<string, number> | null } = {}) => {
+    const s = scenario(extra.git);
+    const fs = fakeFs(s, { directory: extra.directory });
+    const decision = await evaluateCleanup(workspace({ workspaceKind: "local_checkout", ...ws }), {
+      config: defaultConfig({ staleWorkspaceMinutes: 60 }),
+      deps: { merge: { run: fakeRunner(s), fs }, fs, now: () => NOW },
+      agents: [],
+      history: extra.history ?? [],
+      terminals: extra.terminals ?? 0,
+      deliveries: extra.deliveries === undefined ? new Map() : extra.deliveries,
+      notified: new Map(),
+    });
+    return `${decision.action} ${decision.reason}`;
+  };
+
+  it("archives only an idle record with no terminal, running script, pin or Paseo-owned worktree claim", async () => {
+    assert.equal(await cleanup({}), "archive stale-record(idle=2h)");
+    assert.equal(await cleanup({}, { terminals: 1 }), "skip terminals(1)");
+    assert.equal(await cleanup({ scripts: [{ scriptName: "dev", lifecycle: "running" }] as WorkspaceView["scripts"] }), "skip script-running(dev)");
+    assert.equal(await cleanup({ statusEnteredAt: new Date(NOW - 10 * 60_000).toISOString() }), "skip recent(idle=10m, stale after 60m)");
+    assert.equal(await cleanup({ pinnedAt: new Date(NOW).toISOString() }), "skip pinned");
+    assert.equal(await cleanup({ worktreeSlug: "kept" }), "skip paseo-owned-worktree-record");
+    assert.equal(await cleanup({}, { directory: false }), "skip path-missing(left to Paseo)");
+  });
+
+  it("an agent's archive is not activity, but its delivered messages and its last turn are; a worktree's HEAD commit is", async () => {
+    const ago = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
+    const tenMinutesAgo = ago(10);
+    // Last input 14 h ago, archived 10 minutes ago: archivedAt, the updatedAt and the statusEnteredAt it
+    // stamped do not count, and the 12 h last-turn allowance ended 2 h ago.
+    const archived = agent({ archivedAt: tenMinutesAgo, updatedAt: tenMinutesAgo, lastUserMessageAt: ago(14 * 60) });
+    assert.equal(await cleanup({ statusEnteredAt: tenMinutesAgo }, { history: [archived] }), "archive stale-record(idle=2h)");
+    // A message delivered 12.5 h ago (a receipt) is input too: its allowance ends 30 minutes ago.
+    assert.equal(await cleanup({}, { history: [archived], deliveries: new Map([[archived.id, NOW - 750 * 60_000]]) }), "skip recent(idle=30m, stale after 60m)");
+    // Unreadable receipts: the archive time counts.
+    assert.equal(await cleanup({}, { history: [archived], deliveries: null }), "skip recent(idle=10m, stale after 60m)");
+    assert.equal(await cleanup({}, { history: [{ ...archived, lastUserMessageAt: ago(20) }] }), "skip recent(idle=10m, stale after 60m)");
+    const worktree = { workspaceKind: "worktree" as const };
+    assert.equal(await cleanup(worktree, { git: { commitDate: tenMinutesAgo } }), "skip recent(idle=10m, stale after 60m)");
+    assert.equal(await cleanup(worktree, { git: { failOn: "--format=%h %cI %s" } }), "skip ambiguous(HEAD commit unreadable)");
   });
 });
