@@ -1,7 +1,7 @@
 {
   "skill": "opn",
   "skill_path": "skills/orchestration/opn/SKILL.md",
-  "description": "Behavioral scenario fixtures for the compact non-code ownership policy. These cases need an evaluator; the structural validator does not claim to execute them.",
+  "description": "Behavioral scenario fixtures for the OPN non-code PM policy. These cases need an evaluator; the structural validator does not claim to execute them.",
   "cases": [
     {
       "id": "direct-work-fallback",
@@ -29,7 +29,7 @@
         },
         {
           "criterion": "identity",
-          "observable": "does not invent a Worker, task, or thread"
+          "observable": "does not invent a worker, task, or thread"
         }
       ],
       "critical": true
@@ -60,7 +60,7 @@
         },
         {
           "criterion": "ownership",
-          "observable": "preserves the existing folder owner and does not create a sibling or take over"
+          "observable": "preserves the existing folder owner and does not create a sibling owner or take over"
         },
         {
           "criterion": "blocker",
@@ -70,91 +70,110 @@
       "critical": true
     },
     {
-      "id": "reuse-exact-owner",
-      "prompt": "An existing Worker owns the exact folder and is idle after a completed objective. The user asks for a related follow-up.",
+      "id": "repair-same-worker",
+      "prompt": "A worker reports its outcome done, but the PM's own fresh readback shows one acceptance check failing. Decide the next step.",
       "scenario": {
-        "delegation_authorized": true,
-        "existing_owner": {
-          "folder": "project/research",
-          "state": "idle"
-        },
-        "requested_folder": "project/research"
+        "worker_report": "done",
+        "pm_readback": "one acceptance check fails",
+        "worker_open": true,
+        "folder": "project/research"
       },
       "expected": {
-        "decision": "reuse",
+        "decision": "send the repair to the same worker",
         "replacement": false,
-        "retirement": false
+        "pm_redoes_work": false,
+        "archive": false
       },
       "rubric": [
         {
-          "criterion": "folder ownership",
-          "observable": "the exact owner is reverified and reused"
+          "criterion": "proof",
+          "observable": "the failing readback, not the worker claim, decides the outcome"
         },
         {
-          "criterion": "no retirement",
-          "observable": "idle or accepted work does not archive the owner"
+          "criterion": "repair",
+          "observable": "the repair goes to the same worker with the failing check named"
+        },
+        {
+          "criterion": "lifecycle",
+          "observable": "the worker stays open until a fresh readback verifies the repair"
         }
       ],
       "critical": true
     },
     {
-      "id": "authorized-native-handoff",
-      "prompt": "The user authorizes native delegation for one non-code workstream and the host exposes spawn, follow-up, and wait operations.",
+      "id": "worker-dispatch",
+      "prompt": "A PM owns a non-code project and the owner asks for two independent outcomes, one of which runs on another host. No worker model choice is recorded. Start the work.",
       "scenario": {
-        "delegation_authorized": true,
-        "codex_operations": false,
-        "native_operations": true,
-        "folder": "project/media"
+        "delegation_allowed": true,
+        "host": "paseo",
+        "outcomes": [
+          "inventory report",
+          "settings change on another host"
+        ],
+        "recorded_model_choice": null,
+        "pm_model": "the PM's own model and thinking"
       },
       "expected": {
-        "adapter": "native_subagent",
-        "owners": 1,
-        "handoff": "OPN delivers the bounded result"
+        "workers": 2,
+        "workspace": "the PM's own workspace, no new workspace",
+        "remote_host": "the worker reaches it over ssh",
+        "model": "inherits the PM's model and thinking",
+        "asks_owner_for_model": false,
+        "acknowledgment_round": false,
+        "notify_on_finish": true
       },
       "rubric": [
         {
-          "criterion": "selection",
-          "observable": "native is selected only after explicit authorization"
+          "criterion": "topology",
+          "observable": "one child worker per outcome, both in the PM's workspace"
         },
         {
-          "criterion": "scope",
-          "observable": "one folder-owning Worker receives outcome, scope, constraints, and checks"
+          "criterion": "model",
+          "observable": "workers inherit the PM's model and thinking without asking the owner, and a GPT worker would stay read-only"
         },
         {
-          "criterion": "delivery",
-          "observable": "OPN waits for and delivers that result without spawning a replacement"
+          "criterion": "brief",
+          "observable": "each brief states outcome, acceptance checks, and rules, and is dispatched without an acknowledgment round"
         }
       ],
       "critical": true
     },
     {
-      "id": "direct-user-codex-owner",
-      "prompt": "A named-task Worker acknowledged the brief and owns the requested folder. Explain the next collaboration boundary.",
+      "id": "worker-report-relay",
+      "prompt": "A worker finishes and reports to the PM in five lines with a report.md in its scratch folder. Nothing else reports to it. Explain what the PM does next.",
       "scenario": {
-        "delegation_authorized": true,
-        "adapter": "codex_named_task",
-        "acknowledged": true,
-        "user_facing_task": true
+        "report_lines": 5,
+        "report_file": "report.md in worker scratch",
+        "acceptance_checks": [
+          "service answers",
+          "setting applied"
+        ],
+        "other_reporters": false
       },
       "expected": {
-        "decision": "user collaborates directly with Worker",
-        "pm_action": "stop routing work"
+        "pm_action": "fresh readback of each acceptance check",
+        "owner_message": "plain-words relay citing the readback",
+        "archive_worker": "after verification"
       },
       "rubric": [
         {
-          "criterion": "boundary",
-          "observable": "the user is pointed to the existing Worker task"
+          "criterion": "verification",
+          "observable": "the PM runs its own fresh readback before telling the owner"
         },
         {
-          "criterion": "no relay",
-          "observable": "OPN does not poll, redo, or relay the substantive work"
+          "criterion": "relay",
+          "observable": "the owner gets a plain-words result from the PM, not a pointer to the worker"
+        },
+        {
+          "criterion": "lifecycle",
+          "observable": "the worker is archived once verified"
         }
       ],
       "critical": true
     },
     {
       "id": "evidence-provenance",
-      "prompt": "A Worker reports completion and links only to a generated artifact. Assess whether the objective is verified.",
+      "prompt": "A worker reports completion and links only to a generated artifact. Assess whether the objective is verified.",
       "scenario": {
         "artifact": "generated report",
         "acceptance_checks": [
@@ -167,7 +186,7 @@
       },
       "expected": {
         "verified": false,
-        "next": "request observable check evidence and provenance"
+        "next": "run a fresh readback of each acceptance check and name its source"
       },
       "rubric": [
         {
@@ -186,32 +205,30 @@
       "critical": true
     },
     {
-      "id": "scoped-cleanup-approval",
-      "prompt": "A Worker proposes deleting stale non-code files after finding a possible source-of-truth contradiction.",
+      "id": "scratch-cleanup-scope",
+      "prompt": "A PM finished a task and wants to delete its own stale scratch folders and also a large cache directory outside the host's disk-guard allowlist.",
       "scenario": {
-        "destructive": true,
-        "manifest": true,
-        "rollback": true,
-        "post_checks": true,
-        "contradiction": true,
-        "user_approval": false
+        "own_scratch": true,
+        "outside_allowlist_path": "a cache directory",
+        "owner_yes": false
       },
       "expected": {
-        "decision": "do not execute",
-        "reason": "approval and contradiction gate"
+        "own_scratch": "clean it now",
+        "outside_allowlist": "ask the owner with $wo and wait for yes",
+        "manifest_or_independent_review": false
       },
       "rubric": [
         {
-          "criterion": "scope",
-          "observable": "an exact manifest and source-of-truth check precede any mutation"
-        },
-        {
-          "criterion": "safety",
-          "observable": "the contradiction blocks only the dependent cleanup"
+          "criterion": "ownership",
+          "observable": "the owning PM cleans its own scratch without a manifest, review, or approval step"
         },
         {
           "criterion": "authority",
-          "observable": "explicit user approval is required"
+          "observable": "the path outside the disk-guard allowlist is not deleted without the owner's yes"
+        },
+        {
+          "criterion": "independence",
+          "observable": "the pending question blocks only the outside path, not the scratch cleanup"
         }
       ],
       "critical": true
@@ -250,25 +267,24 @@
       "critical": true
     },
     {
-      "id": "no-auto-retirement",
-      "prompt": "A Worker delivered an accepted result and is now inactive. Decide whether OPN may archive it.",
+      "id": "archive-after-verify",
+      "prompt": "A worker's result is verified by the PM's fresh readback. A check-back heartbeat still reports to that worker. Decide whether to archive it.",
       "scenario": {
-        "accepted": true,
-        "inactive": true,
-        "retirement_request": false
+        "verified": true,
+        "still_reported_to": "heartbeat"
       },
       "expected": {
         "archive": false,
-        "owner": "remains available"
+        "owner": "worker stays open until nothing reports to it, then is archived"
       },
       "rubric": [
         {
           "criterion": "lifecycle",
-          "observable": "completion and inactivity leave the owner available"
+          "observable": "a verified worker is archived once nothing still reports to it"
         },
         {
-          "criterion": "authority",
-          "observable": "retirement waits for an explicit user request or approval"
+          "criterion": "safety",
+          "observable": "a worker something still reports to stays open"
         }
       ],
       "critical": true
@@ -291,7 +307,7 @@
         },
         {
           "criterion": "no mutation",
-          "observable": "OPN does not create a non-code Worker or edit source"
+          "observable": "OPN does not start a non-code worker or edit source"
         }
       ],
       "critical": true

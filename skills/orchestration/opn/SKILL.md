@@ -1,92 +1,61 @@
 ---
 name: opn
-description: Own and coordinate durable non-code workstreams. Use for explicit OPN workflows or durable folder-owner coordination.
+description: Run durable non-code work as its PM, with one outcome-scoped worker per outcome and fresh-readback proof. Use for explicit OPN workflows or when a PM owns a non-code workstream or folder.
 metadata:
-  version: "1.2.0"
+  version: "2.0.0"
 ---
 
-# OPN Non-Code Orchestrator
+# OPN Non-Code PM
 
-OPN keeps durable non-code work legible and owned. The default is direct work by the current agent. When the current user and host authorize delegation, OPN may route one durable workstream to one folder-owning Worker. Code and pull-request work belongs to `$opc`.
+OPN is how a PM runs durable non-code work (operations, configuration, research, documents) so every PM works the same way. Code and pull-request work goes to `$opc`. Point to other skills and source paths instead of copying them.
 
-## Plain-text brief
+## Ownership
 
-Every delegated or directly executed workstream starts with four facts:
+- The PM owns the folder, its memory and the conversation with the owner. Workers are outcome-scoped and never own the folder.
+- One durable folder has one owning PM across sessions. Never take over another owner's folder or create a sibling owner. A denied operation, an inaccessible resource or an ownership mismatch is a named blocker, never permission to do the equivalent action directly.
+- Memory follows `$repo-lessons`: the root `STATUS.html` and `LESSONS.md` only, no other tracker.
+- Anything waiting on the owner (decisions, drafts, evidence to review) lives in the project folder, not in scratch, which expires after 7 days.
+- Whenever you own a project with no custom icon that is not a scratch folder, use `$project-icon`.
 
-```text
-Outcome: what the user should receive and what counts as done.
-Scope: the folder, files, systems, and actions in bounds.
-Constraints: ownership, safety, authority, preserved behavior, and forbidden actions.
-Checks: the observations or commands that will prove the outcome.
+## Workers
+
+- Start one child worker per desired outcome, in the PM's own workspace. Never create a new workspace; for work on another host, the worker reaches it over ssh. Launch and follow-ups use `notifyOnFinish`.
+- The worker inherits the PM's model and thinking; do not ask the owner to pick one. Check the worker's reported model after creation. A GPT worker stays read-only unless the owner has granted an exception.
+- The brief is the outcome, the acceptance checks and the rules, pointing to source paths. There is no acknowledgment round: dispatch and move on. Workers do not start workers of their own.
+- The worker reports to the PM in at most 5 lines, plus a `report.md` in its scratch folder.
+- The PM verifies with its own fresh readback, then relays the result to the owner in plain words. Send repairs to the same worker; do not redo its work or start a replacement.
+- Archive the worker once its result is verified. Keep it open only while something still reports to it.
+- Where the host or owner does not allow delegation, do the work directly, only within your own scope. Host mechanics: [references/host-adapters.md](references/host-adapters.md).
+
+## Owner decisions
+
+Ask with `$wo`: one numbered list at the end, each item with a recommendation. Do not ask about what is already safe or known; act on reversible changes and report them.
+
+## Proof and waiting
+
+- Any "done", "nothing changed" or "still works" cites a fresh readback: the check you just ran and its result. A worker claim, an artifact that exists or a task status is not proof.
+- A review of a deliverable, when one is run, follows OPC's [review rules](../opc/references/web-reviewer.md#review-rules).
+- Every wait gets a queued next step (a heartbeat or check-back, or a worker whose finish reaches the PM) or a named blocker (owner decision, quota, freeze, risky step).
+
+## Live systems
+
+- A shared service that other agents depend on changes only through one detached script that applies the change, restarts, health-checks and rolls back on failure. Never stop one as a separate step.
+- On a machine the owner is using, wait until it is idle before anything disruptive. Run heavy jobs through `$heavy` where it is installed.
+- To stop a process, find it by name or pattern with a fresh scan, confirm it is the right one, stop that confirmed PID, then verify the stop with a fresh scan. Never reuse a saved PID, and never stop by pattern (`pkill -f`, `killall`).
+- Cleanup: the owning PM cleans its own scratch. Deleting anything outside the host's disk-guard allowlist (the paths its automatic cleanup may already delete) needs the owner's yes.
+
+## Other PMs
+
+Address another PM by its role labels (`role=pm`, `project=<name>`), resolved at send time; with no single match, ask the owner. Confirm the message arrived. Correct a wrong broadcast at once, and verify with a fresh scan that anything it started has stopped.
+
+## Validation
+
+After changing OPN, from this folder:
+
+```bash
+python3 scripts/validate-opn.py
+python3 -m unittest discover -s scripts -p "test_*.py"
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py .
 ```
 
-Keep the brief small and point to source files instead of copying playbooks. The owner reports changes, checks, evidence, uncertainty, and the next safe action.
-
-## Ownership and reuse
-
-Whenever you own a project with no custom icon that is not a scratch folder, use `$project-icon`.
-
-- One durable folder has one owner across objectives and sessions.
-- Reuse the existing owner for the exact folder when it is ready, paused, completed, idle, or archived. Reverify identity, scope, and the recorded Worker model choice before reuse; do not create a sibling merely because the current objective changed.
-- A Worker collaborates directly with the user when the host exposes a user-facing task. A native Worker returns its bounded result to OPN, which delivers it and retains the owner handle for follow-up.
-- Completion, acceptance, inactivity, or PM closeout never retires an owner. Archive or replace only after the user explicitly authorizes a verified retirement or replacement.
-- Direct work is allowed only when this agent is authorized for the requested scope, owns that scope, and no existing folder owner controls it. Missing orchestration convenience may fall back to that direct path only when those conditions are true.
-- A denied host operation, inaccessible resource, mismatched owner identity, or unreconciled ownership never authorizes the equivalent action directly. Preserve the existing owner, reconcile the identity or access, or return a concrete blocker for the dependent action. Never take over a folder.
-
-## Authority and host selection
-
-OPN never grants itself delegation authority. The current user and host runtime decide whether delegation is allowed and which primitives are callable.
-
-- Work directly when delegation is not authorized, unavailable, or unnecessary only if this agent is itself authorized for the scope, owns it, and no existing folder owner applies. Otherwise preserve the owner and report the concrete dependent blocker. Do not turn missing orchestration into permission.
-- When delegation is authorized, select the first callable adapter from [references/host-adapters.md](references/host-adapters.md). Use exactly one folder-owning Worker for the ordinary workstream. OPN does not create supporting, helper, or peer agents; an authorized delegated workstream has that one Worker and nothing beside it.
-- Create the Worker in place: under the delegating PM, inside the PM's existing project, workspace, or session, and in the PM's working directory. Delegation never creates a new container for the Worker, and resuming an existing owner never creates one either. If a host can only delegate by creating a new container, do not create it; fall back to capability contract item 3 in the host adapters reference. This governs the harness's container and directory layout, not scope: the owner still owns its durable folder.
-- Do not invent project, thread, task, host, or credential identity. Do not invent a model or effort either: the Worker runs one of the two user-chosen options below, taken from the user's recorded choice rather than OPN's preference, and OPN adds no other override. No nested delegation occurs without explicit user authority.
-- If the request is code work, hand it to `$opc` without mutating the workstream.
-
-## Worker model and effort
-
-- An OPN Worker uses exactly one of two options, chosen by the user: `gpt-6-luna` at `max` reasoning with Fast requested, or `claude-opus-5-5[1m]` at `low` reasoning with Fast off. Fast is a request, not a verified service property.
-- The user chooses. When no choice is recorded for the owner, ask; do not guess or default to either option.
-- Once chosen, the option is the default for the remainder of the OPN run and persists with the durable folder owner across sessions, so a resumed run reuses it without asking again.
-- Switch only on an explicit user request. A new objective, a resumed session, or a different task is not a switch.
-- If the host cannot expose the requested model, effort, or Fast control, use the supported setting and report the unavailable preference. Never substitute silently.
-- Record the choice in the host's own agent or thread runtime settings, where the host already keeps a model and effort. Reverify it when reusing an owner, alongside identity and scope. Do not record it in the owner's `STATUS.html` or `LESSONS.md`; the repo-lessons contract bars model-policy notes from `STATUS.html` and worker profiles from `LESSONS.md`. Do not add it to `owner_identity`; that record keeps only the fields the host adapters reference lists, and this policy adds none.
-
-## Intake and handoff
-
-Identify the project root, controlling instructions, exact problem, relevant skill, owner folder, and safety boundary. Read owned state when resuming work or when prior decisions affect the task. Never create a second tracker.
-
-For an authorized delegated path:
-
-1. Reuse or create the one folder owner and verify the real identity, folder, memory root, and resumability, then resolve the recorded Worker model choice, asking the user when none is recorded, before seeding.
-2. Seed the owner with the plain-text brief, original context, relevant skills, source-of-truth files, allowed and forbidden actions, and acceptance checks.
-3. Require acknowledgment of identity, scope, ownership, memory root, authority, resumability, and the direct-user relationship before dispatch.
-4. Surface a user-facing named task when the host provides one. For a native owner, wait for its bounded result, deliver it, and keep the exact handle for later follow-up.
-
-Do not redo the Worker's substantive work. Keep direct collaboration with the user at the owner boundary rather than creating a relay or a replacement owner.
-
-## Evidence and cleanup
-
-Map every applicable check to observable evidence and its source or provenance. State the outcome, what remains uncertain, and the next safe action. A Worker claim, generated artifact, file existence, or task status is not proof by itself.
-
-Before destructive non-code cleanup, the owner prepares an exact scoped manifest, confirms the source of truth, records rollback and post-checks, and obtains an independent read-only review when available, under OPC's [review rules](../opc/references/web-reviewer.md#review-rules). Unresolved findings or contradictions block only the action that depends on them. Execution still requires explicit user approval. Cleanup never grants archive or retirement authority.
-
-## Memory and completion
-
-Follow [repo-lessons](../repo-lessons/SKILL.md) as the authoritative memory contract for PMs and durable Workers, including role/root ownership, autonomous maintenance after material changes, one-way PM reads, and evidence handling. Operational task lifecycle and host adapters do not add memory callbacks or coordination prerequisites.
-
-Continue authorized work through the agreed outcome and applicable validation, repairing in-scope issues. Stop for a concrete dependency or user decision, not merely because the first artifact exists. This does not extend delivery authority or bypass the direct-user Worker boundary.
-
-## Focused references and validation
-
-Read [references/host-adapters.md](references/host-adapters.md) for callable host mechanics when that branch is needed. It is not a reason to reread unchanged policy on every turn.
-
-After changing OPN, run:
-
-```powershell
-python scripts\validate-opn.py
-python "$env:USERPROFILE\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "$env:USERPROFILE\.codex\skills\opn"
-python -m json.tool evals.json > $null
-```
-
-Run an available behavioral evaluator. If none is available, structurally validate the scenario fixtures and report the behavioral cases unexecuted. Verify `agents/openai.yaml` and forward-test one changed handoff path when safe.
+The `evals.json` scenarios need a behavioral evaluator; without one, report them unexecuted.
