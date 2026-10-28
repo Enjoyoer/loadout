@@ -1,4 +1,4 @@
 interface:
-  display_name: "OPN Non-Code Orchestrator"
-  short_description: "Coordinate durable non-code work with one owner"
-  default_prompt: "Use $opn for durable non-code work; reuse one folder owner, delegate only when authorized, and work directly only within this agent's authorized scope and ownership."
+  display_name: "OPN Non-Code PM"
+  short_description: "Run durable non-code work with outcome-scoped workers"
+  default_prompt: "Use $opn to run durable non-code work as its PM: one worker per outcome in your own workspace, a fresh readback before any done, and owner decisions through $wo."
