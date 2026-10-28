@@ -152,16 +152,39 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertEqual(self.config('laptop'), EXISTING)
         code, out = self.run_sync('--host', 'laptop')
         self.assertEqual(code, 0, out)
+        # Only Codex, which reads an HTTP bearer from its environment alone, launches with the MCP tokens.
         command = self.config('laptop')['agents']['providers']['codex']['command']
-        self.assertEqual(command[2:], ['--', 'codex'])
-        self.assertNotIn('fixture-only', self.config_path('laptop').read_text())
+        self.assertEqual(command[2:], ['--provider', 'codex', '--', 'codex'])
+        self.assertIn('codex MCP bearer env from env files', out)
+        launcher = command[:2]
+        runtime = [pi_root / 'agent/mcp.json', pi_root / 'runtime.json']
+        self.assertFalse(any('fixture-only' in p.read_text() for p in [self.config_path('laptop'), *runtime]))
         self.assertNotIn('fixture-only', out)
-        probe = subprocess.run([*command[:3], 'node', '-e', 'console.log(process.env.EBAY_ANALYZE_MCP_TOKEN.length)'],
-                               env={**self.env, 'HOME': str(home)}, capture_output=True, text=True)
-        self.assertEqual(probe.returncode, 0, probe.stderr)
-        self.assertEqual(probe.stdout.strip(), '12')
+        length = 'console.log(String(process.env.EBAY_ANALYZE_MCP_TOKEN?.length))'
+        slot = lambda *prefix: subprocess.run([*launcher, *prefix, '--', 'node', '-e', length], capture_output=True,
+                                              text=True, env={**self.env, 'HOME': str(home), 'EBAY_ANALYZE_MCP_TOKEN': 'inherited'})
+        probe = slot('--provider', 'codex')
+        self.assertEqual((probe.returncode, probe.stdout.strip()), (0, '12'), probe.stderr)
+        # Pi and Claude Code launch without it, an inherited one removed too, and read it when they connect.
+        for prefix in ((), ('--provider', 'claude')):
+            probe = slot(*prefix)
+            self.assertEqual((probe.returncode, probe.stdout.strip()), (0, 'undefined'), probe.stderr)
         wrapped = self.config('laptop')['agents']['providers']['pi']['command']
-        self.assertEqual(wrapped, [*command[:3], 'node', str(pi_root) + '/launch.mjs'])
+        self.assertEqual(wrapped, [*launcher, '--', 'node', str(pi_root) + '/launch.mjs'])
+        # The Pi entry the runtime step wrote runs, in the shell, the launcher's reader: exactly the header line.
+        entry = json.loads(runtime[0].read_text())['mcpServers']['ebay-analyze']
+        self.assertEqual(entry['headers']['Authorization'],
+                         '!' + ' '.join(['"%s"' % c for c in launcher] + ['--mcp-header', 'pi', 'ebay-analyze']))
+        reader = lambda env: subprocess.run(entry['headers']['Authorization'][1:], shell=True, capture_output=True,
+                                            text=True, env={**self.env, 'HOME': str(home), **env})
+        done = reader({})
+        self.assertEqual((done.returncode, done.stdout), (0, 'Bearer fixture-only'), done.stderr)
+        # A missing env file gives no header and no fallback to the environment.
+        env_file.rename(env_file.with_suffix('.away'))
+        done = reader({'EBAY_ANALYZE_MCP_TOKEN': 'inherited'})
+        self.assertEqual((done.returncode, done.stdout), (1, ''))
+        self.assertIn('MCP env file unavailable or unsafe for EBAY_ANALYZE_MCP_TOKEN: missing', done.stderr)
+        env_file.with_suffix('.away').rename(env_file)
         # Pi deploy apply after the providers step, with the proposal that step derived and node resolved to its
         # absolute path, keeps the wrapped command byte for byte, and the next providers step writes nothing.
         sys.path.insert(0, str(SCRIPTS / 'pi'))
@@ -196,11 +219,11 @@ class ProviderSyncTest(unittest.TestCase):
         got = merge()
         self.assertEqual((got['error'], got['wrote']), (None, True))
         windows = win_pi()
-        self.assertEqual(windows, [*command[:3], 'node', win_root + '/launch.mjs'])
+        self.assertEqual(windows, [*launcher, '--', 'node', win_root + '/launch.mjs'])
         # Apply over the providers step's command, and over one an earlier apply left with another root: both end
         # as the providers step's bytes, so the next merge changes nothing.
         stale = json.loads(win_config.read_text())
-        stale['agents']['providers']['pi']['command'] = [*command[:3], node, r'C:\Old\pi\launch.mjs']
+        stale['agents']['providers']['pi']['command'] = [*launcher, '--', node, r'C:\Old\pi\launch.mjs']
         for before in (win_config.read_text(), json.dumps(stale)):
             win_config.write_text(before)
             with patch.object(deploy.shutil, 'which', return_value=r'C:\Node\node.exe'):
@@ -210,36 +233,53 @@ class ProviderSyncTest(unittest.TestCase):
             self.assertEqual((got['error'], got['changed'], got['wrote']), (None, False, False))
             self.assertEqual(win_pi(), windows)
 
-    @unittest.skipUnless(os.name == 'nt', 'Windows user-env launch wiring')
-    def test_mcp_user_env_is_read_at_each_windows_launch(self):
-        name = f'LOADOUT_TEST_MCP_TOKEN_{os.getpid()}'
-        reg = lambda *args: subprocess.run(['reg.exe', *args, '/f'], check=True, capture_output=True)
-        user_env = lambda value: reg('add', r'HKCU\Environment', '/v', name, '/t', 'REG_SZ', '/d', value)
-        self.addCleanup(subprocess.run, ['reg.exe', 'delete', r'HKCU\Environment', '/v', name, '/f'], capture_output=True)
-        user_env('first-fixture')
+    @unittest.skipUnless(os.name == 'nt', 'Windows env-file launch wiring')
+    def test_mcp_env_file_is_read_at_each_windows_launch(self):
+        name = 'LOADOUT_TEST_MCP_TOKEN'
+        env_file = self.root / 'hosts/laptop/.config/ebay-analyze/mcp.env'
+        # The documented recipe: a new owner-only file, its NAME=value line from the environment.
+        create = lambda value: subprocess.run(
+            ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPTS / 'new_token_file.ps1'),
+             '-Path', str(env_file), '-FromEnv', 'FIXTURE_KEY', '-EnvName', name],
+            check=True, capture_output=True, env={**os.environ, 'FIXTURE_KEY': value})
         hosts = json.loads((self.fleet / 'hosts.json').read_text())
         hosts['hosts'][0].update(os='windows', sync=[*hosts['hosts'][0]['sync'], 'client-config'])
         (self.fleet / 'hosts.json').write_text(json.dumps(hosts))
         (self.fleet / 'client-config.json').write_text(json.dumps({'mcpServers': {'ebay-analyze': {
             'url': 'http://192.0.2.40:8766/mcp', 'bearerTokenEnvVar': name, 'hosts': {'laptop': True}}}}))
         code, out = self.run_sync('--host', 'laptop')
+        self.assertEqual(code, 1, out)
+        self.assertIn(name + ' envFile ~/.config/ebay-analyze/mcp.env missing or unsafe (missing)', out)
+        create('first-fixture')
+        code, out = self.run_sync('--host', 'laptop')
         self.assertEqual(code, 0, out)
-        self.assertIn(name + ' user env length=13; read at each launch', out)
+        self.assertIn(name + ' envFile ~/.config/ebay-analyze/mcp.env present, owner-only', out)
         command = self.config('laptop')['agents']['providers']['codex']['command']
-        self.assertEqual(command[2:], ['--', 'codex'])
+        self.assertEqual(command[2:], ['--provider', 'codex', '--', 'codex'])
         self.assertNotIn('first-fixture', self.config_path('laptop').read_text() + out)
-        # The codex slot launched with node in place of codex, under a daemon that inherited a stale value.
-        probe = lambda: subprocess.run([*command[:3], 'node', '-e', f'console.log(process.env.{name}.length)'],
-                                       env={**self.env, name: 'stale'}, capture_output=True, text=True, timeout=60)
-        self.assertEqual(probe().stdout.strip(), '13')
+        # The codex slot launched with node in place of codex, under a daemon that inherited a stale value in
+        # another spelling.
+        length = f'console.log(String(process.env.{name}?.length))'
+        slot = lambda *prefix: subprocess.run([*command[:2], *prefix, '--', 'node', '-e', length],
+                                              env={**self.env, name.lower(): 'stale'}, capture_output=True, text=True,
+                                              timeout=60)
+        self.assertEqual(slot('--provider', 'codex').stdout.strip(), '13')
+        # Pi and Claude Code get no bearer variable, and read the header in cmd.exe when they connect.
+        self.assertEqual(slot().stdout.strip(), 'undefined')
+        helper = ' '.join(['"%s"' % c for c in command[:2]] + ['--mcp-header', 'claude', 'ebay-analyze'])
+        done = subprocess.run(helper, shell=True, capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual(json.loads(done.stdout), {'Authorization': 'Bearer first-fixture'}, done.stderr)
         # A rotation reaches the next launch with no daemon restart.
-        user_env('rotated-fixture-value')
-        self.assertEqual(probe().stdout.strip(), '21')
-        # A deleted value keeps the inherited one and names only the variable.
-        reg('delete', r'HKCU\Environment', '/v', name)
-        done = probe()
-        self.assertEqual((done.returncode, done.stdout.strip()), (0, '5'), done.stderr)
-        self.assertIn('no usable ' + name, done.stderr)
+        env_file.unlink()
+        create('rotated-fixture-value')
+        self.assertEqual(slot('--provider', 'codex').stdout.strip(), '21')
+        # A deleted file fails the Codex launch closed, naming only the variable, and gives no header.
+        env_file.unlink()
+        done = slot('--provider', 'codex')
+        self.assertEqual((done.returncode, done.stdout.strip()), (1, ''), done.stderr)
+        self.assertIn('MCP env file unavailable or unsafe for ' + name + ': missing', done.stderr)
+        done = subprocess.run(helper, shell=True, capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual((done.returncode, done.stdout), (1, ''))
 
     def test_launch_settings_route_paseo_harnesses_with_an_owner_only_token_file(self):
         catalog = json.loads((self.fleet / 'paseo-providers.json').read_text())

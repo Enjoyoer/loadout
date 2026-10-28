@@ -431,6 +431,10 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
     generated = None
     mcp_servers = config.get('_mcpHosts', {}).get(host, [])
     launch = launch_for(config, host)
+    # Codex reads an HTTP bearer only from its environment, so only its launch gets the MCP tokens; Claude Code and Pi
+    # read each one when they connect (the Pi entries come from the merge, which knows this host's paths).
+    if any(server['enabled'] for server in mcp_servers):
+        launch['codex'] = {**launch.get('codex', {}), 'mcpTokens': True}
     if pi:
         sys.path.insert(0, str(Path(__file__).parent / 'pi'))
         from catalog import derive
@@ -439,9 +443,6 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
             providers['pi'] = {'models': catalog['provider']['models']}
         else:
             generated = derive(providers, pi)
-            if mcp_servers:
-                import mcp_config
-                generated['runtime']['mcpServers'] = mcp_config.pi_servers(mcp_servers)
             providers['pi'] = generated['provider']
             env.setdefault('pi', {})['LOADOUT_PI_ROOT'] = pi['root']
         if 'options' in pi: providers['pi']['options'] = pi['options']

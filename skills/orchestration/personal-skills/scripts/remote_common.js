@@ -70,6 +70,26 @@ const loadoutDir = (path, os) => process.platform === "win32"
   ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "loadout")
   : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "loadout");
 
+// A fleet MCP server's entry in Claude Code's user ~/.claude.json, or with pi set in Pi's agent/mcp.json. No token
+// is in it: at each connection the harness runs this Node and the launcher the providers step installs in
+// loadoutDir, whose --mcp-header mode reads the bearer from the server's owner-only env file (see mcp_env.cjs). Pi
+// runs a header value starting with ! as a shell command and sends its output; Claude Code runs headersHelper and
+// merges the JSON object it prints. The shell is /bin/sh on POSIX; on Windows it is Git Bash or cmd.exe for Pi and
+// cmd.exe for Claude Code. Each path is double-quoted, which all of them read alike only while it holds no quote,
+// backquote, $, %, ! or control character, nor on POSIX a backslash, so such a path is refused.
+function mcpEntry(path, os, server, pi) {
+  const quote = word => {
+    if (/["`$%!\x00-\x1f]/.test(word) || process.platform !== "win32" && word.includes("\\"))
+      throw new Error("MCP header command refused, a path holds a shell-special character: " + word);
+    return '"' + word + '"';
+  };
+  if (!/^[A-Za-z0-9_-]+$/.test(server.name)) throw new Error("invalid MCP server name: " + server.name);
+  const command = [quote(process.execPath), quote(path.join(loadoutDir(path, os), "mcp-env.cjs")), "--mcp-header",
+    pi ? "pi" : "claude", server.name].join(" ");
+  return pi ? { url: server.url, headers: { Authorization: "!" + command }, enabled: server.enabled, exposure: "codemode" }
+    : { type: "http", url: server.url, headersHelper: command };
+}
+
 const sha256 = buf => require("crypto").createHash("sha256").update(buf).digest("hex");
 
 // Throws unless file is still what preflight accepted: absent when accepted is null, else a regular

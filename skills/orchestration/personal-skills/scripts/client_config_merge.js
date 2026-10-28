@@ -1,9 +1,8 @@
 // Merge managed Codex and Claude Code settings into this host's client config.
 // Shipped by client_config.py through fleet.run_node in a digest-checked stdin envelope; process.argv[2] is the gzip+base64 JSON payload
 // {codex: {top, sections, reportOnly, removeTop}, claude: {settings, env, token_env, removeEnv, minVersion},
-//  token, stamp, dry_run, update_claude, hold_removal}. With hold_removal set, removal-listed keys stay and are
-//  reported as `held`. The token arrives only on stdin and is
-// never printed. Only managed keys are written, and only listed keys an earlier sync managed are removed;
+//  token, stamp, dry_run, update_claude, hold_removal, mcpServers, mcpLauncherSha256}. With hold_removal set,
+//  removal-listed keys stay and are reported as `held`. The token arrives only on stdin and is never printed. Only managed keys are written, and only listed keys an earlier sync managed are removed;
 // everything else stays host-local.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execSync, execFileSync } = require("child_process");
@@ -36,6 +35,8 @@ function checkNames(codex) {
 function tomlValue(v) {
   if (typeof v === "string") return JSON.stringify(v);
   if (typeof v === "boolean" || typeof v === "number") return String(v);
+  // One line of strings only, such as the generated shell_environment_policy.exclude.
+  if (Array.isArray(v) && v.every(x => typeof x === "string")) return "[" + v.map(x => JSON.stringify(x)).join(", ") + "]";
   throw new Error("unsupported TOML value for a managed key");
 }
 
@@ -324,8 +325,7 @@ function mergeMcp(bytes, servers, pi = false) {
       if (cfg.mcpServers && s.name in cfg.mcpServers) { delete cfg.mcpServers[s.name]; changes.push('-' + s.name); }
       continue;
     }
-    const want = { type: 'http', url: s.url, headers: { Authorization: 'Bearer ${' + s.bearerTokenEnvVar + '}' } };
-    if (pi) { delete want.type; want.enabled = s.enabled; want.exposure = 'codemode'; }
+    const want = mcpEntry(path, os, s, pi);
     cfg.mcpServers ||= {};
     if (JSON.stringify(cfg.mcpServers[s.name]) !== JSON.stringify(want)) {
       cfg.mcpServers[s.name] = want; changes.push(s.name);
@@ -341,6 +341,13 @@ try {
   const servers = p.mcpServers || [];
   const mcpPlans = [];
   if (servers.length) {
+    // Claude Code and Pi read each bearer through the launcher the providers step installs; one that is missing or
+    // from another revision may lack that reader, so nothing is written until the providers step has run here.
+    const launcher = path.join(loadoutDir(path, os), 'mcp-env.cjs');
+    checkConfigPath(fs, path, os, launcher);
+    if (!probe(fs, launcher) || sha256(fs.readFileSync(launcher)) !== p.mcpLauncherSha256)
+      throw Error('the MCP launcher ' + launcher + ' is missing or not the one this sync installs; '
+                  + 'run the providers step for this host first');
     const claudeMcp = path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json');
     // probe(), not existsSync: an unreadable path throws instead of reading as absent.
     if (probe(fs, path.join(os.homedir(), '.claude'), true))

@@ -54,14 +54,19 @@ def validate(servers, fleet_doc, providers_path=None):
         enabled = server.get('hosts')
         if not isinstance(enabled, dict) or not enabled:
             raise fleet.FleetError('mcpServers.' + name + '.hosts must map host names to booleans or {"url": ...}')
+        # The same file on every OS: a Windows host reads ~/ as %USERPROFILE%, and has no absolute POSIX path.
+        windows = sorted(host for host in enabled if host in hosts and hosts[host].get('os') == 'windows')
+        if windows and not env_file.startswith('~/'):
+            raise fleet.FleetError('mcpServers.' + name + '.envFile must start with ~/ while it lists Windows host(s) '
+                                   + ', '.join(windows))
         for host, value in enabled.items():
             if isinstance(value, dict):
                 fleet._keys(value, {'url'}, 'mcpServers.' + name + '.hosts.' + str(host))
                 _check_url(value.get('url'), 'mcpServers.' + name + '.hosts.' + str(host) + '.url')
             if host not in hosts or not (type(value) is bool or isinstance(value, dict)):
                 raise fleet.FleetError('mcpServers.' + name + '.hosts needs client-config hosts and boolean or {"url": ...} values')
-            # The providers step installs the launcher that loads each token at launch: the env file on POSIX, the
-            # user environment on Windows, where without it agents keep the daemon's start-time value until a restart.
+            # The providers step installs the launcher that reads each token from its env file: for Codex at launch,
+            # for Claude Code and Pi at each connection. Without it no harness gets a token.
             if 'providers' not in hosts[host].get('sync', []):
                 raise fleet.FleetError('mcpServers.' + name + ' lists host ' + host + ' without the providers scope; '
                                        'MCP hosts need it for launch wiring')
@@ -77,11 +82,6 @@ def for_host(servers, host):
     # A host value is true, false, or {"url": ...}: enabled with that URL instead of the top-level one.
     return [dict(name=name, url=(s['hosts'][host['name']] if isinstance(s['hosts'][host['name']], dict) else s)['url'],
                  bearerTokenEnvVar=s['bearerTokenEnvVar'],
-                 envFile=None if host['os'] == 'windows' else s.get('envFile', '~/.config/' + name + '/mcp.env'),
+                 envFile=s.get('envFile', '~/.config/' + name + '/mcp.env'),
                  enabled=s['hosts'][host['name']] is not False)
             for name, s in servers.items() if host['name'] in s['hosts']]
-
-
-def pi_servers(servers):
-    return {s['name']: {'url': s['url'], 'headers': {'Authorization': 'Bearer ${' + s['bearerTokenEnvVar'] + '}'},
-                        'enabled': s['enabled'], 'exposure': 'codemode'} for s in servers}

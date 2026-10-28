@@ -64,10 +64,11 @@ try {
     ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData/Roaming'), 'loadout')
     : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'loadout');
   const launcher = path.join(envRoot, 'mcp-env.cjs');
-  // The servers the launcher loads: on POSIX each one's env file; on Windows, which has none, each one's user
-  // environment variable, read afresh at each launch.
-  const envServers = process.platform === 'win32' ? servers : servers.filter(s => s.envFile);
-  // Per provider launch settings, read by the launcher for the harness it names: token files and leading args.
+  // The servers the launcher reads: each one's owner-only env file, for Codex at launch and for Claude Code and Pi
+  // when they connect.
+  const envServers = servers.filter(s => s.envFile);
+  // Per provider launch settings, read by the launcher for the harness it names: token files, leading args, and for
+  // Codex mcpTokens, the MCP bearers in its environment.
   const launch = p.launch || {};
   // The shipped launcher, loaded from the payload without running its launch.
   const launcherModule = () => {
@@ -91,6 +92,7 @@ try {
   if (Object.keys(launch).length) result.launch = [];
   for (const [id, settings] of Object.entries(launch)) {
     if (settings.args) result.launch.push(id + ' args ' + settings.args.join(' '));
+    if (settings.mcpTokens) result.launch.push(id + ' MCP bearer env from env files');
     for (const [key, tokenFile] of Object.entries(settings.tokenFiles || {})) {
       check(tokenFile.replace(/^~(?=[\\/])/, os.homedir()));
       // The launcher's own owner-only check (mode and uid, or the Windows ACL); it reads the value only at launch.
@@ -103,23 +105,15 @@ try {
   for (const s of servers) {
     result.mcp.push(s.name + ' ' + (s.enabled ? s.url + ' bearer env ' + s.bearerTokenEnvVar : 'disabled'));
     if (!s.enabled) continue;
-    if (s.envFile) {
-      const file = s.envFile.replace(/^~\//, os.homedir() + '/');
-      check(file);
-      // probe() from remote_common.js, not existsSync: an unreadable env file throws instead of reading as absent.
-      const st = probe(fs, file, true);
-      const ready = st && st.size > s.bearerTokenEnvVar.length + 1 && (st.mode & 0o777) === 0o600 && st.uid === process.getuid();
-      result.mcp.push(s.bearerTokenEnvVar + ' envFile ' + s.envFile + (ready ? ' present, owner-only' : ' missing or unsafe'));
-      if (!ready && !p.dry_run) throw Error('MCP envFile missing or unsafe for ' + s.bearerTokenEnvVar);
-    } else {
-      // Windows user environment, not this already-running daemon's stale inherited environment.
-      const {execFileSync} = require('child_process');
-      const script = '$v=[Environment]::GetEnvironmentVariable(' + JSON.stringify(s.bearerTokenEnvVar) + ',"User"); if($null -eq $v){0}else{$v.Length}';
-      const length = Number(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim());
-      result.mcp.push(s.bearerTokenEnvVar + ' user env length=' + length + '; read at each launch');
-      if (!length && !p.dry_run) throw Error('MCP user env missing for ' + s.bearerTokenEnvVar);
-    }
+    if (!s.envFile) throw Error('MCP server ' + s.name + ' has no envFile');
+    check(s.envFile.replace(/^~(?=[\\/])/, os.homedir()));
+    // The launcher's own owner-only check (mode and uid, or the Windows ACL), without reading the value.
+    const problem = launcherModule().tokenFileProblem(s.envFile);
+    result.mcp.push(s.bearerTokenEnvVar + ' envFile ' + s.envFile + (problem ? ' missing or unsafe (' + problem + ')' : ' present, owner-only'));
+    if (problem && !p.dry_run) throw Error('MCP envFile missing or unsafe for ' + s.bearerTokenEnvVar);
   }
+  // Pi's MCP entries hold this host's Node and launcher paths, so they are built here, as client-config builds them.
+  if (p.pi && servers.length) p.pi.runtime.mcpServers = Object.fromEntries(servers.map(s => [s.name, mcpEntry(path, os, s, true)]));
   // The pinned rows merged into one config revision, with the required env checked on the result. It changes
   // nothing, so it runs before the Pi runtime is touched, and again on any newer revision before publishing.
   const merge = raw => {

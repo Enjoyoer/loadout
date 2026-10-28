@@ -1,10 +1,12 @@
 // Launch a harness with fleet credentials in memory only. Never source shell code.
-// mcp-env.json holds {servers, providers}: MCP servers whose env files load for every wrapped harness, and per
-// provider launch settings (`tokenFiles`, `args`) for the harness named by `--provider <id>`. A bare array is the
-// servers list from before provider settings. On Windows a server has no env file: its token is a user environment
-// variable, read afresh at each launch.
+// mcp-env.json holds {servers, providers}: the host's fleet MCP servers, each with an owner-only env file holding its
+// bearer, and per provider launch settings (`tokenFiles`, `args`, `mcpTokens`) for the harness named by
+// `--provider <id>`. A bare array is the servers list from before provider settings. Only a provider with
+// `mcpTokens: true` (Codex, which has no other way to read an HTTP bearer) gets the servers' bearer variables, read
+// from their env files at launch; every other harness gets none of them, inherited ones removed, and reads each
+// bearer at connect time through `--mcp-header` instead.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const { spawn, spawnSync, execFileSync } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 const file = path.join(__dirname, 'mcp-env.json');
 const windows = process.platform === 'win32';
 // Only these codes mean a path is absent; any other error propagates.
@@ -98,58 +100,39 @@ function tokenFileProblem(name) {
   catch (e) { if (e instanceof Unsafe) return e.message; if (absent(e)) return 'missing'; throw e; }
 }
 const safeValue = value => value && !/[\x00-\x1f\x7f]/.test(value);
-// One variable as the current user's environment holds it now (HKCU\Environment), not as this process inherited
-// it: reg.exe, without a shell. Its output must be a blank line, the key and that one value line; anything else, or a
-// failed or timed-out run, throws. A non-zero exit, which reg gives for no such value (or one it cannot read), gives
-// null, and so does an expanding value that names another variable, since reg prints it unexpanded.
-function readUserEnv(name) {
-  const done = spawnSync(system32('reg.exe'), ['query', 'HKCU\\Environment', '/v', name],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, windowsHide: true });
-  if (done.error) throw done.error;
-  if (done.status !== 0) return null;
-  const lines = done.stdout.replace(/(\r?\n)+$/, '').split(/\r?\n/);
-  const m = lines.length === 3 && lines[0] === '' && lines[1] === 'HKEY_CURRENT_USER\\Environment'
-    && /^ {4}(\S+) {4}(REG_SZ|REG_EXPAND_SZ)(?: {4}(.*))?$/.exec(lines[2]);
-  if (!m || m[1].toUpperCase() !== name) throw Error('unexpected reg output');
-  const value = m[3] || '';
-  return m[2] === 'REG_SZ' || !value.includes('%') ? value : null;
-}
-// Windows: a Paseo daemon inherits the user environment once, when it starts, so after a token rotation its copy
-// is stale. Each enabled server's bearer variable, and no other, is read from the user environment at this launch
-// and replaces the inherited one, so a rotation needs no daemon restart. A value that is absent or empty, or shows a
-// character other than printable ASCII in reg's output, or a read that fails or times out, keeps the inherited value,
-// so at most that server fails to authenticate, as before. Values must be printable ASCII, as bearer tokens are: reg
-// prints in the console code page, so a character outside that page arrives already replaced (for example as ?) and
-// goes undetected. The notice names only variables, never a value.
-function windowsUserEnv(out, servers) {
-  const names = [...new Set(servers.filter(s => s.enabled).map(s => s.bearerTokenEnvVar))];
-  if (names.some(name => typeof name !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(name)))
-    throw Error('invalid MCP bearer env name in mcp-env.json');
-  const kept = [];
-  for (const name of names) {
-    let value;
-    try { value = readUserEnv(name); } catch (e) { kept.push(name + ' (' + (e.code || e.message) + ')'); continue; }
-    if (!value || !/^[\x20-\x7e]+$/.test(value)) { kept.push(name); continue; }
-    // Windows env names ignore case, so no other spelling of the name may linger beside it.
-    for (const key of Object.keys(out)) if (key.toUpperCase() === name) delete out[key];
-    out[name] = value;
+const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
+// One server's bearer from its env file: exactly one line `NAME=value` besides blank and # lines, no quoting or
+// expansion, in an owner-only file (mode 0600 and ours on POSIX, the ACL check above on Windows), read afresh each
+// time so a rotation reaches the next launch or connection. Throws, naming only the variable, when unavailable.
+function envFileValue(s) {
+  const key = s.bearerTokenEnvVar;
+  try {
+    if (typeof s.envFile !== 'string') throw Error('no env file');
+    const lines = ownerFile(s.envFile, true).split(/\r?\n/).filter(line => line.trim() && !line.startsWith('#'));
+    if (lines.length !== 1 || !lines[0].startsWith(key + '=')) throw Error('not one ' + key + '= line');
+    const value = lines[0].slice(key.length + 1);
+    if (!safeValue(value)) throw Error('an empty value or a control character');
+    return value;
+  } catch (e) {
+    throw Error('MCP env file unavailable or unsafe for ' + key + ': ' + (absent(e) ? 'missing' : e.message) + (windows
+      ? ' (requires one ' + key + '= line in a file only the current user, SYSTEM and Administrators can access, inheritance off)'
+      : ' (requires an owner-only 0600 file holding one ' + key + '= line)'));
   }
-  if (kept.length)
-    process.stderr.write('MCP user env has no usable ' + kept.join(', ') + '; keeping any inherited value\n');
+}
+function bearerNames(servers) {
+  const names = [...new Set(servers.map(s => s.bearerTokenEnvVar))];
+  if (names.some(name => typeof name !== 'string' || !ENV_NAME.test(name)))
+    throw Error('invalid MCP bearer env name in mcp-env.json');
+  return names;
 }
 function loadEnv(servers, env = process.env, provider = {}) {
   const out = { ...env };
-  if (windows) windowsUserEnv(out, servers);
-  else for (const s of servers.filter(s => s.enabled && s.envFile)) {
-    const key = s.bearerTokenEnvVar;
-    try {
-      const lines = ownerFile(s.envFile, true).split(/\r?\n/).filter(line => line.trim() && !line.startsWith('#'));
-      if (lines.length !== 1 || !lines[0].startsWith(key + '=')) throw Error();
-      const value = lines[0].slice(key.length + 1);
-      if (!safeValue(value)) throw Error();
-      out[key] = value;
-    } catch { throw Error('MCP env file unavailable or unsafe for ' + key + ' (requires owner-only 0600 VAR= line)'); }
-  }
+  // No harness keeps an inherited bearer variable: a POSIX daemon or shell, or the Windows user environment, may
+  // hold one. Windows env names ignore case, so every spelling goes.
+  const names = bearerNames(servers);
+  for (const key of Object.keys(out)) if (names.includes(windows ? key.toUpperCase() : key)) delete out[key];
+  if (provider.mcpTokens === true)
+    for (const s of servers.filter(s => s.enabled)) out[s.bearerTokenEnvVar] = envFileValue(s);
   // A token file holds the bare value on one line, surrounding whitespace ignored, like the source host's token_file.
   for (const [key, tokenFile] of Object.entries(provider.tokenFiles || {})) {
     try {
@@ -163,6 +146,21 @@ function loadEnv(servers, env = process.env, provider = {}) {
     }
   }
   return out;
+}
+// `--mcp-header pi|claude <server>`: the Authorization header for one enabled server, read from its env file at the
+// moment the harness connects. Pi runs it as a `!command` header value and sends its stdout, `Bearer <value>`; Claude
+// Code runs it as `headersHelper` and merges the JSON object it prints. Only the server name is on the command line.
+// Missing, unsafe or unreadable means no output and exit 1, so the harness sends no header; it never falls back to
+// an environment variable. The value must be printable ASCII without spaces, as a bearer token is, so the header is
+// exactly that one line.
+function mcpHeader(servers, client, name) {
+  if (client !== 'pi' && client !== 'claude') throw Error('usage: node mcp-env.cjs --mcp-header pi|claude <server>');
+  const s = servers.find(s => s.name === name && s.enabled);
+  if (!s) throw Error('no enabled MCP server ' + (/^[A-Za-z0-9_-]+$/.test(name || '') ? name : '') + ' in mcp-env.json');
+  bearerNames([s]);
+  const value = envFileValue(s);
+  if (!/^[\x21-\x7e]+$/.test(value)) throw Error('MCP env file value for ' + s.bearerTokenEnvVar + ' is not a bearer token');
+  return client === 'pi' ? 'Bearer ' + value : JSON.stringify({ Authorization: 'Bearer ' + value });
 }
 function parents(dir) {
   const out = [];
@@ -219,21 +217,26 @@ function launch(command, args, env) {
   // One command line avoids Node's DEP0190 warning for args with shell:true.
   return spawn(cmdLine(resolved, args), { ...options, shell: true });
 }
-module.exports = { loadEnv, tokenFileProblem };
+module.exports = { loadEnv, tokenFileProblem, mcpHeader };
 if (require.main === module) {
   try {
     const args = process.argv.slice(2);
-    let id = null;
-    if (args[0] === '--provider') { args.shift(); id = args.shift(); }
-    if (args.shift() !== '--' || !args.length) throw Error('usage: node mcp-env.cjs [--provider <id>] -- <harness> [args]');
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     const descriptor = Array.isArray(raw) ? { servers: raw } : raw;
-    const provider = (id && (descriptor.providers || {})[id]) || {};
-    const env = loadEnv(descriptor.servers || [], process.env, provider);
-    // Provider args go right after the executable, so they are global flags before any subcommand the caller adds.
-    const child = launch(args[0], [...(provider.args || []), ...args.slice(1)], env);
-    for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
-    child.on('error', () => { process.stderr.write('MCP harness launch failed\n'); process.exitCode = 1; });
-    child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });
+    if (args[0] === '--mcp-header') {
+      if (args.length !== 3) throw Error('usage: node mcp-env.cjs --mcp-header pi|claude <server>');
+      process.stdout.write(mcpHeader(descriptor.servers || [], args[1], args[2]));
+    } else {
+      let id = null;
+      if (args[0] === '--provider') { args.shift(); id = args.shift(); }
+      if (args.shift() !== '--' || !args.length) throw Error('usage: node mcp-env.cjs [--provider <id>] -- <harness> [args]');
+      const provider = (id && (descriptor.providers || {})[id]) || {};
+      const env = loadEnv(descriptor.servers || [], process.env, provider);
+      // Provider args go right after the executable, so they are global flags before any subcommand the caller adds.
+      const child = launch(args[0], [...(provider.args || []), ...args.slice(1)], env);
+      for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
+      child.on('error', () => { process.stderr.write('MCP harness launch failed\n'); process.exitCode = 1; });
+      child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });
+    }
   } catch (error) { process.stderr.write(error.message + '\n'); process.exitCode = 1; }
 }
