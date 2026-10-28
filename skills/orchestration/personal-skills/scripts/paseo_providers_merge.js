@@ -70,20 +70,30 @@ try {
   // Per provider launch settings, read by the launcher for the harness it names: token files, leading args, and for
   // Codex mcpTokens, the MCP bearers in its environment.
   const launch = { ...(p.launch || {}) };
-  // Rollout bridge: a client whose MCP config still sends `Bearer ${VAR}` for an enabled server (client-config has
-  // not moved it to the reader yet, or failed here) keeps the bearers in its environment, as before, so it never
-  // has neither. The first run after client-config has moved it drops them. Claude Code's ~/.claude.json, and Pi's
-  // MCP file when this run does not write the Pi runtime itself; a file that does not parse fails the host.
+  // Rollout bridge: a client whose MCP config still sends `Bearer ${VAR}` for an enabled server (client-config, or
+  // this run's Pi runtime step, has not moved it to the reader yet, or failed here) keeps the bearers in its
+  // environment, as before, so it never has neither. Claude Code's ~/.claude.json, and Pi's runtime agent/mcp.json
+  // whether or not this run writes it; a file that does not parse fails the host. The bridge covers both the command
+  // the daemon runs now and the one this run publishes: `providers[id].mcpTokens` for a `--provider <id>` launch,
+  // and `unnamed.mcpTokens` for a launch without one. It is written with the launcher, before any other step, and
+  // the first run after the file has moved drops it.
   const enabled = servers.filter(s => s.enabled), bridged = [];
+  const rows = JSON.parse(read()).agents?.providers || {}, commandOf = id => [].concat(rows[id]?.command || []);
   const envRefs = file => {
-    const cfg = enabled.length && probe(fs, file, true) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+    const cfg = file && enabled.length && probe(fs, file, true) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
     return enabled.some(s => String(cfg.mcpServers?.[s.name]?.headers?.Authorization).includes('${' + s.bearerTokenEnvVar + '}'));
   };
   if (envRefs(path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json'))) bridged.push('claude');
-  const piLaunch = !p.pi && [].concat(JSON.parse(read()).agents?.providers?.pi?.command || [])
-    .find(arg => typeof arg === 'string' && path.basename(arg) === 'launch.mjs');
-  if (piLaunch && envRefs(path.join(path.dirname(piLaunch), 'agent/mcp.json'))) bridged.push('pi');
-  for (const id of bridged) launch[id] = { ...launch[id], mcpTokens: true };
+  const piLaunch = p.pi ? path.join(expand(p.pi.root), 'launch.mjs')
+    : commandOf('pi').find(arg => typeof arg === 'string' && path.basename(arg) === 'launch.mjs');
+  if (envRefs(piLaunch && path.join(path.dirname(piLaunch), 'agent/mcp.json'))) bridged.push('pi');
+  const unnamedFor = [];
+  for (const id of bridged) {
+    const now = commandOf(id), named = now[1] === launcher && now[2] === '--provider' && now[3] === id;
+    if (!named) unnamedFor.push(id);
+    if (named || (p.launch || {})[id]) launch[id] = { ...launch[id], mcpTokens: true };
+  }
+  const unnamed = unnamedFor.length > 0;
   // The shipped launcher, loaded from the payload without running its launch.
   const launcherModule = () => {
     const Module = require('module'), mod = new Module(launcher);
@@ -99,11 +109,14 @@ try {
   if (manageLaunch) {
     // Without MCP servers or launch settings the payload carries no launcher; the one on the host stays.
     if (p.mcp_env_launcher) envPlans.push([launcher, p.mcp_env_launcher]);
-    envPlans.push([path.join(envRoot, 'mcp-env.json'), JSON.stringify({ servers: envServers, providers: launch }, null, 2) + '\n']);
+    envPlans.push([path.join(envRoot, 'mcp-env.json'), JSON.stringify({ servers: envServers, providers: launch,
+      ...(unnamed ? { unnamed: { mcpTokens: true } } : {}) }, null, 2) + '\n']);
     for (const [file] of envPlans) check(file);
   }
   // Reported only when set, so a result without launch settings keeps its earlier shape.
-  if (Object.keys(launch).length) result.launch = [];
+  if (Object.keys(launch).length || unnamed) result.launch = [];
+  if (unnamed) result.launch.push('launches without --provider MCP bearer env from env files until the MCP config of '
+    + unnamedFor.join(', ') + ' uses the reader (run providers again after client-config)');
   for (const [id, settings] of Object.entries(launch)) {
     if (settings.args) result.launch.push(id + ' args ' + settings.args.join(' '));
     if (settings.mcpTokens) result.launch.push(id + ' MCP bearer env from env files' + (bridged.includes(id)

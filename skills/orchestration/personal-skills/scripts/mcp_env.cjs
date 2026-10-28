@@ -1,10 +1,11 @@
 // Launch a harness with fleet credentials in memory only. Never source shell code.
-// mcp-env.json holds {servers, providers}: the host's fleet MCP servers, each with an owner-only env file holding its
-// bearer, and per provider launch settings (`tokenFiles`, `args`, `mcpTokens`) for the harness named by
-// `--provider <id>`. A bare array is the servers list from before provider settings. Only a provider with
-// `mcpTokens: true` (Codex, which has no other way to read an HTTP bearer) gets the servers' bearer variables, read
-// from their env files at launch; every other harness gets none of them, inherited ones removed, and reads each
-// bearer at connect time through `--mcp-header` instead.
+// mcp-env.json holds {servers, providers, unnamed}: the host's fleet MCP servers, each with an owner-only env file
+// holding its bearer, per provider launch settings (`tokenFiles`, `args`, `mcpTokens`) for the harness named by
+// `--provider <id>`, and `unnamed: {mcpTokens}` for a launch without `--provider`. A bare array is the servers list
+// from before provider settings. Only a launch with `mcpTokens: true` (Codex, which has no other way to read an HTTP
+// bearer, or a client the providers step bridges during a rollout) gets the servers' bearer variables, read from
+// their env files at launch; every other harness gets none of them, inherited ones removed, and reads each bearer at
+// connect time through `--mcp-header` instead.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 const file = path.join(__dirname, 'mcp-env.json');
@@ -230,7 +231,8 @@ if (require.main === module) {
       let id = null;
       if (args[0] === '--provider') { args.shift(); id = args.shift(); }
       if (args.shift() !== '--' || !args.length) throw Error('usage: node mcp-env.cjs [--provider <id>] -- <harness> [args]');
-      const provider = (id && (descriptor.providers || {})[id]) || {};
+      const provider = id ? (descriptor.providers || {})[id] || {}
+        : { mcpTokens: (descriptor.unnamed || {}).mcpTokens === true };
       const env = loadEnv(descriptor.servers || [], process.env, provider);
       // Provider args go right after the executable, so they are global flags before any subcommand the caller adds.
       const child = launch(args[0], [...(provider.args || []), ...args.slice(1)], env);

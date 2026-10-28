@@ -198,13 +198,13 @@ function managedCheck(lines, top, sections) {
   }
 }
 
-// The strings of a one-line TOML array of plain strings (no escape, quote, comma, # or ]), `key = [...]` with an
+// The strings of a one-line TOML array of plain strings (no backslash, quote, comma, # or ]), `key = [...]` with an
 // optional comment, or null for any other value.
 function stringArray(line) {
   const m = /^[^=]*=\s*\[([^\]#]*)\]\s*(#.*)?$/.exec(line);
   const parts = m ? m[1].split(",").map(s => s.trim()) : null;
   if (parts && parts[parts.length - 1] === "") parts.pop();  // [] or a trailing comma
-  const strings = parts && parts.map(s => /^"([^"\\,\x00-\x1f]*)"$|^'([^',\x00-\x1f]*)'$/.exec(s));
+  const strings = parts && parts.map(s => /^"([^"\\,\x00-\x1f]*)"$|^'([^'\\,\x00-\x1f]*)'$/.exec(s));
   return strings && strings.every(Boolean) ? strings.map(s => s[1] ?? s[2]) : null;
 }
 
