@@ -14,8 +14,9 @@ import type { AgentView, Decision, WorkspaceView } from "./types.ts";
 //
 // Stale means no activity for at least staleWorkspaceMinutes, where activity is the latest of the
 // timestamps Paseo exposes for the workspace and for every agent it ever held (archived included),
-// leaving out the ones an agent's archive stamps, plus a worktree's HEAD committer date: see
-// lastActivity() and evaluateCleanup().
+// leaving out the ones an agent's archive stamps, plus each agent's newest delivered message
+// (Paseo's receipts), an archived agent's last turn (up to 12 h after its newest input), and a
+// worktree's HEAD committer date: see lastActivity() and evaluateCleanup().
 
 /** Merge-test results that mean "unmerged or dirty": kept, and the PM is told once. */
 const NOTIFY_REASONS = [
@@ -47,6 +48,11 @@ export interface CleanupContext {
   history: readonly AgentView[];
   /** Live terminals that belong to this workspace. */
   terminals: number;
+  /**
+   * Newest delivered message per agent id (receipts recent enough to matter), or null when the
+   * receipts could not be read: archive times then count instead.
+   */
+  deliveries: ReadonlyMap<string, number> | null;
   /** Worktrees already reported, or null when that state could not be read (no new report is decided). */
   notified: ReadonlyMap<string, NotifiedEntry> | null;
 }
@@ -62,17 +68,28 @@ function parse(value: string | null | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** An archived agent counts as active this long after its newest input, at most until its archive. */
+export const LAST_TURN_ALLOWANCE_MS = 12 * 60 * 60_000;
+
 /**
  * Latest activity Paseo exposes for a workspace: its creation, status entry, activity and last user
  * message times, and for every agent it ever held (archived included) creation, update, last user
- * message and attention times. Archiving is not activity: an agent's archive stamps its archivedAt
- * and its updatedAt with the same moment, and when the last busy agent leaves, Paseo stamps the
- * workspace's statusEnteredAt with that moment too. So archivedAt never counts, an archived agent's
- * updatedAt counts only when it is earlier than its archivedAt, and statusEnteredAt counts only when
- * it is earlier than the newest archivedAt. Scripts and terminals expose no times; a running one
- * blocks cleanup instead. The workspace record's own updatedAt is not exposed. Null when there is none.
+ * message and attention times, and its newest delivered message (`deliveries`, from Paseo's
+ * receipts, which also covers messages from other agents).
+ *
+ * Archiving is not activity: an agent's archive stamps its archivedAt and its updatedAt with the
+ * same moment, and a long-lived Paseo session stamps the workspace's statusEnteredAt with it when the
+ * last busy agent leaves. So an archived agent's updatedAt counts only when it is earlier than its
+ * archivedAt, statusEnteredAt only when it is earlier than the newest archivedAt, and a delivery is
+ * capped at the archivedAt. But the work an agent did after its newest input leaves no trace, so an
+ * archived agent counts as active until min(archivedAt, newest input + LAST_TURN_ALLOWANCE_MS), where
+ * its inputs are its creation, last user message and newest delivery. When the receipts could not be
+ * read (`deliveries` null), an archived agent counts as active until its archivedAt.
+ *
+ * Scripts and terminals expose no times; a running one blocks cleanup instead. The workspace
+ * record's own updatedAt is not exposed. Null when there is none.
  */
-export function lastActivity(workspace: WorkspaceView, history: readonly AgentView[]): number | null {
+export function lastActivity(workspace: WorkspaceView, history: readonly AgentView[], deliveries: ReadonlyMap<string, number> | null): number | null {
   let newestArchive: number | null = null;
   for (const agent of history) {
     const archivedAt = parse(agent.archivedAt);
@@ -86,11 +103,25 @@ export function lastActivity(workspace: WorkspaceView, history: readonly AgentVi
     parse(workspace.lastUserMessageAt),
   ];
   for (const agent of history) {
-    values.push(parse(agent.createdAt), parse(agent.lastUserMessageAt), parse(agent.attentionTimestamp));
+    const createdAt = parse(agent.createdAt);
+    const lastUserMessageAt = parse(agent.lastUserMessageAt);
+    values.push(createdAt, lastUserMessageAt, parse(agent.attentionTimestamp));
     const updatedAt = parse(agent.updatedAt);
     const archivedAt = parse(agent.archivedAt);
-    // An archived agent whose archive time cannot be read keeps its updatedAt (counts as more recent).
-    if (updatedAt !== null && (!agent.archivedAt || archivedAt === null || updatedAt < archivedAt)) values.push(updatedAt);
+    // An archived agent whose archive time cannot be read is not capped (counts as more recent).
+    const uncapped = !agent.archivedAt || archivedAt === null;
+    if (updatedAt !== null && (uncapped || updatedAt < archivedAt)) values.push(updatedAt);
+    const delivered = deliveries?.get(agent.id) ?? null;
+    if (delivered !== null) values.push(uncapped ? delivered : Math.min(delivered, archivedAt));
+    if (!agent.archivedAt) continue;
+    if (deliveries === null) {
+      values.push(archivedAt);
+      continue;
+    }
+    const inputs = [createdAt, lastUserMessageAt, delivered].filter((value): value is number => value !== null);
+    if (inputs.length === 0) continue;
+    const lastTurnEnd = Math.max(...inputs) + LAST_TURN_ALLOWANCE_MS;
+    values.push(uncapped ? lastTurnEnd : Math.min(archivedAt, lastTurnEnd));
   }
   let latest: number | null = null;
   for (const value of values) {
@@ -153,7 +184,7 @@ export async function evaluateCleanup(workspace: WorkspaceView, ctx: CleanupCont
   // A worktree's HEAD committer date is activity too; a worktree whose HEAD git cannot read is skipped.
   const head = worktree ? await headCommit(directory, ctx) : null;
   if (worktree && !head) return decision("skip", "ambiguous(HEAD commit unreadable)");
-  const paseoLatest = lastActivity(workspace, ctx.history);
+  const paseoLatest = lastActivity(workspace, ctx.history, ctx.deliveries);
   const latest = head && (paseoLatest === null || head.at > paseoLatest) ? head.at : paseoLatest;
   if (latest === null) return decision("skip", "ambiguous(no activity timestamp)");
   lastActivityAt = new Date(latest).toISOString();

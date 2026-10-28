@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { evaluateCleanup, formatNotification, isCleanupEntry, resolveOwner, type NotifiedEntry } from "./cleanup.ts";
+import { evaluateCleanup, formatNotification, isCleanupEntry, LAST_TURN_ALLOWANCE_MS, resolveOwner, type NotifiedEntry } from "./cleanup.ts";
 import type { ArchiverConfig } from "./config.ts";
 import { evaluateWorkspace, type EvaluateDeps } from "./evaluate.ts";
 import type { NotifyStateStore } from "./notify-store.ts";
+import type { DeliveryReader } from "./receipts.ts";
 import type { AgentView, CommonDirResolver, Decision, TerminalView, WorkspaceView } from "./types.ts";
 
 // The slice of the Paseo daemon client this plugin uses (see daemon.ts).
@@ -53,6 +54,8 @@ export interface SweeperDeps extends EvaluateDeps {
   resolveCommonDir: CommonDirResolver;
   /** Worktrees already reported to their PM (workspace cleanup). */
   notifyStore: NotifyStateStore;
+  /** Paseo's message delivery receipts (workspace cleanup). Without one, archive times count instead. */
+  deliveries?: DeliveryReader;
 }
 
 export interface SweepOptions {
@@ -143,6 +146,15 @@ interface CleanupData {
   historyByWorkspace: Map<string, AgentView[]>;
   /** Live terminals per workspace. */
   terminalsByWorkspace: Map<string, number>;
+  /** Newest delivered message per agent, or null when the receipts could not be read (see deliveriesError). */
+  deliveries: Map<string, number> | null;
+  deliveriesError: string | null;
+}
+
+/** Where workspace cleanup reads delivery receipts from, and how far back they can matter. */
+interface DeliverySource {
+  reader: DeliveryReader | undefined;
+  sinceMs: number;
 }
 
 function group<T>(map: Map<string, T[]>, key: string, value: T): void {
@@ -158,7 +170,7 @@ function group<T>(map: Map<string, T[]>, key: string, value: T): void {
  * listing) and the terminals, which only workspace cleanup reads: if either fails or is incomplete,
  * only cleanup is left out (`cleanup` null), never the worker sweep.
  */
-async function snapshot(api: ArchiverApi, withCleanup: boolean): Promise<Snapshot> {
+async function snapshot(api: ArchiverApi, withCleanup: DeliverySource | null): Promise<Snapshot> {
   if (typeof api.supportsBackgroundWorkspaces !== "function") throw new Error("daemon client cannot tell whether background workspaces exist");
   const background = api.supportsBackgroundWorkspaces() === true;
   const backgroundFilter = background ? { includeBackground: true } : {};
@@ -177,7 +189,7 @@ async function snapshot(api: ArchiverApi, withCleanup: boolean): Promise<Snapsho
   let cleanupError: string | null = null;
   if (withCleanup) {
     try {
-      cleanup = await cleanupData(api, backgroundFilter, page);
+      cleanup = await cleanupData(api, backgroundFilter, page, withCleanup);
     } catch (error) {
       cleanupError = error instanceof Error ? error.message : String(error);
     }
@@ -189,6 +201,7 @@ async function cleanupData(
   api: ArchiverApi,
   backgroundFilter: { includeBackground?: boolean },
   page: (cursor?: string) => PageRequest,
+  source: DeliverySource,
 ): Promise<CleanupData> {
   const history = await listAll((cursor) => api.agents.list({ filter: { ...backgroundFilter, includeArchived: true }, ...page(cursor) }), "agent history");
   const historyByWorkspace = new Map<string, AgentView[]>();
@@ -201,7 +214,16 @@ async function cleanupData(
     if (!terminal.workspaceId) throw new Error(`terminal ${terminal.id} has no workspace`);
     terminalsByWorkspace.set(terminal.workspaceId, (terminalsByWorkspace.get(terminal.workspaceId) ?? 0) + 1);
   }
-  return { historyByWorkspace, terminalsByWorkspace };
+  // Unreadable receipts do not skip cleanup: archive times count instead, which only makes workspaces newer.
+  let deliveries: Map<string, number> | null = null;
+  let deliveriesError: string | null = null;
+  try {
+    if (!source.reader) throw new Error("no receipt reader");
+    deliveries = await source.reader.newestDeliveries(source.sinceMs);
+  } catch (error) {
+    deliveriesError = error instanceof Error ? error.message : String(error);
+  }
+  return { historyByWorkspace, terminalsByWorkspace, deliveries, deliveriesError };
 }
 
 export function formatDecision(decision: Decision, action: string, extra: Record<string, unknown> = {}): string {
@@ -238,6 +260,7 @@ async function decide(
     agents,
     history: state.cleanup.historyByWorkspace.get(workspace.id) ?? [],
     terminals: state.cleanup.terminalsByWorkspace.get(workspace.id) ?? 0,
+    deliveries: state.cleanup.deliveries,
     notified: cleanup.notified,
   });
 }
@@ -320,7 +343,12 @@ export class Sweeper {
     const decisions: Decision[] = [];
     const archived: string[] = [];
     try {
-      const state = await snapshot(lease.api, fullSweep);
+      // Receipts older than the stale window plus the last-turn allowance cannot make a workspace recent.
+      const deliverySource: DeliverySource = {
+        reader: this.deps.deliveries,
+        sinceMs: this.deps.now() - config.staleWorkspaceMinutes * 60_000 - LAST_TURN_ALLOWANCE_MS,
+      };
+      const state = await snapshot(lease.api, fullSweep ? deliverySource : null);
       // Cleanup data that cannot be read leaves out workspace cleanup only; the worker sweep goes on.
       const cleanupRuns = fullSweep && state.cleanup !== null;
       if (fullSweep && !cleanupRuns) {
@@ -401,7 +429,7 @@ export class Sweeper {
           continue;
         }
         // Re-read live state and re-run every gate immediately before acting.
-        const fresh = await snapshot(lease.api, Boolean(decision.cleanup));
+        const fresh = await snapshot(lease.api, decision.cleanup ? deliverySource : null);
         const freshWorkspace = fresh.workspaces.find((candidate) => candidate.id === workspace.id);
         if (!freshWorkspace) {
           log(formatDecision({ ...decision, reason: "recheck: workspace gone" }, "skip"));
@@ -433,7 +461,7 @@ export class Sweeper {
         const { sweeps } = this.noteArchiveFailure(workspace.id);
         log(formatDecision({ ...recheck, reason: `${recheck.reason}; ${failure}; back-off ${sweeps} sweep(s)` }, "archive-failed"));
       }
-      const reported = await this.report(lease.api, toNotify, state, notified, config, cleanupDryRun);
+      const reported = await this.report(lease.api, toNotify, state, notified, config, cleanupDryRun, deliverySource);
       if (cleanupRuns && notified && !cleanupDryRun) await this.pruneNotified(notified, state);
       const counts = decisions.reduce<Record<string, number>>((acc, decision) => {
         const key = !decision.candidate
@@ -461,7 +489,13 @@ export class Sweeper {
           trigger: options.trigger,
           mode: dryRun ? "dry-run" : "armed",
           ...(fullSweep
-            ? { cleanupMode: cleanupDryRun ? "dry-run" : "armed", cleanup, reports: reported, ...(cleanupRuns ? {} : { cleanupSkipped: state.cleanupError }) }
+            ? {
+              cleanupMode: cleanupDryRun ? "dry-run" : "armed",
+              cleanup,
+              reports: reported,
+              ...(cleanupRuns ? {} : { cleanupSkipped: state.cleanupError }),
+              ...(state.cleanup?.deliveriesError ? { receiptsUnreadable: state.cleanup.deliveriesError } : {}),
+            }
             : {}),
           evaluated: decisions.length,
           nonCandidates,
@@ -499,13 +533,14 @@ export class Sweeper {
     notified: Map<string, NotifiedEntry> | null,
     config: ArchiverConfig,
     wouldOnly: boolean,
+    deliverySource: DeliverySource,
   ): Promise<string[]> {
     const log = this.deps.log;
     if (candidates.length === 0 || !notified) return [];
     let current = state;
     let confirmed = candidates;
     if (!wouldOnly) {
-      current = await snapshot(api, true);
+      current = await snapshot(api, deliverySource);
       if (!current.cleanup) {
         for (const candidate of candidates) {
           log(formatDecision(candidate, "notify-deferred", { why: `cleanup data unavailable, next full sweep: ${current.cleanupError}` }));

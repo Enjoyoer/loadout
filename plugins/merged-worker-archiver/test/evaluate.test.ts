@@ -222,7 +222,7 @@ describe("workspace and agent skip rules", () => {
 
 describe("workspace cleanup gates", () => {
   // An agentless local checkout, idle for two hours, against a one-hour stale window.
-  const cleanup = async (ws: Partial<WorkspaceView>, extra: { terminals?: number; directory?: boolean | null; history?: AgentView[]; git?: Partial<GitScenario> } = {}) => {
+  const cleanup = async (ws: Partial<WorkspaceView>, extra: { terminals?: number; directory?: boolean | null; history?: AgentView[]; git?: Partial<GitScenario>; deliveries?: Map<string, number> | null } = {}) => {
     const s = scenario(extra.git);
     const fs = fakeFs(s, { directory: extra.directory });
     const decision = await evaluateCleanup(workspace({ workspaceKind: "local_checkout", ...ws }), {
@@ -231,6 +231,7 @@ describe("workspace cleanup gates", () => {
       agents: [],
       history: extra.history ?? [],
       terminals: extra.terminals ?? 0,
+      deliveries: extra.deliveries === undefined ? new Map() : extra.deliveries,
       notified: new Map(),
     });
     return `${decision.action} ${decision.reason}`;
@@ -246,12 +247,18 @@ describe("workspace cleanup gates", () => {
     assert.equal(await cleanup({}, { directory: false }), "skip path-missing(left to Paseo)");
   });
 
-  it("an agent's archive is not activity, a worktree's HEAD commit is", async () => {
-    const tenMinutesAgo = new Date(NOW - 10 * 60_000).toISOString();
-    // Archived 10 minutes ago: archivedAt, the updatedAt it stamped and the statusEnteredAt it stamped do not count.
-    const archived = agent({ archivedAt: tenMinutesAgo, updatedAt: tenMinutesAgo });
+  it("an agent's archive is not activity, but its delivered messages and its last turn are; a worktree's HEAD commit is", async () => {
+    const ago = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
+    const tenMinutesAgo = ago(10);
+    // Last input 14 h ago, archived 10 minutes ago: archivedAt, the updatedAt and the statusEnteredAt it
+    // stamped do not count, and the 12 h last-turn allowance ended 2 h ago.
+    const archived = agent({ archivedAt: tenMinutesAgo, updatedAt: tenMinutesAgo, lastUserMessageAt: ago(14 * 60) });
     assert.equal(await cleanup({ statusEnteredAt: tenMinutesAgo }, { history: [archived] }), "archive stale-record(idle=2h)");
-    assert.equal(await cleanup({}, { history: [{ ...archived, lastUserMessageAt: tenMinutesAgo }] }), "skip recent(idle=10m, stale after 60m)");
+    // A message delivered 12.5 h ago (a receipt) is input too: its allowance ends 30 minutes ago.
+    assert.equal(await cleanup({}, { history: [archived], deliveries: new Map([[archived.id, NOW - 750 * 60_000]]) }), "skip recent(idle=30m, stale after 60m)");
+    // Unreadable receipts: the archive time counts.
+    assert.equal(await cleanup({}, { history: [archived], deliveries: null }), "skip recent(idle=10m, stale after 60m)");
+    assert.equal(await cleanup({}, { history: [{ ...archived, lastUserMessageAt: ago(20) }] }), "skip recent(idle=10m, stale after 60m)");
     const worktree = { workspaceKind: "worktree" as const };
     assert.equal(await cleanup(worktree, { git: { commitDate: tenMinutesAgo } }), "skip recent(idle=10m, stale after 60m)");
     assert.equal(await cleanup(worktree, { git: { failOn: "--format=%h %cI %s" } }), "skip ambiguous(HEAD commit unreadable)");

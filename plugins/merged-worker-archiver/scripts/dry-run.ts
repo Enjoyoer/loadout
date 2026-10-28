@@ -3,6 +3,7 @@ import { ConfigSchema, type ArchiverConfig } from "../server/config.ts";
 import { openDaemonClient } from "../server/daemon.ts";
 import { createCommonDirResolver, nodeFileSystem, runCommand } from "../server/io.ts";
 import { NotifyStore, type NotifyStateStore } from "../server/notify-store.ts";
+import { ReceiptReader } from "../server/receipts.ts";
 import { Sweeper, type ArchiverApi } from "../server/sweeper.ts";
 
 // Read-only preview of one full sweep. Nothing is archived, sent, or written: the sweep runs with
@@ -56,6 +57,7 @@ async function run(): Promise<void> {
     now: () => Date.now(),
     resolveCommonDir: createCommonDirResolver(runCommand, () => config.commandTimeoutSeconds * 1000),
     notifyStore,
+    deliveries: new ReceiptReader(),
   });
   try {
     const result = await sweeper.sweep({ ...config, armed: false, armWorkspaceCleanup: false }, { trigger: "cli-dry-run", forceDryRun: true });

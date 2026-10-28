@@ -200,27 +200,47 @@ Last activity is the newest of these timestamps, as Paseo and git expose them:
   `lastUserMessageAt` (0.13);
 - every agent the workspace ever held, archived ones included: `createdAt`,
   `lastUserMessageAt`, `attentionTimestamp`, and `updatedAt` (see below);
+- every agent's newest delivered message, from Paseo's message receipts (see below), at most
+  its `archivedAt`;
+- for an archived agent, the end of its last turn: `min(archivedAt, newest input + 12 h)`,
+  where its inputs are its `createdAt`, its `lastUserMessageAt` and its newest delivered
+  message;
 - for a worktree, the committer date of its HEAD commit (`git log -1`), which covers work
   committed after the last message. A worktree whose HEAD git cannot read is skipped as
   `ambiguous(HEAD commit unreadable)`.
 
-Archiving an agent is not activity, so the times it stamps are left out. Paseo stamps an
-agent's archive time on both `archivedAt` and `updatedAt`. When the last busy agent of a
-workspace goes, it also stamps that moment on the workspace's `statusEnteredAt`. Without
-these rules an agentless workspace would date from its last agent's archive, which often
-comes days after the last work. So:
+Archiving an agent is not activity in itself. Paseo stamps an agent's archive time on both
+`archivedAt` and `updatedAt`, and archiving clears its `attentionTimestamp`. Counting that
+time would date an agentless workspace from its last agent's archive, which often comes days
+after the last work. So an archived agent's `updatedAt` counts only when it is earlier than
+its `archivedAt`, and `archivedAt` serves only as the cap above. The work an agent does after
+its newest input leaves no other trace, so the 12 h last-turn allowance covers it. An agent
+archived within 12 h of its last input therefore counts as active until its archive.
 
-- `archivedAt` never counts;
-- an archived agent's `updatedAt` counts only when it is earlier than its `archivedAt`;
-- `statusEnteredAt` counts only when it is earlier than the newest `archivedAt` of the
-  workspace's agents. This also drops a status change from terminal use after that archive.
-  A terminal that still exists blocks cleanup anyway.
+**Message receipts.** Messages from other agents, such as a PM's `paseo send`, do not set
+the recipient's `lastUserMessageAt` on 0.13. On 0.11.1 and 0.13.0 (the same code) the daemon
+writes a receipt for every `send_agent_message_request` that carries a `messageId`, which the
+CLI and the app always set: `<PASEO_HOME>/agent-requests/<sha256>.json` with the recipient's
+`agentId`, written `pending` and rewritten `completed` once the message is delivered. So the
+file's modification time is the delivery time. The plugin reads these files without writing
+anything. It counts `completed` and `pending` receipts, since a pending one may have reached
+the agent. It reads only files modified within `staleWorkspaceMinutes` plus 12 h, since
+older ones cannot make a workspace recent; the age a report shows therefore ignores older
+receipts. If the directory or a receipt cannot be read (a missing directory included), archive
+times count instead, which only makes workspaces newer, and `sweep-done` shows
+`receiptsUnreadable`. Messages sent through Paseo's MCP tools write no receipt; for those the
+last-turn allowance and the archive cap apply.
+
+**`statusEnteredAt`.** A long-lived Paseo session stamps the workspace's `statusEnteredAt`
+with the moment its last busy agent leaves, which can be its archive. The plugin counts
+`statusEnteredAt` only when it is earlier than the newest `archivedAt` of the workspace's
+agents. In practice each sweep opens a new session, which for an agentless workspace reports
+the workspace's `createdAt` there.
 
 Paseo does not expose the workspace record's `updatedAt`, and scripts report only their
 `lifecycle`, with no start or stop time, so neither can count; a running script or a live
-terminal blocks cleanup instead. On 0.11.1 and 0.13.0 `activityAt` is always null. Paseo keeps
-`statusEnteredAt` in memory, and after a daemon restart it falls back to the workspace's
-`createdAt`. File edits made outside Paseo and not committed are not activity.
+terminal blocks cleanup instead. On 0.11.1 and 0.13.0 `activityAt` is always null. File
+edits made outside Paseo and not committed are not activity.
 
 ### What archiving a record does
 
@@ -485,6 +505,14 @@ workspace stale, and the record was archived with its files intact. A commit mad
 before the sweep kept a worktree `recent`. A worktree whose HEAD commit was its newest
 activity was reported with that age. A report to a PM in a running turn logged
 `notify-deferred` (`PM running`) and was sent at the next sweep, once the PM was idle.
+A third round checked the receipts on both versions. Each `paseo send` added one
+`completed` receipt for the recipient, with the send time as its file time. On 0.13.0 a
+send from another agent (`PASEO_AGENT_ID` set) left `lastUserMessageAt` unchanged and
+still wrote a receipt. A workspace whose agent was archived more than 4 minutes after its
+last input stayed `recent`, dated by the archive, and became `would-archive` 4 minutes
+after it. With the receipt directory made
+unreadable, the sweep showed `receiptsUnreadable` and dated the same workspaces by their
+archive.
 
 Paseo compiles the plugin from source with esbuild and bundles `@getpaseo/client`
 (with `@getpaseo/protocol`), about 8.4 MB, so `npm install` must have run here before

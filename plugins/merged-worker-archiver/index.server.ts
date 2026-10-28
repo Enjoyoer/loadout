@@ -4,6 +4,7 @@ import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type ArchiverConfig } from
 import { openDaemonClient, resolveDaemonTarget } from "./server/daemon.ts";
 import { createCommonDirResolver, nodeFileSystem, runCommand } from "./server/io.ts";
 import { NotifyStore } from "./server/notify-store.ts";
+import { ReceiptReader } from "./server/receipts.ts";
 import { EventScheduler, realTimers } from "./server/scheduler.ts";
 import { Sweeper, type ApiLease } from "./server/sweeper.ts";
 
@@ -40,6 +41,7 @@ export default function contribute(server: PluginServerContext) {
     resolveCommonDir: createCommonDirResolver(runCommand, () => lastTimeoutMs),
     now: () => Date.now(),
     notifyStore: new NotifyStore(),
+    deliveries: new ReceiptReader(),
   });
 
   const loadConfig = async (): Promise<ArchiverConfig | null> => {
