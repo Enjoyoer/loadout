@@ -69,7 +69,21 @@ try {
   const envServers = servers.filter(s => s.envFile);
   // Per provider launch settings, read by the launcher for the harness it names: token files, leading args, and for
   // Codex mcpTokens, the MCP bearers in its environment.
-  const launch = p.launch || {};
+  const launch = { ...(p.launch || {}) };
+  // Rollout bridge: a client whose MCP config still sends `Bearer ${VAR}` for an enabled server (client-config has
+  // not moved it to the reader yet, or failed here) keeps the bearers in its environment, as before, so it never
+  // has neither. The first run after client-config has moved it drops them. Claude Code's ~/.claude.json, and Pi's
+  // MCP file when this run does not write the Pi runtime itself; a file that does not parse fails the host.
+  const enabled = servers.filter(s => s.enabled), bridged = [];
+  const envRefs = file => {
+    const cfg = enabled.length && probe(fs, file, true) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+    return enabled.some(s => String(cfg.mcpServers?.[s.name]?.headers?.Authorization).includes('${' + s.bearerTokenEnvVar + '}'));
+  };
+  if (envRefs(path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json'))) bridged.push('claude');
+  const piLaunch = !p.pi && [].concat(JSON.parse(read()).agents?.providers?.pi?.command || [])
+    .find(arg => typeof arg === 'string' && path.basename(arg) === 'launch.mjs');
+  if (piLaunch && envRefs(path.join(path.dirname(piLaunch), 'agent/mcp.json'))) bridged.push('pi');
+  for (const id of bridged) launch[id] = { ...launch[id], mcpTokens: true };
   // The shipped launcher, loaded from the payload without running its launch.
   const launcherModule = () => {
     const Module = require('module'), mod = new Module(launcher);
@@ -92,7 +106,8 @@ try {
   if (Object.keys(launch).length) result.launch = [];
   for (const [id, settings] of Object.entries(launch)) {
     if (settings.args) result.launch.push(id + ' args ' + settings.args.join(' '));
-    if (settings.mcpTokens) result.launch.push(id + ' MCP bearer env from env files');
+    if (settings.mcpTokens) result.launch.push(id + ' MCP bearer env from env files' + (bridged.includes(id)
+      ? ' until its MCP config uses the reader (run providers again after client-config)' : ''));
     for (const [key, tokenFile] of Object.entries(settings.tokenFiles || {})) {
       check(tokenFile.replace(/^~(?=[\\/])/, os.homedir()));
       // The launcher's own owner-only check (mode and uid, or the Windows ACL); it reads the value only at launch.
@@ -130,8 +145,9 @@ try {
       merged[k] = { ...rest, enabled: false };
     }
     if (manageLaunch) for (const provider of ['codex', 'claude', 'pi']) {
-      // Launch settings for a built-in provider with no row of its own wrap Paseo's default: its bare command.
-      if (!merged[provider] && launch[provider]) {
+      // Launch settings for a built-in provider with no row of its own wrap Paseo's default: its bare command. A
+      // bridged client with no row was not wrapped before either, so it stays as it is.
+      if (!merged[provider] && (p.launch || {})[provider]) {
         if (provider === 'pi') throw Error('launch settings for pi need a pi provider row');
         merged[provider] = {};
       }

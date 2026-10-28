@@ -168,6 +168,9 @@ def describe(name: str, result: dict) -> list:
         state = "CHANGED " + ",".join(claude["changes"]) if claude["changes"] else "unchanged"
         backup = f" (backup {claude['backup']})" if claude.get("backup") else ""
         lines.append(f"{name}: claude {state}{backup}")
+    if result.get('mcp_launcher'):
+        lines.append(f"{name}: MCP launcher {result['mcp_launcher']['status']}; "
+                     "a real run refuses this host until that step has installed it")
     for client in ('claude_mcp', 'pi_mcp'):
         if client in result:
             entry = result[client]

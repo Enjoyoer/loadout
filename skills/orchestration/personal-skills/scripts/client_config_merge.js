@@ -198,6 +198,37 @@ function managedCheck(lines, top, sections) {
   }
 }
 
+// The strings of a one-line TOML array of plain strings (no escape, quote, comma, # or ]), `key = [...]` with an
+// optional comment, or null for any other value.
+function stringArray(line) {
+  const m = /^[^=]*=\s*\[([^\]#]*)\]\s*(#.*)?$/.exec(line);
+  const parts = m ? m[1].split(",").map(s => s.trim()) : null;
+  if (parts && parts[parts.length - 1] === "") parts.pop();  // [] or a trailing comma
+  const strings = parts && parts.map(s => /^"([^"\\,\x00-\x1f]*)"$|^'([^',\x00-\x1f]*)'$/.exec(s));
+  return strings && strings.every(Boolean) ? strings.map(s => s[1] ?? s[2]) : null;
+}
+
+// A managed string array (shell_environment_policy.exclude) keeps the host's own entries: where the host sets that
+// key on one line in its own table, the managed value is the host's strings with the managed ones added after them.
+// A one-line value that is not plain strings is refused; a value spanning lines is left for tomlUnsupported.
+function withHostEntries(text, sections) {
+  const lines = text.split(/\r?\n/), kinds = tomlScan(lines);
+  const out = Object.fromEntries(Object.entries(sections).map(([name, keys]) => [name, { ...keys }]));
+  let table = [];
+  kinds.forEach((l, n) => {
+    if (l.kind === "header") table = l.array ? null : l.keys;
+    if (l.kind !== "key" || !table || l.inline || (kinds[n + 1] && kinds[n + 1].kind === "more")) return;
+    for (const [name, keys] of Object.entries(out)) for (const [k, v] of Object.entries(keys)) {
+      if (!Array.isArray(v) || !samePath(table, name) || !samePath(l.keys, k)) continue;
+      const have = stringArray(lines[n]);
+      if (!have) throw new Error(`refused, nothing written: config.toml line ${n + 1} sets ${name}.${k} to a value the `
+                                 + `merge cannot extend; make it one line of plain strings${BY_HAND}`);
+      keys[k] = [...have, ...v.filter(x => !have.includes(x))];
+    }
+  });
+  return out;
+}
+
 // Line-based merge on the scan: keeps CRLF, comments, other keys and other sections. A removeTop key is
 // deleted, with any continuation lines, where it is set before the first table header; with hold set it stays,
 // listed in `held`.
@@ -342,12 +373,15 @@ try {
   const mcpPlans = [];
   if (servers.length) {
     // Claude Code and Pi read each bearer through the launcher the providers step installs; one that is missing or
-    // from another revision may lack that reader, so nothing is written until the providers step has run here.
+    // from another revision may lack that reader, so nothing is written until the providers step has run here. A dry
+    // run, whose providers step installs nothing, reports that and previews the rest.
     const launcher = path.join(loadoutDir(path, os), 'mcp-env.cjs');
     checkConfigPath(fs, path, os, launcher);
-    if (!probe(fs, launcher) || sha256(fs.readFileSync(launcher)) !== p.mcpLauncherSha256)
-      throw Error('the MCP launcher ' + launcher + ' is missing or not the one this sync installs; '
-                  + 'run the providers step for this host first');
+    if (!probe(fs, launcher) || sha256(fs.readFileSync(launcher)) !== p.mcpLauncherSha256) {
+      if (!p.dry_run) throw Error('the MCP launcher ' + launcher + ' is missing or not the one this sync installs; '
+                                  + 'run the providers step for this host first');
+      result.mcp_launcher = { status: 'waits for the providers step' };
+    }
     const claudeMcp = path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json');
     // probe(), not existsSync: an unreadable path throws instead of reading as absent.
     if (probe(fs, path.join(os.homedir(), '.claude'), true))
@@ -371,8 +405,8 @@ try {
   if (!fs.existsSync(codexFile)) result.codex = { status: "absent" };
   else result.codex = update(p, codexFile, bytes => {
     if (bytes === null) throw new Error("config.toml disappeared during the merge, so nothing was written");
-    const before = bytes.toString("utf8"), r = mergeToml(before, p.codex.top, p.codex.sections, p.codex.removeTop,
-                                                                       p.hold_removal);
+    const before = bytes.toString("utf8");
+    const r = mergeToml(before, p.codex.top, withHostEntries(before, p.codex.sections), p.codex.removeTop, p.hold_removal);
     const report = {}, lines = before.split(/\r?\n/), kinds = tomlScan(lines);
     let first = kinds.findIndex(l => l.kind === "header");
     if (first < 0) first = lines.length;
