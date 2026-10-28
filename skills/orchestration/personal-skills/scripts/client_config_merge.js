@@ -1,9 +1,8 @@
 // Merge managed Codex and Claude Code settings into this host's client config.
 // Shipped by client_config.py through fleet.run_node in a digest-checked stdin envelope; process.argv[2] is the gzip+base64 JSON payload
 // {codex: {top, sections, reportOnly, removeTop}, claude: {settings, env, token_env, removeEnv, minVersion},
-//  token, stamp, dry_run, update_claude, hold_removal}. With hold_removal set, removal-listed keys stay and are
-//  reported as `held`. The token arrives only on stdin and is
-// never printed. Only managed keys are written, and only listed keys an earlier sync managed are removed;
+//  token, stamp, dry_run, update_claude, hold_removal, mcpServers, mcpLauncherSha256}. With hold_removal set,
+//  removal-listed keys stay and are reported as `held`. The token arrives only on stdin and is never printed. Only managed keys are written, and only listed keys an earlier sync managed are removed;
 // everything else stays host-local.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execSync, execFileSync } = require("child_process");
@@ -36,6 +35,8 @@ function checkNames(codex) {
 function tomlValue(v) {
   if (typeof v === "string") return JSON.stringify(v);
   if (typeof v === "boolean" || typeof v === "number") return String(v);
+  // One line of strings only, such as the generated shell_environment_policy.exclude.
+  if (Array.isArray(v) && v.every(x => typeof x === "string")) return "[" + v.map(x => JSON.stringify(x)).join(", ") + "]";
   throw new Error("unsupported TOML value for a managed key");
 }
 
@@ -197,6 +198,37 @@ function managedCheck(lines, top, sections) {
   }
 }
 
+// The strings of a one-line TOML array of plain strings (no backslash, quote, comma, # or ]), `key = [...]` with an
+// optional comment, or null for any other value.
+function stringArray(line) {
+  const m = /^[^=]*=\s*\[([^\]#]*)\]\s*(#.*)?$/.exec(line);
+  const parts = m ? m[1].split(",").map(s => s.trim()) : null;
+  if (parts && parts[parts.length - 1] === "") parts.pop();  // [] or a trailing comma
+  const strings = parts && parts.map(s => /^"([^"\\,\x00-\x1f]*)"$|^'([^'\\,\x00-\x1f]*)'$/.exec(s));
+  return strings && strings.every(Boolean) ? strings.map(s => s[1] ?? s[2]) : null;
+}
+
+// A managed string array (shell_environment_policy.exclude) keeps the host's own entries: where the host sets that
+// key on one line in its own table, the managed value is the host's strings with the managed ones added after them.
+// A one-line value that is not plain strings is refused; a value spanning lines is left for tomlUnsupported.
+function withHostEntries(text, sections) {
+  const lines = text.split(/\r?\n/), kinds = tomlScan(lines);
+  const out = Object.fromEntries(Object.entries(sections).map(([name, keys]) => [name, { ...keys }]));
+  let table = [];
+  kinds.forEach((l, n) => {
+    if (l.kind === "header") table = l.array ? null : l.keys;
+    if (l.kind !== "key" || !table || l.inline || (kinds[n + 1] && kinds[n + 1].kind === "more")) return;
+    for (const [name, keys] of Object.entries(out)) for (const [k, v] of Object.entries(keys)) {
+      if (!Array.isArray(v) || !samePath(table, name) || !samePath(l.keys, k)) continue;
+      const have = stringArray(lines[n]);
+      if (!have) throw new Error(`refused, nothing written: config.toml line ${n + 1} sets ${name}.${k} to a value the `
+                                 + `merge cannot extend; make it one line of plain strings${BY_HAND}`);
+      keys[k] = [...have, ...v.filter(x => !have.includes(x))];
+    }
+  });
+  return out;
+}
+
 // Line-based merge on the scan: keeps CRLF, comments, other keys and other sections. A removeTop key is
 // deleted, with any continuation lines, where it is set before the first table header; with hold set it stays,
 // listed in `held`.
@@ -324,8 +356,7 @@ function mergeMcp(bytes, servers, pi = false) {
       if (cfg.mcpServers && s.name in cfg.mcpServers) { delete cfg.mcpServers[s.name]; changes.push('-' + s.name); }
       continue;
     }
-    const want = { type: 'http', url: s.url, headers: { Authorization: 'Bearer ${' + s.bearerTokenEnvVar + '}' } };
-    if (pi) { delete want.type; want.enabled = s.enabled; want.exposure = 'codemode'; }
+    const want = mcpEntry(path, os, s, pi);
     cfg.mcpServers ||= {};
     if (JSON.stringify(cfg.mcpServers[s.name]) !== JSON.stringify(want)) {
       cfg.mcpServers[s.name] = want; changes.push(s.name);
@@ -341,6 +372,16 @@ try {
   const servers = p.mcpServers || [];
   const mcpPlans = [];
   if (servers.length) {
+    // Claude Code and Pi read each bearer through the launcher the providers step installs; one that is missing or
+    // from another revision may lack that reader, so nothing is written until the providers step has run here. A dry
+    // run, whose providers step installs nothing, reports that and previews the rest.
+    const launcher = path.join(loadoutDir(path, os), 'mcp-env.cjs');
+    checkConfigPath(fs, path, os, launcher);
+    if (!probe(fs, launcher) || sha256(fs.readFileSync(launcher)) !== p.mcpLauncherSha256) {
+      if (!p.dry_run) throw Error('the MCP launcher ' + launcher + ' is missing or not the one this sync installs; '
+                                  + 'run the providers step for this host first');
+      result.mcp_launcher = { status: 'waits for the providers step' };
+    }
     const claudeMcp = path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json');
     // probe(), not existsSync: an unreadable path throws instead of reading as absent.
     if (probe(fs, path.join(os.homedir(), '.claude'), true))
@@ -364,8 +405,8 @@ try {
   if (!fs.existsSync(codexFile)) result.codex = { status: "absent" };
   else result.codex = update(p, codexFile, bytes => {
     if (bytes === null) throw new Error("config.toml disappeared during the merge, so nothing was written");
-    const before = bytes.toString("utf8"), r = mergeToml(before, p.codex.top, p.codex.sections, p.codex.removeTop,
-                                                                       p.hold_removal);
+    const before = bytes.toString("utf8");
+    const r = mergeToml(before, p.codex.top, withHostEntries(before, p.codex.sections), p.codex.removeTop, p.hold_removal);
     const report = {}, lines = before.split(/\r?\n/), kinds = tomlScan(lines);
     let first = kinds.findIndex(l => l.kind === "header");
     if (first < 0) first = lines.length;

@@ -64,11 +64,36 @@ try {
     ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData/Roaming'), 'loadout')
     : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'loadout');
   const launcher = path.join(envRoot, 'mcp-env.cjs');
-  // The servers the launcher loads: on POSIX each one's env file; on Windows, which has none, each one's user
-  // environment variable, read afresh at each launch.
-  const envServers = process.platform === 'win32' ? servers : servers.filter(s => s.envFile);
-  // Per provider launch settings, read by the launcher for the harness it names: token files and leading args.
-  const launch = p.launch || {};
+  // The servers the launcher reads: each one's owner-only env file, for Codex at launch and for Claude Code and Pi
+  // when they connect.
+  const envServers = servers.filter(s => s.envFile);
+  // Per provider launch settings, read by the launcher for the harness it names: token files, leading args, and for
+  // Codex mcpTokens, the MCP bearers in its environment.
+  const launch = { ...(p.launch || {}) };
+  // Rollout bridge: a client whose MCP config still sends `Bearer ${VAR}` for an enabled server (client-config, or
+  // this run's Pi runtime step, has not moved it to the reader yet, or failed here) keeps the bearers in its
+  // environment, as before, so it never has neither. Claude Code's ~/.claude.json, and Pi's runtime agent/mcp.json
+  // whether or not this run writes it; a file that does not parse fails the host. The bridge covers both the command
+  // the daemon runs now and the one this run publishes: `providers[id].mcpTokens` for a `--provider <id>` launch,
+  // and `unnamed.mcpTokens` for a launch without one. It is written with the launcher, before any other step, and
+  // the first run after the file has moved drops it.
+  const enabled = servers.filter(s => s.enabled), bridged = [];
+  const rows = JSON.parse(read()).agents?.providers || {}, commandOf = id => [].concat(rows[id]?.command || []);
+  const envRefs = file => {
+    const cfg = file && enabled.length && probe(fs, file, true) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+    return enabled.some(s => String(cfg.mcpServers?.[s.name]?.headers?.Authorization).includes('${' + s.bearerTokenEnvVar + '}'));
+  };
+  if (envRefs(path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json'))) bridged.push('claude');
+  const piLaunch = p.pi ? path.join(expand(p.pi.root), 'launch.mjs')
+    : commandOf('pi').find(arg => typeof arg === 'string' && path.basename(arg) === 'launch.mjs');
+  if (envRefs(piLaunch && path.join(path.dirname(piLaunch), 'agent/mcp.json'))) bridged.push('pi');
+  const unnamedFor = [];
+  for (const id of bridged) {
+    const now = commandOf(id), named = now[1] === launcher && now[2] === '--provider' && now[3] === id;
+    if (!named) unnamedFor.push(id);
+    if (named || (p.launch || {})[id]) launch[id] = { ...launch[id], mcpTokens: true };
+  }
+  const unnamed = unnamedFor.length > 0;
   // The shipped launcher, loaded from the payload without running its launch.
   const launcherModule = () => {
     const Module = require('module'), mod = new Module(launcher);
@@ -84,13 +109,18 @@ try {
   if (manageLaunch) {
     // Without MCP servers or launch settings the payload carries no launcher; the one on the host stays.
     if (p.mcp_env_launcher) envPlans.push([launcher, p.mcp_env_launcher]);
-    envPlans.push([path.join(envRoot, 'mcp-env.json'), JSON.stringify({ servers: envServers, providers: launch }, null, 2) + '\n']);
+    envPlans.push([path.join(envRoot, 'mcp-env.json'), JSON.stringify({ servers: envServers, providers: launch,
+      ...(unnamed ? { unnamed: { mcpTokens: true } } : {}) }, null, 2) + '\n']);
     for (const [file] of envPlans) check(file);
   }
   // Reported only when set, so a result without launch settings keeps its earlier shape.
-  if (Object.keys(launch).length) result.launch = [];
+  if (Object.keys(launch).length || unnamed) result.launch = [];
+  if (unnamed) result.launch.push('launches without --provider MCP bearer env from env files until the MCP config of '
+    + unnamedFor.join(', ') + ' uses the reader (run providers again after client-config)');
   for (const [id, settings] of Object.entries(launch)) {
     if (settings.args) result.launch.push(id + ' args ' + settings.args.join(' '));
+    if (settings.mcpTokens) result.launch.push(id + ' MCP bearer env from env files' + (bridged.includes(id)
+      ? ' until its MCP config uses the reader (run providers again after client-config)' : ''));
     for (const [key, tokenFile] of Object.entries(settings.tokenFiles || {})) {
       check(tokenFile.replace(/^~(?=[\\/])/, os.homedir()));
       // The launcher's own owner-only check (mode and uid, or the Windows ACL); it reads the value only at launch.
@@ -103,23 +133,15 @@ try {
   for (const s of servers) {
     result.mcp.push(s.name + ' ' + (s.enabled ? s.url + ' bearer env ' + s.bearerTokenEnvVar : 'disabled'));
     if (!s.enabled) continue;
-    if (s.envFile) {
-      const file = s.envFile.replace(/^~\//, os.homedir() + '/');
-      check(file);
-      // probe() from remote_common.js, not existsSync: an unreadable env file throws instead of reading as absent.
-      const st = probe(fs, file, true);
-      const ready = st && st.size > s.bearerTokenEnvVar.length + 1 && (st.mode & 0o777) === 0o600 && st.uid === process.getuid();
-      result.mcp.push(s.bearerTokenEnvVar + ' envFile ' + s.envFile + (ready ? ' present, owner-only' : ' missing or unsafe'));
-      if (!ready && !p.dry_run) throw Error('MCP envFile missing or unsafe for ' + s.bearerTokenEnvVar);
-    } else {
-      // Windows user environment, not this already-running daemon's stale inherited environment.
-      const {execFileSync} = require('child_process');
-      const script = '$v=[Environment]::GetEnvironmentVariable(' + JSON.stringify(s.bearerTokenEnvVar) + ',"User"); if($null -eq $v){0}else{$v.Length}';
-      const length = Number(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim());
-      result.mcp.push(s.bearerTokenEnvVar + ' user env length=' + length + '; read at each launch');
-      if (!length && !p.dry_run) throw Error('MCP user env missing for ' + s.bearerTokenEnvVar);
-    }
+    if (!s.envFile) throw Error('MCP server ' + s.name + ' has no envFile');
+    check(s.envFile.replace(/^~(?=[\\/])/, os.homedir()));
+    // The launcher's own owner-only check (mode and uid, or the Windows ACL), without reading the value.
+    const problem = launcherModule().tokenFileProblem(s.envFile);
+    result.mcp.push(s.bearerTokenEnvVar + ' envFile ' + s.envFile + (problem ? ' missing or unsafe (' + problem + ')' : ' present, owner-only'));
+    if (problem && !p.dry_run) throw Error('MCP envFile missing or unsafe for ' + s.bearerTokenEnvVar);
   }
+  // Pi's MCP entries hold this host's Node and launcher paths, so they are built here, as client-config builds them.
+  if (p.pi && servers.length) p.pi.runtime.mcpServers = Object.fromEntries(servers.map(s => [s.name, mcpEntry(path, os, s, true)]));
   // The pinned rows merged into one config revision, with the required env checked on the result. It changes
   // nothing, so it runs before the Pi runtime is touched, and again on any newer revision before publishing.
   const merge = raw => {
@@ -136,8 +158,9 @@ try {
       merged[k] = { ...rest, enabled: false };
     }
     if (manageLaunch) for (const provider of ['codex', 'claude', 'pi']) {
-      // Launch settings for a built-in provider with no row of its own wrap Paseo's default: its bare command.
-      if (!merged[provider] && launch[provider]) {
+      // Launch settings for a built-in provider with no row of its own wrap Paseo's default: its bare command. A
+      // bridged client with no row was not wrapped before either, so it stays as it is.
+      if (!merged[provider] && (p.launch || {})[provider]) {
         if (provider === 'pi') throw Error('launch settings for pi need a pi provider row');
         merged[provider] = {};
       }

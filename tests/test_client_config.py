@@ -205,7 +205,20 @@ class ClientConfigTest(unittest.TestCase):
         (root / 'agent/mcp.json').write_text(json.dumps({'mcpServers': {'paseo': {'command': 'bridge'}, 'gmail': {'exposure': 'hidden'}}}))
         (home / '.paseo').mkdir()
         (home / '.paseo/config.json').write_text(json.dumps({'agents': {'providers': {'pi': {'command': ['node', str(root / 'launch.mjs')]}}}}))
-        before = {p: p.read_bytes() for p in (home / '.claude.json', root / 'agent/mcp.json')}
+        before = {p: p.read_bytes() for p in (home / '.claude.json', root / 'agent/mcp.json', home / '.codex/config.toml')}
+        # Claude Code and Pi read the bearer through the launcher the providers step installs, so without it (or with
+        # another revision of it) nothing is written.
+        launcher = home / '.config/loadout/mcp-env.cjs'
+        launcher.parent.mkdir(parents=True)
+        for content in (None, '// another revision\n'):
+            if content:
+                launcher.write_text(content)
+            code, out = self.run_sync('--host', 'laptop')
+            self.assertEqual(code, 1, out)
+            self.assertIn('is missing or not the one this sync installs; run the providers step for this host first', out)
+            self.assertTrue(all(p.read_bytes() == data for p, data in before.items()))
+        # As the providers step installs it: the text with LF line ends, whatever the checkout's.
+        launcher.write_bytes((SCRIPTS / 'mcp_env.cjs').read_text().encode())
         code, out = self.run_sync('--host', 'laptop', '--dry-run')
         self.assertEqual(code, 0, out)
         self.assertTrue(all(p.read_bytes() == data for p, data in before.items()))
@@ -214,13 +227,21 @@ class ClientConfigTest(unittest.TestCase):
         claude = json.loads((home / '.claude.json').read_text())
         self.assertEqual(claude['projects'], {'kept': {}})
         self.assertIn('other', claude['mcpServers'])
-        want = {'type': 'http', 'url': 'http://192.0.2.40:8766/mcp', 'headers': {'Authorization': 'Bearer ${EBAY_ANALYZE_MCP_TOKEN}'}}
+        # No variable reference: each connection runs the launcher's reader, in the host shell.
+        node = subprocess.run(['node', '-e', 'process.stdout.write(process.execPath)'], env=self.env,
+                              capture_output=True, text=True, check=True).stdout
+        reader = lambda client: '"%s" "%s" --mcp-header %s ebay-analyze' % (node, launcher, client)
+        want = {'type': 'http', 'url': 'http://192.0.2.40:8766/mcp', 'headersHelper': reader('claude')}
         self.assertEqual(claude['mcpServers']['ebay-analyze'], want)
         pi = json.loads((root / 'agent/mcp.json').read_text())['mcpServers']
         self.assertEqual(pi['gmail'], {'exposure': 'hidden'})
         self.assertIn('paseo', pi)
-        self.assertEqual(pi['ebay-analyze'], {k: v for k, v in {**want, 'enabled': True, 'exposure': 'codemode'}.items() if k != 'type'})
-        self.assertIn('bearer_token_env_var = "EBAY_ANALYZE_MCP_TOKEN"', (home / '.codex/config.toml').read_text())
+        self.assertEqual(pi['ebay-analyze'], {'url': want['url'], 'headers': {'Authorization': '!' + reader('pi')},
+                                              'enabled': True, 'exposure': 'codemode'})
+        codex = (home / '.codex/config.toml').read_text()
+        self.assertIn('bearer_token_env_var = "EBAY_ANALYZE_MCP_TOKEN"', codex)
+        # Codex keeps the token in its environment, so its tool shells drop it.
+        self.assertIn('[shell_environment_policy]\nexclude = ["EBAY_ANALYZE_MCP_TOKEN"]', codex.replace('\r\n', '\n'))
         code, out = self.run_sync('--host', 'laptop')
         self.assertEqual(code, 0, out)
         self.assertIn('claude_mcp unchanged', out)

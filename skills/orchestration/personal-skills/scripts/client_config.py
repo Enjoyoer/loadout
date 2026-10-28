@@ -15,6 +15,7 @@ and the host reports `held`.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import datetime
@@ -25,6 +26,8 @@ import fleet
 import mcp_config
 
 MERGE_JS = Path(__file__).resolve().parent / "client_config_merge.js"
+# The launcher the providers step installs, as it writes it; Claude Code and Pi read MCP bearers through it.
+LAUNCHER_SHA256 = hashlib.sha256((MERGE_JS.parent / "mcp_env.cjs").read_text().encode()).hexdigest()
 TIMEOUT_SECONDS = 300
 # --update-claude lets the host run `claude update` for up to 10 minutes.
 UPDATE_TIMEOUT_SECONDS = 900
@@ -138,6 +141,13 @@ def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
             raise fleet.FleetError('MCP server also declared in codex.sections: ' + section)
         codex['sections'][section] = {'url': server['url'], 'bearer_token_env_var': server['bearerTokenEnvVar'],
                                      'enabled': server['enabled']}
+    # Codex reads an HTTP bearer only from its own environment, so the launcher gives it the tokens; its tool shells
+    # drop every server's variable. Other shell_environment_policy keys, here or on the host, stay.
+    if servers:
+        policy = codex['sections'].setdefault('shell_environment_policy', {})
+        if 'exclude' in policy:
+            raise fleet.FleetError('shell_environment_policy.exclude is managed from mcpServers; remove it from codex.sections')
+        policy['exclude'] = sorted({server['bearerTokenEnvVar'] for server in servers})
     return {"role": role, "codex": codex, "claude": claude, "mcpServers": servers}
 
 
@@ -158,6 +168,9 @@ def describe(name: str, result: dict) -> list:
         state = "CHANGED " + ",".join(claude["changes"]) if claude["changes"] else "unchanged"
         backup = f" (backup {claude['backup']})" if claude.get("backup") else ""
         lines.append(f"{name}: claude {state}{backup}")
+    if result.get('mcp_launcher'):
+        lines.append(f"{name}: MCP launcher {result['mcp_launcher']['status']}; "
+                     "a real run refuses this host until that step has installed it")
     for client in ('claude_mcp', 'pi_mcp'):
         if client in result:
             entry = result[client]
@@ -234,7 +247,7 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
     payload = {"hold_removal": bool(hold),"codex": wanted["codex"], "claude": wanted["claude"],
                "token": token if wanted["claude"]["token_env"] else None,
                "stamp": state["stamp"], "dry_run": dry_run, "update_claude": update_claude,
-               "mcpServers": wanted['mcpServers']}
+               "mcpServers": wanted['mcpServers'], "mcpLauncherSha256": LAUNCHER_SHA256}
     result, output = fleet.run_node(name, name == fleet_doc["source_host"], MERGE_JS, payload,
                                     UPDATE_TIMEOUT_SECONDS if update_claude else TIMEOUT_SECONDS,
                                     paseo_home=host.get('paseo_home'))

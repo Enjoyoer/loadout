@@ -1,18 +1,24 @@
 # Create an owner-only token file for the Loadout launcher on Windows and write a value into it from an
 # environment variable, so the value is never typed or printed. Run it as the user the Paseo daemon runs as:
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File new_token_file.ps1 -Path <file> -FromEnv <VAR>
-# It refuses an existing file and any link or junction on the path. The file is created with its ACL already
+# With -EnvName <NAME> it writes the one line NAME=<value> instead of the bare value, the form of a fleet MCP
+# server's envFile. It refuses an existing file and any link or junction on the path. The file is created with its ACL already
 # protected (nothing inherited) and granting only the current user, by SID; that ACL is read back from the open
 # handle and verified before the value is written. Any failure stops before writing and removes the empty file.
 param(
   [Parameter(Mandatory = $true)][string]$Path,
-  [Parameter(Mandatory = $true)][string]$FromEnv
+  [Parameter(Mandatory = $true)][string]$FromEnv,
+  [string]$EnvName
 )
 Set-StrictMode -Version 3
 $ErrorActionPreference = 'Stop'
 
 $value = [Environment]::GetEnvironmentVariable($FromEnv)
 if (-not $value) { throw "environment variable $FromEnv is empty" }
+if ($EnvName) {
+  if ($EnvName -cnotmatch '^[A-Z_][A-Z0-9_]*$') { throw "-EnvName must be an uppercase env name" }
+  $value = $EnvName + '=' + $value + "`n"
+}
 $Path = [IO.Path]::GetFullPath($Path)
 # GetAttributes does not follow a link, so a dangling one counts as existing too.
 $exists = $true
