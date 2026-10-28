@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { defineSettings } from "@getpaseo/plugin";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type ArchiverConfig } from "./server/config.ts";
@@ -42,6 +43,8 @@ export default function contribute(server: PluginServerContext) {
     now: () => Date.now(),
     notifyStore: new NotifyStore(),
     deliveries: new ReceiptReader(),
+    // Peer daemons (peerHosts) are reached through the paseo CLI on PATH, without a shell.
+    peerCli: (args, timeoutMs) => runCommand("paseo", args, homedir(), timeoutMs),
   });
 
   const loadConfig = async (): Promise<ArchiverConfig | null> => {

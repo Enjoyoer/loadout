@@ -62,9 +62,9 @@ export interface CommandResult {
   notFound: boolean;
 }
 
-/** Runs `git` or `gh` without a shell. Implementations must never throw. */
+/** Runs `git`, `gh` or the `paseo` CLI without a shell. Implementations must never throw. */
 export type CommandRunner = (
-  command: "git" | "gh",
+  command: "git" | "gh" | "paseo",
   args: readonly string[],
   cwd: string,
   timeoutMs: number,

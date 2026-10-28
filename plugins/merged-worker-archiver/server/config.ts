@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PEER_HOST_PATTERN } from "./peers.ts";
 
 // Host-scoped plugin settings, stored by Paseo at
 // <PASEO_HOME>/plugin-settings/merged-worker-archiver/config.json as
@@ -39,6 +40,15 @@ export const ConfigSchema = z
     armWorkspaceCleanup: z.boolean().default(false),
     /** No activity for at least this long makes an agentless workspace stale (default 3 days). */
     staleWorkspaceMinutes: z.number().min(1).max(365 * 24 * 60).default(3 * 24 * 60),
+    /**
+     * Other Paseo daemons, as `ssh://<alias>` targets for the paseo CLI, asked in order for the PM of a
+     * kept agentless worktree when this daemon has none. Empty: only this daemon is asked.
+     */
+    peerHosts: z
+      .array(z.string().regex(PEER_HOST_PATTERN, "peer host must be ssh://<alias> (letters, digits, '.', '_', '-')"))
+      .max(8)
+      .refine((hosts) => new Set(hosts).size === hosts.length, "peer hosts must be unique")
+      .default([]),
   })
   .strict();
 

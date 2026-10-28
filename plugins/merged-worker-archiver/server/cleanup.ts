@@ -10,7 +10,8 @@ import type { AgentView, Decision, WorkspaceView } from "./types.ts";
 //   record. Paseo's workspace archive removes a directory only for a Paseo-owned worktree, so for
 //   these it deletes no files and leaves the project listed (see README, "Workspace cleanup").
 // - A stale agentless worktree is archived only when the plugin's merge test says merged, which also
-//   requires a clean tree. Otherwise it is kept and reported to its PM once.
+//   requires a clean tree; ignored files count as the no-PR path counts them (regenerable output is clean,
+//   a sensitive name or a quoted path is not). Otherwise it is kept and reported to its PM once.
 //
 // Stale means no activity for at least staleWorkspaceMinutes, where activity is the latest of the
 // timestamps Paseo exposes for the workspace and for every agent it ever held (archived included),
@@ -37,6 +38,8 @@ export interface NotifiedEntry {
   at: string;
   agentId: string;
   status: "sending" | "sent" | "unconfirmed";
+  /** The peer daemon (`ssh://<alias>`) the PM lives on; absent for a PM on this daemon. */
+  host?: string;
 }
 
 export interface CleanupContext {
@@ -200,11 +203,12 @@ export async function evaluateCleanup(workspace: WorkspaceView, ctx: CleanupCont
     return decision("archive", `stale-record(${idle})`);
   }
 
+  // Regenerable ignored output (__pycache__, node_modules, ...) is clean here, as on the no-PR path.
   const merge = await checkMerged(directory, {
     ...ctx.deps.merge,
     timeoutMs: ctx.config.commandTimeoutSeconds * 1000,
     useGh: ctx.config.useGh,
-  });
+  }, { allowRegenerable: true });
   const facts = { branch: merge.branch ?? workspace.gitRuntime?.currentBranch ?? null, base: merge.base };
   if (merge.merged) return decision("archive", `stale-agentless-merged(${idle}; ${merge.reason})`, facts);
   if (!NOTIFY_REASONS.some((prefix) => merge.reason.startsWith(prefix))) return decision("skip", merge.reason, facts);
@@ -234,22 +238,39 @@ function newest(history: readonly AgentView[]): AgentView | null {
   return best;
 }
 
+/** What names a kept worktree's PM: its last agent's parent labels and the project names to match. */
+export interface OwnerKeys {
+  /** The last agent's `paseo.parent-agent-id` label (a full id). */
+  parentId: string | null;
+  /** That label, else the `parent` label (an id prefix). */
+  parent: string | null;
+  /** The last agent's `project` label and the workspace's project name, trimmed, as written. */
+  names: string[];
+}
+
+export function ownerKeys(workspace: WorkspaceView, history: readonly AgentView[]): OwnerKeys {
+  const last = newest(history);
+  const parentId = nonEmpty(last?.labels?.["paseo.parent-agent-id"]);
+  const names = [nonEmpty(last?.labels?.project), nonEmpty(workspace.projectDisplayName)].filter((name): name is string => name !== null);
+  return { parentId, parent: parentId ?? nonEmpty(last?.labels?.parent), names: [...new Set(names)] };
+}
+
 /**
  * The PM to tell about a kept worktree: the parent named by the labels `paseo.parent-agent-id`
  * (full id) or `parent` (id prefix) of the workspace's last agent when that parent is live; else the
  * one live agent labelled role=pm whose `project` label matches (case-insensitively) the last
- * agent's `project` label or the workspace's project name. None or several: nobody is told.
+ * agent's `project` label or the workspace's project name. None or several: nobody is told here
+ * (with none, peer daemons may be asked: see peers.ts).
  */
 export function resolveOwner(workspace: WorkspaceView, history: readonly AgentView[], live: readonly AgentView[]): OwnerResolution {
-  const last = newest(history);
-  const parent = nonEmpty(last?.labels?.["paseo.parent-agent-id"]) ?? nonEmpty(last?.labels?.parent);
+  const { parent, names: projectNames } = ownerKeys(workspace, history);
   if (parent) {
     const exact = live.find((agent) => agent.id === parent);
     if (exact) return { kind: "agent", agentId: exact.id, via: "parent" };
     const byPrefix = live.filter((agent) => agent.id.startsWith(parent));
     if (byPrefix.length === 1) return { kind: "agent", agentId: byPrefix[0]!.id, via: "parent" };
   }
-  const names = new Set([nonEmpty(last?.labels?.project), nonEmpty(workspace.projectDisplayName)].filter((name): name is string => name !== null).map((name) => name.toLowerCase()));
+  const names = new Set(projectNames.map((name) => name.toLowerCase()));
   if (names.size === 0) return { kind: "none", detail: "no project name" };
   const pms = live.filter((agent) => {
     const project = nonEmpty(agent.labels?.project)?.toLowerCase();

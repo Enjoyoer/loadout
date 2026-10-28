@@ -13,7 +13,9 @@ Since 0.4.0 its full sweeps also clean up stale workspaces (see Workspace cleanu
 archive the record of an idle, agentless project checkout or local workspace, archive an
 idle agentless worktree whose branch is merged and whose tree is clean, and tell the owning
 PM once about an idle agentless worktree they keep. That path has its own switch,
-`armWorkspaceCleanup`, and stays dry-run until it and `armed` are both on.
+`armWorkspaceCleanup`, and stays dry-run until it and `armed` are both on. Since 0.5.0 that
+PM may run on another Paseo daemon (`peerHosts`, see Messages to the PM), and an agentless
+worktree whose only ignored files are regenerable output counts as clean.
 
 ## What counts as merged
 
@@ -122,7 +124,7 @@ Every decision is `skip` unless its applicable gates pass. Reasons appear verbat
 | `no-base(...)` | No Paseo worktree metadata, or none of the base refs exist locally. |
 | `branch-is-base` | The worktree is on its base branch. |
 | `operation-in-progress(x)` | Merge, cherry-pick, revert, rebase, or bisect in progress. |
-| `dirty(changed, untracked, ignored)` | Any staged, unstaged, or untracked change (`--untracked-files=all`), or any git-ignored file (`--ignored=matching`). A worktree whose only extra files are ignored reports `dirty(ignored=N)`, for example an ignored `.env` or local notes. `N` counts the paths git lists, and an ignored directory counts once. Ignored dependency or build output (`node_modules`, `dist`) also blocks archival. That is intended: the owner chose safety over automatic cleanup. Delete such output, or archive the workspace by hand. |
+| `dirty(changed, untracked, ignored)` | Any staged, unstaged, or untracked change (`--untracked-files=all`), or any git-ignored file (`--ignored=matching`). A worktree whose only extra files are ignored reports `dirty(ignored=N)`, for example an ignored `.env` or local notes. `N` counts the paths git lists, and an ignored directory counts once. On the merged worker path ignored dependency or build output (`node_modules`, `dist`) also blocks archival. That is intended: the owner chose safety over automatic cleanup. Delete such output, or archive the workspace by hand. The no-PR path and workspace cleanup's agentless worktrees count only ignored files that are not regenerable output (see Finished workspaces without a PR, item 4), so there `N` leaves out `__pycache__`, `node_modules` and the rest of that list, and an ignored file with a sensitive name inside such a directory reports `dirty(sensitive-ignored=n:path)`. |
 | `submodule(path)` | A submodule directory (a gitlink in the index, `git ls-files --stage` from the worktree top level) that is not an empty, real directory. The superproject's status cannot vouch for it: `submodule.<name>.ignore` or `diff.ignoreSubmodules` hides its changes, its ignored files are never listed, and files in an unpopulated submodule directory are invisible to git. An unpopulated submodule (an empty directory) does not block; a symlink or junction in its place does. |
 | `no-branch-commits` | The branch reflog has no `commit`/`cherry-pick` entry. A branch with no own commits is trivially an ancestor of its base (also after a pure rebase onto a newer base); that is "no work yet", not "merged". |
 | `not-merged(...)` | Commits not contained in the base, no merged PR (`no PR`, `PR #n open`, `gh unavailable`, `no GitHub remote`, `gh disabled`). |
@@ -147,7 +149,9 @@ request as `paseo workspace archive`). In Paseo 0.9.1 that (`archiveByScope`):
 - if the worktree is Paseo-owned and no other active workspace references it, removes
   the directory with `git worktree remove --force` (Paseo's force, not this plugin's).
   The plugin already refused if any changed, untracked, or ignored file or any non-empty
-  submodule directory was present, so only clean, committed content is removed;
+  submodule directory was present, so only clean, committed content is removed. The one
+  exception is regenerable ignored output (`__pycache__`, `node_modules`, ...), which the
+  no-PR path and agentless worktree cleanup allow and Paseo then removes with the tree;
 - does **not** delete the branch. Verified in the isolated test: after archive the
   directory and its `git worktree` entry were gone and `worker-merged` still existed.
 
@@ -173,8 +177,12 @@ the event-driven ones) those workspaces go to workspace cleanup, which has two p
 - **Agentless worktree** (`cleanup: "agentless-worktree"`): archive it when its branch is
   merged and its tree is clean, by the same merge test as the worker path
   (`stale-agentless-merged(...)`); this removes a Paseo-owned worktree's directory, as for
-  workers. Any other result in the table below means the plugin keeps it and tells its PM
-  once (`notify`).
+  workers. Ignored files count as on the no-PR path (item 4 of Finished workspaces without a
+  PR): regenerable output such as `__pycache__` is clean, while an ignored file with a
+  sensitive name (`.env*`, keys), any other ignored file, or a path git prints quoted is not
+  (`dirty(ignored=N)`, `dirty(sensitive-ignored=n:path)`). An unmerged branch is kept either
+  way; only the reason changes. Any other result in the table below means the plugin keeps it
+  and tells its PM once (`notify`).
 
 Both paths first need all of these, else the line is `skip` with the reason shown:
 
@@ -268,8 +276,9 @@ last activity, and why it was kept. The owner is the parent named by the
 `paseo.parent-agent-id` (full id) or `parent` (id prefix) label of the worktree's last agent,
 when that parent is a live agent. Otherwise it is the one live agent labelled `role=pm`
 whose `project` label matches, case-insensitively, the last agent's `project` label or the
-workspace's project name. The owner is resolved again just before sending. With no owner or
-several, the plugin logs `notify-unrouted` and sends nothing. Each PM gets one message per
+workspace's project name. The owner is resolved again just before sending. With several, or
+with none here and none on a peer daemon (see PMs on other daemons), the plugin logs
+`notify-unrouted` and sends nothing. Each PM gets one message per
 sweep listing at most 20 worktrees (`notify-deferred` for the rest). Right before each send
 the plugin reads that PM's status again, and sends only while it is idle or closed, not
 archived, and without a pending permission. Otherwise it logs `notify-deferred` and tries
@@ -290,6 +299,56 @@ fixed `messageId`, so the daemon drops a duplicate. Entries of worktrees that ar
 listed are pruned by armed sweeps. To report a worktree again, delete its entry, or the file,
 while the plugin is stopped. A file that cannot be read (anything but missing) blocks every
 report and logs `notify-state-unreadable` until it is fixed.
+
+#### PMs on other daemons
+
+With `peerHosts` set (default empty, which changes nothing), a worktree with no owner on this
+daemon is looked up on those daemons, in the order listed, through the `paseo` CLI on the
+plugin's `PATH`: no shell, and each call bounded by `commandTimeoutSeconds`.
+
+1. The last agent's `paseo.parent-agent-id` (full id; the `parent` prefix label is not used),
+   with `paseo inspect --host <peer> --json -- <id>`. It counts when that agent is live and
+   not archived there.
+2. Otherwise the project's `role=pm` agents, with
+   `paseo ls --host <peer> -g --label role=pm --label project=<name> --json` for each project
+   name (the last agent's `project` label and the workspace's project name). The CLI matches
+   labels exactly and does not print them, so each name is asked as written and in lower case.
+   A `project` label in any other spelling, or a `role` other than lower-case `pm`, is not
+   found on a peer.
+
+The owner must be unique across all peers: the parent on exactly one peer, else exactly one
+project PM across all of them. Several matches log `notify-unrouted` with `several owners on
+peers`, and no match logs it with `no owner on peers`; both list the `peers` asked. A peer
+that fails (unreachable, a timeout, a CLI error) logs one `notify-peer-error` line (`peer`,
+`query`, `error`) and is asked nothing more in that sweep, so it costs at most one timeout.
+While a peer has failed and the parent was not found elsewhere, no project PM is chosen, since
+the failed peer may hold another: the line is `notify-unrouted` with `owner unknown on peers`
+and `peerErrors`. Nothing is recorded for an unrouted worktree, so the next full sweep tries
+again.
+
+Peers are asked only after every report to a PM on this daemon has been sent, so a slow or
+unreachable peer cannot delay or block those. A peer send follows the local rules: right
+before it the PM is read again with `paseo inspect`, and the report goes out only while that
+PM is `idle` or `closed`, not archived and without a pending permission (else
+`notify-deferred`), with `paseo send --host <peer> --no-wait --behavior steer`. Its
+`notified.json` entry names the peer as `host`, and its log lines carry `host` and `via`
+(`peer-parent` or `peer-project-pm`). A send that cannot have been delivered (no CLI, a usage
+error, no connection, `Agent not found`) is retried at the next full sweep; any other failure
+is recorded as `unconfirmed` and never resent. The CLI sets its own message id, so for peer
+sends `notified.json` alone keeps each worktree to one report. Dry-run sweeps look peers up
+too (read only) and log `would-notify` with `host`.
+
+Requirements and limits:
+
+- `ssh://<alias>` is the only accepted form (letters, digits, `.`, `_`, `-`; at most 8 unique
+  entries); a user, port, path or `daemonPort` makes the settings invalid. So the peer daemon
+  must listen on the CLI's default SSH daemon port (6767) on that host.
+- SSH to each alias must work without a prompt from the daemon's environment: the CLI runs
+  `ssh -o BatchMode=yes`.
+- The `paseo` CLI must have `send --behavior` (0.13.0 has it, 0.11.1 does not). With an older
+  CLI every peer send is refused before delivery and retried, so nothing is lost or sent twice.
+- Not checked on Windows, where the CLI is usually a `.cmd` shim that runs only through a
+  shell; expect `notify-peer-error` there.
 
 ### Background workspaces
 
@@ -432,6 +491,7 @@ every sweep, so edits take effect on the next sweep without a reload.
 | `staleWorkspaceMinutes` | `4320` | Idle time before workspace cleanup acts (1 to 525600; 3 days by default). |
 | `archiveFinishedWithoutPr` | `true` | Also archive finished worktrees with no open PR that are clean and pushed (see Finished workspaces without a PR). |
 | `finishedGraceMinutes` | `120` | Minimum idle time for that path (0 to 10080). The larger of this and `graceMinutes` applies. |
+| `peerHosts` | `[]` | Other Paseo daemons, as `ssh://<alias>` (at most 8, unique), asked in order for the PM of a kept agentless worktree when this daemon has none (see PMs on other daemons). Any other form makes the settings invalid. Empty asks only this daemon. |
 
 ## Logs
 
@@ -446,7 +506,8 @@ ends with the back-off length), `backoff` (sitting out after a failed archive ca
 reason shows which back-off sweep this is), or `deferred` (over the per-sweep cap).
 Workspace cleanup lines also carry `cleanup` and `lastActivityAt`, and add the actions
 `would-notify`, `notified`, `notify-deferred`, `notify-unrouted` and `notify-failed`, with
-`path`, `lastCommit` and `owner`. Each
+`path`, `lastCommit` and `owner` (and `host` for a PM on a peer daemon). A peer daemon that
+fails logs `notify-peer-error` with `peer`, `query` and `error`. Each
 evaluation ends with a `sweep-done` summary; failures log `sweep-aborted`. Non-worktree
 workspaces are counted in the summary only unless `logNonCandidates` is on.
 
@@ -513,6 +574,26 @@ last input stayed `recent`, dated by the archive, and became `would-archive` 4 m
 after it. With the receipt directory made
 unreadable, the sweep showed `receiptsUnreadable` and dated the same workspaces by their
 archive.
+
+Peer routing and agentless cleanliness (0.5.0) were checked on a pair of disposable 0.13.0
+daemons, each with its own home and port and a fake ACP provider. The plugin ran on one; the
+other held the peer agents. The plugin's own `paseo` CLI and its SSH transport were used
+unchanged. Only `ssh` on the plugin daemon's `PATH` was a stand-in that bridged one fixture
+alias to the peer's port and refused every other alias, plus one fixture alias that fails like
+an unknown host. With `peerHosts` empty, the two worktrees whose owners were on the peer logged
+`notify-unrouted` and no ssh call was made, as in 0.4.0. In dry-run with the failing alias
+listed first, lookups ran and nothing was sent or written. Armed, the local PM got its one
+report, the worktree whose parent was on the peer was reported to that parent (recorded with
+`host`), and the project-PM worktree stayed `notify-unrouted` with `peerErrors`; the failing
+peer was asked once in the sweep. With only the working peer listed, the project worktree
+went to the peer's `role=pm` agent, its `project` label being the lower-case form of the
+worker's, and a further sweep sent nothing. A report to a peer PM in a running turn logged
+`notify-deferred` (`PM running`) and was sent at the next sweep once the PM was idle. Two
+aliases for the same peer made one PM ambiguous, which logged `notify-unrouted` (`several
+owners on peers`). An invalid `peerHosts` entry logged `config-invalid`. The same run archived
+a merged agentless worktree whose only ignored files were two `__pycache__` directories (its
+branch was kept), reported an unmerged one as `not-merged(...)` instead of `dirty(ignored=2)`,
+and reported a merged one with an ignored `.env` as `dirty(ignored=1)`.
 
 Paseo compiles the plugin from source with esbuild and bundles `@getpaseo/client`
 (with `@getpaseo/protocol`), about 8.4 MB, so `npm install` must have run here before

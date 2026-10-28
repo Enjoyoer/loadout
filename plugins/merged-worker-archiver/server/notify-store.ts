@@ -5,7 +5,8 @@ import { writeJsonAtomically } from "./vendor/atomic-json.ts";
 import { paseoHome } from "./vendor/daemon-target.ts";
 import { isAbsent } from "./vendor/fs-probe.ts";
 
-// Which agentless worktrees were already reported to their PM, so each is reported once:
+// Which agentless worktrees were already reported to their PM (on this daemon, or on a peer named by `host`),
+// so each is reported once:
 // <PASEO_HOME>/plugin-state/merged-worker-archiver/notified.json. Only a missing file reads as
 // empty; an unreadable or malformed one throws, and then no report is sent that sweep.
 
@@ -19,7 +20,8 @@ const STATUSES = new Set(["sending", "sent", "unconfirmed"]);
 function isEntry(value: unknown): value is NotifiedEntry {
   if (!value || typeof value !== "object") return false;
   const entry = value as Record<string, unknown>;
-  return typeof entry.at === "string" && typeof entry.agentId === "string" && typeof entry.status === "string" && STATUSES.has(entry.status);
+  return typeof entry.at === "string" && typeof entry.agentId === "string" && typeof entry.status === "string" && STATUSES.has(entry.status)
+    && (entry.host === undefined || typeof entry.host === "string");
 }
 
 export interface NotifyStateStore {
