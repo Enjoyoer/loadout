@@ -217,7 +217,8 @@ class ClientConfigTest(unittest.TestCase):
             self.assertEqual(code, 1, out)
             self.assertIn('is missing or not the one this sync installs; run the providers step for this host first', out)
             self.assertTrue(all(p.read_bytes() == data for p, data in before.items()))
-        shutil.copy(SCRIPTS / 'mcp_env.cjs', launcher)
+        # As the providers step installs it: the text with LF line ends, whatever the checkout's.
+        launcher.write_bytes((SCRIPTS / 'mcp_env.cjs').read_text().encode())
         code, out = self.run_sync('--host', 'laptop', '--dry-run')
         self.assertEqual(code, 0, out)
         self.assertTrue(all(p.read_bytes() == data for p, data in before.items()))
