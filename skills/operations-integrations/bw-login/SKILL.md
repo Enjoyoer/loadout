@@ -64,7 +64,7 @@ If a paste fills nothing, clear the field, stop and report.
 
 ### b. Codex app Browser Use (its own virtual clipboard)
 
-The error `Browser Use virtual clipboard has no data to paste` means this path. Bridge the OS clipboard into the tab clipboard inside the node REPL, and never print, log or return the value. The username screenshot below is taken before the password fill; section 2 still governs all page captures.
+The error `Browser Use virtual clipboard has no data to paste` means this path. Bridge the OS clipboard into the tab clipboard inside the node REPL, and never print, log, return or screenshot the password. The only capture this path allows is the one username screenshot below, taken before the password fill; section 2 still governs all page captures.
 
 - Run `bw-paste` with the agent's shell tool (`exec_command`), never inside the REPL: the REPL may not be able to start it.
 - Read the OS clipboard in the REPL with `execFileSync` from `node:child_process`: on Windows `execFileSync('powershell',['-NoProfile','-Command','Get-Clipboard -Raw']).toString().replace(/\r?\n$/,'')`, on Mac `pbpaste`.
