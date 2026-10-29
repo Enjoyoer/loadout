@@ -1,5 +1,6 @@
 import type { NotifiedEntry } from "../server/cleanup.ts";
 import type { NotifyStateStore } from "../server/notify-store.ts";
+import type { PeerConnector } from "../server/peers.ts";
 import type { CommandResult, CommandRunner, FileSystem } from "../server/types.ts";
 import type { AgentView, WorkspaceView } from "../server/types.ts";
 
@@ -179,6 +180,48 @@ export const mergedPr = (overrides: Record<string, unknown> = {}) => ({
     ...overrides,
   }),
 });
+
+export interface PeerFixtureAgent {
+  id: string;
+  status?: string;
+  archived?: boolean;
+  labels?: Record<string, string>;
+}
+
+/**
+ * Fixture peer daemons behind a PeerConnector, answering as the daemon does: getAgent returns archived agents too and
+ * null for an unknown id, listAgents leaves out archived ones, and a send to an unknown agent is refused before
+ * delivery. A peer that is "down" (or unknown) cannot be connected to.
+ */
+export function fakePeers(peers: Record<string, PeerFixtureAgent[] | "down">) {
+  const connects: string[] = [];
+  const sent: Array<{ host: string; agentId: string; text: string; messageId: string }> = [];
+  const view = (entry: PeerFixtureAgent): AgentView => ({
+    id: entry.id,
+    status: entry.status ?? "idle",
+    labels: entry.labels ?? {},
+    pendingPermissions: [],
+    archivedAt: entry.archived ? LONG_AGO : null,
+  });
+  const connect: PeerConnector = async (host) => {
+    connects.push(host);
+    const agents = peers[host];
+    if (!agents || agents === "down") throw new Error(`ssh: Could not resolve hostname ${host.replace("ssh://", "")}`);
+    return {
+      listAgents: async () => agents.filter((entry) => !entry.archived).map(view),
+      getAgent: async (agentId) => {
+        const found = agents.find((entry) => entry.id === agentId);
+        return found ? view(found) : null;
+      },
+      send: async (agentId, text, messageId) => {
+        if (!agents.some((entry) => entry.id === agentId)) throw new Error(`Agent not found: ${agentId}`);
+        sent.push({ host, agentId, text, messageId });
+      },
+      close: async () => undefined,
+    };
+  };
+  return { connect, connects, sent };
+}
 
 /** In-memory reported-worktree state; `writes` counts persisted writes. */
 export function memoryNotifyStore(initial: Record<string, NotifiedEntry> = {}): NotifyStateStore & { entries: Map<string, NotifiedEntry>; writes: number } {

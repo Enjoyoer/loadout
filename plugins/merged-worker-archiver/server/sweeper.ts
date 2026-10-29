@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { evaluateCleanup, formatNotification, isCleanupEntry, LAST_TURN_ALLOWANCE_MS, resolveOwner, type NotifiedEntry } from "./cleanup.ts";
+import { evaluateCleanup, formatNotification, isCleanupEntry, LAST_TURN_ALLOWANCE_MS, ownerKeys, pmBusyReason, resolveOwner, type NotifiedEntry, type OwnerKeys } from "./cleanup.ts";
 import type { ArchiverConfig } from "./config.ts";
 import { evaluateWorkspace, type EvaluateDeps } from "./evaluate.ts";
 import type { NotifyStateStore } from "./notify-store.ts";
+import { PeerDirectory, type PeerConnector, type PeerSendOutcome } from "./peers.ts";
 import type { DeliveryReader } from "./receipts.ts";
 import type { AgentView, CommonDirResolver, Decision, TerminalView, WorkspaceView } from "./types.ts";
 
@@ -56,6 +57,8 @@ export interface SweeperDeps extends EvaluateDeps {
   notifyStore: NotifyStateStore;
   /** Paseo's message delivery receipts (workspace cleanup). Without one, archive times count instead. */
   deliveries?: DeliveryReader;
+  /** Opens sessions to peer daemons, for their PMs (setting peerHosts). Without one, no peer is asked. */
+  peerConnector?: PeerConnector;
 }
 
 export interface SweepOptions {
@@ -263,6 +266,34 @@ async function decide(
     deliveries: state.cleanup.deliveries,
     notified: cleanup.notified,
   });
+}
+
+interface ReportItem {
+  decision: Decision;
+  directory: string;
+  via: string;
+}
+
+/** One PM's report: on this daemon (host null) or on a peer. */
+interface Recipient {
+  host: string | null;
+  agentId: string;
+  items: ReportItem[];
+}
+
+/** How to reach a PM: read its state right before sending, and send. */
+interface Channel {
+  host: string | null;
+  /** Why the PM must not be messaged now, or null when it is quiet. May throw. */
+  busy(agentId: string): Promise<string | null>;
+  send(agentId: string, text: string, messageId: string): Promise<PeerSendOutcome>;
+}
+
+function addRecipient(groups: Map<string, Recipient>, host: string | null, agentId: string, item: ReportItem): void {
+  const key = `${host ?? ""}\n${agentId}`;
+  const recipient = groups.get(key) ?? { host, agentId, items: [] };
+  recipient.items.push(item);
+  groups.set(key, recipient);
 }
 
 /** The daemon refused before delivery, so the report may be sent again later. */
@@ -521,7 +552,9 @@ export class Sweeper {
    * Tell each kept worktree's PM about it, once. Armed: live state is re-read, every gate re-run and
    * the PM resolved again, and right before each send the PM's own status is read again (only an
    * idle or closed, unarchived PM without a pending permission is sent to, with "steer"); one message
-   * per PM, at most MAX_REPORT_ITEMS worktrees each. A worktree is recorded as reported before the
+   * per PM, at most MAX_REPORT_ITEMS worktrees each. A worktree with no PM on this daemon goes to its
+   * PM on a peer daemon (peerHosts), resolved and sent over one session per peer after the local reports.
+   * A worktree is recorded as reported before the
    * message goes out, so it is never reported twice: a refusal before delivery (the PM is gone)
    * removes the record again, any other failure keeps it as `unconfirmed`. Returns the worktrees
    * reported (or, in dry-run, that would be).
@@ -558,95 +591,162 @@ export class Sweeper {
         confirmed.push(recheck);
       }
     }
-    const groups = new Map<string, Array<{ decision: Decision; directory: string; via: string }>>();
+    // This daemon's PMs first; with none here, peer daemons are asked afterwards, so a slow or unreachable
+    // peer cannot delay a local report.
+    const groups = new Map<string, Recipient>();
+    const toPeers: Array<{ item: ReportItem; keys: OwnerKeys; localDetail: string }> = [];
+    const peerHosts = this.deps.peerConnector ? config.peerHosts : [];
     for (const decision of confirmed) {
       const workspace = current.workspaces.find((entry) => entry.id === decision.workspaceId)!;
-      const owner = resolveOwner(workspace, current.cleanup?.historyByWorkspace.get(workspace.id) ?? [], current.liveAgents);
+      const history = current.cleanup?.historyByWorkspace.get(workspace.id) ?? [];
+      const owner = resolveOwner(workspace, history, current.liveAgents);
       const directory = workspace.workspaceDirectory ?? "";
-      if (owner.kind !== "agent") {
-        const detail = owner.kind === "none" ? `no owner: ${owner.detail}` : `several owners: ${owner.agentIds.join(",")}`;
-        log(formatDecision(decision, "notify-unrouted", { path: directory, lastCommit: decision.lastCommit ?? null, owner: detail }));
+      if (owner.kind === "agent") {
+        addRecipient(groups, null, owner.agentId, { decision, directory, via: owner.via });
         continue;
       }
-      const list = groups.get(owner.agentId) ?? [];
-      list.push({ decision, directory, via: owner.via });
-      groups.set(owner.agentId, list);
+      if (owner.kind === "none" && peerHosts.length > 0) {
+        toPeers.push({ item: { decision, directory, via: "" }, keys: ownerKeys(workspace, history), localDetail: owner.detail });
+        continue;
+      }
+      const detail = owner.kind === "none" ? `no owner: ${owner.detail}` : `several owners: ${owner.agentIds.join(",")}`;
+      log(formatDecision(decision, "notify-unrouted", { path: directory, lastCommit: decision.lastCommit ?? null, owner: detail }));
     }
     const reported: string[] = [];
-    for (const [agentId, items] of groups) {
-      const batch = items.slice(0, MAX_REPORT_ITEMS);
-      for (const item of items.slice(MAX_REPORT_ITEMS)) {
-        log(formatDecision(item.decision, "notify-deferred", { owner: agentId, why: `more than ${MAX_REPORT_ITEMS} worktrees for one PM; next sweep` }));
-      }
-      const lineFor = (item: (typeof items)[number], action: string, extra: Record<string, unknown> = {}) =>
-        formatDecision(item.decision, action, { path: item.directory, lastCommit: item.decision.lastCommit ?? null, owner: agentId, via: item.via, ...extra });
-      if (wouldOnly) {
-        for (const item of batch) {
-          log(lineFor(item, "would-notify"));
-          reported.push(item.decision.workspaceId);
-        }
-        continue;
-      }
-      // Send only to a quiet PM, read again right here: the rechecks above can take tens of seconds.
-      // A message to an agent in a turn interrupts or steers it, one with a pending permission request
-      // clears it, and one to an archived agent unarchives it.
-      let busy: string | null;
-      try {
+    const local: Channel = {
+      host: null,
+      async busy(agentId) {
         if (typeof api.agents.get !== "function") throw new Error("agent lookup unavailable");
-        const owner = await api.agents.get(agentId);
-        busy = !owner
-          ? "gone"
-          : owner.archivedAt
-            ? "archived"
-            : owner.status === "running" || owner.status === "initializing"
-              ? owner.status
-              : (owner.pendingPermissions?.length ?? 0) > 0
-                ? "pending permission"
-                : null;
-      } catch (error) {
-        busy = `status unreadable (${error instanceof Error ? error.message : String(error)})`;
+        return pmBusyReason(await api.agents.get(agentId));
+      },
+      async send(agentId, text, messageId) {
+        try {
+          if (typeof api.sendAgentMessage !== "function") throw new Error("agent messaging unavailable");
+          await api.sendAgentMessage(agentId, text, { messageId, activeTurnBehavior: "steer" });
+          return { status: "sent" };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return { status: isRetryableSendError(message) ? "retry" : "unconfirmed", why: message };
+        }
+      },
+    };
+    for (const recipient of groups.values()) reported.push(...(await this.deliver(recipient, local, notified, config, wouldOnly)));
+    if (toPeers.length === 0) return reported;
+
+    const peers = new PeerDirectory({
+      connect: this.deps.peerConnector!,
+      hosts: peerHosts,
+      timeoutMs: config.commandTimeoutSeconds * 1000,
+      now: this.deps.now,
+      onError: (host, query, error) => log(`[merged-worker-archiver] ${JSON.stringify({ action: "notify-peer-error", peer: host, query, error })}`),
+    });
+    try {
+      const peerGroups = new Map<string, Recipient>();
+      for (const { item, keys, localDetail } of toPeers) {
+        const owner = await peers.resolve(keys);
+        if (owner.kind === "agent") {
+          addRecipient(peerGroups, owner.host, owner.agentId, { ...item, via: owner.via });
+          continue;
+        }
+        const peerDetail = owner.kind === "several"
+          ? `several owners on peers: ${owner.matches.join(",")}`
+          : owner.kind === "unknown"
+            ? `owner unknown on peers: ${owner.detail}`
+            : `no owner on peers: ${owner.detail}`;
+        log(formatDecision(item.decision, "notify-unrouted", {
+          path: item.directory,
+          lastCommit: item.decision.lastCommit ?? null,
+          owner: `no owner: ${localDetail}; ${peerDetail}`,
+          peers: peerHosts,
+          ...(peers.errors.size > 0 ? { peerErrors: Object.fromEntries(peers.errors) } : {}),
+        }));
       }
-      if (busy) {
-        for (const item of batch) log(lineFor(item, "notify-deferred", { why: `PM ${busy}; next full sweep` }));
-        continue;
+      for (const recipient of peerGroups.values()) {
+        const host = recipient.host!;
+        const channel: Channel = {
+          host,
+          busy: async (agentId) => pmBusyReason(await peers.state(host, agentId)),
+          send: (agentId, text, messageId) => peers.send(host, agentId, text, messageId),
+        };
+        reported.push(...(await this.deliver(recipient, channel, notified, config, wouldOnly)));
       }
-      const at = new Date(this.deps.now()).toISOString();
-      for (const item of batch) notified.set(item.decision.workspaceId, { at, agentId, status: "sending" });
-      try {
-        await this.deps.notifyStore.write(notified);
-      } catch (error) {
-        for (const item of batch) notified.delete(item.decision.workspaceId);
-        for (const item of batch) log(lineFor(item, "notify-failed", { why: `state not written, nothing sent: ${error instanceof Error ? error.message : String(error)}` }));
-        continue;
-      }
-      const ids = batch.map((item) => item.decision.workspaceId).sort();
-      const messageId = `merged-worker-archiver-report-${createHash("sha256").update(`${agentId}\n${ids.join("\n")}`).digest("hex").slice(0, 32)}`;
-      const text = formatNotification(batch, config.staleWorkspaceMinutes, this.deps.now());
-      let outcome: { status: NotifiedEntry["status"] | "retry"; why?: string };
-      try {
-        if (typeof api.sendAgentMessage !== "function") throw new Error("agent messaging unavailable");
-        await api.sendAgentMessage(agentId, text, { messageId, activeTurnBehavior: "steer" });
-        outcome = { status: "sent" };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        outcome = isRetryableSendError(message) ? { status: "retry", why: message } : { status: "unconfirmed", why: message };
-      }
+    } finally {
+      await peers.close();
+    }
+    return reported;
+  }
+
+  /**
+   * One message to one PM, on this daemon or a peer: at most MAX_REPORT_ITEMS worktrees, only while the
+   * PM is quiet (read again right here), recorded as `sending` before it goes out. Returns the worktrees
+   * reported (or, in dry-run, that would be).
+   */
+  private async deliver(
+    recipient: Recipient,
+    channel: Channel,
+    notified: Map<string, NotifiedEntry>,
+    config: ArchiverConfig,
+    wouldOnly: boolean,
+  ): Promise<string[]> {
+    const log = this.deps.log;
+    const { agentId, items } = recipient;
+    const host = channel.host;
+    const where = host ? { host } : {};
+    const reported: string[] = [];
+    const batch = items.slice(0, MAX_REPORT_ITEMS);
+    for (const item of items.slice(MAX_REPORT_ITEMS)) {
+      log(formatDecision(item.decision, "notify-deferred", { owner: agentId, ...where, why: `more than ${MAX_REPORT_ITEMS} worktrees for one PM; next sweep` }));
+    }
+    const lineFor = (item: ReportItem, action: string, extra: Record<string, unknown> = {}) =>
+      formatDecision(item.decision, action, { path: item.directory, lastCommit: item.decision.lastCommit ?? null, owner: agentId, ...where, via: item.via, ...extra });
+    if (wouldOnly) {
       for (const item of batch) {
-        if (outcome.status === "retry") notified.delete(item.decision.workspaceId);
-        else notified.set(item.decision.workspaceId, { at, agentId, status: outcome.status });
+        log(lineFor(item, "would-notify"));
+        reported.push(item.decision.workspaceId);
       }
-      try {
-        await this.deps.notifyStore.write(notified);
-      } catch (error) {
-        log(`[merged-worker-archiver] notify-state-write-failed reason=${JSON.stringify(error instanceof Error ? error.message : String(error))} (entries stay marked sending, never resent)`);
-      }
-      for (const item of batch) {
-        if (outcome.status === "sent") {
-          log(lineFor(item, "notified", { messageId }));
-          reported.push(item.decision.workspaceId);
-        } else if (outcome.status === "retry") log(lineFor(item, "notify-deferred", { why: `refused before delivery, retried next full sweep: ${outcome.why}` }));
-        else log(lineFor(item, "notify-failed", { why: `delivery unknown, not resent: ${outcome.why}` }));
-      }
+      return reported;
+    }
+    // Send only to a quiet PM, read again right here: the rechecks before can take tens of seconds.
+    // A message to an agent in a turn interrupts or steers it, one with a pending permission request
+    // clears it, and one to an archived agent unarchives it.
+    let busy: string | null;
+    try {
+      busy = await channel.busy(agentId);
+    } catch (error) {
+      busy = `status unreadable (${error instanceof Error ? error.message : String(error)})`;
+    }
+    if (busy) {
+      for (const item of batch) log(lineFor(item, "notify-deferred", { why: `PM ${busy}; next full sweep` }));
+      return reported;
+    }
+    const at = new Date(this.deps.now()).toISOString();
+    for (const item of batch) notified.set(item.decision.workspaceId, { at, agentId, status: "sending", ...where });
+    try {
+      await this.deps.notifyStore.write(notified);
+    } catch (error) {
+      for (const item of batch) notified.delete(item.decision.workspaceId);
+      for (const item of batch) log(lineFor(item, "notify-failed", { why: `state not written, nothing sent: ${error instanceof Error ? error.message : String(error)}` }));
+      return reported;
+    }
+    const ids = batch.map((item) => item.decision.workspaceId).sort();
+    const messageId = `merged-worker-archiver-report-${createHash("sha256").update(`${agentId}\n${ids.join("\n")}`).digest("hex").slice(0, 32)}`;
+    const text = formatNotification(batch, config.staleWorkspaceMinutes, this.deps.now());
+    const outcome = await channel.send(agentId, text, messageId);
+    for (const item of batch) {
+      if (outcome.status === "retry") notified.delete(item.decision.workspaceId);
+      else notified.set(item.decision.workspaceId, { at, agentId, status: outcome.status, ...where });
+    }
+    try {
+      await this.deps.notifyStore.write(notified);
+    } catch (error) {
+      log(`[merged-worker-archiver] notify-state-write-failed reason=${JSON.stringify(error instanceof Error ? error.message : String(error))} (entries stay marked sending, never resent)`);
+    }
+    for (const item of batch) {
+      if (outcome.status === "sent") {
+        log(lineFor(item, "notified", { messageId }));
+        reported.push(item.decision.workspaceId);
+      } else if (outcome.status === "retry") log(lineFor(item, "notify-deferred", { why: `refused before delivery, retried next full sweep: ${outcome.why}` }));
+      else log(lineFor(item, "notify-failed", { why: `delivery unknown, not resent: ${outcome.why}` }));
     }
     return reported;
   }

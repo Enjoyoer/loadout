@@ -4,6 +4,7 @@ import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type ArchiverConfig } from
 import { openDaemonClient, resolveDaemonTarget } from "./server/daemon.ts";
 import { createCommonDirResolver, nodeFileSystem, runCommand } from "./server/io.ts";
 import { NotifyStore } from "./server/notify-store.ts";
+import { openPeerSession } from "./server/peer-session.ts";
 import { ReceiptReader } from "./server/receipts.ts";
 import { EventScheduler, realTimers } from "./server/scheduler.ts";
 import { Sweeper, type ApiLease } from "./server/sweeper.ts";
@@ -42,6 +43,8 @@ export default function contribute(server: PluginServerContext) {
     now: () => Date.now(),
     notifyStore: new NotifyStore(),
     deliveries: new ReceiptReader(),
+    // Peer daemons (peerHosts): ssh to their daemon port, then the bundled client (see server/peer-session.ts).
+    peerConnector: openPeerSession,
   });
 
   const loadConfig = async (): Promise<ArchiverConfig | null> => {

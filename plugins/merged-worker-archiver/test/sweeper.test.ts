@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { defaultConfig } from "../server/config.ts";
 import { Sweeper, type ArchiverApi } from "../server/sweeper.ts";
-import type { WorkspaceView } from "../server/types.ts";
-import { agent, fakeFs, fakeRunner, LONG_AGO, memoryNotifyStore, NOW, scenario, workspace } from "./fakes.ts";
+import type { AgentView, WorkspaceView } from "../server/types.ts";
+import { agent, fakeFs, fakePeers, fakeRunner, LONG_AGO, memoryNotifyStore, NOW, scenario, workspace, type PeerFixtureAgent } from "./fakes.ts";
 
 it("with the default cap, one sweep over 7 eligible candidates archives 5 and reports 2 deferred; the next sweep archives the 2", async () => {
   const workspaces = Array.from({ length: 7 }, (_, i) => workspace({ id: `wks_${i}`, name: `worker-${i}` }));
@@ -307,4 +307,149 @@ it("an agent history listing that fails leaves out workspace cleanup only: the w
   const done = JSON.parse(lines.find((line) => line.includes("sweep-done"))!.replace(/^\[merged-worker-archiver\] sweep-done /, ""));
   assert.equal(done.cleanupSkipped, "agent history exceeded 50 pages");
   assert.equal(notifyStore.writes, 0);
+});
+
+/**
+ * Armed workspace cleanup over kept (unmerged) agentless worktrees, each with one archived worker carrying
+ * `labels`. This daemon's only PM works on project "other"; `peers` are the fixture peer daemons.
+ */
+function peerCleanup(options: { worktrees: Array<{ id: string; labels: Record<string, string> }>; peers: Record<string, PeerFixtureAgent[] | "down">; peerHosts: string[] }) {
+  const page = <T>(entries: T[]) => ({ entries, pageInfo: { nextCursor: null, hasMore: false } });
+  const workspaces = [
+    workspace({ id: "wks_pm", name: "pm-home", workspaceKind: "local_checkout", workspaceDirectory: "/pm" }),
+    ...options.worktrees.map((wt) => workspace({ id: wt.id, name: wt.id })),
+  ];
+  const agents: AgentView[] = [
+    agent({ id: "pm-local-0001", workspaceId: "wks_pm", labels: { role: "pm", project: "other" } }),
+    ...options.worktrees.map((wt) => agent({ id: `worker-${wt.id}`, workspaceId: wt.id, archivedAt: LONG_AGO, labels: { role: "worker", ...wt.labels } })),
+  ];
+  const localSends: Array<{ agentId: string; text: string }> = [];
+  const api: ArchiverApi = {
+    workspaces: { list: async () => page(workspaces), archive: async () => ({ archivedAt: null, error: "not expected" }) },
+    agents: {
+      list: async (request) => page(agents.filter((entry) => request?.filter?.includeArchived || !entry.archivedAt).map((entry) => ({ agent: entry }))),
+      get: async (agentId) => agents.find((entry) => entry.id === agentId) ?? null,
+    },
+    projects: { list: async () => ({ projects: [] }) },
+    terminals: { list: async () => ({ entries: [] }) },
+    supportsBackgroundWorkspaces: () => false,
+    sendAgentMessage: async (agentId, text) => {
+      localSends.push({ agentId, text });
+    },
+  };
+  const s = scenario();
+  const fs = fakeFs(s);
+  const notifyStore = memoryNotifyStore();
+  const peer = fakePeers(options.peers);
+  const lines: string[] = [];
+  const sweeper = new Sweeper({
+    acquireApi: async () => ({ api, release: async () => undefined }),
+    log: (line) => lines.push(line),
+    fs,
+    merge: { run: fakeRunner(s), fs },
+    resolveCommonDir: async () => null,
+    now: () => NOW,
+    notifyStore,
+    peerConnector: peer.connect,
+  });
+  const sweep = async () => {
+    lines.length = 0;
+    const result = await sweeper.sweep(defaultConfig({ armed: true, armWorkspaceCleanup: true, useGh: false, staleWorkspaceMinutes: 60, peerHosts: options.peerHosts }), { trigger: "test" });
+    const entries = lines.filter((line) => line.startsWith("[merged-worker-archiver] {")).map((line) => JSON.parse(line.replace(/^\[merged-worker-archiver\] /, "")));
+    return { result, entries, lines: [...lines] };
+  };
+  return { sweep, localSends, peer, notifyStore };
+}
+
+it("peer routing: a kept worktree with no PM on this daemon is reported to its parent, by full id, on a peer", async () => {
+  const t = peerCleanup({
+    worktrees: [{ id: "wks_wt", labels: { "paseo.parent-agent-id": "pm-peer-0001", project: "demo" } }],
+    peers: {
+      "ssh://peer-a": [{ id: "pm-a-0001", labels: { role: "pm", project: "demo" } }],
+      "ssh://peer-b": [{ id: "pm-peer-0001", labels: { role: "pm", project: "elsewhere" } }],
+    },
+    peerHosts: ["ssh://peer-a", "ssh://peer-b"],
+  });
+  const { entries } = await t.sweep();
+  // The parent wins over another peer's project PM.
+  const notified = entries.find((entry) => entry.action === "notified");
+  assert.equal(notified?.workspaceId, "wks_wt");
+  assert.equal(notified?.host, "ssh://peer-b");
+  assert.equal(notified?.owner, "pm-peer-0001");
+  assert.equal(notified?.via, "peer-parent");
+  assert.deepEqual(t.peer.sent.map((send) => `${send.host} ${send.agentId}`), ["ssh://peer-b pm-peer-0001"]);
+  assert.match(t.peer.sent[0]!.text, /\(wks_wt\)/);
+  assert.deepEqual(t.localSends, []);
+  assert.deepEqual(t.notifyStore.entries.get("wks_wt"), { at: new Date(NOW).toISOString(), agentId: "pm-peer-0001", status: "sent", host: "ssh://peer-b" });
+
+  // Once per worktree, as for a PM on this daemon.
+  await t.sweep();
+  assert.equal(t.peer.sent.length, 1);
+});
+
+it("peer routing: with no parent there, the one live role=pm agent of the project on the peers gets the report", async () => {
+  const t = peerCleanup({
+    worktrees: [{ id: "wks_wt", labels: { project: "Demo" } }],
+    peers: {
+      "ssh://peer-a": [{ id: "worker-a-0001", labels: { role: "worker", project: "demo" } }],
+      "ssh://peer-b": [
+        { id: "pm-b-0001", labels: { role: "pm", project: "demo" } },
+        { id: "pm-b-old", archived: true, labels: { role: "pm", project: "demo" } },
+      ],
+    },
+    peerHosts: ["ssh://peer-a", "ssh://peer-b"],
+  });
+  const { entries } = await t.sweep();
+  const notified = entries.find((entry) => entry.action === "notified");
+  assert.equal(notified?.host, "ssh://peer-b");
+  assert.equal(notified?.owner, "pm-b-0001");
+  assert.equal(notified?.via, "peer-project-pm");
+  assert.deepEqual(t.peer.sent.map((send) => `${send.host} ${send.agentId}`), ["ssh://peer-b pm-b-0001"]);
+  assert.equal(t.notifyStore.entries.get("wks_wt")?.host, "ssh://peer-b");
+});
+
+it("peer routing: a project PM on more than one peer is ambiguous, so the worktree is unrouted and nothing is recorded", async () => {
+  const t = peerCleanup({
+    worktrees: [{ id: "wks_wt", labels: { project: "demo" } }],
+    peers: {
+      "ssh://peer-a": [{ id: "pm-a-0001", labels: { role: "pm", project: "demo" } }],
+      "ssh://peer-b": [{ id: "pm-b-0001", labels: { role: "pm", project: "demo" } }],
+    },
+    peerHosts: ["ssh://peer-a", "ssh://peer-b"],
+  });
+  const { entries } = await t.sweep();
+  const unrouted = entries.filter((entry) => entry.action === "notify-unrouted");
+  assert.equal(unrouted.length, 1);
+  assert.equal(unrouted[0].workspaceId, "wks_wt");
+  assert.match(unrouted[0].owner, /several owners on peers: ssh:\/\/peer-a pm-a-0001,ssh:\/\/peer-b pm-b-0001$/);
+  assert.deepEqual(unrouted[0].peers, ["ssh://peer-a", "ssh://peer-b"]);
+  assert.deepEqual(t.peer.sent, []);
+  assert.deepEqual(t.localSends, []);
+  assert.equal(t.notifyStore.writes, 0);
+});
+
+it("peer routing: an unreachable peer is asked once, logged, and leaves this daemon's report unaffected", async () => {
+  const t = peerCleanup({
+    worktrees: [
+      { id: "wks_remote", labels: { project: "demo" } },
+      { id: "wks_local", labels: { "paseo.parent-agent-id": "pm-local-0001" } },
+    ],
+    peers: { "ssh://peer-down": "down" },
+    peerHosts: ["ssh://peer-down"],
+  });
+  const { result, entries } = await t.sweep();
+  assert.equal(result.error, null);
+  assert.deepEqual(t.localSends.map((send) => send.agentId), ["pm-local-0001"]);
+  assert.match(t.localSends[0]!.text, /wks_local/);
+  assert.doesNotMatch(t.localSends[0]!.text, /wks_remote/);
+  assert.deepEqual(t.notifyStore.entries.get("wks_local"), { at: new Date(NOW).toISOString(), agentId: "pm-local-0001", status: "sent" });
+  assert.equal(t.notifyStore.entries.has("wks_remote"), false);
+
+  assert.deepEqual(t.peer.connects, ["ssh://peer-down"]);
+  const peerErrors = entries.filter((entry) => entry.action === "notify-peer-error");
+  assert.deepEqual(peerErrors, [{ action: "notify-peer-error", peer: "ssh://peer-down", query: "connect", error: "cannot connect: ssh: Could not resolve hostname peer-down" }]);
+  const unrouted = entries.find((entry) => entry.action === "notify-unrouted");
+  assert.equal(unrouted?.workspaceId, "wks_remote");
+  assert.match(unrouted?.owner, /owner unknown on peers: no role=pm agent on the peers that answered, and unreachable: ssh:\/\/peer-down$/);
+  assert.deepEqual(unrouted?.peerErrors, { "ssh://peer-down": peerErrors[0]!.error });
 });

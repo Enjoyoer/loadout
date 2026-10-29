@@ -85,10 +85,11 @@ function parseMetadata(raw: string | null): { value: WorktreeMetadata | null; re
   }
 }
 
-// Ignored output the no-PR path may discard: dependency, cache, and coverage output a review or build recreates.
+// Ignored output the no-PR path and workspace cleanup's agentless worktrees may discard: dependency, cache, and
+// coverage output a review or build recreates.
 // Build output names (dist, build) are not on the list: projects commit or ignore real files under them.
 const REGENERABLE_SEGMENTS = new Set(["node_modules", "__pycache__", ".pytest_cache", ".venv", ".turbo", ".next", ".cache", "coverage"]);
-// An ignored file with one of these basenames blocks the no-PR path, even inside a regenerable directory.
+// An ignored file with one of these basenames blocks those paths, even inside a regenerable directory.
 const SENSITIVE_BASENAME = /^\.env|\.pem$|\.key$|^id_(?:rsa|ed25519|ecdsa)/i;
 // The same names as git pathspecs, for listing ignored files inside regenerable directories.
 const SENSITIVE_PATHSPECS = [".env*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "id_ecdsa*"].map((glob) => `:(glob,icase)**/${glob}`);
@@ -233,8 +234,13 @@ async function inspectWorktree(directory: string, deps: MergeCheckDeps, allowReg
   return { ok: true, gitDir, branch };
 }
 
-export async function checkMerged(directory: string, deps: MergeCheckDeps): Promise<MergeCheckResult> {
-  const inspection = await inspectWorktree(directory, deps);
+/**
+ * `allowRegenerable` applies the no-PR path's ignored-file rule (regenerable output is not dirty, a sensitive
+ * name or a quoted path is). Only workspace cleanup's agentless worktrees set it; the merged worker path does
+ * not, so it still counts every ignored file as dirty.
+ */
+export async function checkMerged(directory: string, deps: MergeCheckDeps, options: { allowRegenerable?: boolean } = {}): Promise<MergeCheckResult> {
+  const inspection = await inspectWorktree(directory, deps, options.allowRegenerable === true);
   if (!inspection.ok) return { merged: false, branch: inspection.branch, base: null, reason: inspection.reason };
   const { gitDir, branch } = inspection;
 
