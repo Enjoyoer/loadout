@@ -1,0 +1,13 @@
+cache-aware-autocompact [cache-aware-autocompact] {"action":"timer-started","agentId":"<agent-id>","key":"<agent-id>:fake-turn-0","delayMinutes":1,"strictnessTier":"safe"}
+cache-aware-autocompact [cache-aware-autocompact] {"action":"timer-started","agentId":"<agent-id>","key":"<agent-id>:fake-turn-0","delayMinutes":1,"strictnessTier":"safe"}
+usage-limit-auto-resume [usage-limit-auto-resume] detected kind=usage agentId=<agent-id> recordId=resume:6a9d34dd3d4e6dd4aace9d8ec582862a sourceTurnId=fake-turn-0 input=system-message notBefore=2026-10-29T15:03:59.549Z
+cache-aware-autocompact [cache-aware-autocompact] {"action":"would-compact","agentId":"<agent-id>","reason":"safe-boundary; disarmed","command":"/compact","strictnessTier":"safe"}
+cache-aware-autocompact [cache-aware-autocompact] {"action":"timer-started","agentId":"<agent-id>","key":"<agent-id>:fake-turn-1","delayMinutes":1,"strictnessTier":"safe"}
+usage-limit-auto-resume [usage-limit-auto-resume] resume-sent agentId=<agent-id> messageId=resume:6a9d34dd3d4e6dd4aace9d8ec582862a:attempt:1
+usage-limit-auto-resume [usage-limit-auto-resume] resume-turn-started agentId=<agent-id> turnId=fake-turn-1
+usage-limit-auto-resume [usage-limit-auto-resume] resume-completed agentId=<agent-id> turnId=fake-turn-1
+cache-aware-autocompact [cache-aware-autocompact] {"action":"timer-started","agentId":"<agent-id>","key":"<agent-id>:fake-turn-0","delayMinutes":1,"strictnessTier":"safe"}
+history-cwd-fallback [history-cwd-fallback] linked agent=<agent-id> cwd="<scratch>/live-home-0.14.0/worktrees/fixture/deleted" holdSeconds=6
+merged-worker-archiver [merged-worker-archiver] {"action":"would-archive","workspaceId":"<workspace-or-project-id>","name":"deleted","agentIds":[],"branch":null,"base":null,"reason":"empty-disposable-workspace"}
+history-cwd-fallback [history-cwd-fallback] removed cwd="<scratch>/live-home-0.14.0/worktrees/fixture/deleted"
+cache-aware-autocompact [cache-aware-autocompact] {"action":"timer-started","agentId":"<agent-id>","key":"<agent-id>:fake-turn-0","delayMinutes":1,"strictnessTier":"safe"}

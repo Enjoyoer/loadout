@@ -1,0 +1,100 @@
+{
+  "cache-aware-autocompact": {
+    "original": {
+      "typecheck": "pass",
+      "tests": 79,
+      "failed": 0,
+      "build": "pass"
+    },
+    "0.14.0": {
+      "typecheck": "pass",
+      "tests": 79,
+      "failed": 0,
+      "build": "pass"
+    }
+  },
+  "history-cwd-fallback": {
+    "original": {
+      "typecheck": "pass",
+      "tests": "no test script",
+      "failed": 0,
+      "build": "pass"
+    },
+    "0.14.0": {
+      "typecheck": "pass",
+      "tests": "no test script",
+      "failed": 0,
+      "build": "pass"
+    }
+  },
+  "merged-worker-archiver": {
+    "original": {
+      "typecheck": "pass",
+      "tests": 97,
+      "failed": 0,
+      "build": "pass"
+    },
+    "0.14.0": {
+      "typecheck": "pass",
+      "tests": 97,
+      "failed": 0,
+      "build": "pass"
+    }
+  },
+  "orphan-project-sweeper": {
+    "original": {
+      "typecheck": "pass",
+      "tests": 30,
+      "failed": 0,
+      "build": "pass"
+    },
+    "0.14.0": {
+      "typecheck": "pass",
+      "tests": 30,
+      "failed": 0,
+      "build": "pass"
+    }
+  },
+  "pi-fast-toggle": {
+    "original": {
+      "typecheck": "pass",
+      "tests": 17,
+      "failed": 0,
+      "build": "not defined"
+    },
+    "0.14.0": {
+      "typecheck": "pass",
+      "tests": 17,
+      "failed": 0,
+      "build": "not defined"
+    }
+  },
+  "usage-limit-auto-resume": {
+    "original": {
+      "typecheck": "pass",
+      "tests": 99,
+      "failed": 0,
+      "build": "pass"
+    },
+    "0.14.0": {
+      "typecheck": "pass",
+      "tests": 99,
+      "failed": 0,
+      "build": "pass"
+    }
+  },
+  "workspace-folder-title": {
+    "original": {
+      "typecheck": "pass",
+      "tests": "no test script",
+      "failed": 0,
+      "build": "pass"
+    },
+    "0.14.0": {
+      "typecheck": "pass",
+      "tests": "no test script",
+      "failed": 0,
+      "build": "pass"
+    }
+  }
+}

@@ -1,0 +1,141 @@
+{
+  "packages": {
+    "0.13.0": {
+      "server": {
+        "version": "0.13.0",
+        "jsFiles": 513,
+        "packageJsonSha256": "e40a4141f614a71c470308812493b5ad342ff60cf8f01d38f57d38b547a80bd1"
+      },
+      "cli": {
+        "version": "0.13.0",
+        "jsFiles": 150,
+        "packageJsonSha256": "9ae02238504c24957285a7718f7eb66095a65eb9a63874f89de3224ea44c5098"
+      },
+      "client": {
+        "version": "0.13.0",
+        "jsFiles": 23,
+        "packageJsonSha256": "152c29c8a6bfee86cb0043ae2c160821e93d17aa6a502c220dbb0372e5966e2a"
+      },
+      "plugin": {
+        "version": "0.13.0",
+        "jsFiles": 30,
+        "packageJsonSha256": "0c3c897ed6ca10bdcc06747c5575ae263c68cdf2d834c0a902d59a74c2dfba16"
+      },
+      "protocol": {
+        "version": "0.13.0",
+        "jsFiles": 75,
+        "packageJsonSha256": "5d60ca95eaf2108573622a5c0dccae5faaa7bcf996346b70beb2be22fef29962"
+      }
+    },
+    "0.14.0": {
+      "server": {
+        "version": "0.14.0",
+        "jsFiles": 525,
+        "packageJsonSha256": "35a7b65f0855c0283a853b64a50a475b0bd6e24ba33fc09db9fdfcf93f36b74a"
+      },
+      "cli": {
+        "version": "0.14.0",
+        "jsFiles": 150,
+        "packageJsonSha256": "94c8744667b1065418f6aa8b723ae17aa71efc9128f8f256ea6d8061f7bbfc89"
+      },
+      "client": {
+        "version": "0.14.0",
+        "jsFiles": 23,
+        "packageJsonSha256": "cbcf9ac0dbe03f7db2f510d49a629b70959765be9384a9aa1f53e4a7bf93f0d5"
+      },
+      "plugin": {
+        "version": "0.14.0",
+        "jsFiles": 31,
+        "packageJsonSha256": "b5415e2bac7905194a13d245dd496318eb024b25cf7da8eb92120ba59b4eec69"
+      },
+      "protocol": {
+        "version": "0.14.0",
+        "jsFiles": 77,
+        "packageJsonSha256": "91075ab569e32fd5418fef727a51fa60c9d40f8b2f720ef033d90ce4b33f0397"
+      }
+    }
+  },
+  "bundle_comparison": [
+    {
+      "package": "client",
+      "commonJsFiles": 23,
+      "byteIdentical": 20,
+      "different": 3
+    },
+    {
+      "package": "plugin",
+      "commonJsFiles": 30,
+      "byteIdentical": 27,
+      "different": 3
+    },
+    {
+      "package": "protocol",
+      "commonJsFiles": 75,
+      "byteIdentical": 70,
+      "different": 5
+    },
+    {
+      "package": "cli",
+      "commonJsFiles": 150,
+      "byteIdentical": 150,
+      "different": 0
+    },
+    {
+      "package": "server",
+      "commonJsFiles": 507,
+      "byteIdentical": 420,
+      "different": 87
+    }
+  ],
+  "sha256Samples": [
+    {
+      "package": "client",
+      "path": "dist/index.js",
+      "0.13.0": "5bcd9855f3b41b2347da8eb7b373d708de57c80c49155725b832ab83cd4d68de",
+      "0.14.0": "bc6b3fc31ab502c08efb72540e546adb988c627286e6509f3c21ef8ebb818e67"
+    },
+    {
+      "package": "client",
+      "path": "dist/daemon-client.js",
+      "0.13.0": "4c6a091c87c71dea877cde961649f359a7872a09e1506610fd116fd0fc7a254d",
+      "0.14.0": "a75d3ed623b110635b2393d753af2a46a998263bd9ee1a828c9e59e10cd9fc00"
+    },
+    {
+      "package": "plugin",
+      "path": "dist/index.js",
+      "0.13.0": "86d27643283b44f30ea7cafc3312447fc024ea99ca2b2683f6ad0f2e4df9b525",
+      "0.14.0": "86d27643283b44f30ea7cafc3312447fc024ea99ca2b2683f6ad0f2e4df9b525"
+    },
+    {
+      "package": "plugin",
+      "path": "dist/client/index.js",
+      "0.13.0": "61d591223486dc5cc291523d5b31bf7d6a2b406930603a8f8327ab22f9da612a",
+      "0.14.0": "61d591223486dc5cc291523d5b31bf7d6a2b406930603a8f8327ab22f9da612a"
+    },
+    {
+      "package": "plugin",
+      "path": "dist/server/index.js",
+      "0.13.0": "a3f27ce52978e02abb005156351d9b01c5dacfb26cd7e54be821f8587804a8fa",
+      "0.14.0": "e7da0acb8c8d3f2d60d41640b3371b9f8889369369be868e22304b5dfa67e73c"
+    },
+    {
+      "package": "cli",
+      "path": "dist/index.js",
+      "0.13.0": "8620d03c3e7e6776c3bfc4d22a8875f92209a563612fe7cda63dea7512f83c09",
+      "0.14.0": "8620d03c3e7e6776c3bfc4d22a8875f92209a563612fe7cda63dea7512f83c09"
+    },
+    {
+      "package": "server",
+      "path": "dist/server/server/exports.js",
+      "0.13.0": "5b5e75280ce00063df150220c8af681ba7528737a3260b62b6db2a758e4ffaf7",
+      "0.14.0": "5b5e75280ce00063df150220c8af681ba7528737a3260b62b6db2a758e4ffaf7"
+    }
+  ],
+  "desktop": {
+    "name": "@getpaseo/desktop",
+    "version": "0.14.0",
+    "asarSha256": "788f0b3e475c70fd620bb902ad780c4527c901dfb833b45565aa3f1c745bb6cc",
+    "archiveSha256": "237381ec7676d21dd4a06f5b096835e686f877ac4bbc3e6cbbf316341c6d0165"
+  },
+  "cliRuntimeVersion": "0.14.0"
+}

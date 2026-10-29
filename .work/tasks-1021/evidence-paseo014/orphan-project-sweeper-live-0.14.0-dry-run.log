@@ -1,0 +1,7 @@
+[orphan-project-sweeper] startup sweep begin projects=4 activeWorkspaces=3
+[orphan-project-sweeper] decision=skip source=cli-dry-run projectId=<workspace-or-project-id> name="fixture-project" path="<scratch>/fixture-project" reason=active-workspaces activeWorkspaces=1
+[orphan-project-sweeper] decision=skip source=cli-dry-run projectId=<workspace-or-project-id> name="deleted" path="<scratch>/live-home-0.14.0/worktrees/fixture/deleted" reason=active-workspaces activeWorkspaces=1
+[orphan-project-sweeper] decision=would-delete source=cli-dry-run projectId=<workspace-or-project-id> name="orphan-fixture" path="<scratch>/orphan-fixture" reason=orphaned(no-active-workspace,path-missing)
+[orphan-project-sweeper] decision=skip source=cli-dry-run projectId=<workspace-or-project-id> name="git-fixture-0.14.0" path="<scratch>/git-fixture-0.14.0" reason=active-workspaces activeWorkspaces=1
+[orphan-project-sweeper] startup sweep end deleted=0 wouldDelete=1
+[orphan-project-sweeper] stopped; timers cleared

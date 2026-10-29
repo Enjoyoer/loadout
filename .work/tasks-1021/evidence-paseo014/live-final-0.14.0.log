@@ -1,0 +1,21 @@
+daemon version 0.14.0; isolated home; speech features false; background workspaces true
+loaded merged-worker-archiver running
+loaded orphan-project-sweeper running
+loaded cache-aware-autocompact running
+loaded usage-limit-auto-resume running
+loaded pi-fast-toggle running
+loaded history-cwd-fallback running
+loaded workspace-folder-title running
+workspace-folder-title PASS directory title
+completed turn; usage {"inputTokens":1,"outputTokens":1,"contextWindowUsedTokens":1000}
+pi-fast-toggle PASS Fast label and thinking high confirmed
+pi-fast-toggle PASS stale model rejected
+heartbeat projection: old helper missed live row; updated helper binds stable system ID
+usage-limit-auto-resume PASS recognized failure, same-agent resend, done
+history-cwd-fallback PASS archived history read, temporary link removed
+merged-worker-archiver PASS live dry-run
+orphan-project-sweeper PASS live dry-run
+cache-aware-autocompact PASS ended-turn timeline read, timer, would-compact
+final plugin catalog: 7 running
+message receipts present 4
+speech model directory entries []
