@@ -64,16 +64,17 @@ If a paste fills nothing, clear the field, stop and report.
 
 ### b. Codex app Browser Use (its own virtual clipboard)
 
-The error `Browser Use virtual clipboard has no data to paste` means this path. Bridge the OS clipboard into the tab clipboard inside the node REPL, and never print, log, return or screenshot the value.
+The error `Browser Use virtual clipboard has no data to paste` means this path. Bridge the OS clipboard into the tab clipboard inside the node REPL, and never print, log or return the value. The username screenshot below is taken before the password fill; section 2 still governs all page captures.
 
 - Run `bw-paste` with the agent's shell tool (`exec_command`), never inside the REPL: the REPL may not be able to start it.
 - Read the OS clipboard in the REPL with `execFileSync` from `node:child_process`: on Windows `execFileSync('powershell',['-NoProfile','-Command','Get-Clipboard -Raw']).toString().replace(/\r?\n$/,'')`, on Mac `pbpaste`.
 - Probe first with no secret: set the clipboard to `probe123`. In one REPL call, read it as above into `v`, run `tab.clipboard.writeText(v)`, and output only whether `readText()` equals `probe123`.
-- Then for real: run `bw-paste`, then in one REPL call bridge, clear the field and check length 0, click it, `pressKey` `Control_L+v` (`Meta+v` on Mac), check its length is above 0, and output only `pasted` or `empty` (on `empty`, stop and report).
-- Paste success is decided only by length: 0 before, above 0 after; for the username, also match the expected username's length when known.
-- A site-format check is optional: use the input's `el.checkValidity()` or `el.validity.valid`; never pass a hand-written regex through an escaped string.
+- Before the username paste, clear the field and check length 0. If its readback is already exactly `<redacted>`, its state is unknown: clear it again and check by screenshot that it is empty before pasting.
+- Then for real: run `bw-paste`, then in one REPL call bridge, clear the field and check length 0 (or verify it empty as above), click it, `pressKey` `Control_L+v` (`Meta+v` on Mac), check its length is above 0, and output only `pasted` or `empty` (on `empty`, stop and report).
+- Paste success is decided by length: 0 before, above 0 after; for the username, also match the expected username's length when known, unless the readback is exactly `<redacted>`. That literal readback counts as filled and changed from the verified empty state; never compare it to the expected username, its length or its format. Confirm the username visually with one screenshot of the form before the password step.
+- A site-format check is optional, except for a username readback exactly `<redacted>`: use the input's `el.checkValidity()` or `el.validity.valid`; never pass a hand-written regex through an escaped string.
 - A failed format check alone is a format mismatch, not a clipboard or `bw-paste` failure; report it and do not retry the paste for it.
-- For the password, do the whole sequence in that one call, so no other call sees the filled field: bridge, clear the field and check length 0, click, paste, check that the password and username lengths are above 0 and the password grew (numbers only), then press Enter or click the submit locator.
+- For the password, do the whole sequence in that one call, so no other call sees the filled field: bridge, clear the field and check length 0, click, paste, check that the password and username lengths are above 0 and the password grew (numbers only), then press Enter or click the submit locator. A password readback exactly `<redacted>` counts as above 0 for the growth check only when its pre-paste state was verified empty. From the password fill until after submit and the section 2 length check, take no snapshot or screenshot.
 - Wrap all of it in `try`, and in `finally` do two things. First, `tab.clipboard.writeText('')`. Second, if the submit did not happen, set the password field to `''` and confirm its length is 0; if that fails, close the tab.
 - Output only `submitted`, `cleared` or `closed`. Then run the section 2 length check before any snapshot.
 - Verified live on Windows on 2026-10-17 and again on 2026-10-18 (lengths matched, clipboard empty after 20 seconds).
