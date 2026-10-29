@@ -2,6 +2,6 @@
   "id": "pi-fast-toggle",
   "description": "Composer Fast shortcuts and per-agent thinking level menu",
   "requirements": {
-    "paseo": ">=0.11.1 <0.14.0"
+    "paseo": ">=0.11.1 <0.15.0"
   }
 }

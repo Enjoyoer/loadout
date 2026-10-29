@@ -1,6 +1,6 @@
 # Pi Fast toggle
 
-Per-agent composer controls for **Paseo >=0.11.1 <0.14.0**. Fast requests a service tier for eligible Pi agents. Effort offers the selected model's advertised thinking levels for any provider. Neither changes models, global provider defaults, prompts, or other agents. Fast never changes thinking; Effort never changes labels.
+Per-agent composer controls for **Paseo >=0.11.1 <0.15.0**. Fast requests a service tier for eligible Pi agents. Effort offers the selected model's advertised thinking levels for any provider. Neither changes models, global provider defaults, prompts, or other agents. Fast never changes thinking; Effort never changes labels.
 
 ## Keyboard shortcuts: desktop and web only
 

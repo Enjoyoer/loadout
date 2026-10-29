@@ -2,7 +2,7 @@
 
 Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.pid` runtime listen metadata. An explicit non-default `PASEO_HOME` without valid endpoint metadata refuses to connect instead of falling back to another daemon. Invalid explicit hosts also fail closed. The standard local endpoint is a fallback only for an unset home or `~/.paseo`.
 
-Server-only Paseo plugin (Paseo >=0.10.3 <0.14.0) that deletes an orphaned Paseo project row.
+Server-only Paseo plugin (Paseo >=0.10.3 <0.15.0) that deletes an orphaned Paseo project row.
 A project is orphaned only when all of these hold at evaluation time:
 
 1. it has zero active (non-archived) workspaces, joined on `projectId`, background workspaces
@@ -71,7 +71,7 @@ unversioned export, for two reasons:
 
 Because that internal surface can change in any minor release, and a plugin that
 deletes rows must fail closed on an unknown Paseo version, `paseo-plugin.json` pins
-`"paseo": ">=0.10.3 <0.14.0"` and `package.json` pins `@getpaseo/client`,
+`"paseo": ">=0.10.3 <0.15.0"` and `package.json` pins `@getpaseo/client`,
 `@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.13.0`. `DaemonClient`,
 `listProjects()`, `fetchWorkspaces()`, and `removeProject()` keep the same signatures
 from 0.9.2 to 0.13.0.

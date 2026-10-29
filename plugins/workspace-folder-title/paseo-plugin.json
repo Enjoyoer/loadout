@@ -2,6 +2,6 @@
   "id": "workspace-folder-title",
   "description": "Titles new workspaces with the basename of their working directory instead of a bare git branch name.",
   "requirements": {
-    "paseo": ">=0.10.3 <0.14.0"
+    "paseo": ">=0.10.3 <0.15.0"
   }
 }

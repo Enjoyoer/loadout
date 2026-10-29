@@ -1,6 +1,6 @@
 # workspace-folder-title
 
-Server-only Paseo plugin for Paseo >=0.10.3 <0.14.0. It gives a new workspace the basename of its working directory instead of the bare git branch name that Paseo may choose by default.
+Server-only Paseo plugin for Paseo >=0.10.3 <0.15.0. It gives a new workspace the basename of its working directory instead of the bare git branch name that Paseo may choose by default.
 
 ## What it does
 

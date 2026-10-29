@@ -2,7 +2,7 @@
 
 Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.pid` runtime listen metadata. An explicit non-default `PASEO_HOME` without valid endpoint metadata refuses to connect instead of falling back to another daemon. Invalid explicit hosts also fail closed. The standard local endpoint is a fallback only for an unset home or `~/.paseo`.
 
-Server-only Paseo plugin for Paseo >=0.10.3 <0.14.0. It archives worker **worktree** workspaces,
+Server-only Paseo plugin for Paseo >=0.10.3 <0.15.0. It archives worker **worktree** workspaces,
 and through Paseo's own workspace archive the agents in them, once the worker branch
 is merged into its base. It is **event-driven**: every finished agent turn (PM or
 worker) evaluates the worktrees of that agent's project and repository within seconds.
@@ -531,7 +531,7 @@ from `PASEO_HOST`, then `$PASEO_HOME/paseo.pid`, then `127.0.0.1:6767` only for 
 default home. A non-default home without valid listen metadata refuses to connect, and
 that sweep logs `sweep-aborted`.
 
-`paseo-plugin.json` pins `"paseo": ">=0.10.3 <0.14.0"` and `package.json` pins
+`paseo-plugin.json` pins `"paseo": ">=0.10.3 <0.15.0"` and `package.json` pins
 `@getpaseo/client`, `@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.13.0`
 (0.4.0, from 0.11.1, for `supportsBackgroundWorkspaces()`; the same pins as
 `orphan-project-sweeper`). The 0.13.0 client works with older daemons: the workspace

@@ -1,6 +1,6 @@
 # history-cwd-fallback
 
-Server-only Paseo plugin for Paseo >=0.10.3 <0.14.0. It lets an archived agent whose Paseo worktree was deleted open its history again.
+Server-only Paseo plugin for Paseo >=0.10.3 <0.15.0. It lets an archived agent whose Paseo worktree was deleted open its history again.
 
 ## The problem
 
