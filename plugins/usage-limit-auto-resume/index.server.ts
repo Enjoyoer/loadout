@@ -28,6 +28,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
   const settings = server.registerSettings(defineSettings({ id: SETTINGS_ID, scope: "host", version: SETTINGS_VERSION, schema: ConfigSchema }));
   const store = new ResumeStore();
   let timer: NodeJS.Timeout | null = null;
+  let startupInspectionTimer: NodeJS.Timeout | null = null;
   let running = false;
   // Set by cleanup. From then on nothing schedules or starts a sweep: not the startup chain, an interval tick, or a
   // hook handler that is still finishing.
@@ -1080,13 +1081,13 @@ export default function contribute(server: PluginServerContext, openClient: () =
     })().catch((error) => failed("close-handler-failed", error)));
   });
 
-  // Poll even when settings are invalid or unreadable at startup; every sweep reads them again. A cleanup that runs
-  // before the first settings read resolves leaves no interval behind.
-  track(config().catch(() => null).then(async (currentConfig) => {
+  async function inspectDaemonAtStartup(): Promise<void> {
     if (stopped) return;
+    let connected = false;
     let checking014 = false;
     try {
       const api = await acquire();
+      connected = true;
       if (stopped) { await release(); return; }
       checking014 = /^0\.14\./.test(api.daemonVersion?.() ?? "");
       if (checking014) {
@@ -1099,8 +1100,24 @@ export default function contribute(server: PluginServerContext, openClient: () =
       }
     } catch {
       if (!stopped && checking014) console.error('[usage-limit-auto-resume] WARNING: daemon config could not be read at startup; verify agents.idleRuntimeCleanup=false on Paseo 0.14 so parked retries cannot be closed automatically.');
+    } finally {
+      // The supervisor publishes its listen address after plugins start. A missing endpoint is not a completed
+      // inspection: retry until the first connection succeeds, then keep the version-gated read/warning one-time.
+      if (!stopped && !connected) {
+        startupInspectionTimer = setTimeout(() => {
+          startupInspectionTimer = null;
+          track(inspectDaemonAtStartup());
+        }, 1_000);
+        startupInspectionTimer.unref?.();
+      }
     }
-    if (stopped) { await release(); return; }
+  }
+
+  // Poll even when settings are invalid or unreadable at startup; every sweep reads them again. A cleanup that runs
+  // before the first settings read resolves leaves no interval behind.
+  track(config().catch(() => null).then((currentConfig) => {
+    if (stopped) return;
+    track(inspectDaemonAtStartup());
     timer = setInterval(() => { if (!stopped) track(sweep()); }, (currentConfig ?? ConfigSchema.parse({})).pollIntervalSeconds * 1000);
     timer.unref?.();
     track(sweep());
@@ -1114,6 +1131,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
     removePermission();
     removeClosed();
     if (timer) clearInterval(timer);
+    if (startupInspectionTimer) clearTimeout(startupInspectionTimer);
     void release();
   };
   // Cleanup stops new sweeps and hooks but returns at once, as before. idle() resolves once the startup chain, sweep
