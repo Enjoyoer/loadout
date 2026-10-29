@@ -1,7 +1,7 @@
 {
   "name": "workspace-folder-title",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Paseo server-only plugin that titles new workspaces with their folder name.",
   "type": "module",
   "scripts": {

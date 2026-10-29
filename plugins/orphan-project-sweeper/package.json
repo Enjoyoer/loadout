@@ -1,7 +1,7 @@
 {
   "name": "orphan-project-sweeper",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Paseo server-only plugin that removes orphaned project rows (no active workspace, path missing on disk).",
   "type": "module",
   "scripts": {
