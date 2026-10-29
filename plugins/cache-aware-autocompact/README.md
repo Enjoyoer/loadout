@@ -1,6 +1,8 @@
 # cache-aware-autocompact
 
-Server-only Paseo plugin for Paseo >=0.10.3 <0.14.0, built against the exact 0.11.1 `@getpaseo/*` packages. It starts one timer per ended Claude, Codex, or supported Pi turn and, after a configurable cache-preserving delay, evaluates the latest idle snapshot. The default is **dry-run**: it logs `would-compact` decisions and never sends anything. Only `config.armed=true` permits a `/compact` send.
+Server-only Paseo plugin for Paseo >=0.10.3 <0.15.0, built against the exact 0.11.1 `@getpaseo/*` packages. It starts one timer per ended Claude, Codex, or supported Pi turn and, after a configurable cache-preserving delay, evaluates the latest idle snapshot. The default is **dry-run**: it logs `would-compact` decisions and never sends anything. Only `config.armed=true` permits a `/compact` send.
+
+On Paseo 0.14, completed heartbeat timeline rows also count as turn inputs. Their stable system IDs bind recovery to the scheduled turn and let newer scheduled work supersede an older input. Earlier user and agent-message input handling is retained.
 
 ## Design
 

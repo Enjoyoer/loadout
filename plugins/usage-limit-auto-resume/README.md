@@ -4,6 +4,8 @@ Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.
 
 This server plugin keeps the existing usage-limit resume path (five-hour default) and adds a separate retry path for completed turns whose final assistant message is a transient provider error. Both paths obey the host `armed` setting and the `noresume=true` label. The plugin does not send while unarmed.
 
+On Paseo 0.14, completed heartbeat timeline rows also count as turn inputs. Their stable system IDs bind recovery to the scheduled turn and let newer scheduled work supersede an older input. Earlier user and agent-message input handling is retained.
+
 ## Transient retry
 
 The final assistant text must start with `API Error:` and contain `rate limit`, `rate_limit`, `temporarily limiting requests`, `overloaded`, `429`, or `529`. The exact final text `Selected model is at capacity` also qualifies. A normal answer that discusses these terms does not qualify. Explicit usage-limit failures retain the five-hour path.
