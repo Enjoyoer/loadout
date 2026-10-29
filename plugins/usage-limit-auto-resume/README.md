@@ -6,6 +6,14 @@ This server plugin keeps the existing usage-limit resume path (five-hour default
 
 On Paseo 0.14, completed heartbeat timeline rows also count as turn inputs. Their stable system IDs bind recovery to the scheduled turn and let newer scheduled work supersede an older input. Earlier user and agent-message input handling is retained.
 
+## Paseo 0.14 rollout requirement
+
+Paseo 0.14 requires `agents.idleRuntimeCleanup` set to `false` in the daemon's `config.json` to preserve parked retries. Its default is `true` when unset, and its one-hour collector emits the same `agent.closed` event as an intentional close or kill. A quota retry parked for five hours can therefore be canceled before its scheduled attempt. The plugin cannot distinguish these closes or exempt an existing provider session from collection. Intentional close, kill and archive cancellation stays in place.
+
+Config must install 0.14 first, then write `{"agents":{"idleRuntimeCleanup":false}}` merged into the existing config before starting that daemon with this plugin. Paseo 0.13 rejects that key, so do not add it before the 0.14 installation; remove it or restore the pre-upgrade config before rollback. This plugin never edits daemon config. At startup it reads the effective daemon config once and logs one loud warning if cleanup is enabled, including when the persisted key is unset. A failed config read warns that the condition could not be verified. Explicit `false` is quiet. The connected daemon version gates this inspection to 0.14, so 0.13 gets neither this config read nor a new warning. Later config changes require an operator check or plugin reload to repeat the startup check.
+
+Upstream 0.14 contracts: [close event and before hooks](https://github.com/getpaseo/paseo/blob/v0.14.0/packages/plugin/src/server/lifecycle.ts#L72), [collector candidates and provider-owned veto](https://github.com/getpaseo/paseo/blob/v0.14.0/packages/server/src/server/agent/agent-manager.ts#L1846), [eligibility fields](https://github.com/getpaseo/paseo/blob/v0.14.0/packages/server/src/server/agent/agent-manager.ts#L1887), [shared close path](https://github.com/getpaseo/paseo/blob/v0.14.0/packages/server/src/server/agent/agent-manager.ts#L1903), [identical emitted event](https://github.com/getpaseo/paseo/blob/v0.14.0/packages/server/src/server/agent/agent-manager.ts#L4051), and [daemon-owned protection](https://github.com/getpaseo/paseo/blob/v0.14.0/packages/server/src/server/bootstrap.ts#L1482). No plugin keep-alive, pin or collector eligibility flag is exposed on these surfaces.
+
 ## Transient retry
 
 The final assistant text must start with `API Error:` and contain `rate limit`, `rate_limit`, `temporarily limiting requests`, `overloaded`, `429`, or `529`. The exact final text `Selected model is at capacity` also qualifies. A normal answer that discusses these terms does not qualify. Explicit usage-limit failures retain the five-hour path.

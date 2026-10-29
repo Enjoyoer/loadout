@@ -18,7 +18,7 @@ const errorMessage = (error: unknown) => error instanceof Error ? error.message 
 // Thrown before anything reaches the socket, so the message was never delivered.
 const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/.test(errorMessage(error));
 
-type OpenedClient = PaseoClient & { agentSettings?: AgentSettingsPort };
+type OpenedClient = PaseoClient & { agentSettings?: AgentSettingsPort; daemonVersion?: () => string | null };
 
 // Paseo forks every plugin from the daemon worker, so the parent process is the daemon run: a daemon restart replaces
 // it, a plugin reload does not.
@@ -1060,8 +1060,9 @@ export default function contribute(server: PluginServerContext, openClient: () =
     })().catch((error) => failed("permission-handler-failed", error)));
   });
 
-  // Paseo sends agent.closed for an explicit close or kill and for every agent when the daemon shuts down; nothing in
-  // the event tells them apart. The close is stored for the agent, with this daemon run, whether or not it has a record
+  // Paseo sends agent.closed for an explicit close or kill and for every agent when the daemon shuts down. In 0.14
+  // automatic idle collection emits it too, with no distinguishing field; operators must disable that collector.
+  // The close is stored for the agent, with this daemon run, whether or not it has a record
   // yet, and closeGate decides on every later sweep: work of this agent is held, and ended once this run outlives the
   // close, while a new daemon run clears it.
   const removeClosed = server.on("agent.closed", (event) => {
@@ -1081,8 +1082,25 @@ export default function contribute(server: PluginServerContext, openClient: () =
 
   // Poll even when settings are invalid or unreadable at startup; every sweep reads them again. A cleanup that runs
   // before the first settings read resolves leaves no interval behind.
-  track(config().catch(() => null).then((currentConfig) => {
+  track(config().catch(() => null).then(async (currentConfig) => {
     if (stopped) return;
+    let checking014 = false;
+    try {
+      const api = await acquire();
+      if (stopped) { await release(); return; }
+      checking014 = /^0\.14\./.test(api.daemonVersion?.() ?? "");
+      if (checking014) {
+        // Read the effective setting, never patch it. 0.14 resolves an absent persisted key to true. The host version
+        // gate keeps older daemons on their existing path without attempting the newer config inspection.
+        const { config: daemonConfig } = await api.config.get();
+        if (!stopped && daemonConfig.idleRuntimeCleanup !== false) {
+          console.error('[usage-limit-auto-resume] WARNING: agents.idleRuntimeCleanup is enabled (also the Paseo 0.14 default when unset). Parked retries can be closed automatically and canceled as intentional stops. Config must set agents.idleRuntimeCleanup=false after installing 0.14 and before starting it with this plugin. This plugin only reads daemon config.');
+        }
+      }
+    } catch {
+      if (!stopped && checking014) console.error('[usage-limit-auto-resume] WARNING: daemon config could not be read at startup; verify agents.idleRuntimeCleanup=false on Paseo 0.14 so parked retries cannot be closed automatically.');
+    }
+    if (stopped) { await release(); return; }
     timer = setInterval(() => { if (!stopped) track(sweep()); }, (currentConfig ?? ConfigSchema.parse({})).pollIntervalSeconds * 1000);
     timer.unref?.();
     track(sweep());
