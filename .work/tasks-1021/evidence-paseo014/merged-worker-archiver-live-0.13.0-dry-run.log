@@ -1,3 +1,0 @@
-[merged-worker-archiver] {"action":"would-archive","workspaceId":"<workspace-or-project-id>","name":"fixture-worker","agentIds":["<agent-id>"],"branch":"fixture-worker","base":"main","reason":"merged-ancestry(refs/heads/main)"}
-[merged-worker-archiver] {"action":"skip","workspaceId":"<workspace-or-project-id>","name":"fixture-project","agentIds":["<agent-id>","<agent-id>","<agent-id>"],"branch":null,"base":null,"reason":"non-archived-agents"}
-[merged-worker-archiver] sweep-done {"trigger":"cli-dry-run","mode":"dry-run","cleanupMode":"dry-run","cleanup":{"skip":1},"reports":[],"evaluated":3,"nonCandidates":1,"counts":{"archive":1,"nonCandidate":1,"skip":1},"archived":[],"deferred":0,"backoff":0,"pendingMerge":[]}

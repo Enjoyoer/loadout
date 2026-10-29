@@ -1,9 +1,0 @@
-.................................................................................................................s....................................................s..................................................................................
-----------------------------------------------------------------------
-Ran 249 tests in 139.894s
-
-OK (skipped=2)
-{"apply": "verified", "state": "<fixture-temp>/tmpdocy8utk/state.json", "rollback": "use rollback --state with this same file", "ui_preferences": "not applied by daemon config; apply in each UI client"}
-{"rollback": "verified", "runtime_install_retained": true, "config": "<fixture-temp>/tmpdocy8utk/daemon/config.json"}
-{"apply": "verified", "state": "<fixture-temp>/tmpnfj50onq/state.json", "rollback": "use rollback --state with this same file", "ui_preferences": "not applied by daemon config; apply in each UI client"}
-{"rollback": "verified", "runtime_install_retained": true, "config": "<fixture-temp>/tmpnfj50onq/daemon/config.json"}
