@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { defaultConfig } from "../server/config.ts";
 import { Sweeper, type ArchiverApi } from "../server/sweeper.ts";
 import type { AgentView, WorkspaceView } from "../server/types.ts";
-import { agent, fakeFs, fakePaseoCli, fakeRunner, LONG_AGO, memoryNotifyStore, NOW, scenario, workspace, type PeerFixtureAgent } from "./fakes.ts";
+import { agent, fakeFs, fakePeers, fakeRunner, LONG_AGO, memoryNotifyStore, NOW, scenario, workspace, type PeerFixtureAgent } from "./fakes.ts";
 
 it("with the default cap, one sweep over 7 eligible candidates archives 5 and reports 2 deferred; the next sweep archives the 2", async () => {
   const workspaces = Array.from({ length: 7 }, (_, i) => workspace({ id: `wks_${i}`, name: `worker-${i}` }));
@@ -340,7 +340,7 @@ function peerCleanup(options: { worktrees: Array<{ id: string; labels: Record<st
   const s = scenario();
   const fs = fakeFs(s);
   const notifyStore = memoryNotifyStore();
-  const peer = fakePaseoCli(options.peers);
+  const peer = fakePeers(options.peers);
   const lines: string[] = [];
   const sweeper = new Sweeper({
     acquireApi: async () => ({ api, release: async () => undefined }),
@@ -350,7 +350,7 @@ function peerCleanup(options: { worktrees: Array<{ id: string; labels: Record<st
     resolveCommonDir: async () => null,
     now: () => NOW,
     notifyStore,
-    peerCli: peer.cli,
+    peerConnector: peer.connect,
   });
   const sweep = async () => {
     lines.length = 0;
@@ -445,9 +445,9 @@ it("peer routing: an unreachable peer is asked once, logged, and leaves this dae
   assert.deepEqual(t.notifyStore.entries.get("wks_local"), { at: new Date(NOW).toISOString(), agentId: "pm-local-0001", status: "sent" });
   assert.equal(t.notifyStore.entries.has("wks_remote"), false);
 
-  assert.equal(t.peer.calls.length, 1);
+  assert.deepEqual(t.peer.connects, ["ssh://peer-down"]);
   const peerErrors = entries.filter((entry) => entry.action === "notify-peer-error");
-  assert.deepEqual(peerErrors, [{ action: "notify-peer-error", peer: "ssh://peer-down", query: "ls", error: "DAEMON_UNREACHABLE: Cannot connect to daemon at ssh://peer-down: socket hang up" }]);
+  assert.deepEqual(peerErrors, [{ action: "notify-peer-error", peer: "ssh://peer-down", query: "connect", error: "cannot connect: ssh: Could not resolve hostname peer-down" }]);
   const unrouted = entries.find((entry) => entry.action === "notify-unrouted");
   assert.equal(unrouted?.workspaceId, "wks_remote");
   assert.match(unrouted?.owner, /owner unknown on peers: no role=pm agent on the peers that answered, and unreachable: ssh:\/\/peer-down$/);

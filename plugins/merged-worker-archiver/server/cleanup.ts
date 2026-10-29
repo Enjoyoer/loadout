@@ -272,13 +272,32 @@ export function resolveOwner(workspace: WorkspaceView, history: readonly AgentVi
   }
   const names = new Set(projectNames.map((name) => name.toLowerCase()));
   if (names.size === 0) return { kind: "none", detail: "no project name" };
-  const pms = live.filter((agent) => {
-    const project = nonEmpty(agent.labels?.project)?.toLowerCase();
-    return agent.labels?.role?.trim().toLowerCase() === "pm" && project !== undefined && project !== null && names.has(project);
-  });
+  const pms = matchProjectPms(live, projectNames);
   if (pms.length === 1) return { kind: "agent", agentId: pms[0]!.id, via: "project-pm" };
   if (pms.length === 0) return { kind: "none", detail: `no live role=pm agent for project ${[...names].join("|")}${parent ? ` and parent ${parent} not live` : ""}` };
   return { kind: "several", agentIds: pms.map((agent) => agent.id) };
+}
+
+/** The live agents labelled role=pm whose `project` label matches one of `names`, both case-insensitively. */
+export function matchProjectPms(live: readonly AgentView[], names: readonly string[]): AgentView[] {
+  const wanted = new Set(names.map((name) => name.trim().toLowerCase()).filter(Boolean));
+  return live.filter((agent) => {
+    const project = nonEmpty(agent.labels?.project)?.toLowerCase();
+    return !agent.archivedAt && agent.labels?.role?.trim().toLowerCase() === "pm" && project !== undefined && project !== null && wanted.has(project);
+  });
+}
+
+/**
+ * Why a PM must not be messaged now, or null when it may be: it is gone, archived, in any status other than idle
+ * or closed (a message would interrupt or steer a turn, or end an error a usage-limit resume is waiting on), or has
+ * a pending permission request (a message clears it). Messaging an archived agent unarchives it.
+ */
+export function pmBusyReason(agent: AgentView | null): string | null {
+  if (!agent) return "gone";
+  if (agent.archivedAt) return "archived";
+  if (agent.status !== "idle" && agent.status !== "closed") return agent.status;
+  if ((agent.pendingPermissions?.length ?? 0) > 0) return "pending permission";
+  return null;
 }
 
 /** A duration as its two largest units: "3d 4h", "5h 12m", "7m". */

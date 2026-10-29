@@ -1,32 +1,33 @@
-import type { OwnerKeys } from "./cleanup.ts";
-import type { CommandResult } from "./types.ts";
+import { matchProjectPms, type OwnerKeys } from "./cleanup.ts";
+import type { AgentView } from "./types.ts";
 
-// Peer daemons (setting peerHosts). When this daemon has no PM for a kept agentless worktree, the other
-// daemons are asked in order through the paseo CLI (`--host ssh://<alias>`), never through a shell:
+// Peer daemons (setting peerHosts). When this daemon has no PM for a kept agentless worktree, the other daemons are
+// asked in order, each over one connection per report pass (see peer-session.ts for how it is opened):
 //
-// - `paseo inspect --host <peer> --json -- <id>` for the last agent's `paseo.parent-agent-id` (a full
-//   id), which must be a live, unarchived agent there;
-// - else `paseo ls --host <peer> -g --label role=pm --label project=<name> --json` for each project name,
-//   as written and in lower case: the CLI filters labels exactly and does not print them.
+// - the last agent's `paseo.parent-agent-id` (a full id), which must be a live, unarchived agent there;
+// - else the live role=pm agents whose `project` label matches a project name, by the same case-insensitive rule as
+//   on this daemon.
 //
-// The owner must be unique across every peer. A peer that fails is asked nothing more in that pass and is
-// logged once; while one is unreachable no project PM is chosen, since it may hold another.
+// The owner must be unique across every peer. A peer that fails (connect, lookup, state read or send) logs one
+// notify-peer-error and is asked nothing more in that pass; while one has failed no project PM is chosen, since it
+// may hold another. Every call is bounded by commandTimeoutSeconds, and the whole pass by a time budget.
 
 /** The only peer form accepted: `ssh://<alias>`, an ssh alias or host name with no user, port, path or query. */
 export const PEER_HOST_PATTERN = /^ssh:\/\/[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
 
-/** Runs the paseo CLI with these arguments, without a shell. Must never throw. */
-export type PaseoCli = (args: readonly string[], timeoutMs: number) => Promise<CommandResult>;
-
-// Only an id of this shape is passed to the CLI (after `--`, so it can never be read as an option).
-const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-
-export interface PeerAgent {
-  id: string;
-  status: string;
-  archived: boolean;
-  pendingPermissions: number;
+/** One open connection to a peer daemon. Every call takes its own time limit. */
+export interface PeerSession {
+  /** Every non-archived agent (pages followed to the end). */
+  listAgents(timeoutMs: number): Promise<AgentView[]>;
+  /** One agent by id, archived included; null when there is none. */
+  getAgent(agentId: string, timeoutMs: number): Promise<AgentView | null>;
+  /** Prompt an agent with "steer"; the daemon keeps one receipt per (agent, messageId) and delivers it once. */
+  send(agentId: string, text: string, messageId: string, timeoutMs: number): Promise<void>;
+  close(): Promise<void>;
 }
+
+/** Opens a session to `host` within `timeoutMs`; `lifetimeMs` bounds how long anything it starts may live. */
+export type PeerConnector = (host: string, timeoutMs: number, lifetimeMs: number) => Promise<PeerSession>;
 
 export type PeerResolution =
   | { kind: "agent"; host: string; agentId: string; via: "peer-parent" | "peer-project-pm" }
@@ -37,80 +38,54 @@ export type PeerResolution =
 
 export type PeerSendOutcome = { status: "sent" } | { status: "retry" | "unconfirmed"; why: string };
 
+/** Each listed peer adds this many command timeouts to one report pass's peer budget. */
+export const PEER_BUDGET_TIMEOUTS = 2;
+
 interface Failure {
   failure: string;
 }
 
 const isFailure = (value: unknown): value is Failure => typeof value === "object" && value !== null && "failure" in value;
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 300);
 
-/** The CLI's own error (`{"error":{"code","message"}}` on stderr with --json), or what is known of it. */
-function cliError(result: CommandResult): { code: string | null; message: string } {
-  if (result.notFound) return { code: null, message: "paseo CLI not found" };
-  if (result.timedOut) return { code: null, message: "timed out" };
-  const raw = (result.stderr.trim() || result.stdout.trim()).slice(0, 4000);
-  try {
-    const parsed = JSON.parse(raw) as { error?: { code?: unknown; message?: unknown } } | null;
-    if (parsed?.error && typeof parsed.error.message === "string") {
-      return { code: typeof parsed.error.code === "string" ? parsed.error.code : null, message: parsed.error.message };
-    }
-  } catch {
-    // Not JSON: a usage error or a crash.
-  }
-  return { code: null, message: `exit ${result.code ?? "null"}: ${raw.split("\n")[0] ?? ""}` };
+/** The daemon refused before delivery: the agent is not there. */
+const NOT_FOUND = /Agent not found: /;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)} s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-const describe = (error: { code: string | null; message: string }) => (error.code ? `${error.code}: ${error.message}` : error.message).slice(0, 300);
-
-/** CLI output that is not JSON is a failure of that peer, never an empty answer. */
-function parseJson(stdout: string, what: string): { value: unknown } | Failure {
-  try {
-    return { value: JSON.parse(stdout) as unknown };
-  } catch {
-    return { failure: `${what} output is not JSON` };
-  }
-}
-
-function parseInspect(agentId: string, result: CommandResult): PeerAgent | null | Failure {
-  if (result.code !== 0) {
-    const error = cliError(result);
-    return error.code === "AGENT_NOT_FOUND" ? null : { failure: describe(error) };
-  }
-  const parsed = parseJson(result.stdout, "inspect");
-  if (isFailure(parsed)) return parsed;
-  const data = parsed.value as Record<string, unknown> | null;
-  if (!data || typeof data !== "object" || typeof data.Id !== "string" || typeof data.Status !== "string" || typeof data.Archived !== "boolean" || !Array.isArray(data.PendingPermissions)) {
-    return { failure: "inspect output malformed" };
-  }
-  // The CLI also resolves id prefixes; only this exact id counts.
-  if (data.Id !== agentId) return null;
-  return { id: data.Id, status: data.Status, archived: data.Archived, pendingPermissions: data.PendingPermissions.length };
-}
-
-function parseList(result: CommandResult): string[] | Failure {
-  if (result.code !== 0) return { failure: describe(cliError(result)) };
-  const parsed = parseJson(result.stdout, "ls");
-  if (isFailure(parsed)) return parsed;
-  const data = parsed.value;
-  if (!Array.isArray(data) || !data.every((entry) => entry && typeof entry === "object" && typeof (entry as { id?: unknown }).id === "string")) {
-    return { failure: "ls output malformed" };
-  }
-  return data.map((entry) => (entry as { id: string }).id);
-}
-
-/** One pass of peer lookups (a report): answers are cached, and a peer that fails once is asked nothing more. */
+/** One report pass of peer lookups and sends: one session per peer, answers cached, a failed peer asked nothing more. */
 export class PeerDirectory {
   readonly hosts: readonly string[];
-  private readonly cli: PaseoCli;
+  private readonly connect: PeerConnector;
   private readonly timeoutMs: number;
+  private readonly budgetMs: number;
+  private readonly deadline: number;
+  private readonly now: () => number;
   private readonly onError: (host: string, query: string, error: string) => void;
   private readonly down = new Map<string, string>();
+  private readonly sessions = new Map<string, PeerSession>();
   private readonly answers = new Map<string, unknown>();
 
-  constructor(cli: PaseoCli, hosts: readonly string[], timeoutMs: number, onError: (host: string, query: string, error: string) => void) {
-    this.cli = cli;
-    this.hosts = hosts;
-    this.timeoutMs = timeoutMs;
-    this.onError = onError;
+  constructor(options: {
+    connect: PeerConnector;
+    hosts: readonly string[];
+    timeoutMs: number;
+    now: () => number;
+    onError: (host: string, query: string, error: string) => void;
+  }) {
+    this.connect = options.connect;
+    this.hosts = options.hosts;
+    this.timeoutMs = options.timeoutMs;
+    this.now = options.now;
+    this.onError = options.onError;
+    this.budgetMs = PEER_BUDGET_TIMEOUTS * options.timeoutMs * options.hosts.length;
+    this.deadline = options.now() + this.budgetMs;
   }
 
   /** Peers that failed in this pass, with their first error. */
@@ -118,55 +93,85 @@ export class PeerDirectory {
     return this.down;
   }
 
-  private async ask<T>(host: string, query: string, args: string[], parse: (result: CommandResult) => T | Failure): Promise<T | Failure> {
+  private fail(host: string, query: string, error: string): Failure {
+    if (!this.down.has(host)) {
+      this.down.set(host, error);
+      this.onError(host, query, error);
+    }
+    return { failure: this.down.get(host)! };
+  }
+
+  /** Time left for one call: the command timeout, cut to what is left of the pass's budget. */
+  private allowance(): number {
+    return Math.min(this.timeoutMs, this.deadline - this.now());
+  }
+
+  private get budgetSpent(): string {
+    return `peer time budget spent (${Math.round(this.budgetMs / 1000)} s per sweep)`;
+  }
+
+  private async session(host: string, query: string): Promise<PeerSession | Failure> {
     const known = this.down.get(host);
     if (known !== undefined) return { failure: known };
-    const key = `${host}\n${args.join("\n")}`;
-    if (this.answers.has(key)) return this.answers.get(key) as T;
-    const value = parse(await this.cli(args, this.timeoutMs));
-    if (isFailure(value)) {
-      this.down.set(host, value.failure);
-      this.onError(host, query, value.failure);
-    } else {
-      this.answers.set(key, value);
+    const open = this.sessions.get(host);
+    if (open) return open;
+    const ms = this.allowance();
+    if (ms <= 0) return this.fail(host, query, this.budgetSpent);
+    // Whatever the connector starts may live until the pass's budget ends, plus a margin for closing.
+    const pending = this.connect(host, ms, Math.max(0, this.deadline - this.now()) + 5_000);
+    try {
+      const session = await withTimeout(pending, ms, "connect");
+      this.sessions.set(host, session);
+      return session;
+    } catch (error) {
+      // A connect that finishes after the time limit is closed at once.
+      void pending.then((late) => late.close(), () => undefined);
+      return this.fail(host, "connect", `cannot connect: ${message(error)}`);
     }
+  }
+
+  private async call<T>(host: string, query: string, run: (session: PeerSession, ms: number) => Promise<T>): Promise<T | Failure> {
+    const session = await this.session(host, query);
+    if (isFailure(session)) return session;
+    const ms = this.allowance();
+    if (ms <= 0) return this.fail(host, query, this.budgetSpent);
+    try {
+      return await withTimeout(run(session, ms), ms, query);
+    } catch (error) {
+      return this.fail(host, query, message(error));
+    }
+  }
+
+  private async cached<T>(host: string, query: string, key: string, run: (session: PeerSession, ms: number) => Promise<T>): Promise<T | Failure> {
+    const cacheKey = `${host}\n${query}\n${key}`;
+    if (this.answers.has(cacheKey)) return this.answers.get(cacheKey) as T;
+    const value = await this.call(host, query, run);
+    if (!isFailure(value)) this.answers.set(cacheKey, value);
     return value;
-  }
-
-  private inspect(host: string, agentId: string): Promise<PeerAgent | null | Failure> {
-    return this.ask(host, "inspect", ["inspect", "--host", host, "--json", "--", agentId], (result) => parseInspect(agentId, result));
-  }
-
-  private projectPms(host: string, project: string): Promise<string[] | Failure> {
-    return this.ask(host, "ls", ["ls", "--host", host, "-g", "--label", "role=pm", "--label", `project=${project}`, "--json"], parseList);
   }
 
   /** The PM on a peer: the live parent by full id, else the one role=pm agent of the project, across every peer. */
   async resolve(keys: OwnerKeys): Promise<PeerResolution> {
     const unreachable = () => this.hosts.filter((host) => this.down.has(host));
-    if (keys.parentId && AGENT_ID.test(keys.parentId)) {
+    if (keys.parentId) {
+      const parentId = keys.parentId;
       const found: string[] = [];
       for (const host of this.hosts) {
-        const agent = await this.inspect(host, keys.parentId);
-        if (agent && !isFailure(agent) && !agent.archived) found.push(host);
+        const agent = await this.cached(host, "parent", parentId, (session, ms) => session.getAgent(parentId, ms));
+        // The daemon also resolves id prefixes and titles; only this exact id counts.
+        if (!isFailure(agent) && agent && agent.id === parentId && !agent.archivedAt) found.push(host);
       }
-      if (found.length === 1) return { kind: "agent", host: found[0]!, agentId: keys.parentId, via: "peer-parent" };
-      if (found.length > 1) return { kind: "several", matches: found.map((host) => `${host} ${keys.parentId}`) };
+      if (found.length === 1) return { kind: "agent", host: found[0]!, agentId: parentId, via: "peer-parent" };
+      if (found.length > 1) return { kind: "several", matches: found.map((host) => `${host} ${parentId}`) };
       // The parent may be on a peer that did not answer.
-      if (unreachable().length > 0) return { kind: "unknown", detail: `parent ${keys.parentId} not live on the peers that answered; unreachable: ${unreachable().join(",")}` };
+      if (unreachable().length > 0) return { kind: "unknown", detail: `parent ${parentId} not live on the peers that answered; unreachable: ${unreachable().join(",")}` };
     }
     if (keys.names.length === 0) return { kind: "none", detail: "no project name" };
-    const variants = [...new Set(keys.names.flatMap((name) => [name, name.toLowerCase()]))];
     const matches: Array<{ host: string; agentId: string }> = [];
     for (const host of this.hosts) {
-      const ids = new Set<string>();
-      for (const name of variants) {
-        const list = await this.projectPms(host, name);
-        if (isFailure(list)) break;
-        for (const id of list) ids.add(id);
-      }
-      if (this.down.has(host)) continue;
-      for (const agentId of ids) matches.push({ host, agentId });
+      const live = await this.cached(host, "list", "", (session, ms) => session.listAgents(ms));
+      if (isFailure(live)) continue;
+      for (const pm of matchProjectPms(live, keys.names)) matches.push({ host, agentId: pm.id });
     }
     if (matches.length > 1) return { kind: "several", matches: matches.map((match) => `${match.host} ${match.agentId}`) };
     const down = unreachable();
@@ -175,29 +180,40 @@ export class PeerDirectory {
       return { kind: "unknown", detail: `${seen} unreachable: ${down.join(",")}` };
     }
     if (matches.length === 1) return { kind: "agent", host: matches[0]!.host, agentId: matches[0]!.agentId, via: "peer-project-pm" };
-    return { kind: "none", detail: `no live role=pm agent for project ${variants.join("|")}${keys.parentId ? ` and parent ${keys.parentId} not live` : ""}` };
+    const names = [...new Set(keys.names.map((name) => name.toLowerCase()))].join("|");
+    return { kind: "none", detail: `no live role=pm agent for project ${names}${keys.parentId ? ` and parent ${keys.parentId} not live` : ""}` };
   }
 
   /** A fresh read of one agent on a peer, right before a send: null when it has none; throws when the peer fails. */
-  async state(host: string, agentId: string): Promise<PeerAgent | null> {
-    if (!AGENT_ID.test(agentId)) return null;
-    const value = parseInspect(agentId, await this.cli(["inspect", "--host", host, "--json", "--", agentId], this.timeoutMs));
-    if (isFailure(value)) throw new Error(value.failure);
-    return value;
+  async state(host: string, agentId: string): Promise<AgentView | null> {
+    const agent = await this.call(host, "state", (session, ms) => session.getAgent(agentId, ms));
+    if (isFailure(agent)) throw new Error(agent.failure);
+    return agent && agent.id === agentId ? agent : null;
   }
 
   /**
-   * `paseo send --no-wait --behavior steer`. A failure that cannot have delivered (no CLI, a usage error, no
-   * connection, the agent gone) may be retried; any other may have delivered and is never resent.
+   * Send with "steer" and a fixed messageId. Nothing sent yet (the peer is down or the budget is spent) or the agent
+   * gone: may be retried. Any other failure may have delivered and is never resent; it also marks the peer down.
    */
-  async send(host: string, agentId: string, text: string): Promise<PeerSendOutcome> {
-    const result = await this.cli(["send", "--host", host, "--no-wait", "--behavior", "steer", "--json", "--", agentId, text], this.timeoutMs);
-    if (result.code === 0) return { status: "sent" };
-    const error = cliError(result);
-    const beforeDelivery = result.notFound
-      || /^error: /.test(result.stderr.trim())
-      || error.message.startsWith("Cannot connect to daemon at ")
-      || (error.code === "SEND_FAILED" && /Agent not found: /.test(error.message));
-    return { status: beforeDelivery ? "retry" : "unconfirmed", why: describe(error) };
+  async send(host: string, agentId: string, text: string, messageId: string): Promise<PeerSendOutcome> {
+    const session = await this.session(host, "send");
+    if (isFailure(session)) return { status: "retry", why: session.failure };
+    const ms = this.allowance();
+    if (ms <= 0) return { status: "retry", why: this.fail(host, "send", this.budgetSpent).failure };
+    try {
+      await withTimeout(session.send(agentId, text, messageId, ms), ms, "send");
+      return { status: "sent" };
+    } catch (error) {
+      const why = message(error);
+      if (NOT_FOUND.test(why)) return { status: "retry", why };
+      this.fail(host, "send", why);
+      return { status: "unconfirmed", why };
+    }
+  }
+
+  /** Close every session this pass opened. */
+  async close(): Promise<void> {
+    await Promise.all([...this.sessions.values()].map((session) => session.close().catch(() => undefined)));
+    this.sessions.clear();
   }
 }

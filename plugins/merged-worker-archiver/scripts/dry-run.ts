@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { ConfigSchema, type ArchiverConfig } from "../server/config.ts";
 import { openDaemonClient } from "../server/daemon.ts";
 import { createCommonDirResolver, nodeFileSystem, runCommand } from "../server/io.ts";
 import { NotifyStore, type NotifyStateStore } from "../server/notify-store.ts";
+import { openPeerSession } from "../server/peer-session.ts";
 import { ReceiptReader } from "../server/receipts.ts";
 import { Sweeper, type ArchiverApi } from "../server/sweeper.ts";
 
@@ -59,11 +59,11 @@ async function run(): Promise<void> {
     resolveCommonDir: createCommonDirResolver(runCommand, () => config.commandTimeoutSeconds * 1000),
     notifyStore,
     deliveries: new ReceiptReader(),
-    // Peers (peerHosts) are only looked up: the CLI is never asked to send.
-    peerCli: async (args, timeoutMs) =>
-      args[0] === "send"
-        ? { code: 1, stdout: "", stderr: "dry-run never sends", timedOut: false, notFound: false }
-        : runCommand("paseo", args, homedir(), timeoutMs),
+    // Peers (peerHosts) are only looked up: their sessions refuse to send.
+    peerConnector: async (host, timeoutMs, lifetimeMs) => {
+      const session = await openPeerSession(host, timeoutMs, lifetimeMs);
+      return { ...session, send: async () => { throw new Error("dry-run never sends"); } };
+    },
   });
   try {
     const result = await sweeper.sweep({ ...config, armed: false, armWorkspaceCleanup: false }, { trigger: "cli-dry-run", forceDryRun: true });

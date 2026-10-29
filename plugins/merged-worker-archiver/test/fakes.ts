@@ -1,6 +1,6 @@
 import type { NotifiedEntry } from "../server/cleanup.ts";
 import type { NotifyStateStore } from "../server/notify-store.ts";
-import type { PaseoCli } from "../server/peers.ts";
+import type { PeerConnector } from "../server/peers.ts";
 import type { CommandResult, CommandRunner, FileSystem } from "../server/types.ts";
 import type { AgentView, WorkspaceView } from "../server/types.ts";
 
@@ -189,40 +189,38 @@ export interface PeerFixtureAgent {
 }
 
 /**
- * The paseo CLI against fixture peer daemons, answering as the 0.13 CLI does with --json: `ls` filters
- * labels exactly and leaves out archived agents, `inspect` takes an id, errors are JSON on stderr. A peer
- * that is "down" (or unknown) cannot be reached.
+ * Fixture peer daemons behind a PeerConnector, answering as the daemon does: getAgent returns archived agents too and
+ * null for an unknown id, listAgents leaves out archived ones, and a send to an unknown agent is refused before
+ * delivery. A peer that is "down" (or unknown) cannot be connected to.
  */
-export function fakePaseoCli(peers: Record<string, PeerFixtureAgent[] | "down">) {
-  const calls: string[][] = [];
-  const sent: Array<{ host: string; agentId: string; text: string }> = [];
-  const reply = (stdout: string): CommandResult => ({ code: 0, stdout, stderr: "", timedOut: false, notFound: false });
-  const error = (code: string, message: string): CommandResult => ({ code: 1, stdout: "", stderr: JSON.stringify({ error: { code, message } }, null, 2), timedOut: false, notFound: false });
-  const cli: PaseoCli = async (args) => {
-    calls.push([...args]);
-    const host = args[args.indexOf("--host") + 1]!;
+export function fakePeers(peers: Record<string, PeerFixtureAgent[] | "down">) {
+  const connects: string[] = [];
+  const sent: Array<{ host: string; agentId: string; text: string; messageId: string }> = [];
+  const view = (entry: PeerFixtureAgent): AgentView => ({
+    id: entry.id,
+    status: entry.status ?? "idle",
+    labels: entry.labels ?? {},
+    pendingPermissions: [],
+    archivedAt: entry.archived ? LONG_AGO : null,
+  });
+  const connect: PeerConnector = async (host) => {
+    connects.push(host);
     const agents = peers[host];
-    if (!agents || agents === "down") return error("DAEMON_UNREACHABLE", `Cannot connect to daemon at ${host}: socket hang up`);
-    const positional = args.includes("--") ? args.slice(args.indexOf("--") + 1) : [];
-    if (args[0] === "inspect") {
-      const found = agents.find((entry) => entry.id === positional[0]);
-      if (!found) return error("AGENT_NOT_FOUND", `Agent not found: ${positional[0]}`);
-      return reply(JSON.stringify({ Id: found.id, Status: found.status ?? "idle", Archived: found.archived ?? false, PendingPermissions: [] }));
-    }
-    if (args[0] === "ls") {
-      const filters = args.flatMap((arg, index) => (args[index - 1] === "--label" ? [arg.split("=") as [string, string]] : []));
-      const listed = agents.filter((entry) => !entry.archived && filters.every(([key, value]) => entry.labels?.[key] === value));
-      return reply(JSON.stringify(listed.map((entry) => ({ id: entry.id, status: entry.status ?? "idle" }))));
-    }
-    if (args[0] === "send") {
-      const [agentId, text] = positional as [string, string];
-      if (!agents.some((entry) => entry.id === agentId)) return error("SEND_FAILED", `Failed to send message: Agent not found: ${agentId}`);
-      sent.push({ host, agentId, text });
-      return reply(JSON.stringify({ agentId, status: "sent" }));
-    }
-    return { code: 1, stdout: "", stderr: `error: unknown command '${args[0]}'`, timedOut: false, notFound: false };
+    if (!agents || agents === "down") throw new Error(`ssh: Could not resolve hostname ${host.replace("ssh://", "")}`);
+    return {
+      listAgents: async () => agents.filter((entry) => !entry.archived).map(view),
+      getAgent: async (agentId) => {
+        const found = agents.find((entry) => entry.id === agentId);
+        return found ? view(found) : null;
+      },
+      send: async (agentId, text, messageId) => {
+        if (!agents.some((entry) => entry.id === agentId)) throw new Error(`Agent not found: ${agentId}`);
+        sent.push({ host, agentId, text, messageId });
+      },
+      close: async () => undefined,
+    };
   };
-  return { cli, calls, sent };
+  return { connect, connects, sent };
 }
 
 /** In-memory reported-worktree state; `writes` counts persisted writes. */

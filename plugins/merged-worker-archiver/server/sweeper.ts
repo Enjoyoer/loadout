@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { evaluateCleanup, formatNotification, isCleanupEntry, LAST_TURN_ALLOWANCE_MS, ownerKeys, resolveOwner, type NotifiedEntry, type OwnerKeys } from "./cleanup.ts";
+import { evaluateCleanup, formatNotification, isCleanupEntry, LAST_TURN_ALLOWANCE_MS, ownerKeys, pmBusyReason, resolveOwner, type NotifiedEntry, type OwnerKeys } from "./cleanup.ts";
 import type { ArchiverConfig } from "./config.ts";
 import { evaluateWorkspace, type EvaluateDeps } from "./evaluate.ts";
 import type { NotifyStateStore } from "./notify-store.ts";
-import { PeerDirectory, type PaseoCli, type PeerSendOutcome } from "./peers.ts";
+import { PeerDirectory, type PeerConnector, type PeerSendOutcome } from "./peers.ts";
 import type { DeliveryReader } from "./receipts.ts";
 import type { AgentView, CommonDirResolver, Decision, TerminalView, WorkspaceView } from "./types.ts";
 
@@ -57,8 +57,8 @@ export interface SweeperDeps extends EvaluateDeps {
   notifyStore: NotifyStateStore;
   /** Paseo's message delivery receipts (workspace cleanup). Without one, archive times count instead. */
   deliveries?: DeliveryReader;
-  /** The paseo CLI, for the PMs on peer daemons (setting peerHosts). Without one, no peer is asked. */
-  peerCli?: PaseoCli;
+  /** Opens sessions to peer daemons, for their PMs (setting peerHosts). Without one, no peer is asked. */
+  peerConnector?: PeerConnector;
 }
 
 export interface SweepOptions {
@@ -553,7 +553,7 @@ export class Sweeper {
    * the PM resolved again, and right before each send the PM's own status is read again (only an
    * idle or closed, unarchived PM without a pending permission is sent to, with "steer"); one message
    * per PM, at most MAX_REPORT_ITEMS worktrees each. A worktree with no PM on this daemon goes to its
-   * PM on a peer daemon (peerHosts), resolved and sent through the paseo CLI after the local reports.
+   * PM on a peer daemon (peerHosts), resolved and sent over one session per peer after the local reports.
    * A worktree is recorded as reported before the
    * message goes out, so it is never reported twice: a refusal before delivery (the PM is gone)
    * removes the record again, any other failure keeps it as `unconfirmed`. Returns the worktrees
@@ -595,7 +595,7 @@ export class Sweeper {
     // peer cannot delay a local report.
     const groups = new Map<string, Recipient>();
     const toPeers: Array<{ item: ReportItem; keys: OwnerKeys; localDetail: string }> = [];
-    const peerHosts = this.deps.peerCli ? config.peerHosts : [];
+    const peerHosts = this.deps.peerConnector ? config.peerHosts : [];
     for (const decision of confirmed) {
       const workspace = current.workspaces.find((entry) => entry.id === decision.workspaceId)!;
       const history = current.cleanup?.historyByWorkspace.get(workspace.id) ?? [];
@@ -617,16 +617,7 @@ export class Sweeper {
       host: null,
       async busy(agentId) {
         if (typeof api.agents.get !== "function") throw new Error("agent lookup unavailable");
-        const owner = await api.agents.get(agentId);
-        return !owner
-          ? "gone"
-          : owner.archivedAt
-            ? "archived"
-            : owner.status === "running" || owner.status === "initializing"
-              ? owner.status
-              : (owner.pendingPermissions?.length ?? 0) > 0
-                ? "pending permission"
-                : null;
+        return pmBusyReason(await api.agents.get(agentId));
       },
       async send(agentId, text, messageId) {
         try {
@@ -642,48 +633,45 @@ export class Sweeper {
     for (const recipient of groups.values()) reported.push(...(await this.deliver(recipient, local, notified, config, wouldOnly)));
     if (toPeers.length === 0) return reported;
 
-    const peers = new PeerDirectory(this.deps.peerCli!, peerHosts, config.commandTimeoutSeconds * 1000, (host, query, error) => {
-      log(`[merged-worker-archiver] ${JSON.stringify({ action: "notify-peer-error", peer: host, query, error })}`);
+    const peers = new PeerDirectory({
+      connect: this.deps.peerConnector!,
+      hosts: peerHosts,
+      timeoutMs: config.commandTimeoutSeconds * 1000,
+      now: this.deps.now,
+      onError: (host, query, error) => log(`[merged-worker-archiver] ${JSON.stringify({ action: "notify-peer-error", peer: host, query, error })}`),
     });
-    const peerGroups = new Map<string, Recipient>();
-    for (const { item, keys, localDetail } of toPeers) {
-      const owner = await peers.resolve(keys);
-      if (owner.kind === "agent") {
-        addRecipient(peerGroups, owner.host, owner.agentId, { ...item, via: owner.via });
-        continue;
+    try {
+      const peerGroups = new Map<string, Recipient>();
+      for (const { item, keys, localDetail } of toPeers) {
+        const owner = await peers.resolve(keys);
+        if (owner.kind === "agent") {
+          addRecipient(peerGroups, owner.host, owner.agentId, { ...item, via: owner.via });
+          continue;
+        }
+        const peerDetail = owner.kind === "several"
+          ? `several owners on peers: ${owner.matches.join(",")}`
+          : owner.kind === "unknown"
+            ? `owner unknown on peers: ${owner.detail}`
+            : `no owner on peers: ${owner.detail}`;
+        log(formatDecision(item.decision, "notify-unrouted", {
+          path: item.directory,
+          lastCommit: item.decision.lastCommit ?? null,
+          owner: `no owner: ${localDetail}; ${peerDetail}`,
+          peers: peerHosts,
+          ...(peers.errors.size > 0 ? { peerErrors: Object.fromEntries(peers.errors) } : {}),
+        }));
       }
-      const peerDetail = owner.kind === "several"
-        ? `several owners on peers: ${owner.matches.join(",")}`
-        : owner.kind === "unknown"
-          ? `owner unknown on peers: ${owner.detail}`
-          : `no owner on peers: ${owner.detail}`;
-      log(formatDecision(item.decision, "notify-unrouted", {
-        path: item.directory,
-        lastCommit: item.decision.lastCommit ?? null,
-        owner: `no owner: ${localDetail}; ${peerDetail}`,
-        peers: peerHosts,
-        ...(peers.errors.size > 0 ? { peerErrors: Object.fromEntries(peers.errors) } : {}),
-      }));
-    }
-    for (const recipient of peerGroups.values()) {
-      const host = recipient.host!;
-      const channel: Channel = {
-        host,
-        async busy(agentId) {
-          const owner = await peers.state(host, agentId);
-          return !owner
-            ? "gone"
-            : owner.archived
-              ? "archived"
-              : owner.status !== "idle" && owner.status !== "closed"
-                ? owner.status
-                : owner.pendingPermissions > 0
-                  ? "pending permission"
-                  : null;
-        },
-        send: (agentId, text) => peers.send(host, agentId, text),
-      };
-      reported.push(...(await this.deliver(recipient, channel, notified, config, wouldOnly)));
+      for (const recipient of peerGroups.values()) {
+        const host = recipient.host!;
+        const channel: Channel = {
+          host,
+          busy: async (agentId) => pmBusyReason(await peers.state(host, agentId)),
+          send: (agentId, text, messageId) => peers.send(host, agentId, text, messageId),
+        };
+        reported.push(...(await this.deliver(recipient, channel, notified, config, wouldOnly)));
+      }
+    } finally {
+      await peers.close();
     }
     return reported;
   }
@@ -755,8 +743,7 @@ export class Sweeper {
     }
     for (const item of batch) {
       if (outcome.status === "sent") {
-        // The paseo CLI sets its own message id, so only a local send carries this one.
-        log(lineFor(item, "notified", host ? {} : { messageId }));
+        log(lineFor(item, "notified", { messageId }));
         reported.push(item.decision.workspaceId);
       } else if (outcome.status === "retry") log(lineFor(item, "notify-deferred", { why: `refused before delivery, retried next full sweep: ${outcome.why}` }));
       else log(lineFor(item, "notify-failed", { why: `delivery unknown, not resent: ${outcome.why}` }));

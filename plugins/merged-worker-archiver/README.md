@@ -303,52 +303,60 @@ report and logs `notify-state-unreadable` until it is fixed.
 #### PMs on other daemons
 
 With `peerHosts` set (default empty, which changes nothing), a worktree with no owner on this
-daemon is looked up on those daemons, in the order listed, through the `paseo` CLI on the
-plugin's `PATH`: no shell, and each call bounded by `commandTimeoutSeconds`.
+daemon is looked up on those daemons, in the order listed. The plugin reaches each one as the
+Paseo CLI reaches an `ssh://<alias>` host, without the CLI: `ssh -o BatchMode=yes` (the `ssh`
+on the daemon's `PATH`, no shell) to the peer daemon's port (6767) on that host's loopback,
+then its own bundled `DaemonClient`, so the version of any `paseo` CLI on `PATH` does not
+matter. One connection per peer serves a whole sweep and is closed at its end. On macOS and
+Linux the tunnel is Paseo's own `ssh -W`. On Windows, where Win32-OpenSSH never answers
+`ssh -W` through a pipe, it is `ssh -N -L 127.0.0.1:<free port>:127.0.0.1:6767` run by a
+small watchdog on the daemon's own `node`, with no window; the watchdog ends `ssh` when the
+sweep closes the connection, when the plugin goes away, or when the sweep's peer budget ends.
 
-1. The last agent's `paseo.parent-agent-id` (full id; the `parent` prefix label is not used),
-   with `paseo inspect --host <peer> --json -- <id>`. It counts when that agent is live and
-   not archived there.
-2. Otherwise the project's `role=pm` agents, with
-   `paseo ls --host <peer> -g --label role=pm --label project=<name> --json` for each project
-   name (the last agent's `project` label and the workspace's project name). The CLI matches
-   labels exactly and does not print them, so each name is asked as written and in lower case.
-   A `project` label in any other spelling, or a `role` other than lower-case `pm`, is not
-   found on a peer.
+1. The last agent's `paseo.parent-agent-id` (full id; the `parent` prefix label is not used).
+   It counts when the peer has an agent with exactly that id, live and not archived.
+2. Otherwise the peer's live `role=pm` agents whose `project` label matches, by the same
+   case-insensitive rule as here, the last agent's `project` label or the workspace's project
+   name.
 
 The owner must be unique across all peers: the parent on exactly one peer, else exactly one
 project PM across all of them. Several matches log `notify-unrouted` with `several owners on
 peers`, and no match logs it with `no owner on peers`; both list the `peers` asked. A peer
-that fails (unreachable, a timeout, a CLI error) logs one `notify-peer-error` line (`peer`,
-`query`, `error`) and is asked nothing more in that sweep, so it costs at most one timeout.
-While a peer has failed and the parent was not found elsewhere, no project PM is chosen, since
-the failed peer may hold another: the line is `notify-unrouted` with `owner unknown on peers`
-and `peerErrors`. Nothing is recorded for an unrouted worktree, so the next full sweep tries
-again.
+that fails (no connection, a timeout, an error from its daemon) logs one `notify-peer-error`
+line (`peer`, `query`, `error`) and is asked nothing more in that sweep. `query` is the
+step that failed: `connect`, `parent`, `list`, `state` or `send`; a failed connect names the
+`ssh` error, such as an unknown host or a refused key. While a peer has failed and the parent
+was not found elsewhere, no project PM is chosen, since the failed peer may hold another: the
+line is `notify-unrouted` with `owner unknown on peers` and `peerErrors`. Nothing is recorded
+for an unrouted worktree, so the next full sweep tries again.
+
+Each call to a peer is bounded by `commandTimeoutSeconds`, and all peer work in one sweep
+(connects, lookups, the state reads and the sends) by a budget of twice that per listed peer
+(60 s with the default timeout and two peers). Once it is spent, a peer asked again logs
+`notify-peer-error` with `peer time budget spent`, its worktrees are unrouted or deferred, and
+the next full sweep tries again.
 
 Peers are asked only after every report to a PM on this daemon has been sent, so a slow or
 unreachable peer cannot delay or block those. A peer send follows the local rules: right
-before it the PM is read again with `paseo inspect`, and the report goes out only while that
-PM is `idle` or `closed`, not archived and without a pending permission (else
-`notify-deferred`), with `paseo send --host <peer> --no-wait --behavior steer`. Its
+before it the PM is read again, and the report goes out only while that PM is `idle` or
+`closed`, not archived and without a pending permission (else `notify-deferred`), with
+`activeTurnBehavior: "steer"` and the same fixed `messageId` as a local send. Its
 `notified.json` entry names the peer as `host`, and its log lines carry `host` and `via`
-(`peer-parent` or `peer-project-pm`). A send that cannot have been delivered (no CLI, a usage
-error, no connection, `Agent not found`) is retried at the next full sweep; any other failure
-is recorded as `unconfirmed` and never resent. The CLI sets its own message id, so for peer
-sends `notified.json` alone keeps each worktree to one report. Dry-run sweeps look peers up
-too (read only) and log `would-notify` with `host`.
+(`peer-parent` or `peer-project-pm`). A send that cannot have been delivered (no connection,
+the budget spent, `Agent not found`) is retried at the next full sweep; any other failure,
+a timeout included, is recorded as `unconfirmed` and never resent. Dry-run sweeps look peers
+up too (read only; their connections refuse to send) and log `would-notify` with `host`.
 
 Requirements and limits:
 
 - `ssh://<alias>` is the only accepted form (letters, digits, `.`, `_`, `-`; at most 8 unique
   entries); a user, port, path or `daemonPort` makes the settings invalid. So the peer daemon
-  must listen on the CLI's default SSH daemon port (6767) on that host.
-- SSH to each alias must work without a prompt from the daemon's environment: the CLI runs
-  `ssh -o BatchMode=yes`.
-- The `paseo` CLI must have `send --behavior` (0.13.0 has it, 0.11.1 does not). With an older
-  CLI every peer send is refused before delivery and retried, so nothing is lost or sent twice.
-- Not checked on Windows, where the CLI is usually a `.cmd` shim that runs only through a
-  shell; expect `notify-peer-error` there.
+  must listen on Paseo's default SSH daemon port (6767) on that host. The user, port and key
+  belong in the ssh config of the account the daemon runs as.
+- SSH to each alias must work without a prompt from the daemon's environment (`BatchMode=yes`).
+  No password is sent to a peer daemon, so one that requires a password refuses the connect.
+- Only agents the peer lists without `includeBackground` are found as project PMs, so a PM in a
+  background workspace on a peer is not seen (its parent id still is).
 
 ### Background workspaces
 
@@ -507,7 +515,8 @@ reason shows which back-off sweep this is), or `deferred` (over the per-sweep ca
 Workspace cleanup lines also carry `cleanup` and `lastActivityAt`, and add the actions
 `would-notify`, `notified`, `notify-deferred`, `notify-unrouted` and `notify-failed`, with
 `path`, `lastCommit` and `owner` (and `host` for a PM on a peer daemon). A peer daemon that
-fails logs `notify-peer-error` with `peer`, `query` and `error`. Each
+fails logs `notify-peer-error` with `peer`, `query` (`connect`, `parent`, `list`, `state` or
+`send`) and `error`. Each
 evaluation ends with a `sweep-done` summary; failures log `sweep-aborted`. Non-worktree
 workspaces are counted in the summary only unless `logNonCandidates` is on.
 
@@ -576,24 +585,38 @@ unreadable, the sweep showed `receiptsUnreadable` and dated the same workspaces 
 archive.
 
 Peer routing and agentless cleanliness (0.5.0) were checked on a pair of disposable 0.13.0
-daemons, each with its own home and port and a fake ACP provider. The plugin ran on one; the
-other held the peer agents. The plugin's own `paseo` CLI and its SSH transport were used
-unchanged. Only `ssh` on the plugin daemon's `PATH` was a stand-in that bridged one fixture
-alias to the peer's port and refused every other alias, plus one fixture alias that fails like
-an unknown host. With `peerHosts` empty, the two worktrees whose owners were on the peer logged
+daemons on macOS, each with its own home and port and a fake ACP provider. The plugin ran on
+one; the other held the peer agents. The plugin's tunnel and client were used unchanged. Only
+`ssh` on the plugin daemon's `PATH` was a stand-in that bridged two fixture aliases to the
+peer's port, hung on a third, failed a fourth like an unknown host, and refused every other
+alias. With `peerHosts` empty, the two worktrees whose owners were on the peer logged
 `notify-unrouted` and no ssh call was made, as in 0.4.0. In dry-run with the failing alias
 listed first, lookups ran and nothing was sent or written. Armed, the local PM got its one
 report, the worktree whose parent was on the peer was reported to that parent (recorded with
-`host`), and the project-PM worktree stayed `notify-unrouted` with `peerErrors`; the failing
-peer was asked once in the sweep. With only the working peer listed, the project worktree
-went to the peer's `role=pm` agent, its `project` label being the lower-case form of the
-worker's, and a further sweep sent nothing. A report to a peer PM in a running turn logged
-`notify-deferred` (`PM running`) and was sent at the next sweep once the PM was idle. Two
-aliases for the same peer made one PM ambiguous, which logged `notify-unrouted` (`several
-owners on peers`). An invalid `peerHosts` entry logged `config-invalid`. The same run archived
-a merged agentless worktree whose only ignored files were two `__pycache__` directories (its
-branch was kept), reported an unmerged one as `not-merged(...)` instead of `dirty(ignored=2)`,
-and reported a merged one with an ignored `.env` as `dirty(ignored=1)`.
+`host`; the peer kept a receipt for its `messageId`), and the project-PM worktree stayed
+`notify-unrouted` with `peerErrors`; the failing peer was asked once in the sweep. With only
+the working peer listed, the project worktree went to the peer's `role=pm` agent (`project`
+label `peerproj` against the worker's `PeerProj`), and a further sweep sent nothing. Reports
+to a peer PM in a running turn and to a local PM in status `error` logged `notify-deferred`
+(`PM running`, `PM error`) and were sent at the next sweep once each PM was idle. Two aliases
+for the same peer made one PM ambiguous (`several owners on peers`). With the hanging alias
+first and `commandTimeoutSeconds` 3, its connect failed after 3 s (`notify-peer-error`, query
+`connect`), the project worktrees stayed `notify-unrouted` (`owner unknown on peers`), and no
+stand-in process was left. An invalid `peerHosts` entry logged `config-invalid`. The same run
+archived a merged agentless worktree whose only ignored files were two `__pycache__`
+directories (its branch was kept), reported an unmerged one as `not-merged(...)` instead of
+`dirty(ignored=2)`, and reported a merged one with an ignored `.env` as `dirty(ignored=1)`.
+
+On Windows (Win32-OpenSSH 10.0p2, node 25) a disposable 0.13.0 daemon with its own home and
+port ran the plugin from the same source, started from an ssh session with no window. In
+dry-run with the real `ssh.exe` from `PATH`, one fixture worktree was routed to a real project
+PM on a Linux peer and another to its real parent on a second Windows peer, both read only; an
+unknown alias logged `notify-peer-error` with ssh's own `Could not resolve hostname` message
+(Win32-OpenSSH prints it and does not exit, which the watchdog handles). Armed, with a stand-in
+`ssh.exe` that served only one fixture alias, bridged to the macOS peer above, the project
+worktree was reported to the peer's PM, recorded with `host`, and not sent again by the next
+sweep. No tunnel `ssh` or watchdog process remained after any sweep, and the PC's own daemon
+was only observed.
 
 Paseo compiles the plugin from source with esbuild and bundles `@getpaseo/client`
 (with `@getpaseo/protocol`), about 8.4 MB, so `npm install` must have run here before
