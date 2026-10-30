@@ -5,7 +5,7 @@ description: Review a stalled project with a fresh PM and get it unstuck. Use wh
 
 # Unstuck
 
-A fresh PM on the strongest available model, high thinking (the owner names it), reviews a stalled project and returns a plan the owner can approve in one reply. The usual cause is a design or process loop, such as fail-closed code plus a review loop that rewards finding new refusals, so the core cycle never runs.
+A fresh PM on Fable (pi, fleet/claude-fable-5-1), thinking high; if Fable is unavailable, Astra (pi, fleet/gpt-6-astra), thinking xhigh; unless the owner names another model. Fable is unavailable when it is out of quota, missing from the catalog, or creating the agent fails. That PM reviews a stalled project and returns a plan the owner can approve in one reply. The usual cause is a design or process loop, such as fail-closed code plus a review loop that rewards finding new refusals, so the core cycle never runs.
 
 ## 1. Review only
 
