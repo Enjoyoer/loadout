@@ -1,6 +1,6 @@
 ---
 name: repo-lessons
-description: Maintain an assigned project's or durable workstream's STATUS.html and LESSONS.md: root and ownership rules, the five-section dashboard, and capped durable lessons.
+description: "Maintain an assigned project's or durable workstream's STATUS.html and LESSONS.md: root and ownership rules, the five-section dashboard, and capped durable lessons."
 ---
 
 # Project Memory
