@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "e2bccd3abbc2ec54234565db0b6ef01d1b9b80d5",
+  "source_commit": "2823db82934cbd29fbe79df2d8a564bdc84727dd",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -807,8 +807,8 @@
       "path": "skills/orchestration/unstuck/SKILL.md",
       "category": "orchestration",
       "skill": "unstuck",
-      "bytes": 3575,
-      "sha256": "12dd03d30fa396d0071b279a35f8a49be4ad9cf7758f3ee5ee2da3567c89ff19"
+      "bytes": 3778,
+      "sha256": "e3bb602f52bee23ab8ac0ff0cd471387757ac92af90dc9cbfed2308b358a0db2"
     },
     {
       "path": "skills/orchestration/unstuck/agents/openai.yaml",
