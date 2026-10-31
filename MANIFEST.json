@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "1f1f61ebb5db09b6afef8c022975c53b639ce210",
+  "source_commit": "a0cd55bb5ce5bd4600fd7529ce1d5595e2d836c0",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -114,8 +114,8 @@
       "path": "skills/operations-integrations/bw-login/SKILL.md",
       "category": "operations-integrations",
       "skill": "bw-login",
-      "bytes": 23397,
-      "sha256": "3412473b96cfadc43c3037df1bba406e70bc929120dac9e93b51468ad992159e"
+      "bytes": 25266,
+      "sha256": "1ba3eb8024973d34dd3000dc6bc92283a9c0c6102c3edeebb7eb73633a5af87a"
     },
     {
       "path": "skills/operations-integrations/bw-login/agents/openai.yaml",
