@@ -1061,8 +1061,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
     })().catch((error) => failed("permission-handler-failed", error)));
   });
 
-  // Paseo sends agent.closed for an explicit close or kill and for every agent when the daemon shuts down. In 0.14
-  // automatic idle collection emits it too, with no distinguishing field; operators must disable that collector.
+  // Paseo sends agent.closed for an explicit close or kill and for every agent when the daemon shuts down. In 0.14 and
+  // 0.15 automatic idle collection emits it too, with no distinguishing field; operators must disable that collector.
   // The close is stored for the agent, with this daemon run, whether or not it has a record
   // yet, and closeGate decides on every later sweep: work of this agent is held, and ended once this run outlives the
   // close, while a new daemon run clears it.
@@ -1084,22 +1084,23 @@ export default function contribute(server: PluginServerContext, openClient: () =
   async function inspectDaemonAtStartup(): Promise<void> {
     if (stopped) return;
     let connected = false;
-    let checking014 = false;
+    let checkingCleanup = false;
     try {
       const api = await acquire();
       connected = true;
       if (stopped) { await release(); return; }
-      checking014 = /^0\.14\./.test(api.daemonVersion?.() ?? "");
-      if (checking014) {
-        // Read the effective setting, never patch it. 0.14 resolves an absent persisted key to true. The host version
-        // gate keeps older daemons on their existing path without attempting the newer config inspection.
+      // 0.15 keeps 0.14's idle collector unchanged, so it gets the same inspection.
+      checkingCleanup = /^0\.1[45]\./.test(api.daemonVersion?.() ?? "");
+      if (checkingCleanup) {
+        // Read the effective setting, never patch it. 0.14 and 0.15 resolve an absent persisted key to true. The host
+        // version gate keeps older daemons on their existing path without attempting the newer config inspection.
         const { config: daemonConfig } = await api.config.get();
         if (!stopped && daemonConfig.idleRuntimeCleanup !== false) {
-          console.error('[usage-limit-auto-resume] WARNING: agents.idleRuntimeCleanup is enabled (also the Paseo 0.14 default when unset). Parked retries can be closed automatically and canceled as intentional stops. Config must set agents.idleRuntimeCleanup=false after installing 0.14 and before starting it with this plugin. This plugin only reads daemon config.');
+          console.error('[usage-limit-auto-resume] WARNING: agents.idleRuntimeCleanup is enabled (also the Paseo 0.14 and 0.15 default when unset). Parked retries can be closed automatically and canceled as intentional stops. Config must set agents.idleRuntimeCleanup=false after installing 0.14 or 0.15 and before starting it with this plugin. This plugin only reads daemon config.');
         }
       }
     } catch {
-      if (!stopped && checking014) console.error('[usage-limit-auto-resume] WARNING: daemon config could not be read at startup; verify agents.idleRuntimeCleanup=false on Paseo 0.14 so parked retries cannot be closed automatically.');
+      if (!stopped && checkingCleanup) console.error('[usage-limit-auto-resume] WARNING: daemon config could not be read at startup; verify agents.idleRuntimeCleanup=false on Paseo 0.14 or 0.15 so parked retries cannot be closed automatically.');
     } finally {
       // The supervisor publishes its listen address after plugins start. A missing endpoint is not a completed
       // inspection: retry until the first connection succeeds, then keep the version-gated read/warning one-time.
