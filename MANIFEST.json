@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "d91c7c35ba04ce95668715950b519f568a949d6b",
+  "source_commit": "7b9a5eee20d487a9e4068fd8de2a8ac8cb88b63e",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -465,7 +465,7 @@
       "category": "orchestration",
       "skill": "personal-skills",
       "bytes": 64118,
-      "sha256": "fab05a11ff88bd2f422560e3372a32b28733341e1c59e168ea6b368cec31d4fc"
+      "sha256": "c709b7ba0324b999f5196e3b11250b5be7708f9a4b9e77fafbe4efc46b44b944"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -605,7 +605,7 @@
       "category": "orchestration",
       "skill": "personal-skills",
       "bytes": 19905,
-      "sha256": "4027a52232d48915d8d4a2ba55f824137154c0d726cae96acc92612d29923025"
+      "sha256": "bae9eb196557df557ff31646b1a31d58faa968fb71e871e1e9602d769ed57e12"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_reload_remote.js",
@@ -661,7 +661,7 @@
       "category": "orchestration",
       "skill": "personal-skills",
       "bytes": 14041,
-      "sha256": "d4138719d2671d3a3ab1674358d6102e06e234d1be22d2ad3cddef818f622aca"
+      "sha256": "5c0e7fd5eff467f1c1c1aed40616a277d8a0aef1bd4710d9fc1a0f04c3254e9c"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
@@ -1061,31 +1061,31 @@
   "plugins": [
     {
       "id": "cache-aware-autocompact",
-      "paseo": ">=0.10.3 <0.15.0"
+      "paseo": ">=0.10.3 <0.16.0"
     },
     {
       "id": "history-cwd-fallback",
-      "paseo": ">=0.10.3 <0.15.0"
+      "paseo": ">=0.10.3 <0.16.0"
     },
     {
       "id": "merged-worker-archiver",
-      "paseo": ">=0.10.3 <0.15.0"
+      "paseo": ">=0.10.3 <0.16.0"
     },
     {
       "id": "orphan-project-sweeper",
-      "paseo": ">=0.10.3 <0.15.0"
+      "paseo": ">=0.10.3 <0.16.0"
     },
     {
       "id": "pi-fast-toggle",
-      "paseo": ">=0.11.1 <0.15.0"
+      "paseo": ">=0.11.1 <0.16.0"
     },
     {
       "id": "usage-limit-auto-resume",
-      "paseo": ">=0.10.3 <0.15.0"
+      "paseo": ">=0.10.3 <0.16.0"
     },
     {
       "id": "workspace-folder-title",
-      "paseo": ">=0.10.3 <0.15.0"
+      "paseo": ">=0.10.3 <0.16.0"
     }
   ],
   "plugin_files": [
@@ -1093,7 +1093,7 @@
       "path": "plugins/cache-aware-autocompact/README.md",
       "plugin": "cache-aware-autocompact",
       "bytes": 20565,
-      "sha256": "5b8f1cafe5004ff919ad3da6389aa686fa4945f3e3f24951efcd5a08922b58de"
+      "sha256": "5df9116fa94ee6e9055f3b387d3be4f9bdeb93e609edf9af53b36229b1a421cb"
     },
     {
       "path": "plugins/cache-aware-autocompact/index.server.ts",
@@ -1105,19 +1105,19 @@
       "path": "plugins/cache-aware-autocompact/package-lock.json",
       "plugin": "cache-aware-autocompact",
       "bytes": 21229,
-      "sha256": "c4c31d9dc1fcd9e5defa545888739fa43cb8379d1894ab9a1f916b29f6c2f1d1"
+      "sha256": "1fca3fab0863dd64bcf00afd34d1f03daa1786e764f4fd8b5e92f7641e412fbc"
     },
     {
       "path": "plugins/cache-aware-autocompact/package.json",
       "plugin": "cache-aware-autocompact",
       "bytes": 900,
-      "sha256": "d9cc00057caf96d5e6d02081e966cebeea6c6079d5c29cef8ee0e80ae787446e"
+      "sha256": "cb1cd6618063bc233161c1461c98c1f84dd2ba5b6774d11931fa032ff6f6c0b2"
     },
     {
       "path": "plugins/cache-aware-autocompact/paseo-plugin.json",
       "plugin": "cache-aware-autocompact",
       "bytes": 190,
-      "sha256": "5e831174896eddd6f28ff4624240b13f51d450225139287d5d81d4c5be02e4a0"
+      "sha256": "6ae6902facb035bfaeda768f814a16ebe5a8a956ab75a2010ef16a27b80336dd"
     },
     {
       "path": "plugins/cache-aware-autocompact/server/compaction.ts",
@@ -1261,7 +1261,7 @@
       "path": "plugins/history-cwd-fallback/README.md",
       "plugin": "history-cwd-fallback",
       "bytes": 7633,
-      "sha256": "40fc3c77141a2c2018789c063367dd51bd7e3d015c41bc8908b161ec17d6926e"
+      "sha256": "94c6c113ff5804a5af7696e7e2b3d312f002c125c5d9a4edfb6ec041d432cfd5"
     },
     {
       "path": "plugins/history-cwd-fallback/index.server.ts",
@@ -1273,19 +1273,19 @@
       "path": "plugins/history-cwd-fallback/package-lock.json",
       "plugin": "history-cwd-fallback",
       "bytes": 21198,
-      "sha256": "c30e3650cee6dac5029930149d015604bdc078924b41f5f8fe7f98ad670b369c"
+      "sha256": "b289dae2f3883da730da8989891ebb4280d3145a9dac5e7f6681559efbcb16e2"
     },
     {
       "path": "plugins/history-cwd-fallback/package.json",
       "plugin": "history-cwd-fallback",
       "bytes": 888,
-      "sha256": "b36d266a842956db813ba12b67996cc6697584b7f8b76010bf075bfa8239bd78"
+      "sha256": "963981d8d35dae4ab73d3bedf2856ef8a1919c603468170fe9353091b42b4b01"
     },
     {
       "path": "plugins/history-cwd-fallback/paseo-plugin.json",
       "plugin": "history-cwd-fallback",
       "bytes": 259,
-      "sha256": "07baa9f160713a9f99643fd5f07e028953014cd42507e7d552f2c97676c294fe"
+      "sha256": "b67bef2c88a5cdda496eeaeccdd33b49036fa536655b169a6066568d51dc0551"
     },
     {
       "path": "plugins/history-cwd-fallback/server/bridge.ts",
@@ -1321,7 +1321,7 @@
       "path": "plugins/merged-worker-archiver/README.md",
       "plugin": "merged-worker-archiver",
       "bytes": 48536,
-      "sha256": "099dba672637b791a59ced5d252e075939de00094f9876a7d14a21380466c1f4"
+      "sha256": "b40f0b16959f644fc904b5e322aa18a6039d24decbcaa6be9af91fbc1fd8d1de"
     },
     {
       "path": "plugins/merged-worker-archiver/index.server.ts",
@@ -1333,19 +1333,19 @@
       "path": "plugins/merged-worker-archiver/package-lock.json",
       "plugin": "merged-worker-archiver",
       "bytes": 23597,
-      "sha256": "7dc08dec4256b87e1d4ba8874efedcb9710454650f55170a4103c0d4df24e9cd"
+      "sha256": "622e45129a9c30bb6fc0bfddf1100ecb0a568cb151308bd5a8a43377677755d3"
     },
     {
       "path": "plugins/merged-worker-archiver/package.json",
       "plugin": "merged-worker-archiver",
       "bytes": 1054,
-      "sha256": "7403f7581213861bdec7b46eaba4a30172f408cd6f0a1d8428416530c7f2c8ff"
+      "sha256": "3d1c47e0b7e63726f525e2eeacc886e343558bbfa8f0470247309b11070f8cc3"
     },
     {
       "path": "plugins/merged-worker-archiver/paseo-plugin.json",
       "plugin": "merged-worker-archiver",
       "bytes": 356,
-      "sha256": "a153cd57a262cf5dcfc8cf615cbf65a013cdcbe3235a8d0c0056926c0f2e71d0"
+      "sha256": "5eb424739b9c5925495e27cfd54e89c612410bf5a3a452048fcb7afc8e1e0baf"
     },
     {
       "path": "plugins/merged-worker-archiver/scripts/dry-run.ts",
@@ -1507,7 +1507,7 @@
       "path": "plugins/orphan-project-sweeper/README.md",
       "plugin": "orphan-project-sweeper",
       "bytes": 11054,
-      "sha256": "2313544bac12551679dc23872453de409ea13baea4d868e768a272ef37a8a7c2"
+      "sha256": "bac55b8173e48692183af8003ebd5e801641ba395a08d4ce0e0bf19a374b84ae"
     },
     {
       "path": "plugins/orphan-project-sweeper/index.server.ts",
@@ -1519,19 +1519,19 @@
       "path": "plugins/orphan-project-sweeper/package-lock.json",
       "plugin": "orphan-project-sweeper",
       "bytes": 23597,
-      "sha256": "809c9b2cbc1c19727d53c730e83f6aa2d10b3885942f0409a789df55cdeafc9a"
+      "sha256": "1f206c2206631f3661f602c30fe65bcfa50d97e93fb00c5a55a8a8e2aeaddbbe"
     },
     {
       "path": "plugins/orphan-project-sweeper/package.json",
       "plugin": "orphan-project-sweeper",
       "bytes": 964,
-      "sha256": "31835a7b621a21a48b6aec9e045bb258618d40ddadc1dc6c97f34c006ca35b80"
+      "sha256": "9c86b4ecf7fc23691c72fbdb4b7e4ddeb1f87518e547a64b94a3687f743e360d"
     },
     {
       "path": "plugins/orphan-project-sweeper/paseo-plugin.json",
       "plugin": "orphan-project-sweeper",
       "bytes": 94,
-      "sha256": "017f6a33bae2733f78d5f9b4b06bbbf5a7e130eb2b3e073d7a8f565f0d2a15b0"
+      "sha256": "c515a4230e9174d46cfa2255fc36be955bd518f7ad36415e234ce1130872e7b5"
     },
     {
       "path": "plugins/orphan-project-sweeper/scripts/dry-run.ts",
@@ -1591,7 +1591,7 @@
       "path": "plugins/pi-fast-toggle/README.md",
       "plugin": "pi-fast-toggle",
       "bytes": 15456,
-      "sha256": "b3e6577d9039ab5353571205bdcdaa2e2a949646f046f7b33d7ca5e620c8f062"
+      "sha256": "4b4602c8f0eba234918512f39c9d341c160e1182cdb7ab32cd133ed280a85826"
     },
     {
       "path": "plugins/pi-fast-toggle/client/effort.tsx",
@@ -1633,19 +1633,19 @@
       "path": "plugins/pi-fast-toggle/package-lock.json",
       "plugin": "pi-fast-toggle",
       "bytes": 162275,
-      "sha256": "3f9d9822513798e9d5d7954d3a9fb093152773c58b341c41dc0aa462436211bf"
+      "sha256": "93b95e5912b160699dc4249f899cba38f859607f88b8f20c03bda748ad20195a"
     },
     {
       "path": "plugins/pi-fast-toggle/package.json",
       "plugin": "pi-fast-toggle",
       "bytes": 719,
-      "sha256": "08b902ae9d1b0aff0d6583bcc9e9521bdce8710b2a4209bb4474d3225670c870"
+      "sha256": "6d8d453e681d613d7e8d4511099564d87e03a32b5ccee0616c6aa45a64dd9232"
     },
     {
       "path": "plugins/pi-fast-toggle/paseo-plugin.json",
       "plugin": "pi-fast-toggle",
       "bytes": 164,
-      "sha256": "888ce2382866c25f96215935e334481edd200ac2c294a3cf0728f2f974e612bd"
+      "sha256": "ba84555f1ff647ddea20a0027c7d4a7a9ab755cf9593c44b3d1f64fc45833534"
     },
     {
       "path": "plugins/pi-fast-toggle/server/effort.ts",
@@ -1710,32 +1710,32 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 39609,
-      "sha256": "f3766262a7e57773906da255071ce1a10e3110c168a0dc95cd7166afffea6f15"
+      "bytes": 41690,
+      "sha256": "253a0ae6783bbaa366de42cabb07da69a81220c4a3863af87e07cf3465c5b5e7"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 76490,
-      "sha256": "b2ccd097fe27ee14ed05589f47b74e644a01aa185c0e2208e3eced421e041f26"
+      "bytes": 76636,
+      "sha256": "6dce5b6ed89e0c1951fdf5f880d4518d850dc60724dd03d850578fe8da37212d"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 21229,
-      "sha256": "312946a4886690c7e7b6a0d08e47b08a7ded35a4d991cb5803ef9fa24a5ea78a"
+      "sha256": "da71a8b39cf16418f5d530aa482df0a24583422bca639a7854e0c5beb39c6a1c"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 890,
-      "sha256": "8083a240c450b9f7d0b3e46d15f966a480fa282553d5e47e42207669c05752f8"
+      "sha256": "736e6fa21f6a30c421716062889b60c2cf0020cdcb15f572c2788bff2afd9cdc"
     },
     {
       "path": "plugins/usage-limit-auto-resume/paseo-plugin.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 186,
-      "sha256": "a6beb42dcd185998c601e4ddc68ae9318db1c5b4856d3fb689c736e0bb8e5033"
+      "sha256": "da00e3e4efb6e9def5ef2e23ca7cd4f53830a81778fe2f30f816119476bd0e3a"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/config.ts",
@@ -1873,7 +1873,7 @@
       "path": "plugins/workspace-folder-title/README.md",
       "plugin": "workspace-folder-title",
       "bytes": 1322,
-      "sha256": "dd8686cef6f5a634b40579e3cca688e96b413021f06e0ab51da9d7ef622c706f"
+      "sha256": "e4ef36c6d6506e85c39ff93537e822ce88b296c5e638376723c724688c9efc5c"
     },
     {
       "path": "plugins/workspace-folder-title/index.server.ts",
@@ -1885,19 +1885,19 @@
       "path": "plugins/workspace-folder-title/package-lock.json",
       "plugin": "workspace-folder-title",
       "bytes": 21202,
-      "sha256": "1eb5626e7fdfe50cb60396e7ba61836f28d7fc7d2d49baec16f35f3aacb28ecf"
+      "sha256": "e3cf07490e445905052b587ff94950bc8fc886ecc5861e2d3c2170936fb5ad25"
     },
     {
       "path": "plugins/workspace-folder-title/package.json",
       "plugin": "workspace-folder-title",
       "bytes": 861,
-      "sha256": "13a2962f7fd164db2150f76a83cd58d636941e10aec26e9fa92f17bc2d26a735"
+      "sha256": "209bacd07ee74f48ee3aeb3d79745d5c165cced9c59297aa71e513373ff1ddd7"
     },
     {
       "path": "plugins/workspace-folder-title/paseo-plugin.json",
       "plugin": "workspace-folder-title",
       "bytes": 216,
-      "sha256": "d612a72603a014b215ffa5198664de8208075d121ecb6d07786ba17011a82ad3"
+      "sha256": "f2b2c3260dd7883c27b8dfb2826116fae9b08a2d493449ad6f42d40738cee167"
     },
     {
       "path": "plugins/workspace-folder-title/tsconfig.json",
