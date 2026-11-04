@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "834195d4964409cedaf0edce844cb725174a9d12",
+  "source_commit": "b0d307c068b361c39ea7f2c6b83c531d4d1eda5d",
   "skill_count": 27,
   "file_count": 152,
   "files": [
@@ -1052,8 +1052,8 @@
       "path": "skills/web-browser/playwright/scripts/playwright_cli.sh",
       "category": "web-browser",
       "skill": "playwright",
-      "bytes": 2071,
-      "sha256": "e4473feb8df7a474b42bd425eac2660501407675f450585dee6603a2800e4525"
+      "bytes": 2077,
+      "sha256": "464938a2b1fbca2e0be516ab2699a0c63e3371a13b0a6b267b2e35973636a42a"
     },
     {
       "path": "skills/web-browser/playwright/scripts/seed_local_state.ps1",
