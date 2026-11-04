@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { agentPool, quotaHold, usageResumeAt, type PoolQuota, type QuotaHold, type QuotaPool, type QuotaSettings } from "./quota.ts";
 import { lastInput, turnInput, type TurnInput } from "./vendor/turn-input.ts";
+import { sameDaemonRun } from "./daemon-run.ts";
 
 export { lastInput, turnInput, type TurnInput };
 
@@ -72,35 +73,28 @@ export type ResumeRecord = {
   rpcTimeout?: RpcTimeoutWait | null;
   // The pq pool whose provider refused the failed turn for quota (see quotaRefused); absent for any other failure.
   refusedPool?: QuotaPool | null;
-  // The retry turn this record sent ended without completing and left nothing to decide on; the agent's close decides
-  // (see RetryInterruption).
+  // The retry turn this record sent was cut off by a graceful daemon stop (see RetryInterruption).
   interrupted?: RetryInterruption | null;
+  // The daemon run that last delayed this record's first send after a restart (RESTART_SETTLE_MS). Set when a retry cut
+  // off by a stop is parked again, cleared by its next send; each later run delays it again (restartSettle).
+  settleRun?: string | null;
 };
 
 export type RpcTimeoutWait = { giveUpAt: string; waiting: string | null };
 
 /**
- * A retry turn the plugin sent that ended without completing and without evidence to decide it on: canceled, or failed
- * with no readable timeline. A graceful daemon stop ends a running retry so, as does an explicit close or kill, a user's
- * cancel or a newer message. `at` is when the plugin saw the end. `lastUserMessageAt` is the agent's latest user message
- * time in its stored record then: after a restart it is the only way to know the plugin's own send on the rebuilt
- * timeline (isExpectedUser). `closedBy` is the agent's close within INTERRUPT_CLOSE_WINDOW_MS of that end, which ended
- * the turn; another daemon run's close was that run's stop, and the retry goes on (resumeInterrupted).
+ * A retry turn the plugin sent that a graceful daemon stop cut off: it ended canceled, or failed with no readable
+ * timeline, while the daemon did not answer the plugin (a stopping daemon stops answering before it closes its agents).
+ * `at` is when the plugin saw the end, and `daemon` the run that stopped. `lastUserMessageAt` is the agent's latest user
+ * message time in its stored record then: after a restart it is the only way to know the plugin's own send on the
+ * rebuilt timeline (isExpectedUser). A later run resumes the retry (resumeInterrupted).
  */
-export type RetryInterruption = { turnId: string; at: string; lastUserMessageAt: string; closedBy: { at: string; daemon: string } | null };
+export type RetryInterruption = { turnId: string; at: string; lastUserMessageAt: string; daemon: string };
 
-// Paseo closes an agent right after its close ends the running turn, within its 5-second close timeout, so the end and
-// the close arrive this close together, in either order.
-export const INTERRUPT_CLOSE_WINDOW_MS = 10_000;
 // After a restart the resume of an interrupted retry waits this long, so Paseo 0.15's restart recovery
 // (agents.resumeOnStartup), dispatched as plugins start, goes first when it resumes the agent; its message is newer and
 // ends the record.
 export const RESTART_SETTLE_MS = 60_000;
-
-/** The close came within INTERRUPT_CLOSE_WINDOW_MS of the retry turn's end, before or after it. */
-export function closedTheTurn(interruption: Pick<RetryInterruption, "at">, close: { at: string }): boolean {
-  return Math.abs(Date.parse(close.at) - Date.parse(interruption.at)) <= INTERRUPT_CLOSE_WINDOW_MS;
-}
 
 /** Paseo closed this agent (`agent.closed`): when, and which daemon run saw it (the plugin's parent process). */
 export type AgentClose = { agentId: string; at: string; daemon: string };
@@ -121,7 +115,7 @@ export const AGENT_CLOSE_GRACE_MS = 60_000;
  */
 export function closeDecision(close: AgentClose | null, record: Pick<ResumeRecord, "originUserMessageAt">, daemon: string, now = Date.now()): "go" | "stale" | "hold" | "end" {
   if (!close) return "go";
-  if (close.daemon !== daemon) return "stale";
+  if (!sameDaemonRun(close.daemon, daemon)) return "stale";
   if (record.originUserMessageAt && Date.parse(record.originUserMessageAt) > Date.parse(close.at)) return "go";
   return Date.parse(close.at) + AGENT_CLOSE_GRACE_MS <= now ? "end" : "hold";
 }
@@ -667,14 +661,25 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
  * A retry turn a graceful daemon stop cut off, resumed after the restart: parked again on the backoff from the end of
  * that turn, as a failed retry turn is (afterTransientFailure), with a pure "continue", never a replay. The turn ran on
  * the record's last send, which the rebuilt timeline shows only by its text and the agent's unchanged latest user
- * message time. The first send also waits RESTART_SETTLE_MS from now.
+ * message time. The first send also waits RESTART_SETTLE_MS from now, in this run `run` (restartSettle).
  */
-export function resumeInterrupted(record: ResumeRecord, config: ResumeConfig, now = Date.now()): ResumeRecord {
+export function resumeInterrupted(record: ResumeRecord, config: ResumeConfig, run: string, now = Date.now()): ResumeRecord {
   const interruption = record.interrupted!;
   const next = afterTransientFailure({ ...record, failedOutcome: true, retryPrompt: "continue" }, "failed: retry turn interrupted by a daemon stop",
     resumePrompt(record), record.attempts.at(-1)!.messageId, interruption.lastUserMessageAt, config, now);
   const due = Date.parse(interruption.at) + transientDelaySeconds(config, attemptCount(record)) * 1000;
-  return { ...next, interrupted: null, notBefore: new Date(Math.max(due, now + RESTART_SETTLE_MS)).toISOString() };
+  return { ...next, interrupted: null, settleRun: run, notBefore: new Date(Math.max(due, now + RESTART_SETTLE_MS)).toISOString() };
+}
+
+/**
+ * A retry parked again after a stop and not sent since, seen by a daemon run other than the one that last delayed it: its
+ * first send in this run waits RESTART_SETTLE_MS from now too, so this run's own restart recovery goes first. Null when
+ * nothing changes.
+ */
+export function restartSettle(record: ResumeRecord, run: string, now = Date.now()): ResumeRecord | null {
+  if (!record.settleRun || sameDaemonRun(record.settleRun, run)) return null;
+  const notBefore = new Date(Math.max(Date.parse(record.notBefore), now + RESTART_SETTLE_MS)).toISOString();
+  return { ...record, settleRun: run, notBefore, updatedAt: new Date(now).toISOString() };
 }
 
 /** A turn start seen while a send was in flight, noted before the store records it. */
