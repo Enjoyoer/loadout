@@ -73,7 +73,7 @@ export type ResumeRecord = {
   rpcTimeout?: RpcTimeoutWait | null;
   // The pq pool whose provider refused the failed turn for quota (see quotaRefused); absent for any other failure.
   refusedPool?: QuotaPool | null;
-  // The retry turn this record sent was cut off by a graceful daemon stop (see RetryInterruption).
+  // The turn this record sent was cut off by a graceful daemon stop or a crash (see RetryInterruption).
   interrupted?: RetryInterruption | null;
   // The daemon run that last delayed this record's first send after a restart (RESTART_SETTLE_MS). Set when a retry cut
   // off by a stop is parked again, cleared by its next send; each later run delays it again (restartSettle).
@@ -83,11 +83,14 @@ export type ResumeRecord = {
 export type RpcTimeoutWait = { giveUpAt: string; waiting: string | null };
 
 /**
- * A retry turn the plugin sent that a graceful daemon stop cut off: it ended canceled, or failed with no readable
- * timeline, while the daemon did not answer the plugin (a stopping daemon stops answering before it closes its agents).
- * `at` is when the plugin saw the end, and `daemon` the run that stopped. `lastUserMessageAt` is the agent's latest user
- * message time in its stored record then: after a restart it is the only way to know the plugin's own send on the
- * rebuilt timeline (isExpectedUser). A later run resumes the retry (resumeInterrupted).
+ * A turn the plugin sent (a retry, a usage resume or a prompt-timeout resend) that a graceful daemon stop or a crash cut
+ * off. At a stop it ended canceled, or failed with no readable timeline, while the daemon did not answer the plugin (a
+ * stopping daemon stops answering before it closes its agents): `at` is when the plugin saw the end, and
+ * `lastUserMessageAt` the agent's latest user message time in its stored record then. After a crash, or a stop whose end
+ * the plugin did not mark, a later run finds the turn's start note instead (index.server.ts, cutTurn): `at` is when the
+ * turn started, and `lastUserMessageAt` the time the daemon reported then. `daemon` is the run that stopped. After a
+ * restart that time is the only way to know the plugin's own send on the rebuilt timeline (isExpectedUser). A later run
+ * resumes the send (resumeInterrupted).
  */
 export type RetryInterruption = { turnId: string; at: string; lastUserMessageAt: string; daemon: string };
 
@@ -658,17 +661,21 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
 }
 
 /**
- * A retry turn a graceful daemon stop cut off, resumed after the restart: parked again on the backoff from the end of
- * that turn, as a failed retry turn is (afterTransientFailure), with a pure "continue", never a replay. The turn ran on
- * the record's last send, which the rebuilt timeline shows only by its text and the agent's unchanged latest user
- * message time. The first send also waits RESTART_SETTLE_MS from now, in this run `run` (restartSettle).
+ * A turn the plugin sent that a graceful daemon stop or a crash cut off, resumed after the restart: parked again on the
+ * backoff from that turn, as a failed retry turn is (afterTransientFailure), never a replay. A retry sends a pure
+ * "continue". A prompt-timeout resend ran its prompt, so it becomes an ordinary failed-turn retry ("continue"). A usage
+ * resume sends its continuation prompt again, with no new reset wait, and keeps its usage evidence. The turn ran on the
+ * record's last send, which the rebuilt timeline shows only by its text and the agent's unchanged latest user message
+ * time. The first send also waits RESTART_SETTLE_MS from now, in this run `run` (restartSettle).
  */
 export function resumeInterrupted(record: ResumeRecord, config: ResumeConfig, run: string, now = Date.now()): ResumeRecord {
   const interruption = record.interrupted!;
-  const next = afterTransientFailure({ ...record, failedOutcome: true, retryPrompt: "continue" }, "failed: retry turn interrupted by a daemon stop",
+  const next = afterTransientFailure({ ...record, failedOutcome: true, retryPrompt: "continue", rpcTimeout: null }, "failed: retry turn interrupted by a daemon stop",
     resumePrompt(record), record.attempts.at(-1)!.messageId, interruption.lastUserMessageAt, config, now);
   const due = Date.parse(interruption.at) + transientDelaySeconds(config, attemptCount(record)) * 1000;
-  return { ...next, interrupted: null, settleRun: run, notBefore: new Date(Math.max(due, now + RESTART_SETTLE_MS)).toISOString() };
+  const usage = record.kind !== "transient"
+    ? { failureSignature: record.failureSignature, failedAssistantText: record.failedAssistantText, refusedPool: record.refusedPool ?? null } : {};
+  return { ...next, ...usage, interrupted: null, settleRun: run, notBefore: new Date(Math.max(due, now + RESTART_SETTLE_MS)).toISOString() };
 }
 
 /**
