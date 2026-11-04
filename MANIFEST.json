@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "ce35fbd4e45112f51915d898192def815651faa2",
+  "source_commit": "1a4d22c10e1a18fe312080c500617b427441eb96",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -1746,8 +1746,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/daemon-run.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 2062,
-      "sha256": "86949616306a07b39bb758dae333b76c97f9d0cb03f720661ca648733fbb5d17"
+      "bytes": 2111,
+      "sha256": "07cfa5665c96a59d942f870b41660241b768e879aa6ceaf79938c8f58ec51f49"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/daemon.ts",
