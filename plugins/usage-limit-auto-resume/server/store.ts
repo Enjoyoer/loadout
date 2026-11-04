@@ -2,6 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { isActive, type AgentClose, type ResumeAttempt, type ResumeRecord, type ResumeState } from "./model.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
+import { sameDaemonRun } from "./daemon-run.ts";
 import { paseoHome } from "./vendor/daemon-target.ts";
 
 /** What a pruned record leaves behind: its source turn, so a repeated event for that turn still reads as a duplicate. */
@@ -66,6 +67,12 @@ const isQuotaHold = (value: unknown) => typeof value === "object" && value !== n
 const isRpcTimeout = (value: unknown) => typeof value === "object" && value !== null &&
   isTime((value as Record<string, unknown>).giveUpAt) && nullable((value as Record<string, unknown>).waiting, isString);
 
+const isInterruption = (value: unknown) => {
+  if (typeof value !== "object" || value === null) return false;
+  const interruption = value as Record<string, unknown>;
+  return isId(interruption.turnId) && isTime(interruption.at) && isTime(interruption.lastUserMessageAt) && isId(interruption.daemon);
+};
+
 const isClose = (value: unknown): value is AgentClose => typeof value === "object" && value !== null &&
   isId((value as Record<string, unknown>).agentId) && isTime((value as Record<string, unknown>).at) && isId((value as Record<string, unknown>).daemon);
 
@@ -86,7 +93,7 @@ function isRecord(value: unknown): value is ResumeRecord {
     nullable(record.sentAt, isTime) && nullable(record.resumeTurnId, isString) && nullable(record.resumeStartedAt, isTime) &&
     nullable(record.resumeFinishedAt, isTime) && nullable(record.verificationDeadlineAt, isTime) &&
     isTime(record.createdAt) && isTime(record.updatedAt) && nullable(record.terminalReason, isString) &&
-    nullable(record.quotaHold, isQuotaHold) && nullable(record.rpcTimeout, isRpcTimeout);
+    nullable(record.quotaHold, isQuotaHold) && nullable(record.rpcTimeout, isRpcTimeout) && nullable(record.interrupted, isInterruption) && nullable(record.settleRun, isId);
 }
 
 function defaultState(): State {
@@ -160,7 +167,7 @@ export class ResumeStore {
   async markClosed(close: AgentClose): Promise<void> {
     await this.exclusive(async () => {
       const state = await this.load();
-      const kept = (state.closes ?? []).filter((other) => other.agentId !== close.agentId && other.daemon === close.daemon);
+      const kept = (state.closes ?? []).filter((other) => other.agentId !== close.agentId && sameDaemonRun(other.daemon, close.daemon));
       await this.persist(state.records, state.guards, [...kept, close].slice(-MAX_AGENT_CLOSES));
     });
   }

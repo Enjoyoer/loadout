@@ -6,10 +6,11 @@ import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./server/config.ts";
 import { openDaemonClient, type AgentSettingsPort } from "./server/daemon.ts";
 import { ReturnStore, type Profile } from "./server/fallback.ts";
-import { readStoredProfiles } from "./server/stored-agent.ts";
+import { readStoredProfiles, readStoredUserMessageAt } from "./server/stored-agent.ts";
+import { daemonRun, sameDaemonRun } from "./server/daemon-run.ts";
 import { createFallbackRunner } from "./server/fallback-runner.ts";
 import { agentPool, QuotaReader, type PoolQuota, type QuotaPool } from "./server/quota.ts";
-import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, boundUser, cancelClaim, closeDecision, failureSignature, holdsClaim, isActive, isExpectedUser, isOwnLatestMessage, isRpcTimeoutWaiting, lastInput, endedTurnRows, turnInput, verifyUsageInput, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, rpcTimeoutDecision, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, USAGE_ENDING_GATES, verificationDecision, verifyTransientTimeline, staleFailure, type AgentClose, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim, type TimelineEntry, type TurnInput } from "./server/model.ts";
+import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, boundUser, cancelClaim, closeDecision, failureSignature, restartSettle, resumeInterrupted, holdsClaim, isActive, isExpectedUser, isOwnLatestMessage, isRpcTimeoutWaiting, lastInput, endedTurnRows, turnInput, verifyUsageInput, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, rpcTimeoutDecision, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, USAGE_ENDING_GATES, verificationDecision, verifyTransientTimeline, staleFailure, type AgentClose, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim, type TimelineEntry, type TurnInput } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError } from "./server/store.ts";
 import { endedReads, killAgent } from "./server/vendor/ended-read.ts";
 
@@ -20,11 +21,16 @@ const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/
 
 type OpenedClient = PaseoClient & { agentSettings?: AgentSettingsPort; daemonVersion?: () => string | null };
 
-// Paseo forks every plugin from the daemon worker, so the parent process is the daemon run: a daemon restart replaces
-// it, a plugin reload does not.
-const currentDaemon = () => `pid:${process.ppid}`;
+// The daemon run: the parent process, with its start where the host shows it (daemon-run.ts). Read once.
+let thisRun: string | null = null;
+const currentDaemon = () => thisRun ??= daemonRun();
+// A reply, an error reply included, shows the daemon answered.
+const isDaemonReply = (error: unknown) => error instanceof Error && (error.name === "DaemonRpcError" || error.name === "DaemonProtocolError");
+// How long the plugin waits for the daemon to answer before it takes it for stopping (daemonProbe). Paseo gives a stopping
+// plugin 2 seconds before it terminates it, and the record must be written within them.
+const DAEMON_PROBE_TIMEOUT_MS = 1_000;
 
-export default function contribute(server: PluginServerContext, openClient: () => Promise<OpenedClient> = openDaemonClient, quota = new QuotaReader(), returns = new ReturnStore(), stored: (agentId: string) => Promise<Profile[]> = readStoredProfiles, daemon: () => string = currentDaemon, kill: (agentId: string) => Promise<void> = killAgent) {
+export default function contribute(server: PluginServerContext, openClient: () => Promise<OpenedClient> = openDaemonClient, quota = new QuotaReader(), returns = new ReturnStore(), stored: (agentId: string) => Promise<Profile[]> = readStoredProfiles, daemon: () => string = currentDaemon, kill: (agentId: string) => Promise<void> = killAgent, storedUserAt: (agentId: string) => Promise<string | null> = readStoredUserMessageAt) {
   const settings = server.registerSettings(defineSettings({ id: SETTINGS_ID, scope: "host", version: SETTINGS_VERSION, schema: ConfigSchema }));
   const store = new ResumeStore();
   let timer: NodeJS.Timeout | null = null;
@@ -258,14 +264,15 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // Decided before anything reads the agent's timeline, since that read loads a closed agent again (closeDecision).
   // The close is the agent's, so this holds every record of the agent, whenever and by whichever handler it was
   // created. True when the record may go on.
-  async function closeGate(record: ResumeRecord): Promise<boolean> {
+  async function closeGate(record: ResumeRecord, currentConfig: Config): Promise<boolean> {
     const run = daemon();
     let close = await store.closeOf(record.agentId);
-    if (close && close.daemon !== run) {
+    if (close && !sameDaemonRun(close.daemon, run)) {
       await store.clearClose(close);
       log(`agent-close-cleared agentId=${record.agentId} reason=daemon-restarted closedAt=${close.at}`);
       close = null;
     }
+    if (!(await restartGate(record, currentConfig, run))) return false;
     // A close this process saw whose store write has not landed yet.
     const seen = closes.get(record.agentId);
     if (seen && (!close || Date.parse(seen.at) > Date.parse(close.at))) close = seen;
@@ -282,12 +289,60 @@ export default function contribute(server: PluginServerContext, openClient: () =
     return false;
   }
 
+  // A retry a graceful stop cut off (markInterrupted), and the first send after a restart. True when the record may go on.
+  // - Cut off in an earlier daemon run: parked again with a pure continue (resumeInterrupted), and sent once due.
+  // - Cut off in this run: nothing acts on it while the daemon still does not answer. A daemon that answers again did not
+  //   stop (its reply was only slow when the turn ended), so the record settles as such a turn always did.
+  // - Parked again and not sent since, first seen by this run: its first send waits RESTART_SETTLE_MS (restartSettle).
+  async function restartGate(record: ResumeRecord, currentConfig: Config, run: string): Promise<boolean> {
+    const unchanged = (value: ResumeRecord) => value.state === record.state && value.updatedAt === record.updatedAt;
+    const interruption = record.interrupted;
+    if (interruption && !sameDaemonRun(interruption.daemon, run)) {
+      let resumed = false;
+      const next = await store.update(record.recordId, (value) => unchanged(value) ? (resumed = true, resumeInterrupted(value, currentConfig, run)) : value);
+      if (resumed && next) log(`retry-scheduled agentId=${record.agentId} recordId=${record.recordId} attempts=${attemptCount(next)} notBefore=${next.notBefore} reason=daemon-restarted`);
+      return false;
+    }
+    if (interruption) {
+      if (await daemonProbe(record.agentId) !== "answered") return false;
+      const updatedAt = new Date().toISOString();
+      let dismissed = false;
+      await store.update(record.recordId, (value) => !unchanged(value) ? value : (dismissed = true, value.terminalReason === "retry-turn-canceled"
+        ? { ...value, state: "superseded", interrupted: null, updatedAt } : { ...value, interrupted: null, updatedAt }));
+      if (dismissed) log(`retry-interruption-dismissed agentId=${record.agentId} recordId=${record.recordId} reason=daemon-answered`);
+      return false;
+    }
+    if (restartSettle(record, run)) {
+      const next = await store.update(record.recordId, (value) => unchanged(value) ? restartSettle(value, run) ?? value : value);
+      if (next?.settleRun === run) log(`retry-scheduled agentId=${record.agentId} recordId=${record.recordId} attempts=${attemptCount(next)} notBefore=${next.notBefore} reason=daemon-restarted`);
+      return false;
+    }
+    return true;
+  }
+
+  // Whether the daemon answers the plugin now: one agent fetch, which never loads an agent. A stopping daemon drops every
+  // request and refuses new connections from the moment it freezes its sockets, before it closes any agent, and the
+  // plugin's own cleanup then closes its client. So no reply within DAEMON_PROBE_TIMEOUT_MS, a transport that is not
+  // connected, a closed client and a refused connection are no answer; any reply, an error reply included, is one.
+  // "answered", or why not.
+  async function daemonProbe(agentId: string): Promise<string> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<string>((resolve) => { timer = setTimeout(() => resolve("timeout"), DAEMON_PROBE_TIMEOUT_MS); });
+    const fetched = (async () => { await fetchAgent(await acquire(), agentId); return "answered"; })()
+      .catch((error: unknown) => isDaemonReply(error) ? "answered" : JSON.stringify(errorMessage(error)));
+    try {
+      return await Promise.race([fetched, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // All ambiguous transient sends take this path, including persisted records from older plugin versions. Never
   // infer delivery from prompt text alone: the latest user must be the original checked row or our stable send ID.
   async function reverifyTransient(input: ResumeRecord, currentConfig: Config): Promise<ResumeRecord | null> {
     // A prompt-timeout record never re-arms: it sends its original message once, or nothing.
     if (input.rpcTimeout || !currentConfig.armed || inFlight.has(input.agentId)) return null;
-    if (!(await closeGate(input))) return null;
+    if (!(await closeGate(input, currentConfig))) return null;
     const record = input;
     const api = await acquire();
     const agent = await fetchAgent(api, record.agentId);
@@ -585,6 +640,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
           state: "verifying",
           resumeTurnId: value.resumeTurnId ?? claim.turnId,
           resumeStartedAt: value.resumeStartedAt ?? claim.startedAt,
+          settleRun: null,
           attempts: value.attempts.map((attempt) => attempt.messageId === stableMessageId ? { ...attempt, result: "sent" } : attempt),
           updatedAt: new Date().toISOString(),
         } : value);
@@ -672,7 +728,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
           await store.update(record.recordId, (value) => value.state === "detected" ? { ...value, state: "parked", updatedAt: new Date().toISOString() } : value);
         }
         const latest = (await store.read()).find((value) => value.recordId === record.recordId);
-        if (!latest || !(await closeGate(latest))) continue;
+        if (!latest || !(await closeGate(latest, currentConfig))) continue;
         if (latest.state === "resuming") {
           await store.update(latest.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: "send-state-unreconciled", updatedAt: new Date().toISOString() }));
           continue;
@@ -749,7 +805,40 @@ export default function contribute(server: PluginServerContext, openClient: () =
     })().catch((error) => failed("turn-started-handler-failed", error)));
   });
 
+  // The retry turn this record sent ended without completing and left nothing to decide on: canceled, or failed with no
+  // readable timeline. A graceful daemon stop ends a running retry so: Paseo stops answering the plugin, then closes
+  // every agent, and Pi's close fails the running turn. A user's cancel, a newer message and an explicit close or kill
+  // end it so too, but while the daemon still answers (daemonProbe). Only a turn that ended while the daemon did not
+  // answer was cut off by a stop: the record waits for the next daemon run (restartGate). After a restart only the
+  // agent's latest user message time can show that the newest row of the rebuilt timeline is the plugin's own send, and
+  // the daemon no longer answers, so that time is read from the agent's stored record. A daemon that answers, or a
+  // stored time that cannot be read, leaves the turn to end as it always did. True when the record now waits.
+  async function markInterrupted(active: ResumeRecord, turnId: string | null | undefined, at: string, reason: string): Promise<boolean> {
+    if (active.kind !== "transient" || active.rpcTimeout || active.state !== "verifying" || !turnId || active.resumeTurnId !== turnId || !active.attempts.length) return false;
+    const probe = await daemonProbe(active.agentId);
+    if (probe === "answered") return false;
+    let stamp: string | null;
+    try {
+      stamp = await storedUserAt(active.agentId);
+    } catch (error) {
+      log(`retry-interruption-unread agentId=${active.agentId} recordId=${active.recordId} reason=${JSON.stringify(errorMessage(error))}`);
+      return false;
+    }
+    if (!stamp) return false;
+    const lastUserMessageAt = stamp;
+    let marked = false;
+    await store.update(active.recordId, (value) => {
+      if (value.state !== "verifying" || value.resumeTurnId !== turnId) return value;
+      marked = true;
+      return { ...value, state: "uncertain", terminalReason: reason, interrupted: { turnId, at, lastUserMessageAt, daemon: daemon() }, updatedAt: new Date().toISOString() };
+    });
+    if (marked) log(`retry-interrupted agentId=${active.agentId} recordId=${active.recordId} turnId=${turnId} reason=${reason} probe=${probe}`);
+    return marked;
+  }
+
   const removeTurnEnded = server.on("agent.turn_ended", (event, context) => {
+    // When the end arrived (markInterrupted).
+    const endedAt = new Date().toISOString();
     // The turn's timeline: the event's own (Paseo 0.11), else the tail, read before any other await (endedTimeline).
     // A canceled turn is not read: a kill, delete, archive or daemon shutdown cancels the turn just before it unloads
     // the agent, and a read landing after that loads it again. Without its rows a canceled turn still ends as before;
@@ -828,6 +917,9 @@ export default function contribute(server: PluginServerContext, openClient: () =
         return;
       }
       if (active?.kind === "transient" && event.outcome.kind === "canceled") {
+        // A repeated end of a retry turn already cut off by a stop changes nothing.
+        if (active.interrupted?.turnId === event.turnId) return;
+        if (await markInterrupted(active, event.turnId, endedAt, "retry-turn-canceled")) return;
         await store.update(active.recordId, (value) => ({ ...value, state: "superseded", terminalReason: "retry-turn-canceled", updatedAt: new Date().toISOString() }));
         return;
       }
@@ -854,6 +946,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
             : turnText(items);
           const sentMessageId = active.attempts.at(-1)?.messageId;
           if (!user || (user.messageId ?? user.clientMessageId) !== sentMessageId || user.text !== active.retryPrompt || !assistant) {
+            if (!user && event.outcome.kind === "failed" && await markInterrupted(active, event.turnId, endedAt, "retry-turn-ambiguous")) return;
             await store.update(active.recordId, (value) => !owns(value) ? value : ({ ...value, state: "uncertain", terminalReason: "retry-turn-ambiguous", updatedAt: new Date().toISOString() }));
             log(`retry-uncertain agentId=${event.agent.id} reason=retry-turn-ambiguous`);
             return;
