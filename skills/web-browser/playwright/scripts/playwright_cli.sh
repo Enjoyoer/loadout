@@ -33,7 +33,7 @@ case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*)
     export PW_CODEGEN_NO_INSPECTOR=1
     for arg in "$@"; do
-      if [[ "$arg" == open || "$arg" == attach || "$arg" == show ]]; then
+      if [[ "$arg" == *open* || "$arg" == *attach* || "$arg" == *show* ]]; then
         resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/windows_profile.cjs"
         if command -v cygpath >/dev/null 2>&1; then
           resolver="$(cygpath -w "$resolver")"
