@@ -72,9 +72,35 @@ export type ResumeRecord = {
   rpcTimeout?: RpcTimeoutWait | null;
   // The pq pool whose provider refused the failed turn for quota (see quotaRefused); absent for any other failure.
   refusedPool?: QuotaPool | null;
+  // The retry turn this record sent ended without completing and left nothing to decide on; the agent's close decides
+  // (see RetryInterruption).
+  interrupted?: RetryInterruption | null;
 };
 
 export type RpcTimeoutWait = { giveUpAt: string; waiting: string | null };
+
+/**
+ * A retry turn the plugin sent that ended without completing and without evidence to decide it on: canceled, or failed
+ * with no readable timeline. A graceful daemon stop ends a running retry so, as does an explicit close or kill, a user's
+ * cancel or a newer message. `at` is when the plugin saw the end. `lastUserMessageAt` is the agent's latest user message
+ * time in its stored record then: after a restart it is the only way to know the plugin's own send on the rebuilt
+ * timeline (isExpectedUser). `closedBy` is the agent's close within INTERRUPT_CLOSE_WINDOW_MS of that end, which ended
+ * the turn; another daemon run's close was that run's stop, and the retry goes on (resumeInterrupted).
+ */
+export type RetryInterruption = { turnId: string; at: string; lastUserMessageAt: string; closedBy: { at: string; daemon: string } | null };
+
+// Paseo closes an agent right after its close ends the running turn, within its 5-second close timeout, so the end and
+// the close arrive this close together, in either order.
+export const INTERRUPT_CLOSE_WINDOW_MS = 10_000;
+// After a restart the resume of an interrupted retry waits this long, so Paseo 0.15's restart recovery
+// (agents.resumeOnStartup), dispatched as plugins start, goes first when it resumes the agent; its message is newer and
+// ends the record.
+export const RESTART_SETTLE_MS = 60_000;
+
+/** The close came within INTERRUPT_CLOSE_WINDOW_MS of the retry turn's end, before or after it. */
+export function closedTheTurn(interruption: Pick<RetryInterruption, "at">, close: { at: string }): boolean {
+  return Math.abs(Date.parse(close.at) - Date.parse(interruption.at)) <= INTERRUPT_CLOSE_WINDOW_MS;
+}
 
 /** Paseo closed this agent (`agent.closed`): when, and which daemon run saw it (the plugin's parent process). */
 export type AgentClose = { agentId: string; at: string; daemon: string };
@@ -635,6 +661,20 @@ export function afterTransientFailure(record: ResumeRecord, assistant: string, u
     resumeTurnId: null, resumeStartedAt: null, resumeFinishedAt: null,
     sentAt: null, verificationDeadlineAt: null, updatedAt,
   };
+}
+
+/**
+ * A retry turn a graceful daemon stop cut off, resumed after the restart: parked again on the backoff from the end of
+ * that turn, as a failed retry turn is (afterTransientFailure), with a pure "continue", never a replay. The turn ran on
+ * the record's last send, which the rebuilt timeline shows only by its text and the agent's unchanged latest user
+ * message time. The first send also waits RESTART_SETTLE_MS from now.
+ */
+export function resumeInterrupted(record: ResumeRecord, config: ResumeConfig, now = Date.now()): ResumeRecord {
+  const interruption = record.interrupted!;
+  const next = afterTransientFailure({ ...record, failedOutcome: true, retryPrompt: "continue" }, "failed: retry turn interrupted by a daemon stop",
+    resumePrompt(record), record.attempts.at(-1)!.messageId, interruption.lastUserMessageAt, config, now);
+  const due = Date.parse(interruption.at) + transientDelaySeconds(config, attemptCount(record)) * 1000;
+  return { ...next, interrupted: null, notBefore: new Date(Math.max(due, now + RESTART_SETTLE_MS)).toISOString() };
 }
 
 /** A turn start seen while a send was in flight, noted before the store records it. */

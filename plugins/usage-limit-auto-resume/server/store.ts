@@ -66,6 +66,14 @@ const isQuotaHold = (value: unknown) => typeof value === "object" && value !== n
 const isRpcTimeout = (value: unknown) => typeof value === "object" && value !== null &&
   isTime((value as Record<string, unknown>).giveUpAt) && nullable((value as Record<string, unknown>).waiting, isString);
 
+const isInterruption = (value: unknown) => {
+  if (typeof value !== "object" || value === null) return false;
+  const interruption = value as Record<string, unknown>;
+  const closedBy = interruption.closedBy as Record<string, unknown> | null | undefined;
+  return isId(interruption.turnId) && isTime(interruption.at) && isTime(interruption.lastUserMessageAt) &&
+    (closedBy == null || (typeof closedBy === "object" && isTime(closedBy.at) && isId(closedBy.daemon)));
+};
+
 const isClose = (value: unknown): value is AgentClose => typeof value === "object" && value !== null &&
   isId((value as Record<string, unknown>).agentId) && isTime((value as Record<string, unknown>).at) && isId((value as Record<string, unknown>).daemon);
 
@@ -86,7 +94,7 @@ function isRecord(value: unknown): value is ResumeRecord {
     nullable(record.sentAt, isTime) && nullable(record.resumeTurnId, isString) && nullable(record.resumeStartedAt, isTime) &&
     nullable(record.resumeFinishedAt, isTime) && nullable(record.verificationDeadlineAt, isTime) &&
     isTime(record.createdAt) && isTime(record.updatedAt) && nullable(record.terminalReason, isString) &&
-    nullable(record.quotaHold, isQuotaHold) && nullable(record.rpcTimeout, isRpcTimeout);
+    nullable(record.quotaHold, isQuotaHold) && nullable(record.rpcTimeout, isRpcTimeout) && nullable(record.interrupted, isInterruption);
 }
 
 function defaultState(): State {
