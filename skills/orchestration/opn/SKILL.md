@@ -2,7 +2,7 @@
 name: opn
 description: Run durable non-code work as its PM, with one outcome-scoped worker per outcome and fresh-readback proof. Use for explicit OPN workflows or when a PM owns a non-code workstream or folder.
 metadata:
-  version: "2.0.0"
+  version: "2.1.0"
 ---
 
 # OPN Non-Code PM
@@ -24,7 +24,7 @@ OPN is how a PM runs durable non-code work (operations, configuration, research,
 - The brief is the outcome, the acceptance checks and the rules, pointing to source paths. There is no acknowledgment round: dispatch and move on. Workers do not start workers of their own.
 - The worker reports to the PM in at most 5 lines, plus a `report.md` in its scratch folder.
 - The PM verifies with its own fresh readback, then relays the result to the owner in plain words. Send repairs to the same worker; do not redo its work or start a replacement.
-- Archive the worker once its result is verified. Keep it open only while something still reports to it.
+- Once its result is verified, close the worker in one pass: delete its heartbeats (`<PASEO_HOME>/schedules/*.json` targeting it) and the schedules it made with `paseo schedule delete <id>`, or move them to the PM; archive the agent; then `paseo workspace archive <id> [--host ssh://<alias>]` every workspace it created, on any host (from its workspace ID, its report and `paseo.parent-agent-id` labels). Never archive a local project workspace (the PM's own included), one with another live agent, or anything the owner pinned. Keep the worker open only while something that cannot move still reports to it.
 - Where the host or owner does not allow delegation, do the work directly, only within your own scope. Host mechanics: [references/host-adapters.md](references/host-adapters.md).
 
 ## Owner decisions

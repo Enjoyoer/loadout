@@ -166,7 +166,7 @@
         },
         {
           "criterion": "lifecycle",
-          "observable": "the worker is archived once verified"
+          "observable": "the worker is closed once verified: heartbeats and schedules, then the agent, then the workspaces it created"
         }
       ],
       "critical": true
@@ -268,23 +268,31 @@
     },
     {
       "id": "archive-after-verify",
-      "prompt": "A worker's result is verified by the PM's fresh readback. A check-back heartbeat still reports to that worker. Decide whether to archive it.",
+      "prompt": "A worker's result is verified by the PM's fresh readback. A check-back heartbeat still targets that worker, and the worker created a scratch workspace on another host. Close the worker.",
       "scenario": {
         "verified": true,
-        "still_reported_to": "heartbeat"
+        "heartbeat_targets_worker": true,
+        "workspaces": [
+          "PM's own local project workspace",
+          "scratch workspace on another host, created by the worker"
+        ]
       },
       "expected": {
-        "archive": false,
-        "owner": "worker stays open until nothing reports to it, then is archived"
+        "order": "heartbeat deleted or moved to the PM, then the agent archived, then the scratch workspace archived with --host",
+        "kept": "the PM's local project workspace"
       },
       "rubric": [
         {
           "criterion": "lifecycle",
-          "observable": "a verified worker is archived once nothing still reports to it"
+          "observable": "the heartbeat is deleted or recreated on the PM before the worker is archived, in the same pass"
+        },
+        {
+          "criterion": "cleanup",
+          "observable": "the workspace the worker created on the other host is archived through paseo workspace archive with --host"
         },
         {
           "criterion": "safety",
-          "observable": "a worker something still reports to stays open"
+          "observable": "the PM's own local project workspace, which holds another live agent, is not archived"
         }
       ],
       "critical": true
