@@ -71,7 +71,7 @@ pwcli open https://example.com/checkout
 
 ## Configuration file
 
-The CLI reads the global config `~/.playwright/cli.config.json` first, then `.playwright/cli.config.json` in the current directory, or the file given with `--config`. Keep the sandbox settings from the skill's "Browser sandbox" section; the example below only adds to them.
+The CLI reads the global config `~/.playwright/cli.config.json` first, then `.playwright/cli.config.json` in the current directory, or the file given with `--config`. Keep the sandbox settings from the skill's "Browser sandbox" section; the example below only adds to them. On Windows, leave `browser.isolated` unset: the wrapper then seeds whatever profile the session uses (`browser.userDataDir` included), as the skill's "Windows: seeded profiles" section describes.
 
 Minimal example:
 
@@ -93,3 +93,4 @@ Minimal example:
 - If an element ref fails, run `pwcli snapshot` again and retry.
 - If the page looks wrong, re-open with `--headed` and resize the window.
 - If a flow depends on prior state, use a named `--session`.
+- On Windows, if `open` stops with `could not seed`, nothing was started. Fix what the message names (often an unreadable `Local State` in that profile) and run `open` again.
