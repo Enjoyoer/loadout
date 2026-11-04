@@ -14,7 +14,7 @@ function parentStart(ppid: number, platform: NodeJS.Platform): string | null {
     return boot && start && /^\d+$/.test(start) ? `${boot}:${start}` : null;
   }
   if (platform === "darwin") {
-    const start = execFileSync("ps", ["-o", "lstart=", "-p", String(ppid)], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] }).trim().replace(/\s+/g, " ");
+    const start = execFileSync("ps", ["-o", "lstart=", "-p", String(ppid)], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C" } }).trim().replace(/\s+/g, " ");
     return start || null;
   }
   return null;
