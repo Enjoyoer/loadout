@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "fb8ebe614ce448b9902eb5a7cf6ee2c135f9d56b",
+  "source_commit": "10898afdaf4d83ddc7e2e82d0233925edc4da2ce",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -114,8 +114,8 @@
       "path": "skills/operations-integrations/bw-login/SKILL.md",
       "category": "operations-integrations",
       "skill": "bw-login",
-      "bytes": 26307,
-      "sha256": "7e13376a4e25327b8f965beff1f86c53c4970453f3acb657333bff336a1a5933"
+      "bytes": 26312,
+      "sha256": "2279f0712c26bb64a0fd5743496060b60ae68e30aaf98d2cbe9e48caf66d39c7"
     },
     {
       "path": "skills/operations-integrations/bw-login/agents/openai.yaml",
@@ -1010,8 +1010,8 @@
       "path": "skills/web-browser/playwright/SKILL.md",
       "category": "web-browser",
       "skill": "playwright",
-      "bytes": 5167,
-      "sha256": "f684a9db36c11decaf099b996ed50d234318c7ea1ea8b95de97a05b23bec047f"
+      "bytes": 5462,
+      "sha256": "8d900652b73fed4e9b552620abe9adbfdb3493861f52a1a50c6e532d13d8f4f9"
     },
     {
       "path": "skills/web-browser/playwright/agents/openai.yaml",
@@ -1038,15 +1038,15 @@
       "path": "skills/web-browser/playwright/references/cli.md",
       "category": "web-browser",
       "skill": "playwright",
-      "bytes": 1863,
-      "sha256": "7c069a8206ba20b9ddbdc42436b04de30bb3aa4a825ba98680757ee62e954900"
+      "bytes": 1951,
+      "sha256": "81516a021a4a552e866c5439b00d29d5b811715048f64a1b4c1af5c3db15b99b"
     },
     {
       "path": "skills/web-browser/playwright/references/workflows.md",
       "category": "web-browser",
       "skill": "playwright",
-      "bytes": 2018,
-      "sha256": "cfacac93b262a532e2c4eb21ab2266c06852ee8aaaadbf960db09b3423209cc0"
+      "bytes": 2023,
+      "sha256": "3b24566071382f78cf8eddbc8f4dc795799e063f41949db10902d4c619709266"
     },
     {
       "path": "skills/web-browser/playwright/scripts/playwright_cli.sh",
