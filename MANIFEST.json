@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "1a4d22c10e1a18fe312080c500617b427441eb96",
+  "source_commit": "144bc5fa0e0e7ddaa35af6d9778277e8d14aa51a",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -163,8 +163,8 @@
       "path": "skills/operations-integrations/recover-mouse-input/SKILL.md",
       "category": "operations-integrations",
       "skill": "recover-mouse-input",
-      "bytes": 3177,
-      "sha256": "ee26d465ea75e1aa3594b673323bacdd3e7ebcad0544cb9f6cc9419ae77885ae"
+      "bytes": 6495,
+      "sha256": "892057e30e6a46ebb3af8fbbb023396560c3d105411b086eb141e8e4ab95c8dd"
     },
     {
       "path": "skills/operations-integrations/recover-mouse-input/agents/openai.yaml",
