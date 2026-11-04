@@ -93,4 +93,4 @@ Minimal example:
 - If an element ref fails, run `pwcli snapshot` again and retry.
 - If the page looks wrong, re-open with `--headed` and resize the window.
 - If a flow depends on prior state, use a named `--session`.
-- On Windows, if `open` stops with `could not seed`, nothing was started. Fix what the message names (often an unreadable `Local State` in that profile) and run `open` again.
+- On Windows, if the wrapper stops with exit 2, nothing was started. Fix what the message names (often an unreadable `Local State` in that profile, or a refused option) and run the command again.

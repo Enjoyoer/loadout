@@ -23,15 +23,17 @@ if [[ "${has_session_flag}" != "true" && -n "${PLAYWRIGHT_CLI_SESSION:-}" ]]; th
   set -- --session "${PLAYWRIGHT_CLI_SESSION}" "$@"
 fi
 
-# Windows: seed the profile's Local State before the CLI starts Chrome or Edge on it, so Chrome's
+# Windows: Chrome or Edge may start only on a profile whose Local State was just seeded, so Chrome's
 # blank-password check logs no failed Windows logon. windows_profile.cjs reads the arguments as the
-# CLI does, does nothing for commands other than `open` (and refuses `show`), stops the launch when
-# it cannot seed, and prints a `--profile=<dir>` argument to add when the launch does not name its
-# profile itself.
+# CLI does, checks `open`, `attach` and `show`, stops any of them that could start Chrome on a
+# profile it cannot seed, and prints a `--profile=<dir>` argument to add when the launch does not
+# name its profile itself. PW_CODEGEN_NO_INSPECTOR keeps a paused headed session from opening the
+# Playwright Inspector, which would start Chrome on a temporary profile.
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*)
+    export PW_CODEGEN_NO_INSPECTOR=1
     for arg in "$@"; do
-      if [[ "$arg" == open || "$arg" == show ]]; then
+      if [[ "$arg" == open || "$arg" == attach || "$arg" == show ]]; then
         resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/windows_profile.cjs"
         if command -v cygpath >/dev/null 2>&1; then
           resolver="$(cygpath -w "$resolver")"
