@@ -1,10 +1,27 @@
 import { createHash } from "node:crypto";
-import { evaluateCleanup, formatNotification, isCleanupEntry, LAST_TURN_ALLOWANCE_MS, ownerKeys, pmBusyReason, resolveOwner, type NotifiedEntry, type OwnerKeys } from "./cleanup.ts";
+import { evaluateCleanup, formatAge, formatNotification, headCommit, isCleanupEntry, LAST_TURN_ALLOWANCE_MS, lastActivity, ownerKeys, pmBusyReason, resolveOwner, type NotifiedEntry, type OwnerKeys, type OwnerResolution } from "./cleanup.ts";
 import type { ArchiverConfig } from "./config.ts";
-import { evaluateWorkspace, type EvaluateDeps } from "./evaluate.ts";
+import { evaluateWorkspace, isDisposableDirectory, isPmAgent, type EvaluateDeps } from "./evaluate.ts";
 import type { NotifyStateStore } from "./notify-store.ts";
 import { PeerDirectory, type PeerConnector, type PeerSendOutcome } from "./peers.ts";
 import type { DeliveryReader } from "./receipts.ts";
+import {
+  agentLabelPairs,
+  agentLastActivity,
+  agentOwnerKeys,
+  exclusionMatch,
+  type FlagEntry,
+  type FlagStateStore,
+  formatFlagMessage,
+  hasNoArchive,
+  itemKey,
+  MAX_FLAG_ITEMS,
+  pmKey,
+  recentlyFlagged,
+  resolveStalePm,
+  type StaleItem,
+  workspaceLabelPairs,
+} from "./stale.ts";
 import type { AgentView, CommonDirResolver, Decision, TerminalView, WorkspaceView } from "./types.ts";
 
 // The slice of the Paseo daemon client this plugin uses (see daemon.ts).
@@ -24,6 +41,12 @@ export interface ArchiverApi {
     list(options?: PageRequest & { filter?: { includeBackground?: boolean; includeArchived?: boolean } }): Promise<Page<{ agent: AgentView }>>;
     /** One agent by id, archived included; null when there is none. Read just before a PM report is sent. */
     get?(agentId: string): Promise<AgentView | null>;
+    /** Archive one agent (stale sweep, opt-in only). */
+    archive?(agentId: string): Promise<unknown>;
+  };
+  /** Every schedule on the daemon, heartbeats (target type `agent`) included. Stale sweep only. */
+  schedules?: {
+    list(): Promise<ReadonlyArray<{ id: string; status: string; target: { type: string; agentId?: string } }>>;
   };
   projects: {
     list(): Promise<{ projects: ReadonlyArray<{ projectRootPath?: string | null }> }>;
@@ -59,6 +82,8 @@ export interface SweeperDeps extends EvaluateDeps {
   deliveries?: DeliveryReader;
   /** Opens sessions to peer daemons, for their PMs (setting peerHosts). Without one, no peer is asked. */
   peerConnector?: PeerConnector;
+  /** When stale items were last flagged (setting staleSweep). Without one, the stale sweep does not run. */
+  flagStore?: FlagStateStore;
 }
 
 export interface SweepOptions {
@@ -301,6 +326,89 @@ function isRetryableSendError(message: string): boolean {
   return /^Agent not found: /.test(message) || message === "agent messaging unavailable";
 }
 
+/** This daemon's PMs: read the PM's state right before sending, then send with "steer" and the caller's messageId. */
+function localChannel(api: ArchiverApi): Channel {
+  return {
+    host: null,
+    async busy(agentId) {
+      if (typeof api.agents.get !== "function") throw new Error("agent lookup unavailable");
+      return pmBusyReason(await api.agents.get(agentId));
+    },
+    async send(agentId, text, messageId) {
+      try {
+        if (typeof api.sendAgentMessage !== "function") throw new Error("agent messaging unavailable");
+        await api.sendAgentMessage(agentId, text, { messageId, activeTurnBehavior: "steer" });
+        return { status: "sent" };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { status: isRetryableSendError(message) ? "retry" : "unconfirmed", why: message };
+      }
+    },
+  };
+}
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+function staleLine(action: string, item: StaleItem, now: number, extra: Record<string, unknown> = {}): string {
+  return `[merged-worker-archiver] ${JSON.stringify({
+    action,
+    kind: item.kind,
+    id: item.id,
+    name: item.name,
+    where: item.where,
+    status: item.status,
+    idle: formatAge(now - item.lastActivityAt),
+    lastActivityAt: new Date(item.lastActivityAt).toISOString(),
+    ...(item.blocked ? { blocked: item.blocked } : {}),
+    ...extra,
+  })}`;
+}
+
+/** Active or paused heartbeats per agent id (schedules whose target is that agent), or null with the error when unreadable. */
+interface Heartbeats {
+  byAgent: Map<string, string[]> | null;
+  error: string | null;
+}
+
+async function readHeartbeats(api: ArchiverApi): Promise<Heartbeats> {
+  try {
+    if (typeof api.schedules?.list !== "function") throw new Error("schedule list unavailable");
+    const byAgent = new Map<string, string[]>();
+    for (const schedule of await api.schedules.list()) {
+      const agentId = schedule.target?.type === "agent" ? schedule.target.agentId : undefined;
+      if (!agentId || (schedule.status !== "active" && schedule.status !== "paused")) continue;
+      byAgent.set(agentId, [...(byAgent.get(agentId) ?? []), schedule.id]);
+    }
+    return { byAgent, error: null };
+  } catch (error) {
+    return { byAgent: null, error: errorText(error) };
+  }
+}
+
+/** `child` names `parentId` as its parent: `paseo.parent-agent-id` (full id), else `parent` (an id prefix). */
+function isChildOf(child: AgentView, parentId: string): boolean {
+  const full = child.labels?.["paseo.parent-agent-id"]?.trim();
+  if (full) return full === parentId;
+  const prefix = child.labels?.parent?.trim();
+  return Boolean(prefix) && parentId.startsWith(prefix!);
+}
+
+const ARCHIVABLE_AGENT_STATUSES = new Set(["idle", "closed"]);
+
+/** Why a stale agent may not be archived, or null: the worker path's agent gates, plus nothing that still reports to it. */
+function agentArchiveBlock(agent: AgentView, heartbeats: ReadonlyMap<string, string[]> | null, heartbeatError: string | null, children: number): string | null {
+  if (agent.archivedAt) return "already archived";
+  if (isPmAgent(agent)) return "pm-agent";
+  if (!ARCHIVABLE_AGENT_STATUSES.has(agent.status)) return `agent-status-${agent.status}`;
+  if ((agent.pendingPermissions?.length ?? 0) > 0) return "pending-permission";
+  if (agent.requiresAttention && agent.attentionReason !== "finished") return `attention-${agent.attentionReason ?? "unknown"}`;
+  if (children > 0) return `live-children(${children})`;
+  if (!heartbeats) return `heartbeats-unknown(${heartbeatError ?? "no schedule list"})`;
+  const own = heartbeats.get(agent.id);
+  if (own && own.length > 0) return `heartbeat(${own.join(",")})`;
+  return null;
+}
+
 export class Sweeper {
   private running: Promise<SweepResult> | null = null;
   private readonly deps: SweeperDeps;
@@ -494,6 +602,10 @@ export class Sweeper {
       }
       const reported = await this.report(lease.api, toNotify, state, notified, config, cleanupDryRun, deliverySource);
       if (cleanupRuns && notified && !cleanupDryRun) await this.pruneNotified(notified, state);
+      // Stale sweep: after everything above, on a fresh read, so nothing archived just now is flagged.
+      const stale = fullSweep && config.staleSweep === true
+        ? await this.stalePass(lease.api, config, { preview: options.forceDryRun === true, archivedNow: new Set(archived), deliverySource })
+        : undefined;
       const counts = decisions.reduce<Record<string, number>>((acc, decision) => {
         const key = !decision.candidate
           ? "nonCandidate"
@@ -526,6 +638,7 @@ export class Sweeper {
               reports: reported,
               ...(cleanupRuns ? {} : { cleanupSkipped: state.cleanupError }),
               ...(state.cleanup?.deliveriesError ? { receiptsUnreadable: state.cleanup.deliveriesError } : {}),
+              ...(stale ? { stale } : {}),
             }
             : {}),
           evaluated: decisions.length,
@@ -613,23 +726,7 @@ export class Sweeper {
       log(formatDecision(decision, "notify-unrouted", { path: directory, lastCommit: decision.lastCommit ?? null, owner: detail }));
     }
     const reported: string[] = [];
-    const local: Channel = {
-      host: null,
-      async busy(agentId) {
-        if (typeof api.agents.get !== "function") throw new Error("agent lookup unavailable");
-        return pmBusyReason(await api.agents.get(agentId));
-      },
-      async send(agentId, text, messageId) {
-        try {
-          if (typeof api.sendAgentMessage !== "function") throw new Error("agent messaging unavailable");
-          await api.sendAgentMessage(agentId, text, { messageId, activeTurnBehavior: "steer" });
-          return { status: "sent" };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          return { status: isRetryableSendError(message) ? "retry" : "unconfirmed", why: message };
-        }
-      },
-    };
+    const local = localChannel(api);
     for (const recipient of groups.values()) reported.push(...(await this.deliver(recipient, local, notified, config, wouldOnly)));
     if (toPeers.length === 0) return reported;
 
@@ -749,6 +846,370 @@ export class Sweeper {
       else log(lineFor(item, "notify-failed", { why: `delivery unknown, not resent: ${outcome.why}` }));
     }
     return reported;
+  }
+
+  /**
+   * The stale sweep (setting staleSweep; see stale.ts), on a fresh read. Each stale item goes to the PM that owns it,
+   * one message per PM and at most one a day, each item listed at most once a day; an item whose PM or project opted
+   * in is archived instead when armed and every gate passes (re-checked on a fresh read right before). `preview` (the
+   * dry-run script) sends, archives and writes nothing. Returns counts for sweep-done.
+   */
+  private async stalePass(
+    api: ArchiverApi,
+    config: ArchiverConfig,
+    options: { preview: boolean; archivedNow: ReadonlySet<string>; deliverySource: DeliverySource },
+  ): Promise<Record<string, number>> {
+    const log = this.deps.log;
+    const now = this.deps.now();
+    const counts: Record<string, number> = {};
+    const bump = (key: string, by = 1) => {
+      if (by > 0) counts[key] = (counts[key] ?? 0) + by;
+    };
+    const skipped = (reason: string) => {
+      log(`[merged-worker-archiver] stale-skipped reason=${JSON.stringify(reason)} (the stale sweep waits for the next full sweep)`);
+      return { skipped: 1 };
+    };
+    const flagStore = this.deps.flagStore;
+    if (!flagStore) return skipped("no flag store");
+    // Receipts as far back as either stale window, so an agent's last delivered message always counts.
+    const deliverySource: DeliverySource = {
+      reader: options.deliverySource.reader,
+      sinceMs: now - Math.max(config.staleAgentMinutes, config.staleWorkspaceMinutes) * 60_000 - LAST_TURN_ALLOWANCE_MS,
+    };
+    let state: Snapshot;
+    try {
+      state = await snapshot(api, deliverySource);
+    } catch (error) {
+      return skipped(`listing failed: ${errorText(error)}`);
+    }
+    if (!state.cleanup) return skipped(`cleanup data unavailable: ${state.cleanupError}`);
+    let flags: Map<string, FlagEntry>;
+    try {
+      flags = await flagStore.read();
+    } catch (error) {
+      return skipped(`stale-flags state unreadable: ${errorText(error)}`);
+    }
+    const heartbeats = await readHeartbeats(api);
+    const items = await this.staleItems(state, config, now, heartbeats, options.archivedNow, bump);
+    bump("stale", items.length);
+
+    // Owners: this daemon first, then peer daemons for the rest.
+    interface Routed {
+      item: StaleItem;
+      host: string | null;
+      owner: string | null;
+      via: string;
+      detail?: string;
+    }
+    const routed: Routed[] = [];
+    const toPeers: Array<{ item: StaleItem; keys: OwnerKeys; detail: string }> = [];
+    const peerHosts = this.deps.peerConnector ? config.peerHosts : [];
+    const unroutedDetail = (owner: OwnerResolution) =>
+      owner.kind === "none" ? `no owner: ${owner.detail}` : owner.kind === "several" ? `several owners: ${owner.agentIds.join(",")}` : "";
+    for (const item of items) {
+      const { owner, peerKeys } = resolveStalePm(item.keys, state.liveAgents);
+      if (owner.kind === "agent") routed.push({ item, host: null, owner: owner.agentId, via: owner.via });
+      else if (owner.kind === "none" && peerHosts.length > 0) toPeers.push({ item, keys: peerKeys, detail: owner.detail });
+      else routed.push({ item, host: null, owner: null, via: "", detail: unroutedDetail(owner) });
+    }
+    const peers = toPeers.length > 0
+      ? new PeerDirectory({
+        connect: this.deps.peerConnector!,
+        hosts: peerHosts,
+        timeoutMs: config.commandTimeoutSeconds * 1000,
+        now: this.deps.now,
+        onError: (host, query, error) => log(`[merged-worker-archiver] ${JSON.stringify({ action: "notify-peer-error", peer: host, query, error, pass: "stale" })}`),
+      })
+      : null;
+    let dirty = false;
+    try {
+      for (const { item, keys, detail } of toPeers) {
+        const owner = await peers!.resolve(keys);
+        if (owner.kind === "agent") {
+          routed.push({ item, host: owner.host, owner: owner.agentId, via: owner.via });
+          continue;
+        }
+        const peerDetail = owner.kind === "several" ? `several owners on peers: ${owner.matches.join(",")}` : `${owner.kind === "unknown" ? "owner unknown on peers" : "no owner on peers"}: ${owner.detail}`;
+        routed.push({ item, host: null, owner: null, via: "", detail: `no owner: ${detail}; ${peerDetail}` });
+      }
+
+      // Opt-in archive, else flag.
+      const optInProjects = new Set(config.staleArchiveProjects.map((name) => name.toLowerCase()));
+      const groups = new Map<string, { host: string | null; owner: string; items: Array<{ item: StaleItem; via: string }> }>();
+      let archiveSlots = config.maxArchivesPerSweep;
+      for (const entry of routed) {
+        const { item } = entry;
+        const owned = entry.owner ? { owner: entry.owner, ...(entry.host ? { host: entry.host } : {}), via: entry.via } : {};
+        const optIn = (entry.owner !== null && config.staleArchivePms.includes(entry.owner)) || item.projects.some((name) => optInProjects.has(name));
+        if (optIn) {
+          if (item.kind === "workspace") item.blocked = await this.workspaceArchiveBlock(item.id, state, config);
+          if (!item.blocked && options.preview) {
+            log(staleLine("would-archive", item, now, owned));
+            bump("wouldArchive");
+            continue;
+          }
+          if (!item.blocked && config.armed !== true) {
+            log(staleLine("would-archive", item, now, { ...owned, why: "armed is false; flagged instead" }));
+            item.blocked = "opt-in archive waits for armed";
+          }
+          if (!item.blocked && archiveSlots <= 0) {
+            log(staleLine("stale-deferred", item, now, { ...owned, why: `maxArchivesPerSweep=${config.maxArchivesPerSweep} reached; next full sweep` }));
+            bump("deferred");
+            continue;
+          }
+          if (!item.blocked) {
+            archiveSlots -= 1;
+            const failure = await this.archiveStale(api, item, config, deliverySource);
+            if (failure === null) {
+              log(staleLine("stale-archived", item, now, owned));
+              bump("archived");
+              continue;
+            }
+            item.blocked = failure;
+            log(staleLine("stale-archive-skipped", item, now, owned));
+          }
+        }
+        if (entry.owner === null) {
+          const key = itemKey(item);
+          if (recentlyFlagged(flags, key, now, true)) continue;
+          log(staleLine(options.preview ? "would-flag-unrouted" : "stale-unrouted", item, now, {
+            owner: entry.detail,
+            ...(peers && peers.errors.size > 0 ? { peerErrors: Object.fromEntries(peers.errors) } : {}),
+          }));
+          bump("unrouted");
+          if (!options.preview) {
+            flags.set(key, { at: new Date(now).toISOString(), status: "unrouted" });
+            dirty = true;
+          }
+          continue;
+        }
+        const groupKey = pmKey(entry.host, entry.owner);
+        const group = groups.get(groupKey) ?? { host: entry.host, owner: entry.owner, items: [] };
+        group.items.push({ item, via: entry.via });
+        groups.set(groupKey, group);
+      }
+
+      // One message per PM, at most one a day.
+      const local = localChannel(api);
+      for (const [groupKey, group] of groups) {
+        const where = group.host ? { host: group.host } : {};
+        if (recentlyFlagged(flags, groupKey, now)) {
+          bump("held", group.items.length);
+          continue;
+        }
+        const fresh = group.items.filter(({ item }) => !recentlyFlagged(flags, itemKey(item), now));
+        const batch = fresh.slice(0, MAX_FLAG_ITEMS);
+        bump("held", group.items.length - batch.length);
+        if (batch.length === 0) continue;
+        const lineFor = (action: string, entry: { item: StaleItem; via: string }, extra: Record<string, unknown> = {}) =>
+          staleLine(action, entry.item, now, { owner: group.owner, ...where, via: entry.via, ...extra });
+        if (options.preview) {
+          for (const entry of batch) log(lineFor("would-flag", entry));
+          bump("wouldFlag", batch.length);
+          continue;
+        }
+        const channel: Channel = group.host === null
+          ? local
+          : { host: group.host, busy: async (agentId) => pmBusyReason(await peers!.state(group.host!, agentId)), send: (agentId, text, messageId) => peers!.send(group.host!, agentId, text, messageId) };
+        let busy: string | null;
+        try {
+          busy = await channel.busy(group.owner);
+        } catch (error) {
+          busy = `status unreadable (${errorText(error)})`;
+        }
+        if (busy) {
+          for (const entry of batch) log(lineFor("stale-flag-deferred", entry, { why: `PM ${busy}; next full sweep` }));
+          bump("deferred", batch.length);
+          continue;
+        }
+        const at = new Date(now).toISOString();
+        const keys = [groupKey, ...batch.map(({ item }) => itemKey(item))];
+        const previous = new Map(keys.map((key) => [key, flags.get(key)]));
+        const restore = () => {
+          for (const [key, entry] of previous) {
+            if (entry) flags.set(key, entry);
+            else flags.delete(key);
+          }
+        };
+        for (const key of keys) flags.set(key, { at, status: "sending", owner: group.owner, ...where });
+        try {
+          await flagStore.write(flags);
+        } catch (error) {
+          restore();
+          for (const entry of batch) log(lineFor("stale-flag-failed", entry, { why: `state not written, nothing sent: ${errorText(error)}` }));
+          bump("failed", batch.length);
+          continue;
+        }
+        // One id per attempt: the text changes with every attempt (ages), and the daemon refuses a reused id with a
+        // different text. The `sending` record above is what keeps an attempt from being repeated.
+        const ids = batch.map(({ item }) => itemKey(item)).sort();
+        const messageId = `merged-worker-archiver-stale-${createHash("sha256").update(`${group.owner}\n${at}\n${ids.join("\n")}`).digest("hex").slice(0, 32)}`;
+        const outcome = await channel.send(group.owner, formatFlagMessage(batch.map(({ item }) => item), config, now), messageId);
+        if (outcome.status === "retry") restore();
+        else for (const key of keys) flags.set(key, { at, status: outcome.status, owner: group.owner, ...where });
+        try {
+          await flagStore.write(flags);
+        } catch (error) {
+          log(`[merged-worker-archiver] stale-state-write-failed reason=${JSON.stringify(errorText(error))} (entries stay marked sending, not resent within a day)`);
+        }
+        for (const entry of batch) {
+          if (outcome.status === "sent") log(lineFor("stale-flagged", entry, { messageId }));
+          else if (outcome.status === "retry") log(lineFor("stale-flag-deferred", entry, { why: `refused before delivery, retried next full sweep: ${outcome.why}` }));
+          else log(lineFor("stale-flag-failed", entry, { why: `delivery unknown, not resent within a day: ${outcome.why}` }));
+        }
+        bump(outcome.status === "sent" ? "flagged" : outcome.status === "retry" ? "deferred" : "failed", batch.length);
+        if (outcome.status === "sent") bump("messages");
+      }
+      if (dirty) {
+        try {
+          await flagStore.write(flags);
+        } catch (error) {
+          log(`[merged-worker-archiver] stale-state-write-failed reason=${JSON.stringify(errorText(error))}`);
+        }
+      }
+    } finally {
+      await peers?.close();
+    }
+    return counts;
+  }
+
+  /** Stale agents and workspaces on a fresh read (see stale.ts). PMs, excluded, pinned and `noarchive` items are left out. */
+  private async staleItems(
+    state: Snapshot,
+    config: ArchiverConfig,
+    now: number,
+    heartbeats: Heartbeats,
+    archivedNow: ReadonlySet<string>,
+    bump: (key: string, by?: number) => void,
+  ): Promise<StaleItem[]> {
+    const cleanup = state.cleanup!;
+    const items: StaleItem[] = [];
+    const workspaces = new Map(state.workspaces.map((workspace) => [workspace.id, workspace]));
+    const lower = (names: readonly string[]) => [...new Set(names.map((name) => name.toLowerCase()))];
+    // 1. Agents that are not PMs. A delivered message also moves a live agent's updatedAt (its turn), so unreadable
+    // receipts only drop a second source of the same time.
+    for (const agent of state.liveAgents) {
+      if (isPmAgent(agent)) {
+        bump("pm");
+        continue;
+      }
+      if (agent.workspaceId && archivedNow.has(agent.workspaceId)) continue;
+      const workspace = agent.workspaceId ? workspaces.get(agent.workspaceId) : undefined;
+      const labels = [...agentLabelPairs(agent), ...workspaceLabelPairs(workspace?.labels)];
+      if (exclusionMatch(config.staleExclude, [agent.id, ...(workspace ? [workspace.id] : [])], labels)) {
+        bump("excluded");
+        continue;
+      }
+      if (workspace?.pinnedAt || hasNoArchive(labels)) {
+        bump("kept");
+        continue;
+      }
+      if (agent.status === "running" || agent.status === "initializing") continue;
+      const last = agentLastActivity(agent, cleanup.deliveries);
+      if (last === null || now - last < config.staleAgentMinutes * 60_000) continue;
+      const children = state.liveAgents.filter((other) => other.id !== agent.id && isChildOf(other, agent.id)).length;
+      const keys = agentOwnerKeys(agent, workspace?.projectDisplayName);
+      items.push({
+        kind: "agent",
+        id: agent.id,
+        name: agent.title?.trim() || agent.id.slice(0, 8),
+        where: workspace ? `${workspace.name} (${workspace.id})` : "no workspace",
+        status: agent.status,
+        branch: null,
+        lastActivityAt: last,
+        keys,
+        projects: lower(keys.names),
+        blocked: agentArchiveBlock(agent, heartbeats.byAgent, heartbeats.error, children),
+      });
+    }
+    // 2. Worktree and disposable-root workspaces with no live agent.
+    for (const workspace of state.workspaces) {
+      if (archivedNow.has(workspace.id) || workspace.archivingAt || !workspace.workspaceDirectory) continue;
+      if ((state.agentsByWorkspace.get(workspace.id)?.length ?? 0) > 0) continue;
+      const worktree = workspace.workspaceKind === "worktree";
+      const directory = workspace.workspaceDirectory;
+      if (!worktree && !(await isDisposableDirectory(directory, this.deps))) continue;
+      const history = cleanup.historyByWorkspace.get(workspace.id) ?? [];
+      const labels = [...workspaceLabelPairs(workspace.labels), ...history.flatMap(agentLabelPairs)];
+      if (exclusionMatch(config.staleExclude, [workspace.id], labels)) {
+        bump("excluded");
+        continue;
+      }
+      if (workspace.pinnedAt || hasNoArchive(labels)) {
+        bump("kept");
+        continue;
+      }
+      // A missing directory is left to Paseo's own reconciliation, as in workspace cleanup.
+      if ((await this.deps.fs.isDirectory(directory)) !== true) continue;
+      const head = worktree ? await headCommit(directory, { config, deps: this.deps }) : null;
+      const paseoLatest = lastActivity(workspace, history, cleanup.deliveries);
+      const latest = head && (paseoLatest === null || head.at > paseoLatest) ? head.at : paseoLatest;
+      if (latest === null || now - latest < config.staleWorkspaceMinutes * 60_000) continue;
+      const keys = ownerKeys(workspace, history);
+      items.push({
+        kind: "workspace",
+        id: workspace.id,
+        name: workspace.name,
+        where: directory,
+        status: workspace.workspaceKind,
+        branch: workspace.gitRuntime?.currentBranch ?? null,
+        lastActivityAt: latest,
+        keys,
+        projects: lower(keys.names),
+        blocked: null,
+      });
+    }
+    return items;
+  }
+
+  /** Why an agentless workspace may not be archived: the worker path's and workspace cleanup's own decision, or null. */
+  private async workspaceArchiveBlock(workspaceId: string, state: Snapshot, config: ArchiverConfig): Promise<string | null> {
+    const workspace = state.workspaces.find((entry) => entry.id === workspaceId);
+    if (!workspace) return "workspace gone";
+    const decision = await decide(workspace, state, config, this.deps, { notified: new Map() });
+    // The message shows the idle time already; workspace cleanup's notify reasons end with it.
+    return decision.action === "archive" ? null : decision.reason.replace(/; idle=[^;]*$/, "");
+  }
+
+  /** Archive one opted-in stale item after re-reading live state and re-running every gate. Null when archived, else why not. */
+  private async archiveStale(api: ArchiverApi, item: StaleItem, config: ArchiverConfig, deliverySource: DeliverySource): Promise<string | null> {
+    let fresh: Snapshot;
+    try {
+      fresh = await snapshot(api, deliverySource);
+    } catch (error) {
+      return `recheck: listing failed: ${errorText(error)}`;
+    }
+    if (!fresh.cleanup) return `recheck: cleanup data unavailable: ${fresh.cleanupError}`;
+    const now = this.deps.now();
+    if (item.kind === "agent") {
+      if (typeof api.agents.archive !== "function") return "agent archive unavailable";
+      const agent = fresh.liveAgents.find((entry) => entry.id === item.id);
+      if (!agent) return "recheck: agent gone or archived";
+      const last = agentLastActivity(agent, fresh.cleanup.deliveries);
+      if (last === null || now - last < config.staleAgentMinutes * 60_000) return "recheck: active again";
+      const children = fresh.liveAgents.filter((other) => other.id !== agent.id && isChildOf(other, agent.id)).length;
+      const heartbeats = await readHeartbeats(api);
+      const block = agentArchiveBlock(agent, heartbeats.byAgent, heartbeats.error, children);
+      if (block) return `recheck: ${block}`;
+      try {
+        await api.agents.archive(agent.id);
+        return null;
+      } catch (error) {
+        return `archive threw: ${errorText(error)}`;
+      }
+    }
+    const workspace = fresh.workspaces.find((entry) => entry.id === item.id);
+    if (!workspace) return "recheck: workspace gone";
+    const agents = fresh.agentsByWorkspace.get(workspace.id)?.length ?? 0;
+    if (agents > 0) return `recheck: agents(${agents})`;
+    const block = await this.workspaceArchiveBlock(workspace.id, fresh, config);
+    if (block) return `recheck: ${block}`;
+    try {
+      const result = await api.workspaces.archive(workspace.id);
+      return result.error ? `archive error: ${result.error}` : null;
+    } catch (error) {
+      return `archive threw: ${errorText(error)}`;
+    }
   }
 
   /** Armed workspace cleanup only: forget reported worktrees that are no longer listed. */

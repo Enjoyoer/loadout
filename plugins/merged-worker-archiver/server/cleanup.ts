@@ -141,7 +141,7 @@ function hasNoArchiveWorkspaceLabel(workspace: WorkspaceView): boolean {
  * A worktree's HEAD commit: `<sha7> <committer date> <subject>` for the report, and the committer
  * date as activity (work committed after the last message). Null when git cannot tell.
  */
-async function headCommit(directory: string, ctx: CleanupContext): Promise<{ line: string; at: number } | null> {
+export async function headCommit(directory: string, ctx: Pick<CleanupContext, "config" | "deps">): Promise<{ line: string; at: number } | null> {
   const result = await ctx.deps.merge.run("git", ["log", "-1", "--format=%h %cI %s"], directory, ctx.config.commandTimeoutSeconds * 1000);
   const line = result.code === 0 ? result.stdout.trim().split("\n")[0]?.trim() ?? "" : "";
   const at = parse(/^\S+ (\S+)/.exec(line)?.[1]);

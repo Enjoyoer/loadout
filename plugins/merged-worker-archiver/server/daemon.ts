@@ -44,6 +44,14 @@ export async function openDaemonClient(env: NodeJS.ProcessEnv = process.env): Pr
     agents: {
       list: async (options) => (await client.fetchAgents(options)) as unknown as Awaited<ReturnType<ArchiverApi["agents"]["list"]>>,
       get: async (agentId) => ((await client.fetchAgent({ agentId }))?.agent ?? null) as unknown as AgentView | null,
+      archive: (agentId) => client.archiveAgent(agentId),
+    },
+    schedules: {
+      list: async () => {
+        const payload = await client.scheduleList();
+        if (payload.error) throw new Error(payload.error);
+        return payload.schedules;
+      },
     },
     projects: {
       list: () => client.listProjects(),

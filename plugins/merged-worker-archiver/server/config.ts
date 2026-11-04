@@ -49,6 +49,26 @@ export const ConfigSchema = z
       .max(8)
       .refine((hosts) => new Set(hosts).size === hosts.length, "peer hosts must be unique")
       .default([]),
+    /**
+     * Stale sweep (full sweeps only): non-PM agents idle at least staleAgentMinutes, and worktree or scratch
+     * workspaces with no live agent idle at least staleWorkspaceMinutes, are flagged to their PM, one message per PM
+     * and at most one per day. Off by default. Flagging needs only this switch.
+     */
+    staleSweep: z.boolean().default(false),
+    /** Idle time before the stale sweep flags a non-PM agent (default 3 days). */
+    staleAgentMinutes: z.number().min(1).max(365 * 24 * 60).default(3 * 24 * 60),
+    /**
+     * Opt-in archiving for the stale sweep: items whose PM has one of these agent ids, or whose project has one of
+     * these names (case-insensitive), are archived instead of flagged when `armed` is true and every safety gate
+     * passes. An item that fails a gate is flagged with the reason.
+     */
+    staleArchivePms: z.array(z.string().trim().min(1)).max(100).default([]),
+    staleArchiveProjects: z.array(z.string().trim().min(1)).max(100).default([]),
+    /**
+     * Never flagged or archived by the stale sweep: agent ids, workspace ids, or labels as `key` (any value) or
+     * `key=value`, for example `keep=1`.
+     */
+    staleExclude: z.array(z.string().trim().min(1)).max(200).default([]),
   })
   .strict();
 
