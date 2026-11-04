@@ -71,7 +71,7 @@ pwcli open https://example.com/checkout
 
 ## Configuration file
 
-By default, the CLI reads `playwright-cli.json` from the current directory. Use `--config` to point at a specific file.
+The CLI reads the global config `~/.playwright/cli.config.json` first, then `.playwright/cli.config.json` in the current directory, or the file given with `--config`. Keep the sandbox settings from the skill's "Browser sandbox" section; the example below only adds to them.
 
 Minimal example:
 
