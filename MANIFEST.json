@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "7b9a5eee20d487a9e4068fd8de2a8ac8cb88b63e",
+  "source_commit": "fb8ebe614ce448b9902eb5a7cf6ee2c135f9d56b",
   "skill_count": 27,
   "file_count": 150,
   "files": [
@@ -114,8 +114,8 @@
       "path": "skills/operations-integrations/bw-login/SKILL.md",
       "category": "operations-integrations",
       "skill": "bw-login",
-      "bytes": 25719,
-      "sha256": "963e7488ca673b3ca8dcf9ad2b417337180b626186b30de08d5bb725b1a0c242"
+      "bytes": 26307,
+      "sha256": "7e13376a4e25327b8f965beff1f86c53c4970453f3acb657333bff336a1a5933"
     },
     {
       "path": "skills/operations-integrations/bw-login/agents/openai.yaml",
@@ -1003,15 +1003,15 @@
       "path": "skills/web-browser/playwright/NOTICE.txt",
       "category": "web-browser",
       "skill": "playwright",
-      "bytes": 403,
-      "sha256": "417d5d3372914ecfd9fe102ac1d7dc2119253209f9718d6c222f616876c1904b"
+      "bytes": 500,
+      "sha256": "6fd7d621fde6575173035190790f7f7cdd84ce5f0167a5fb99a1144ac88ccc76"
     },
     {
       "path": "skills/web-browser/playwright/SKILL.md",
       "category": "web-browser",
       "skill": "playwright",
-      "bytes": 3787,
-      "sha256": "b14a29f2b0d6267b6dbe43bcd1f2cb51111a87b34401af0e594d9036056fc0fe"
+      "bytes": 5167,
+      "sha256": "f684a9db36c11decaf099b996ed50d234318c7ea1ea8b95de97a05b23bec047f"
     },
     {
       "path": "skills/web-browser/playwright/agents/openai.yaml",
@@ -1045,15 +1045,15 @@
       "path": "skills/web-browser/playwright/references/workflows.md",
       "category": "web-browser",
       "skill": "playwright",
-      "bytes": 1864,
-      "sha256": "a2b5835a00ebee3906c146adf7f764f7718ea3f89a8702d86eaa135dfe0fc8c2"
+      "bytes": 2018,
+      "sha256": "cfacac93b262a532e2c4eb21ab2266c06852ee8aaaadbf960db09b3423209cc0"
     },
     {
       "path": "skills/web-browser/playwright/scripts/playwright_cli.sh",
       "category": "web-browser",
       "skill": "playwright",
-      "bytes": 533,
-      "sha256": "6b0fbd210ee2c2ff81840169f5f533bb1b71ab42f6747b5ec9c451b6587ef848"
+      "bytes": 697,
+      "sha256": "91d46e59b4980531a21eb2246d7253b2c51935197bf016c629b6fa04febc09c0"
     }
   ],
   "plugin_count": 7,
