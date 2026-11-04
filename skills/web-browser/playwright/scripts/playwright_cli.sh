@@ -16,7 +16,9 @@ for arg in "$@"; do
   esac
 done
 
-cmd=(npx --yes --package @playwright/cli@0.1.22 playwright-cli)
+# The CLI that ships in the stable Playwright release. @playwright/cli releases pin pre-release
+# Playwright builds, so the skill pins playwright-core itself.
+cmd=(npx --yes --package playwright-core@1.64.1 playwright-core cli)
 if [[ "${has_session_flag}" != "true" && -n "${PLAYWRIGHT_CLI_SESSION:-}" ]]; then
   cmd+=(--session "${PLAYWRIGHT_CLI_SESSION}")
 fi

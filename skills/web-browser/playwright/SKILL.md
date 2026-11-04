@@ -25,11 +25,11 @@ node --version
 npm --version
 
 # If missing, install Node.js/npm, then:
-npm install -g @playwright/cli@0.1.22
-playwright-cli --help
+npm install -g playwright-core@1.64.1
+playwright-core cli --help
 ```
 
-Once `npx` is present, proceed with the wrapper script. A global install of `playwright-cli` is optional.
+Once `npx` is present, proceed with the wrapper script. A global install is optional.
 
 ## Skill path (set once)
 
@@ -39,6 +39,19 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 ```
 
 User-scoped skills install under `$CODEX_HOME/skills` (default: `~/.codex/skills`).
+
+## Browser sandbox (required)
+
+Keep Chromium's sandbox on. Set it once per host in the CLI's global config, `~/.playwright/cli.config.json` (`%USERPROFILE%\.playwright\cli.config.json` on Windows):
+
+```json
+{"browser":{"browserName":"chromium","launchOptions":{"channel":"chrome","chromiumSandbox":true}}}
+```
+
+- `channel: "chrome"` runs the installed Google Chrome, which keeps itself up to date. Keep `browserName`: without it the CLI ignores `channel` and always uses Chrome.
+- Without `chromiumSandbox: true`, the CLI starts Playwright's bundled Chromium on Linux with `--no-sandbox`.
+- The CLI applies a session's own config (`--config`, or `.playwright/cli.config.json` in the working folder) on top of this file. Never set `chromiumSandbox` to false there or pass `--no-sandbox`.
+- On a Linux host without Google Chrome, set `"channel": "chromium"` (Playwright's bundled Chromium, installed with `"$PWCLI" install-browser chromium`) and keep `chromiumSandbox: true`. It sandboxes through unprivileged user namespaces. If the browser will not start with the sandbox, stop and report it; do not turn the sandbox off.
 
 ## Quick start
 
@@ -53,11 +66,11 @@ Use the wrapper script:
 "$PWCLI" screenshot
 ```
 
-If the user prefers a global install, this is also valid:
+If the user prefers a global install, this is also valid (the command is then `playwright-core cli`):
 
 ```bash
-npm install -g @playwright/cli@0.1.22
-playwright-cli --help
+npm install -g playwright-core@1.64.1
+playwright-core cli --help
 ```
 
 ## Core workflow
@@ -121,7 +134,7 @@ Refs can go stale. When a command fails due to a missing ref, snapshot again.
 
 ## Wrapper script
 
-The wrapper script uses the pinned `npx --package @playwright/cli@0.1.22 playwright-cli` so the CLI can run without a global install:
+The wrapper script uses the pinned `npx --package playwright-core@1.64.1 playwright-core cli` so the CLI can run without a global install. That is the CLI shipped in the stable Playwright release. The separate `@playwright/cli` package pins pre-release Playwright builds, so the skill does not use it; move the pin only to a newer stable `playwright-core`.
 
 ```bash
 "$PWCLI" --help
