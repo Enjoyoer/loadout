@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "144bc5fa0e0e7ddaa35af6d9778277e8d14aa51a",
+  "source_commit": "b0d307c068b361c39ea7f2c6b83c531d4d1eda5d",
   "skill_count": 27,
-  "file_count": 150,
+  "file_count": 152,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -114,8 +114,8 @@
       "path": "skills/operations-integrations/bw-login/SKILL.md",
       "category": "operations-integrations",
       "skill": "bw-login",
-      "bytes": 26312,
-      "sha256": "2279f0712c26bb64a0fd5743496060b60ae68e30aaf98d2cbe9e48caf66d39c7"
+      "bytes": 26919,
+      "sha256": "c59d2580c753421d5e3b52e63fe447053bf86656b72dc45d6c7dad2d8149b2fe"
     },
     {
       "path": "skills/operations-integrations/bw-login/agents/openai.yaml",
@@ -1010,8 +1010,8 @@
       "path": "skills/web-browser/playwright/SKILL.md",
       "category": "web-browser",
       "skill": "playwright",
-      "bytes": 5462,
-      "sha256": "8d900652b73fed4e9b552620abe9adbfdb3493861f52a1a50c6e532d13d8f4f9"
+      "bytes": 8630,
+      "sha256": "a16b2237b76f05e90b6f1d641a06419f950ba05f109ba2bdab2404ac5bfd2a3f"
     },
     {
       "path": "skills/web-browser/playwright/agents/openai.yaml",
@@ -1038,22 +1038,36 @@
       "path": "skills/web-browser/playwright/references/cli.md",
       "category": "web-browser",
       "skill": "playwright",
-      "bytes": 1951,
-      "sha256": "81516a021a4a552e866c5439b00d29d5b811715048f64a1b4c1af5c3db15b99b"
+      "bytes": 2226,
+      "sha256": "64c87fc532ae97adddcd174a1833f4f090a68d5a0aee97bd3224025a2988a808"
     },
     {
       "path": "skills/web-browser/playwright/references/workflows.md",
       "category": "web-browser",
       "skill": "playwright",
-      "bytes": 2023,
-      "sha256": "3b24566071382f78cf8eddbc8f4dc795799e063f41949db10902d4c619709266"
+      "bytes": 2415,
+      "sha256": "539750e3ca82f9e2087ce7cc7754c9be6a2895465d445fc2499eca614123a752"
     },
     {
       "path": "skills/web-browser/playwright/scripts/playwright_cli.sh",
       "category": "web-browser",
       "skill": "playwright",
-      "bytes": 697,
-      "sha256": "91d46e59b4980531a21eb2246d7253b2c51935197bf016c629b6fa04febc09c0"
+      "bytes": 2077,
+      "sha256": "464938a2b1fbca2e0be516ab2699a0c63e3371a13b0a6b267b2e35973636a42a"
+    },
+    {
+      "path": "skills/web-browser/playwright/scripts/seed_local_state.ps1",
+      "category": "web-browser",
+      "skill": "playwright",
+      "bytes": 6565,
+      "sha256": "1a1d0445f751f9159d734b56d9d7628c7f25eeffc85cf7386df7db80dc06eb1b"
+    },
+    {
+      "path": "skills/web-browser/playwright/scripts/windows_profile.cjs",
+      "category": "web-browser",
+      "skill": "playwright",
+      "bytes": 14957,
+      "sha256": "051e9402e8231699615681dd8d5d465da63235e2fc568dc63ab676285371702a"
     }
   ],
   "plugin_count": 7,

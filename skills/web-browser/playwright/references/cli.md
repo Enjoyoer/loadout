@@ -8,7 +8,7 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 bash "$PWCLI" --help
 ```
 
-User-scoped skills install under `$CODEX_HOME/skills` (default: `~/.codex/skills`). Run the wrapper through `bash`: an installed copy may lack the execute bit.
+User-scoped skills install under `$CODEX_HOME/skills` (default: `~/.codex/skills`). Run the wrapper through `bash`: an installed copy may lack the execute bit. On Windows the wrapper seeds the browser profile before `open` and stops any command that could start Chrome or Edge on a profile it cannot seed; anything that starts Chrome or Edge outside it must seed its profile first (see the skill's "Windows: seeded profiles" section).
 
 Optional convenience alias:
 

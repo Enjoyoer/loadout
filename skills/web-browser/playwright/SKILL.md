@@ -55,6 +55,24 @@ Keep Chromium's sandbox on. Set it once per host in the CLI's global config, `~/
 - The CLI applies a session's own config (`--config`, or `.playwright/cli.config.json` in the working folder) on top of this file. Never set `chromiumSandbox` to false there or pass `--no-sandbox`.
 - On a Linux host without Google Chrome, set `"channel": "chromium"` (Playwright's bundled Chromium, installed with `bash "$PWCLI" install-browser chromium`) and keep `chromiumSandbox: true`. It sandboxes through unprivileged user namespaces. If the browser will not start with the sandbox, stop and report it; do not turn the sandbox off.
 
+## Windows: seeded profiles (required)
+
+On a fresh Chrome or Edge profile, Chrome checks whether the Windows account has a blank password by trying to log on with an empty one. Each try logs a failed logon (Security event 4625), and enough of them in a few minutes lock the account, SSH included. A profile whose `Local State` already holds the cached answer (`password_manager.os_password_blank` false, `os_password_last_changed` `"9223372036854775807"`) skips the check. `scripts/seed_local_state.ps1` writes it: it merges those two keys into an existing `Local State` and keeps every other key, creates the file only when it is missing, and writes nothing when the profile is already seeded, so it is safe before every launch.
+
+On Windows (Git Bash) the wrapper checks `open`, `attach` and `show` first, about a second each. It lets one through only when it starts no Chrome or Edge, or starts one on a profile it has just seeded. Anything it cannot prove stops with exit 2 before a browser starts. Fix the cause it names; never start the browser another way.
+
+- `open` finds the profile the CLI will start, as the CLI does: `--profile`, else `browser.userDataDir` from the config files or `PLAYWRIGHT_MCP_USER_DATA_DIR`, else the CLI's own folder for `--persistent`. It seeds that folder and passes it to the CLI as `--profile`. `--profile` needs one non-empty value: an empty, repeated or negated one is refused.
+- A session with none of those would start on a temporary profile that the browser launch creates, too late to seed. The wrapper gives it a fresh seeded profile instead, a new one at each `open`, so it still starts empty. `delete-data` removes these. An `open` removes earlier ones only when they are older than 30 minutes, hold no browser lock, and no session file or running process names them.
+- Refused on Windows:
+  - a config with `browser.isolated: true` or `PLAYWRIGHT_MCP_ISOLATED`;
+  - extension mode (`attach --extension`, `PLAYWRIGHT_MCP_EXTENSION`, or `extension` in a config), whose relay starts Chrome on a profile the wrapper does not seed;
+  - `show` and `show --annotate`, whose dashboard runs Chrome on a temporary profile (`show --port <n>` and `show --kill` start none);
+  - `PWDEBUG` other than `0` or `false`, since the Playwright Inspector runs Chrome on a temporary profile.
+- The wrapper also sets `PW_CODEGEN_NO_INSPECTOR=1`, so a paused headed session does not open the Inspector; `resume` still works.
+- `attach` to a running browser (`attach <name>`, `--endpoint`, `--cdp`) starts no browser and goes through. So do Firefox and WebKit, which have no such check.
+- To start Chrome or Edge on Windows outside the wrapper (a Playwright script, code run through `run-code`, or a browser you launch yourself), use a profile folder and seed it first: `powershell -NoProfile -ExecutionPolicy Bypass -File "$(dirname "$PWCLI")/seed_local_state.ps1" -Profile <dir>`. Then launch with `chromium.launchPersistentContext('<dir>', ...)` or `--user-data-dir=<dir>`. If the helper fails, do not launch. Never use `chromium.launch()` there: it starts on a temporary profile.
+- Not needed on macOS or Linux; the wrapper skips it there.
+
 ## Quick start
 
 Use the wrapper script:
