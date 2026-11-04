@@ -5,15 +5,15 @@ Use the wrapper script unless the CLI is already installed globally:
 ```bash
 export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
-"$PWCLI" --help
+bash "$PWCLI" --help
 ```
 
-User-scoped skills install under `$CODEX_HOME/skills` (default: `~/.codex/skills`).
+User-scoped skills install under `$CODEX_HOME/skills` (default: `~/.codex/skills`). Run the wrapper through `bash`: an installed copy may lack the execute bit.
 
 Optional convenience alias:
 
 ```bash
-alias pwcli="$PWCLI"
+alias pwcli='bash "$PWCLI"'
 ```
 
 ## Core
