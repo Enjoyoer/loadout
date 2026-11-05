@@ -26,6 +26,8 @@ const workerClass = (label, effort, range, fastMode = false) =>
 export const WORKER_DEFAULT_ROUTES = Object.freeze({
   code: workerClass('Opus', 'medium', ['medium', 'xhigh']),
   review: workerClass('Sol', 'xhigh', null, true),
+  // Security, credential and data-loss reviews run on Opus, never GPT (owner rule): GPT trips the cyber-safety filter.
+  'review-security': workerClass('Opus', 'xhigh', null),
   plan: workerClass('Sol', 'xhigh', null, true),
   browser: workerClass('Sol', 'medium', ['medium', 'high'], true),
   'browser-hard': workerClass('Astra', 'medium', ['medium', 'high'], true),
@@ -34,7 +36,7 @@ export const WORKER_DEFAULT_ROUTES = Object.freeze({
 });
 export const WORKER_CLASS_ALIASES = Object.freeze({
   'code-bounded': 'code', 'test-fix': 'code', automation: 'code', mechanical: 'code',
-  research: 'plan', 'review-critical': 'review', 'review-general': 'review',
+  research: 'plan', 'review-critical': 'review', 'review-general': 'review', security: 'review-security',
 });
 // The pre-7.53 ui class name, kept as a compatibility alias of ui-design.
 const OWNER_RULE_ALIASES = Object.freeze({ ui: 'ui-design' });
@@ -105,7 +107,7 @@ function requireFableRule(route, rows = null) {
 // The owner's hard rules for a lane class bind every route, whatever its source says: ui-design and ui-check are exactly
 // Fable high, Fast off, these classes never run a GPT or web model, Fable never runs at another level, and no route runs
 // below its class minimum. Inside them an owner-named route keeps its model and effort.
-const CLAUDE_ONLY_CLASSES = Object.freeze(['code']);
+const CLAUDE_ONLY_CLASSES = Object.freeze(['code', 'review-security']);
 function laneProblem(route, taskClass, rows) {
   taskClass = canonicalWorkerClass(taskClass);
   if (route.source === 'task-default' && canonicalWorkerClass(route.kind) !== taskClass) return `it is a ${route.kind} route`;
@@ -312,6 +314,9 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog,
     if (uiClass(taskKind) && isGptOrWebRoute(ownerRoute, rows)) {
       throw Error(`${taskKind} work never uses a GPT or web model (owner rule); name a Claude model or use the ${taskKind} class route`);
     }
+    if (CLAUDE_ONLY_CLASSES.includes(taskKind) && isGptOrWebRoute(ownerRoute, rows)) {
+      throw Error(`the ${taskKind} class never runs a GPT or web model (owner rule); name a Claude model or use the class route`);
+    }
     return Object.freeze({ ...ownerRoute });
   }
   if (Object.hasOwn(OWNER_RULE_ROUTES, taskKind ?? '')) {
@@ -374,7 +379,9 @@ export function resolveAgentRoute(role, { explicitRoute = null, taskKind = null,
 const WORKER_TESTING_RULE = 'Testing rule: do not write new unit, integration, or end-to-end tests, and do not use test-driven development, unless the PM specifies the test cases. ' +
   'Verify against the acceptance checks, run the existing suites and keep them green, and keep existing tests unless the PM asks to remove them.';
 
-const UI_LANE_BRIEFS = Object.freeze({
+const READ_ONLY_BRIEFS = Object.freeze({
+  review: 'Review the exact PR head using references/simplifier-review.md as the brief. ',
+  'review-security': 'Correctness review of the exact PR head: report concrete defects with file, line, and what breaks. ',
   'ui-design': 'From the current screens (screenshots and code), return a short design spec and a static mockup (HTML/CSS or images) at the scratch path the PM names. No repository edits, no PR. ',
   'ui-check': 'Compare the after-screenshots to the mockup once and return a fix list for the code lane. No repository edits, no PR. ',
 });
@@ -391,9 +398,8 @@ export function buildDelegatedBrief({ role, route, brief, reason = null, task = 
     : role === 'worker' ? validateLaunchedWorkerRoute(route, { task, lane, taskClass, catalog }) : validateRoleRoute(role, route);
   // A UI task's lane is ui-design or ui-check even when the caller names no class and the route carries no kind.
   const kind = canonicalWorkerClass((role === 'worker' ? uiTaskLaneClass(task, taskClass) : taskClass) ?? route?.kind);
-  if (role === 'worker' && ['plan', 'review', ...UI_CLASSES].includes(kind)) {
-    brief = `Read-only lane: do not edit, implement, or publish. ${kind === 'review'
-      ? 'Review the exact PR head using references/simplifier-review.md as the brief. ' : UI_LANE_BRIEFS[kind] ?? ''}\n\n${brief}`;
+  if (role === 'worker' && ['plan', 'review', 'review-security', ...UI_CLASSES].includes(kind)) {
+    brief = `Read-only lane: do not edit, implement, or publish. ${READ_ONLY_BRIEFS[kind] ?? ''}\n\n${brief}`;
   }
   const line = role === 'worker' ? `${routeText(resolved)}; route: ${reason ?? routeReason(resolved)}` : routeText(resolved);
   return `Fixed route for this ${role} lane: ${line}. This route is not a suggestion. You cannot delegate, launch another agent, choose another route, or substitute a model or effort. If this route fails, stop this lane and report the failure to the PM.\n\n${role === 'worker' ? `${WORKER_TESTING_RULE}\n\n` : ''}${brief}`;
