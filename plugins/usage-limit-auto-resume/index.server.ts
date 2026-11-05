@@ -11,7 +11,7 @@ import { daemonRun, sameDaemonRun } from "./server/daemon-run.ts";
 import { createFallbackRunner } from "./server/fallback-runner.ts";
 import { agentPool, QuotaReader, type PoolQuota, type QuotaPool } from "./server/quota.ts";
 import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, boundUser, cancelClaim, closeDecision, failureSignature, restartSettle, resumeInterrupted, holdsClaim, isActive, RESTART_SETTLE_MS, isExpectedUser, isOwnLatestMessage, isRpcTimeoutWaiting, lastInput, endedTurnRows, turnInput, verifyUsageInput, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, rpcTimeoutDecision, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, USAGE_ENDING_GATES, verificationDecision, verifyTransientTimeline, staleFailure, type AgentClose, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim, type TimelineEntry, type TurnInput } from "./server/model.ts";
-import { ResumeStore, StateUnreadableError, TurnLedger, type RunningTurn } from "./server/store.ts";
+import { ResumeStore, StateUnreadableError, TurnLedger, TurnsUnreadableError, type RunningTurn } from "./server/store.ts";
 import { endedReads, killAgent } from "./server/vendor/ended-read.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
@@ -25,10 +25,11 @@ type OpenedClient = PaseoClient & { agentSettings?: AgentSettingsPort; daemonVer
 let thisRun: string | null = null;
 const currentDaemon = () => thisRun ??= daemonRun();
 // A daemon worker killed with -9 leaves this plugin process running for a while beside the new worker's, and it would
-// sweep the same state on the new daemon as the old run. It acts no more once its parent is gone. Where an orphan keeps
-// its parent pid (Windows), this does not hold.
+// sweep the same state on the new daemon as the old run. It acts no more once its parent is gone: its parent pid changed
+// (Linux, macOS) or its IPC channel to the parent closed (every host, Windows included, where an orphan keeps its parent
+// pid). Paseo closes that channel itself only when it stops the plugin.
 const parentPid = process.ppid;
-const orphaned = () => process.ppid !== parentPid;
+const orphaned = () => process.ppid !== parentPid || (typeof process.send === "function" && !process.connected);
 // A reply, an error reply included, shows the daemon answered.
 const isDaemonReply = (error: unknown) => error instanceof Error && (error.name === "DaemonRpcError" || error.name === "DaemonProtocolError");
 // How long the plugin waits for the daemon to answer before it takes it for stopping (daemonProbe). Paseo gives a stopping
@@ -55,6 +56,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
   let stopped = false;
   let client: OpenedClient | null = null;
   let stateErrorLogged = false;
+  let turnsErrorLogged = false;
   // One entry per agent with a send in flight; see processRecord.
   const inFlight = new Map<string, InFlightClaim>();
   // The newest agent.closed this process saw per agent, set before any await so a send about to be claimed sees it
@@ -98,6 +100,12 @@ export default function contribute(server: PluginServerContext, openClient: () =
   function failed(action: string, error: unknown) {
     if (!(error instanceof StateUnreadableError)) {
       log(`${action} reason=${JSON.stringify(errorMessage(error))}`);
+      return;
+    }
+    if (error instanceof TurnsUnreadableError) {
+      if (turnsErrorLogged) return;
+      turnsErrorLogged = true;
+      console.error(`[usage-limit-auto-resume] turns-unreadable reason=${JSON.stringify(errorMessage(error))} effect="turns a daemon stop or crash cuts off are not resumed until turns.json is fixed or moved aside"`);
       return;
     }
     if (stateErrorLogged) return;

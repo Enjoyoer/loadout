@@ -37,6 +37,8 @@ function retain(records: ResumeRecord[], guards: TurnGuard[] = []): { records: R
 
 /** The state file exists but cannot be read or parsed. Callers fail closed and leave the file alone. */
 export class StateUnreadableError extends Error {}
+/** The same for turns.json: records keep working, only turns cut off by a stop or crash are not found. */
+export class TurnsUnreadableError extends StateUnreadableError {}
 
 // Every ResumeState and attempt result, so typecheck fails here when model.ts adds one.
 const STATES: Record<ResumeState, true> = {
@@ -284,7 +286,7 @@ export class TurnLedger {
       return state.turns;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw new StateUnreadableError(`cannot read ${this.filePath}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new TurnsUnreadableError(`cannot read ${this.filePath}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
