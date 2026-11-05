@@ -37,6 +37,8 @@ function retain(records: ResumeRecord[], guards: TurnGuard[] = []): { records: R
 
 /** The state file exists but cannot be read or parsed. Callers fail closed and leave the file alone. */
 export class StateUnreadableError extends Error {}
+/** The same for turns.json: records keep working, only turns cut off by a stop or crash are not found. */
+export class TurnsUnreadableError extends StateUnreadableError {}
 
 // Every ResumeState and attempt result, so typecheck fails here when model.ts adds one.
 const STATES: Record<ResumeState, true> = {
@@ -249,5 +251,69 @@ export class ResumeStore {
       const state = await this.load();
       await this.persist(state.records.filter((record) => record.recordId !== recordId), state.guards, state.closes);
     });
+  }
+}
+
+/**
+ * A turn the plugin saw start and has not seen end yet: the daemon run it ran in, when the plugin saw it start, and the
+ * agent's latest user message time, read from the daemon then and again while the turn runs. A graceful stop or a crash
+ * leaves the entry behind, so a later daemon run finds the turns they cut off (index.server.ts, cutTurn).
+ */
+export type RunningTurn = { agentId: string; turnId: string; startedAt: string; daemon: string; lastUserMessageAt: string | null };
+
+const isRunningTurn = (value: unknown): value is RunningTurn => {
+  if (typeof value !== "object" || value === null) return false;
+  const turn = value as Record<string, unknown>;
+  return isId(turn.agentId) && isId(turn.turnId) && isTime(turn.startedAt) && isId(turn.daemon) && (turn.lastUserMessageAt === null || isTime(turn.lastUserMessageAt));
+};
+
+const sameEntry = (a: RunningTurn, b: Pick<RunningTurn, "agentId" | "turnId">) => a.agentId === b.agentId && a.turnId === b.turnId;
+
+/** The running turns, one per agent, in their own file, so a turn start or end never rewrites the records. */
+export class TurnLedger {
+  private readonly filePath: string;
+  private queue: Promise<unknown> = Promise.resolve();
+
+  constructor(filePath = path.join(paseoHome(), "plugin-state", "usage-limit-auto-resume", "turns.json")) {
+    this.filePath = filePath;
+  }
+
+  // As ResumeStore: only a missing file reads as empty, anything else unreadable throws.
+  async read(): Promise<RunningTurn[]> {
+    try {
+      const state = JSON.parse(await readFile(this.filePath, "utf8")) as { version?: unknown; turns?: unknown };
+      if (state.version !== 1 || !Array.isArray(state.turns) || !state.turns.every(isRunningTurn)) throw new Error("invalid running turns");
+      return state.turns;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw new TurnsUnreadableError(`cannot read ${this.filePath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** Notes the agent's running turn, while `current` still holds. A new turn shows the agent's earlier one ended. */
+  async start(turn: RunningTurn, current: () => boolean): Promise<void> {
+    await this.change((turns) => current() ? [...turns.filter((other) => other.agentId !== turn.agentId), turn] : turns);
+  }
+
+  /** Notes a later latest user message time for the turn's entry, while it stands. */
+  async restamp(turn: Pick<RunningTurn, "agentId" | "turnId">, lastUserMessageAt: string): Promise<void> {
+    await this.change((turns) => turns.map((other) => sameEntry(other, turn) && other.lastUserMessageAt !== lastUserMessageAt ? { ...other, lastUserMessageAt } : other));
+  }
+
+  /** Removes the turn's entry; an entry a newer turn of the agent replaced stays. */
+  async end(turn: Pick<RunningTurn, "agentId" | "turnId">): Promise<void> {
+    await this.change((turns) => turns.filter((other) => !sameEntry(other, turn)));
+  }
+
+  private change(update: (turns: RunningTurn[]) => RunningTurn[]): Promise<void> {
+    const run = this.queue.then(async () => {
+      const turns = await this.read();
+      const next = update(turns);
+      if (next.length === turns.length && next.every((turn, at) => turn === turns[at])) return;
+      await mkdir(path.dirname(this.filePath), { recursive: true });
+      await writeJsonAtomically(this.filePath, { version: 1, turns: next }, { mode: 0o600 });
+    });
+    this.queue = run.catch(() => undefined);
+    return run;
   }
 }
