@@ -242,8 +242,31 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
                 *base['skills'], '-' + str(root/'agent/skills/dropped'), '-' + str(user/'.agents/skills/user-dropped')]})
             rows = json.loads((home/'models.json').read_text())['providers']['fleet']['models']
             self.assertEqual([(row['id'], row['contextWindow']) for row in rows], [('current', 1000000), ('other', 272000)])
-            # A name no root holds, such as a retired skill, is skipped with one warning line and the launch continues.
+            # A model not in the shared models.json, such as one retired from the catalog, is skipped with one warning line
+            # in either overlay; that model keeps the shared values and a present model is still applied.
+            warning = 'Pi launch: model override "fleet/retired" not in models.json, using default\n'
+            (home/'settings.overlay.json').unlink()
+            (home/'models.overlay.json').write_text(json.dumps({'providers': {'fleet': {'models': [
+                {'id': 'retired', 'contextWindow': 5}, {'id': 'current', 'contextWindow': 1000000}]}}}))
+            done = run()
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.stderr, warning)
+            models = json.loads(shared['models.json']); models['providers']['fleet']['models'][0]['contextWindow'] = 1000000
+            self.assertEqual(json.loads((home/'models.json').read_text()), models)
+            self.assertEqual((home/'settings.json').read_bytes(), shared['settings.json'])
             (home/'models.overlay.json').unlink()
+            (home/'settings.overlay.json').write_text(json.dumps({'compaction': {'modelOverrides': {
+                'fleet/retired': {'reserveTokens': 5}, 'fleet/current': {'reserveTokens': 40960}}}}))
+            done = run()
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.stderr, warning)
+            self.assertEqual(json.loads((home/'settings.json').read_text()), {**base, 'compaction': compaction})
+            self.assertEqual((home/'models.json').read_bytes(), shared['models.json'])
+            (home/'settings.overlay.json').write_text(json.dumps({'compaction': {'modelOverrides': {'fleet/retired': {'reserveTokens': 5}}}}))
+            done = run()
+            self.assertEqual((done.returncode, done.stderr), (0, warning))
+            self.assertEqual({name: (home/name).read_bytes() for name in shared}, shared)
+            # A name no root holds, such as a retired skill, is skipped with one warning line and the launch continues.
             (home/'settings.overlay.json').write_text(json.dumps({'skillsExclude': ['retired', 'dropped']}))
             done = run()
             self.assertEqual(done.returncode, 0, done.stderr)
@@ -267,7 +290,11 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
                     ('settings', {'skillsExclude': ['both']}, '"both" is ambiguous'),
                     ('settings', {'skillsExclude': ['../skills/kept']}, 'must be a skill directory name'),
                     ('settings', {'skillsExclude': []}, 'skillsExclude must be a non-empty list'),
-                    ('models', {'providers': []}, 'providers must be a non-empty object')]:
+                    ('models', {'providers': []}, 'providers must be a non-empty object'),
+                    ('models', {'providers': {'fleet': {'models': [{'id': 'retired', 'contextWindow': 0}]}}}, 'must be a positive integer'),
+                    ('models', {'providers': {'fleet': {'models': [{'id': 7, 'contextWindow': 5}]}}}, 'id must be a non-empty string'),
+                    ('settings', {'compaction': {'modelOverrides': {'fleet/retired': {'window': 5}}}}, 'does not allow "window"'),
+                    ('settings', {'compaction': {'modelOverrides': {'retired': {'reserveTokens': 5}}}}, 'must be "<provider>/<model id>"')]:
                 for stale in home.glob('*.overlay.json'): stale.unlink()
                 (home/f'{name}.overlay.json').write_text(json.dumps(overlay))
                 refused = run()

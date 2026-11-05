@@ -15,9 +15,9 @@ const requireCodemode = settings => {
 requireCodemode(JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8')));
 // Per-agent overlays: the owner or a PM may write models.overlay.json or settings.overlay.json into agents/<id>/.
 // Every launch rebuilds that agent's models.json and settings.json from the shared agent/ copies and applies the
-// overlay on top, so deleting an overlay restores the shared values. Only this allowlist is accepted; any other key,
-// JSON type, provider or model refuses the launch. Every object and list needs at least one entry, n is a positive
-// integer, and each provider, model id and "<provider>/<model id>" key must exist in the shared models.json:
+// overlay on top, so deleting an overlay restores the shared values. Only this allowlist is accepted; any other key
+// or JSON type refuses the launch. Every object and list needs at least one entry, n is a positive integer, and each
+// model id is a non-empty string and each modelOverrides key has the form "<provider>/<model id>":
 //   models.overlay.json    {"providers": {"<provider>": {"models": [{"id": "<model id>", "contextWindow"?: n, "maxTokens"?: n}]}}}
 //   settings.overlay.json  {"compaction"?: {"enabled"?: true|false, "reserveTokens"?: n, "keepRecentTokens"?: n,
 //                           "modelOverrides"?: {"<provider>/<model id>": {"reserveTokens"?: n, "keepRecentTokens"?: n}}},
@@ -25,7 +25,10 @@ requireCodemode(JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8
 // Each skillsExclude entry is unique and names a skill directory directly under exactly one root Pi loads skills from
 // (skillRoots); the launcher appends Pi's exact exclusion "-<that directory>" to skills, so only that skill leaves the
 // agent's index and commands. A name in two roots refuses the launch. A name in no root (a skill since retired or never
-// installed) excludes nothing, so the launch prints one warning line naming it and continues.
+// installed) excludes nothing, so the launch prints one warning line naming it and continues. Likewise a models entry
+// or modelOverrides key naming a model not in the shared models.json (a model since retired from the catalog, or its
+// whole provider) is checked like any other entry, then skipped with one warning line, so that model keeps the shared
+// values and the launch continues.
 // For example, a 1M window for one model with a 40960-token compaction reserve:
 //   {"providers": {"fleet": {"models": [{"id": "<model id>", "contextWindow": 1000000}]}}}
 //   {"compaction": {"modelOverrides": {"fleet/<model id>": {"reserveTokens": 40960}}}}
@@ -42,17 +45,21 @@ function counts(value, keys, where) {
     if (Object.hasOwn(value, key) && !(Number.isSafeInteger(value[key]) && value[key] > 0))
       throw Error(`${where}.${key} must be a positive integer`);
 }
+// A model the shared models.json lacks gets this one stderr line and is skipped; its shared values stay.
+const skipModel = key => process.stderr.write(`Pi launch: model override "${key}" not in models.json, using default\n`);
 function overlayModels(models, overlay) {
-  const providers = only(only(overlay, ['providers'], 'the overlay').providers, Object.keys(models.providers), 'providers');
+  const providers = only(only(overlay, ['providers'], 'the overlay').providers, Object.keys(overlay.providers ?? {}), 'providers');
   for (const [name, provider] of Object.entries(providers)) {
     const where = `providers.${name}.models`, list = only(provider, ['models'], `providers.${name}`).models;
     if (!Array.isArray(list) || !list.length) throw Error(`${where} must be a non-empty list`);
     for (const entry of list) {
       only(entry, ['id', 'contextWindow', 'maxTokens'], `${where} entry`);
-      const model = (models.providers[name].models ?? []).find(row => row.id === entry.id);
-      if (!model) throw Error(`${where} has no shared model "${entry.id}"`);
+      if (typeof entry.id !== 'string' || !entry.id) throw Error(`${where} entry id must be a non-empty string`);
       if (Object.keys(entry).length < 2) throw Error(`${where} entry "${entry.id}" changes nothing`);
       counts(entry, ['contextWindow', 'maxTokens'], `${where} entry "${entry.id}"`);
+      const shared = Object.hasOwn(models.providers, name) ? models.providers[name].models ?? [] : [];
+      const model = shared.find(row => row.id === entry.id);
+      if (!model) { skipModel(`${name}/${entry.id}`); continue; }
       Object.assign(model, entry);
     }
   }
@@ -89,18 +96,24 @@ function overlaySettings(settings, overlay, models, home) {
   if (Object.hasOwn(compaction, 'enabled') && typeof compaction.enabled !== 'boolean')
     throw Error('compaction.enabled must be true or false');
   counts(compaction, ['reserveTokens', 'keepRecentTokens'], 'compaction');
-  const merged = { ...settings.compaction, ...compaction };
+  const { modelOverrides: overrides, ...rest } = compaction;
+  const merged = { ...settings.compaction, ...rest };
+  let changed = Object.keys(rest).length > 0;
   if (Object.hasOwn(compaction, 'modelOverrides')) {
     const ids = Object.entries(models.providers)
       .flatMap(([name, provider]) => (provider.models ?? []).map(row => `${name}/${row.id}`));
-    merged.modelOverrides = { ...settings.compaction?.modelOverrides };
-    for (const [key, override] of Object.entries(only(compaction.modelOverrides, ids, 'compaction.modelOverrides'))) {
+    const applied = { ...settings.compaction?.modelOverrides };
+    for (const [key, override] of Object.entries(only(overrides, Object.keys(overrides ?? {}), 'compaction.modelOverrides'))) {
       const where = `compaction.modelOverrides["${key}"]`;
+      if (!/^[^/]+\/./.test(key)) throw Error(`${where} must be "<provider>/<model id>"`);
       counts(only(override, ['reserveTokens', 'keepRecentTokens'], where), ['reserveTokens', 'keepRecentTokens'], where);
-      merged.modelOverrides[key] = { ...merged.modelOverrides[key], ...override };
+      if (!ids.includes(key)) { skipModel(key); continue; }
+      applied[key] = { ...applied[key], ...override };
+      merged.modelOverrides = applied; changed = true;
     }
   }
-  return { ...settings, compaction: merged };
+  // An overlay whose every entry was skipped leaves the shared settings exactly as they were.
+  return changed ? { ...settings, compaction: merged } : settings;
 }
 if (process.argv.slice(2).some(arg => /^(--(?:no-)?codemode|--no-extensions)(=|$)/.test(arg)))
   throw Error('Pi Codemode cannot be overridden per agent');
