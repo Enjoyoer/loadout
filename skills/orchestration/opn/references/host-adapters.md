@@ -16,7 +16,7 @@ If none is callable, or the owner has not allowed delegation, work directly only
 
 Every adapter creates the worker under the PM, in the PM's existing workspace, project or session and working directory. Never create a new workspace or project for a worker, including when following up.
 
-- Paseo: an agent-scoped `create_agent` with no workspace argument places the worker in the PM's workspace with a parent link. Pass the PM's own provider, model ID and thinking, and `notifyOnFinish: true`; follow-ups go through `send_agent_prompt` with `notifyOnFinish: true`. After the PM's readback verifies its result, close the worker as the main policy says: heartbeats and schedules, then the agent, then its workspaces.
+- Paseo: an agent-scoped `create_agent` with no workspace argument places the worker in the PM's workspace with a parent link. Pass the PM's own provider, model ID and thinking, and `notifyOnFinish: true`; follow-ups go through `send_agent_prompt` with `notifyOnFinish: true`. After the PM's readback verifies its result, close the worker as the main policy says: heartbeats and check-backs, then the agent, then each workspace it created that holds no unpreserved work.
 - Codex named tasks: create only a thread inside the PM's existing project. The PM reads the thread's result and relays it.
 - Native subagents: spawn under the caller, wait for the bounded result, and send repairs to the same subagent.
 
