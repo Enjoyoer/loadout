@@ -24,7 +24,8 @@ requireCodemode(JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8
 //                          "skillsExclude"?: ["<skill name>"]}
 // Each skillsExclude entry is unique and names a skill directory directly under exactly one root Pi loads skills from
 // (skillRoots); the launcher appends Pi's exact exclusion "-<that directory>" to skills, so only that skill leaves the
-// agent's index and commands. A name in no root, or in two, refuses the launch.
+// agent's index and commands. A name in two roots refuses the launch. A name in no root (a skill since retired or never
+// installed) excludes nothing, so the launch prints one warning line naming it and continues.
 // For example, a 1M window for one model with a 40960-token compaction reserve:
 //   {"providers": {"fleet": {"models": [{"id": "<model id>", "contextWindow": 1000000}]}}}
 //   {"compaction": {"modelOverrides": {"fleet/<model id>": {"reserveTokens": 40960}}}}
@@ -69,16 +70,16 @@ function overlaySettings(settings, overlay, models, home) {
     const names = overlay.skillsExclude, roots = skillRoots(home);
     if (!Array.isArray(names) || !names.length) throw Error('skillsExclude must be a non-empty list');
     if (!settings.skills?.includes(roots[0])) throw Error(`the shared settings do not load ${roots[0]}`);
-    const dirs = names.map(name => {
+    const dirs = names.flatMap(name => {
       // A plain skill name only: no separators, globs, dots or Pi pattern prefixes.
       if (typeof name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name))
         throw Error(`skillsExclude entry ${JSON.stringify(name)} must be a skill directory name`);
       if (names.indexOf(name) !== names.lastIndexOf(name)) throw Error(`skillsExclude lists "${name}" twice`);
       const found = roots.map(dir => join(dir, name))
         .filter(dir => statSync(join(dir, 'SKILL.md'), { throwIfNoEntry: false })?.isFile());
-      if (!found.length) throw Error(`skillsExclude has no skill "${name}" in ${roots.join(', ')}`);
       if (found.length > 1) throw Error(`skillsExclude "${name}" is ambiguous: ${found.join(' and ')}`);
-      return found[0];
+      if (!found.length) process.stderr.write(`Pi launch: skillsExclude skips "${name}": no such skill is installed\n`);
+      return found;
     });
     settings = { ...settings, skills: [...settings.skills, ...dirs.map(dir => '-' + dir)] };
   }

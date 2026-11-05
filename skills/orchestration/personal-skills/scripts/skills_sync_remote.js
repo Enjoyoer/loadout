@@ -19,7 +19,7 @@
 // Helpers come from remote_common.js, which fleet.run_node ships ahead of this file.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execFileSync } = require("child_process");
-const result = { status: null, clients: {}, added: [], changed: [], same: 0, conflicts: [], elevation: [], retired: [], kept: [], error: null };
+const result = { status: null, clients: {}, added: [], changed: [], same: 0, conflicts: [], elevation: [], retired: [], kept: [], pi_excludes: [], error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
   process.exit(code);
@@ -191,11 +191,12 @@ try {
   // A configured Loadout Pi receives the same selected, verified skill blobs.
   // Discover its home from the host's provider command, not a second fleet list.
   const cfgPath = path.join(home, '.paseo', 'config.json');
+  let runtimeRoot = null;
   if (fs.existsSync(cfgPath)) {
     const provider = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).agents?.providers?.pi;
     const launcher = provider?.command?.find(arg => path.basename(arg) === 'launch.mjs');
     if (launcher) {
-      const runtimeRoot = path.dirname(expand(launcher));
+      runtimeRoot = path.dirname(expand(launcher));
       const agentHome = path.join(runtimeRoot, 'agent');
       const pkg = path.join(runtimeRoot, 'app', 'node_modules', '@earendil-works', 'pi-coding-agent', 'package.json');
       checkAncestors(fs, path, home, path.join(agentHome, 'skills', 'probe'));
@@ -337,6 +338,20 @@ try {
     binDrops.push({ name, file, label, ours, digest });
   }
   if (result.conflicts.length) { result.status = "conflict"; done(5); }
+  // Report, never edit: Pi per-agent settings overlays whose skillsExclude names a skill this run retires. The launcher
+  // skips such a name with a warning, so the entry is harmless; the owner may drop it.
+  const retiring = new Set(drops.filter(d => d.dir).map(d => d.skill));
+  const agentsDir = CLIENT_HOMES.pi && path.join(runtimeRoot, 'agents');
+  if (retiring.size && agentsDir && probe(fs, agentsDir)?.isDirectory())
+    for (const agent of fs.readdirSync(agentsDir).sort()) {
+      const file = path.join(agentsDir, agent, 'settings.overlay.json');
+      if (!probe(fs, file)?.isFile()) continue;
+      // A malformed overlay is the launcher's to refuse; this report only names the ones it can read.
+      let names;
+      try { names = JSON.parse(fs.readFileSync(file, 'utf8')).skillsExclude; } catch (e) { if (e instanceof SyntaxError) continue; throw e; }
+      const hits = Array.isArray(names) ? [...new Set(names.filter(n => retiring.has(n)))] : [];
+      if (hits.length) result.pi_excludes.push(`${agent} (${hits.join(', ')})`);
+    }
   for (const w of writes) result[w.kind].push(w.label);
   result.status = writes.length + result.retired.length + result.kept.length ? (p.dry_run ? "would update" : "updated") : "same";
   if (p.dry_run) done(0);

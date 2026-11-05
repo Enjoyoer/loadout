@@ -242,7 +242,20 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
                 *base['skills'], '-' + str(root/'agent/skills/dropped'), '-' + str(user/'.agents/skills/user-dropped')]})
             rows = json.loads((home/'models.json').read_text())['providers']['fleet']['models']
             self.assertEqual([(row['id'], row['contextWindow']) for row in rows], [('current', 1000000), ('other', 272000)])
-            for name in shared: (home/name.replace('.json', '.overlay.json')).unlink()
+            # A name no root holds, such as a retired skill, is skipped with one warning line and the launch continues.
+            (home/'models.overlay.json').unlink()
+            (home/'settings.overlay.json').write_text(json.dumps({'skillsExclude': ['retired', 'dropped']}))
+            done = run()
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.stderr, 'Pi launch: skillsExclude skips "retired": no such skill is installed\n')
+            self.assertEqual(json.loads((home/'settings.json').read_text())['skills'],
+                             [*base['skills'], '-' + str(root/'agent/skills/dropped')])
+            (home/'settings.overlay.json').write_text(json.dumps({'skillsExclude': ['retired']}))
+            done = run()
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn('skips "retired"', done.stderr)
+            self.assertEqual(json.loads((home/'settings.json').read_text()), base)
+            (home/'settings.overlay.json').unlink()
             done = run()
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual({name: (home/name).read_bytes() for name in shared}, shared)
@@ -251,7 +264,6 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
                     ('settings', {'codemode': {'mode': 'off'}}, 'does not allow "codemode"'),
                     ('settings', {'packages': [{'source': str(root/'package'), 'extensions': ['index.ts']}]}, 'does not allow "packages"'),
                     ('settings', {'httpProxy': 'http://127.0.0.1:9'}, 'does not allow "httpProxy"'),
-                    ('settings', {'skillsExclude': ['missing']}, 'no skill "missing"'),
                     ('settings', {'skillsExclude': ['both']}, '"both" is ambiguous'),
                     ('settings', {'skillsExclude': ['../skills/kept']}, 'must be a skill directory name'),
                     ('settings', {'skillsExclude': []}, 'skillsExclude must be a non-empty list'),

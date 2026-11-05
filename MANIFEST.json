@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "313fabb3a7b19cd982baf901db83b95bbade753b",
+  "source_commit": "8879e58e00dd7a7c2bb6a4170a1dbd242f9e8ced",
   "skill_count": 24,
   "file_count": 141,
   "files": [
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 26716,
-      "sha256": "94c1dfe7bbff4a54da9ca280f4f7f317b3bea43323b0f4e788734b30db0877a2"
+      "bytes": 27107,
+      "sha256": "7d20f2f56c0242252a409b538665199086cdcb235f8142a792de1affa010e037"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
@@ -429,8 +429,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 64118,
-      "sha256": "c709b7ba0324b999f5196e3b11250b5be7708f9a4b9e77fafbe4efc46b44b944"
+      "bytes": 64507,
+      "sha256": "d1c251fd37322b99df186e365fe2f2277f91b102672db3de82605266238e83e3"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -639,8 +639,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 11272,
-      "sha256": "dfdc93fde615b8d47088cdd53a7b5f60d2629dbd2308ee6abe1ca3fcef6e43eb"
+      "bytes": 11428,
+      "sha256": "96108cc75845b03257b295bdcb243927c41c6975cb6ae20d3c580ded8e7c2333"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/mcp_bridge.py",
@@ -702,15 +702,15 @@
       "path": "skills/orchestration/personal-skills/scripts/skills_sync.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 15873,
-      "sha256": "9d7635c4db6213acb3ef11ce772caf5c832b66cc2cae5c559e578a294f8c5f1b"
+      "bytes": 16271,
+      "sha256": "8bd810734e04278ca94b2d1a568d1a76fd486eaa2fbaaa093ad3ae7d36d1cebd"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/skills_sync_remote.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 27337,
-      "sha256": "57339af409f5dda8f32effc1a62e59ee96309aac9e40cd112dd30ad0e83b0742"
+      "bytes": 28428,
+      "sha256": "57b8d6cc7dd79c6c0b97ea3ca61ecc47782ead8e8296aedbcb827c6bd325dba7"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/sync.py",
