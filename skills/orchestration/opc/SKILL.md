@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.57"
+  version: "7.58"
 ---
 
 # OPC
@@ -47,7 +47,7 @@ Verify returned agent/workspace identity, path, branch, commits, selected-base a
 
 ## 6. Verify
 
-Independently check required behavior and final committed deliverable bytes using the execution mechanics. Reuse a receipt only while head, bytes, command, and evidence remain unchanged; otherwise rerun. [Review rules](references/web-reviewer.md#review-rules "branch:review") bind every review; initially enabled review reads it at the published candidate head. Review never replaces PM correctness checks. Platform or browser checks not run remain unverified.
+Independently check required behavior and final committed deliverable bytes using the execution mechanics. Reuse a receipt only while head, bytes, command, and evidence remain unchanged; otherwise rerun. [Review rules](references/web-reviewer.md#review-rules "branch:review") bind every review; initially enabled review reads it at the published candidate head. Security-sensitive diffs review on `review-security`. Review never replaces PM correctness checks. Platform or browser checks not run remain unverified.
 
 ## 7. Merge and cleanup
 

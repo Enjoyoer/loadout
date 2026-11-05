@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "5a82101bfadf6f040e44232d72c4e3a5dbce5da8",
+  "source_commit": "d2ab11f0145545e80ccaaa46e792fdc97d4c93b1",
   "skill_count": 24,
   "file_count": 141,
   "files": [
@@ -198,8 +198,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5318,
-      "sha256": "57c24e8afb1201bb67e55e4bf6fa5bd7698396f15c4d2c6ab40337d8b5d0c304"
+      "bytes": 5372,
+      "sha256": "b95f49dfcc83301d59a0816506851db40762b4a2449fadc23b26de9732144955"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -219,8 +219,8 @@
       "path": "skills/orchestration/opc/references/exploration-swarm.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 1040,
-      "sha256": "d3deb57c7a1c72254d5f7cb6a4bf4bbd0e8a48abca92c65d5ba6df8c5b65423a"
+      "bytes": 1014,
+      "sha256": "a3f50014e6ea35c6d895facfe36b27910faaf21475c856e89a5c9b483618cb54"
     },
     {
       "path": "skills/orchestration/opc/references/imp-execution.md",
@@ -261,8 +261,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 12832,
-      "sha256": "d2d9e4b775e7ac655c65306a43d2da0366c21b9ddbf4257912de0cb6d230b9b3"
+      "bytes": 13534,
+      "sha256": "79afe1240c50275c35e2392fb31352ffbb954f7601cbfa916dc1ffd0fd40db00"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -310,8 +310,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 34493,
-      "sha256": "34aca928149143af2e1ff9b9f4fe6ae2af3d7d9725279a610c03ff12d6262ad9"
+      "bytes": 35058,
+      "sha256": "c3f0c7948f7a9cbe6ecc60c8d74a13d6290b4fc644b551a3d060d50ff07aa393"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -429,8 +429,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 65053,
-      "sha256": "0f881df9079f87fcf63cc8fe6ab012005505a837cd67acfccc6c11ec472f0a39"
+      "bytes": 65281,
+      "sha256": "ce222e37276a0992bb6e533486031276bffb3c7477e2e34d870cf1d4ea95cb7c"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
