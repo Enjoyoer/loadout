@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "6aa759cc4c4815682d8bebe9b7c7b4f8c39df0c4",
+  "source_commit": "82f8456f69ea44c14079e0d48f768b2aaccb6d13",
   "skill_count": 24,
   "file_count": 141,
   "files": [
@@ -199,7 +199,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5318,
-      "sha256": "198c29a48eb558c91566ae3018e44ef657d4c2d75d9928d2d34c7bf8e3ecb75a"
+      "sha256": "57c24e8afb1201bb67e55e4bf6fa5bd7698396f15c4d2c6ab40337d8b5d0c304"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -303,8 +303,8 @@
       "path": "skills/orchestration/opc/references/worktree-lifecycle.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 898,
-      "sha256": "9231c10d996039fd160910042eca9c11ab224d7c11b941ea27172eee287aecad"
+      "bytes": 887,
+      "sha256": "fc194ca83d461c855908a8671e0a57e32c0b165579e7aa8a9aec86b5a785fc71"
     },
     {
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
@@ -373,8 +373,8 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 4485,
-      "sha256": "99859bfed7d7eb0faf77ee28e5b1a231e0c159b12469eeeafa7fdbd7048af365"
+      "bytes": 5342,
+      "sha256": "2917cf34ff1a57993ab67a6acb490fc1ac8ec1f2749ac7ab9800635dc8b253ad"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
@@ -387,15 +387,15 @@
       "path": "skills/orchestration/opn/evals.json",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 11223,
-      "sha256": "3a886e00bb0fe584e4b5d8871ab93eb1ca1427386f5586a9eafc1481e4c09232"
+      "bytes": 12547,
+      "sha256": "ac496da465876fd14704f7f34f923227d4370ac62c232e21e2b74194347da165"
     },
     {
       "path": "skills/orchestration/opn/references/host-adapters.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 1784,
-      "sha256": "12c5efc5e9e3ba03fd23536c5aa6a2cc594285c669703f786871a47fe901634c"
+      "bytes": 1914,
+      "sha256": "cb583a715399ac0b04b08876424f151a2c2c5384b9952339ab202a7fc87911a5"
     },
     {
       "path": "skills/orchestration/opn/scripts/test_validate_opn.py",
