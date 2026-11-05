@@ -529,6 +529,26 @@ class SkillsSyncTest(unittest.TestCase):
         self.assertIn("desktop: skills updated (-1); codex present, claude present; retired unpublished: claude:old", out)
         self.assertFalse(self.installed("desktop", ".claude/skills/old").exists())
 
+    def test_retiring_a_skill_reports_pi_overlays_that_exclude_it(self):
+        runtime = self.installed("desktop", "pi-runtime")
+        pkg = runtime / "app/node_modules/@earendil-works/pi-coding-agent/package.json"
+        pkg.parent.mkdir(parents=True); pkg.write_text('{"version":"1.0.0"}')
+        cfg = self.installed("desktop", ".paseo/config.json"); cfg.parent.mkdir(parents=True)
+        cfg.write_text(json.dumps({"agents": {"providers": {"pi": {"command": ["node", str(runtime / "launch.mjs")]}}}}))
+        self.legacy_install("desktop", ("pi-runtime/agent/skills",), "old", b"old")
+        overlays = {"pm-agent-0001": {"skillsExclude": ["old", "handoff"]}, "worker-agent-0002": {"skillsExclude": ["handoff"]}}
+        for agent, overlay in overlays.items():
+            (runtime / "agents" / agent).mkdir(parents=True)
+            (runtime / "agents" / agent / "settings.overlay.json").write_text(json.dumps(overlay))
+        code, out = self.full_sync({"skills/misc/old/SKILL.md": [sha(b"old")]})
+        self.assertEqual(code, 0, out)
+        self.assertIn("retired unpublished: pi:old", out)
+        self.assertIn("desktop: Pi agent overlays whose skillsExclude names a retired skill (harmless, not edited): "
+                      "pm-agent-0001 (old)\n", out)
+        self.assertEqual(out.count("Pi agent overlays"), 1, out)
+        for agent, overlay in overlays.items():
+            self.assertEqual(json.loads((runtime / "agents" / agent / "settings.overlay.json").read_text()), overlay)
+
     def test_overlay_is_not_pushed_with_the_fleet(self):
         self.overlay("mine/SKILL.md", "v1")
         self.assertNotIn("skills/mine/SKILL.md", fleet.fleet_files(self.fleet))
