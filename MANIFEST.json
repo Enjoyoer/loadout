@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b0d307c068b361c39ea7f2c6b83c531d4d1eda5d",
-  "skill_count": 27,
-  "file_count": 152,
+  "source_commit": "6aa759cc4c4815682d8bebe9b7c7b4f8c39df0c4",
+  "skill_count": 24,
+  "file_count": 141,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -39,41 +39,6 @@
       "skill": "codebase-design",
       "bytes": 102,
       "sha256": "edebc9e4fcfe102114012575eaa9600b9b5fd08c311664f389c36e7bc717740f"
-    },
-    {
-      "path": "skills/engineering/domain-modeling/ADR-FORMAT.md",
-      "category": "engineering",
-      "skill": "domain-modeling",
-      "bytes": 2733,
-      "sha256": "944c92aa790e8fbdc9199640b170979abb8a34ba8d0fe18c2a01a63bce140ca0"
-    },
-    {
-      "path": "skills/engineering/domain-modeling/CONTEXT-FORMAT.md",
-      "category": "engineering",
-      "skill": "domain-modeling",
-      "bytes": 2290,
-      "sha256": "17ab16ce783e4d2801ee52fd9acdf550cbf44de65ae76797a93943bbedf22a13"
-    },
-    {
-      "path": "skills/engineering/domain-modeling/LICENSE.txt",
-      "category": "engineering",
-      "skill": "domain-modeling",
-      "bytes": 1068,
-      "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
-    },
-    {
-      "path": "skills/engineering/domain-modeling/SKILL.md",
-      "category": "engineering",
-      "skill": "domain-modeling",
-      "bytes": 3331,
-      "sha256": "327a2b50620e2fd70abc6893cd6965e76b20f8d0adb0dc2c8d5eb3845efb643e"
-    },
-    {
-      "path": "skills/engineering/domain-modeling/agents/openai.yaml",
-      "category": "engineering",
-      "skill": "domain-modeling",
-      "bytes": 101,
-      "sha256": "f6bf2aa996c6e6f53fdd0708e18a0d16a56aed8322cca59fedbe3c0d2c75f06b"
     },
     {
       "path": "skills/engineering/improve-codebase-architecture/LICENSE.txt",
@@ -832,27 +797,6 @@
       "sha256": "6e97f641370362b0216ba3716ab4ef2230d494d6dbb10c72d8e681e45429aa20"
     },
     {
-      "path": "skills/planning-writing/grilling/LICENSE.txt",
-      "category": "planning-writing",
-      "skill": "grilling",
-      "bytes": 1068,
-      "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
-    },
-    {
-      "path": "skills/planning-writing/grilling/SKILL.md",
-      "category": "planning-writing",
-      "skill": "grilling",
-      "bytes": 1987,
-      "sha256": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2"
-    },
-    {
-      "path": "skills/planning-writing/grilling/agents/openai.yaml",
-      "category": "planning-writing",
-      "skill": "grilling",
-      "bytes": 113,
-      "sha256": "1411d7df7d99b7e621a1ff8283c8133cc2464be63d064e52d8ce169c6800ee9b"
-    },
-    {
       "path": "skills/planning-writing/sample/SKILL.md",
       "category": "planning-writing",
       "skill": "sample",
@@ -970,27 +914,6 @@
       "skill": "frontend-design",
       "bytes": 242,
       "sha256": "8619bcd4919d1e072ed021884e6d802e07837f3b2d4b284d8626ad3e19d1a1ec"
-    },
-    {
-      "path": "skills/web-browser/pake/SKILL.md",
-      "category": "web-browser",
-      "skill": "pake",
-      "bytes": 3617,
-      "sha256": "14bfd84391a6ac0cded9894f1564be2034e692d2fa4f7040425193c111593ed5"
-    },
-    {
-      "path": "skills/web-browser/pake/agents/openai.yaml",
-      "category": "web-browser",
-      "skill": "pake",
-      "bytes": 164,
-      "sha256": "66cab4044c8a101e6455538a21a85eae396ae83120ff3a09f774d566100d3943"
-    },
-    {
-      "path": "skills/web-browser/pake/references/pake-cli.md",
-      "category": "web-browser",
-      "skill": "pake",
-      "bytes": 3138,
-      "sha256": "54d25f635517816329f70bdbff75ab25e13d54c5cabb3ddf1f27611414e5da00"
     },
     {
       "path": "skills/web-browser/playwright/LICENSE.txt",
