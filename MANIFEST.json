@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "63a7a7ae386f18f11d68dea14266c80eb52db9b8",
+  "source_commit": "8879e58e00dd7a7c2bb6a4170a1dbd242f9e8ced",
   "skill_count": 24,
   "file_count": 141,
   "files": [
@@ -709,8 +709,8 @@
       "path": "skills/orchestration/personal-skills/scripts/skills_sync_remote.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 28297,
-      "sha256": "c5f455f4b123c54cca5cf7cee1a3b103d63779ec30e8ebd0c7414a112c5a2a1c"
+      "bytes": 28428,
+      "sha256": "57b8d6cc7dd79c6c0b97ea3ca61ecc47782ead8e8296aedbcb827c6bd325dba7"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/sync.py",
