@@ -1,8 +1,8 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { formatAge, matchProjectPms, type OwnerKeys, type OwnerResolution } from "./cleanup.ts";
+import { formatAge, keptWorktreeLines, matchProjectPms, type OwnerKeys, type OwnerResolution } from "./cleanup.ts";
 import { isPmAgent } from "./evaluate.ts";
-import type { AgentView } from "./types.ts";
+import type { AgentView, Decision } from "./types.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
 import { paseoHome } from "./vendor/daemon-target.ts";
 import { isAbsent } from "./vendor/fs-probe.ts";
@@ -14,10 +14,12 @@ import { isAbsent } from "./vendor/fs-probe.ts";
 // 2. worktree workspaces, and workspaces under a disposable root (Paseo's worktrees, fleet-scratch), with no live
 //    agent, idle at least staleWorkspaceMinutes.
 //
-// One message per PM, at most one per FLAG_INTERVAL_MS, each item listed at most once per FLAG_INTERVAL_MS. Items
-// whose PM or project opted in (staleArchivePms, staleArchiveProjects) are archived instead when armed and every gate
-// passes. Pinned workspaces, `noarchive` labels, staleExclude entries and PMs are never flagged or archived. Only this
-// daemon's agents and workspaces are swept; peer daemons are only asked for the PM, as in workspace cleanup.
+// One message per PM, at most one per FLAG_INTERVAL_MS, each item listed at most once per FLAG_INTERVAL_MS; workspace
+// cleanup's kept-worktree report goes into the same message, so this daemon sends a PM at most one a day. Items whose PM
+// or project opted in (staleArchivePms, staleArchiveProjects) are archived instead when armed and every gate passes.
+// Pinned workspaces, `noarchive` labels, staleExclude entries and PMs are never flagged or archived, and an agent owed a
+// usage-limit-auto-resume resume is never archived. Only this daemon's agents and workspaces are swept; peer daemons are
+// only asked for the PM, as in workspace cleanup.
 
 /** An item is listed again, and a PM messaged again, only this long after the last time: daily, with room for timer drift. */
 export const FLAG_INTERVAL_MS = 23 * 60 * 60_000;
@@ -25,8 +27,8 @@ export const FLAG_INTERVAL_MS = 23 * 60 * 60_000;
 /** At most this many items go into one PM's message; the rest wait for its next one. */
 export const MAX_FLAG_ITEMS = 50;
 
-/** How far up `paseo.parent-agent-id` / `parent` links the PM is looked for. */
-const MAX_PARENT_HOPS = 8;
+/** How far up `paseo.parent-agent-id` / `parent` links the PM is looked for, on this daemon and on a peer. */
+export const MAX_PARENT_HOPS = 8;
 
 export interface StaleItem {
   kind: "agent" | "workspace";
@@ -100,7 +102,8 @@ export function agentOwnerKeys(agent: AgentView, workspaceProject: string | null
   return { parentId, parent: parentId ?? nonEmpty(agent.labels?.parent), names: [...new Set(names)] };
 }
 
-function findLive(live: readonly AgentView[], id: string): AgentView | null {
+/** The live agent with this id, else the one live agent whose id starts with it. */
+export function findLive(live: readonly AgentView[], id: string): AgentView | null {
   const exact = live.find((agent) => agent.id === id);
   if (exact) return exact;
   const byPrefix = live.filter((agent) => agent.id.startsWith(id));
@@ -136,19 +139,28 @@ export function resolveStalePm(keys: OwnerKeys, live: readonly AgentView[]): { o
   return { owner: { kind: "none", detail: `no PM up the parent labels and no live role=pm agent for project ${lower}` }, peerKeys };
 }
 
-/** One PM's daily message. */
+/** One PM's daily message: workspace cleanup's kept worktrees (each reported once), then the stale items. */
 export function formatFlagMessage(
   items: readonly StaleItem[],
   config: { staleAgentMinutes: number; staleWorkspaceMinutes: number; staleExclude: readonly string[] },
   now: number,
+  kept: ReadonlyArray<{ decision: Decision; directory: string }> = [],
 ): string {
   const agents = items.filter((item) => item.kind === "agent");
   const workspaces = items.filter((item) => item.kind === "workspace");
-  const count = items.length === 1 ? "1 item you own looks" : `${items.length} items you own look`;
+  const total = items.length + kept.length;
+  const count = total === 1 ? "1 item you own needs" : `${total} items you own need`;
   const lines = [
-    `[merged-worker-archiver] Stale sweep: ${count} stale. Close what is done (heartbeats and schedules, then the agent, then its workspaces), or ask the owner to keep it with a staleExclude entry${config.staleExclude.length > 0 ? ` (now: ${config.staleExclude.join(", ")})` : ""}. Nothing listed here was archived. Each item is listed at most once a day.`,
+    `[merged-worker-archiver] Daily report: ${count} a look. Close what is done (heartbeats and check-backs, then the agent, then its workspaces), or ask the owner to keep it with a staleExclude entry${config.staleExclude.length > 0 ? ` (now: ${config.staleExclude.join(", ")})` : ""}. Nothing listed here was archived. This daemon sends you at most one such message a day and lists each item at most once a day.`,
   ];
-  let index = 0;
+  if (kept.length > 0) {
+    lines.push(
+      "",
+      `Worktrees with no agents and no activity for at least ${formatAge(config.staleWorkspaceMinutes * 60_000)}, kept because the branch is not merged into its base or the tree is not clean (each reported once):`,
+      ...keptWorktreeLines(kept, now),
+    );
+  }
+  let index = kept.length;
   const line = (item: StaleItem, detail: string) => {
     index += 1;
     lines.push(`${index}. ${item.name} (${item.id}), ${detail}, idle ${formatAge(now - item.lastActivityAt)}${item.blocked ? `; not archivable now: ${item.blocked}` : ""}`);
@@ -223,6 +235,50 @@ export class FlagStore implements FlagStateStore {
     const kept = [...entries].filter(([, entry]) => (parse(entry.at) ?? Infinity) >= cutoff);
     await mkdir(path.dirname(this.filePath), { recursive: true });
     await writeJsonAtomically(this.filePath, { version: 1, entries: Object.fromEntries(kept) }, { mode: 0o600 });
+  }
+}
+
+/** usage-limit-auto-resume's plugin id; its resume records live in <PASEO_HOME>/plugin-state/<id>/state.json. */
+export const AUTO_RESUME_PLUGIN_ID = "usage-limit-auto-resume";
+
+/** Resume record states that can no longer act. Any other state (detected, parked, resuming, verifying, uncertain, or one unknown here) is owed. */
+const SETTLED_RESUME_STATES = new Set(["done", "exhausted", "opted-out", "superseded"]);
+
+export interface ResumeStateReader {
+  /** Owed resume record ids per agent id, or null when there is no state file. Throws when it cannot be read or is invalid. */
+  read(): Promise<Map<string, string[]> | null>;
+}
+
+/**
+ * usage-limit-auto-resume's state file, read only. A record that is not settled means a resume is still owed to its agent,
+ * possibly days away (a weekly quota hold), and archiving the agent would supersede it: such an agent is never archived.
+ */
+export class ResumeStateFile implements ResumeStateReader {
+  readonly filePath: string;
+
+  constructor(filePath = path.join(paseoHome(), "plugin-state", AUTO_RESUME_PLUGIN_ID, "state.json")) {
+    this.filePath = filePath;
+  }
+
+  async read(): Promise<Map<string, string[]> | null> {
+    let raw: string;
+    try {
+      raw = await readFile(this.filePath, "utf8");
+    } catch (error) {
+      if (isAbsent(error)) return null;
+      throw new Error(`cannot read ${this.filePath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const state = JSON.parse(raw) as { version?: unknown; records?: unknown } | null;
+    if (!state || state.version !== 2 || !Array.isArray(state.records)) throw new Error(`invalid ${this.filePath}`);
+    const owed = new Map<string, string[]>();
+    state.records.forEach((value: unknown, index: number) => {
+      const record = value as { agentId?: unknown; recordId?: unknown; state?: unknown } | null;
+      if (!record || typeof record.agentId !== "string" || typeof record.recordId !== "string" || typeof record.state !== "string") {
+        throw new Error(`invalid record at index ${index} in ${this.filePath}`);
+      }
+      if (!SETTLED_RESUME_STATES.has(record.state)) owed.set(record.agentId, [...(owed.get(record.agentId) ?? []), record.recordId]);
+    });
+    return owed;
   }
 }
 

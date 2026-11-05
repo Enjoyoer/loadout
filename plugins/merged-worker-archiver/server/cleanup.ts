@@ -312,9 +312,15 @@ export function formatAge(ms: number): string {
 
 /** One message per PM per sweep, listing each newly kept worktree once. */
 export function formatNotification(items: ReadonlyArray<{ decision: Decision; directory: string }>, staleMinutes: number, now: number): string {
-  const lines = [
+  return [
     `[merged-worker-archiver] ${items.length === 1 ? "This worktree workspace has" : `These ${items.length} worktree workspaces have`} no agents and no activity for at least ${formatAge(staleMinutes * 60_000)}. I will not archive ${items.length === 1 ? "it" : "them"}: the branch is not merged into its base, or the tree is not clean. Merge or clean up and archive ${items.length === 1 ? "it" : "them"}, or archive ${items.length === 1 ? "it" : "them"} if no longer needed. You get this once per worktree.`,
-  ];
+    ...keptWorktreeLines(items, now),
+  ].join("\n");
+}
+
+/** Each kept worktree's lines, numbered from 1, each after a blank line. */
+export function keptWorktreeLines(items: ReadonlyArray<{ decision: Decision; directory: string }>, now: number): string[] {
+  const lines: string[] = [];
   items.forEach(({ decision, directory }, index) => {
     const age = decision.lastActivityAt ? formatAge(now - Date.parse(decision.lastActivityAt)) : null;
     lines.push(
@@ -327,5 +333,5 @@ export function formatNotification(items: ReadonlyArray<{ decision: Decision; di
       `   why kept: ${decision.reason.replace(/; idle=[^;]*$/, "")}`,
     );
   });
-  return lines.join("\n");
+  return lines;
 }

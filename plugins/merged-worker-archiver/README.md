@@ -17,8 +17,9 @@ PM once about an idle agentless worktree they keep. That path has its own switch
 PM may run on another Paseo daemon (`peerHosts`, see Messages to the PM), and an agentless
 worktree whose only ignored files are regenerable output counts as clean. Since 0.6.0 an optional
 stale sweep (`staleSweep`, off by default) tells each PM once a day about its non-PM agents idle
-for 3 days and its worktree or scratch workspaces with no live agent, and archives them instead
-for PMs or projects that opt in (see Stale sweep).
+for 3 days and its worktree or scratch workspaces with no live agent, in one message per daemon
+that also carries that day's kept-worktree report, and archives them instead for PMs or projects
+that opt in (see Stale sweep).
 
 ## What counts as merged
 
@@ -288,7 +289,8 @@ archived, and without a pending permission. Otherwise it logs `notify-deferred` 
 again at the next full sweep: a message would interrupt a turn, clear a pending permission
 request, or unarchive the PM. The message is sent with `activeTurnBehavior: "steer"`, so a
 turn that starts in the moment between that check and the send gets the text added where
-the provider can steer, instead of being replaced.
+the provider can steer, instead of being replaced. With `staleSweep` on there is no separate
+report: kept worktrees go into the stale sweep's daily message to their PM (see Stale sweep).
 
 Reported worktrees are kept in `<PASEO_HOME>/plugin-state/merged-worker-archiver/notified.json`
 (owner-only), written before the message goes out, so a worktree is never reported twice:
@@ -408,24 +410,37 @@ most once a day:
 Never flagged or archived: PMs; anything a `staleExclude` entry matches (an agent id, a
 workspace id, or a label as `key` with any value or `key=value`, for example `keep=1`; an agent
 also through its workspace's id or labels, a workspace also through the labels of any agent it
-held); pinned workspaces and their agents; and anything labelled `noarchive`.
+held); pinned workspaces and their agents; and anything labelled `noarchive`. `staleExclude`
+is the stale sweep's own: workspace cleanup still reports a kept worktree once, as before (with
+`staleSweep` on, inside the daily message).
 
 **The PM.** Up the item's parent labels, `paseo.parent-agent-id` (full id) or `parent` (id
 prefix), for a workspace those of its last agent, through live agents to the first PM, at most
 8 links up, so a sub-worker goes to its worker's PM. Else the one live `role=pm` agent whose
 `project` label matches, case-insensitively, the item's `project` label or workspace project
 name. With none here, the `peerHosts` daemons are asked as for workspace cleanup (the first
-parent not live here, then project PMs). With none or several, the item is logged
-`stale-unrouted` once a day and nothing is sent.
+parent not live here, then project PMs), except that a parent found on a peer that is not a PM is
+never told: it is climbed there, up its own parent labels, to the first PM, and with none above it
+the project names met on the way are matched to a peer's `role=pm` agent. With none or several,
+the item is logged `stale-unrouted` once a day and nothing is sent.
 
 **Messages.** Each PM gets one message listing its items (at most 50): name and id, status or
 kind, where, branch, idle time and, when known, why it cannot be archived now
-(`heartbeat(<id>)`, `live-children(n)`, `not-merged(...)`, ...). It goes out as `paseo send`
+(`heartbeat(<id>)`, `live-children(n)`, `auto-resume(<record>)`, `not-merged(...)`, ...).
+While `staleSweep` is on, workspace cleanup sends no report of its own: the worktrees it keeps
+and would report (with `armWorkspaceCleanup` and `armed` on) go into the same message, first,
+with path, branch, last commit, age and why kept, at most 20, each still reported once
+(logged `notified` and recorded in `notified.json` as in Messages to the PM). They go to the PM found as
+above, not to a parent that is not a PM. A kept worktree that turns up after the PM's message of
+the day waits for the next one (`notify-deferred`). It goes out as `paseo send`
 sends, with `steer` and its own `messageId`, only while the PM is idle or closed, unarchived and
 without a pending permission; otherwise `stale-flag-deferred`, and the next full sweep tries
 again. A PM messaged within the last 23 hours gets nothing more, and an item listed within the
-last 23 hours is not listed again, so each PM hears at most once a day and each item is listed at
-most once a day (23 hours, so the hourly backstop keeps a daily rhythm despite timer drift). That
+last 23 hours is not listed again, so each PM hears at most once a day from this daemon and each
+item is listed at most once a day (23 hours, so the hourly backstop keeps a daily rhythm despite
+timer drift). The hold is per daemon: a PM that several daemons reach (their own items, routed
+over `peerHosts`) gets at most one message a day from each, so at most as many as there are
+daemons; that was accepted over coordinating daemons. That
 record is `<PASEO_HOME>/plugin-state/merged-worker-archiver/stale-flags.json` (owner-only),
 written `sending` before a message goes out, so an attempt that may have delivered is not
 repeated that day. An unreadable file stops the stale sweep (`stale-skipped`) until it is fixed
@@ -434,12 +449,21 @@ or removed.
 **Opt-in archive.** Items whose PM is listed in `staleArchivePms` (agent ids), or whose project
 is listed in `staleArchiveProjects` (names, case-insensitive), are archived instead of flagged,
 but only while `armed` is true; with `armed` off they are flagged and `would-archive` is logged.
-Every gate is re-checked on a fresh read right before the archive:
+Every gate, and `staleExclude`, pinned and `noarchive`, is re-checked on a fresh read right
+before the archive:
 
 - An agent must be idle or closed, with no pending permission, no attention other than
   `finished`, no live agent naming it as parent, and no active or paused heartbeat (a schedule
-  whose target is the agent; a schedule list that cannot be read blocks it). It is archived
-  alone (`paseo archive <id>`): no workspace and no file is touched.
+  whose target is the agent; a schedule list that cannot be read blocks it). It must not be
+  owed a resume by usage-limit-auto-resume: a record in
+  `<PASEO_HOME>/plugin-state/usage-limit-auto-resume/state.json` for the agent that is not
+  settled (`detected`, `parked`, `resuming`, `verifying`, `uncertain`; only `done`,
+  `exhausted`, `opted-out` and `superseded` are settled) blocks it as `auto-resume(<record>)`,
+  since archiving would supersede a resume that may be days away (a weekly quota hold). A file
+  that cannot be read or parsed, or a missing file while that plugin is installed (the daemon's
+  plugin list, which must be readable), blocks every agent archive
+  (`auto-resume-unknown(...)`); a missing file without the plugin means no records. It is
+  archived alone (`paseo archive <id>`): no workspace and no file is touched.
 - A workspace must get an archive decision from the worker path or workspace cleanup: a merged,
   clean, stale agentless worktree (`stale-agentless-merged(...)`, which removes a Paseo-owned
   worktree's directory and keeps the branch) or an empty disposable workspace
@@ -455,7 +479,9 @@ Peer daemons are only asked who the PM is, so a host where the plugin or `staleS
 never swept.
 
 `sweep-done` adds `stale` with counts (`stale`, `flagged`, `messages`, `held`, `deferred`,
-`archived`, `unrouted`, `excluded`, `kept`, `pm`, ...).
+`archived`, `unrouted`, `excluded`, `kept`, `pm`, and for kept worktrees `reported`,
+`reportDeferred`, `reportUnrouted`, `wouldNotify`, ...); its `reports` lists the kept worktrees
+reported.
 
 ## Triggers
 
@@ -571,7 +597,7 @@ every sweep, so edits take effect on the next sweep without a reload.
 | `archiveFinishedWithoutPr` | `true` | Also archive finished worktrees with no open PR that are clean and pushed (see Finished workspaces without a PR). |
 | `finishedGraceMinutes` | `120` | Minimum idle time for that path (0 to 10080). The larger of this and `graceMinutes` applies. |
 | `peerHosts` | `[]` | Other Paseo daemons, as `ssh://<alias>` (at most 8, unique), asked in order for the PM of a kept agentless worktree when this daemon has none (see PMs on other daemons). Any other form makes the settings invalid. Empty asks only this daemon. |
-| `staleSweep` | `false` | `true` turns on the stale sweep (see Stale sweep): flags to each PM once a day. Flagging needs only this switch. |
+| `staleSweep` | `false` | `true` turns on the stale sweep (see Stale sweep): flags to each PM once a day, in one message per daemon that also carries workspace cleanup's kept-worktree report. Flagging needs only this switch. |
 | `staleAgentMinutes` | `4320` | Idle time before the stale sweep flags a non-PM agent (1 to 525600; 3 days by default). Workspaces use `staleWorkspaceMinutes`. |
 | `staleArchivePms` | `[]` | PM agent ids whose stale items are archived instead of flagged, while `armed` and every gate passes (at most 100). |
 | `staleArchiveProjects` | `[]` | Project names (case-insensitive) whose stale items are archived instead of flagged, likewise (at most 100). |
@@ -705,7 +731,8 @@ repositories, `sweepIntervalMinutes` 1 and both stale windows at 2 minutes. Seed
 worker with a heartbeat, and agentless workspaces: a merged worktree, an unmerged one, one listed
 by id in `staleExclude`, and a fleet-scratch directory; for beta a worker, its sub-worker (parent
 label naming the worker) and a merged agentless worktree; and a worker with no PM. `npm run
-dry-run -- --stale` logged 8 `would-flag` lines and one `would-flag-unrouted`, and wrote nothing.
+dry-run -- --stale` logged 8 `would-flag` lines, one `would-flag-unrouted` and 2 `would-notify`
+(workspace cleanup's, unarmed), and wrote nothing.
 Flag only: the alpha PM got one message listing its 5 items and the beta PM one listing its 3 (the
 sub-worker reached the beta PM up the parent labels), the gamma PM nothing, the PM-less worker
 was logged `stale-unrouted`, and the next sweep sent nothing (`held` 8). With `armed` and the
@@ -716,8 +743,23 @@ alpha PM was told about the other two with `heartbeat(<id>)` and `not-merged(...
 beta item was only flagged. With `staleArchiveProjects` `["Beta"]` added, the sub-worker and the
 beta worktree were archived, the beta worker was flagged with `live-children(1)` and archived at
 the next sweep, once its child was gone. In every phase the three PMs, the `keep=1` worker and the
-excluded worktree stayed live and untouched, and the heartbeat stayed active. Peer routing was
-not run live for the stale sweep; it uses the same peer lookup and send as workspace cleanup.
+excluded worktree stayed live and untouched, and the heartbeat stayed active.
+
+The daily message, peer routing and the resume gate were checked on two such daemons, A and B,
+with both windows at 1 minute. A's sweeps ran the plugin's `Sweeper` from a script whose peer
+connection maps `ssh://peerb` to B's loopback port (the ssh path would reach the host's live
+daemon); A listed usage-limit-auto-resume as an installed, disabled plugin. On B (`armed`,
+`armWorkspaceCleanup`, `staleSweep`) the alpha PM got one message holding the report for an
+agentless unmerged worktree and its stale worker, and the next sweeps sent nothing. A worktree
+kept after that logged `notify-deferred` at the next two sweeps and went out, reported once, in
+the next day's single message (flag record removed). From A, the PM on B got one message for A's
+worker and for A's sub-worker of the B worker (climbed on B to its PM), so two that day, one per
+daemon; a sub-worker of a PM-less B worker was logged `stale-unrouted` (`parent ... on
+ssh://peerb is not a PM and has no PM above it there`) and that worker got nothing. With
+`staleArchiveProjects` naming a project on A, its worker stayed live while a `parked`
+usage-limit-auto-resume record named it (`auto-resume(<record>)`), with that state file missing
+(`auto-resume-unknown(installed, state file missing)`) and with it unreadable, and was archived
+once its only record was `done`. The ssh transport itself was not part of this check.
 
 Paseo compiles the plugin from source with esbuild and bundles `@getpaseo/client`
 (with `@getpaseo/protocol`), about 8.4 MB, so `npm install` must have run here before

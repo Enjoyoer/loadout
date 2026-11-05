@@ -5,7 +5,7 @@ import { createCommonDirResolver, nodeFileSystem, runCommand } from "../server/i
 import { NotifyStore, type NotifyStateStore } from "../server/notify-store.ts";
 import { openPeerSession } from "../server/peer-session.ts";
 import { ReceiptReader } from "../server/receipts.ts";
-import { FlagStore, type FlagStateStore } from "../server/stale.ts";
+import { FlagStore, ResumeStateFile, type FlagStateStore } from "../server/stale.ts";
 import { Sweeper, type ArchiverApi } from "../server/sweeper.ts";
 
 // Read-only preview of one full sweep. Nothing is archived, sent, or written: the sweep runs with
@@ -58,7 +58,7 @@ async function run(): Promise<void> {
     acquireApi: async () => ({ api: readOnly(connection.api), release: async () => undefined }),
     log: (line) => {
       if (staleOnly) {
-        if (/"kind":"(agent|workspace)"|stale-skipped|sweep-done|sweep-aborted|notify-peer-error/.test(line)) console.log(line);
+        if (/"kind":"(agent|workspace)"|"action":"(would-notify|notify-unrouted)"|stale-skipped|sweep-done|sweep-aborted|notify-peer-error/.test(line)) console.log(line);
         return;
       }
       if (!cleanupOnly || line.includes('"cleanup":"') || line.includes("sweep-done") || line.includes("sweep-aborted") || line.includes("notify-state") || line.includes("notify-peer-error")) console.log(line);
@@ -69,6 +69,7 @@ async function run(): Promise<void> {
     resolveCommonDir: createCommonDirResolver(runCommand, () => config.commandTimeoutSeconds * 1000),
     notifyStore,
     flagStore,
+    resumeState: new ResumeStateFile(),
     deliveries: new ReceiptReader(),
     // Peers (peerHosts) are only looked up: their sessions refuse to send.
     peerConnector: async (host, timeoutMs, lifetimeMs) => {

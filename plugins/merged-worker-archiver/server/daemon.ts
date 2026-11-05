@@ -53,6 +53,9 @@ export async function openDaemonClient(env: NodeJS.ProcessEnv = process.env): Pr
         return payload.schedules;
       },
     },
+    plugins: {
+      list: () => client.listPlugins(),
+    },
     projects: {
       list: () => client.listProjects(),
     },

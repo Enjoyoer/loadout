@@ -7,7 +7,7 @@ import { NotifyStore } from "./server/notify-store.ts";
 import { openPeerSession } from "./server/peer-session.ts";
 import { ReceiptReader } from "./server/receipts.ts";
 import { EventScheduler, realTimers } from "./server/scheduler.ts";
-import { FlagStore } from "./server/stale.ts";
+import { FlagStore, ResumeStateFile } from "./server/stale.ts";
 import { Sweeper, type ApiLease } from "./server/sweeper.ts";
 
 // Server-only plugin. Archives worktree workspaces (and, through Paseo's own workspace
@@ -49,6 +49,8 @@ export default function contribute(server: PluginServerContext) {
     peerConnector: openPeerSession,
     // Stale sweep (staleSweep): when each item was last flagged and each PM last messaged.
     flagStore: new FlagStore(),
+    // Stale sweep: usage-limit-auto-resume's resume records, read only; an agent owed a resume is never archived.
+    resumeState: new ResumeStateFile(),
   });
 
   const loadConfig = async (): Promise<ArchiverConfig | null> => {
