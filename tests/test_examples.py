@@ -34,9 +34,9 @@ class FleetDemoTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         out = done.stdout
         self.assertIn("desktop: skills updated", out)
-        self.assertIn("desktop: skills conflict: local edits, nothing written: claude:grilling/SKILL.md", out)
+        self.assertIn("desktop: skills conflict: local edits, nothing written: claude:sample/SKILL.md", out)
         self.assertEqual(out.count("desktop: skills same"), 2, out)
-        self.assertNotIn("'pake'", out.splitlines()[-1])
+        self.assertNotIn("'tco-search'", out.splitlines()[-1])
 
 
 if __name__ == "__main__":
