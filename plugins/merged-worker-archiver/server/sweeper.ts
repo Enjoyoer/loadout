@@ -90,7 +90,7 @@ export interface SweeperDeps extends EvaluateDeps {
   peerConnector?: PeerConnector;
   /** When stale items were last flagged (setting staleSweep). Without one, the stale sweep does not run. */
   flagStore?: FlagStateStore;
-  /** usage-limit-auto-resume's resume records (stale sweep). Without one, no stale agent is archived. */
+  /** usage-limit-auto-resume's resume records. Without one, no workspace with a live agent and no stale agent is archived. */
   resumeState?: ResumeStateReader;
 }
 
@@ -175,6 +175,8 @@ interface Snapshot {
   /** What workspace cleanup reads, when asked for; null when it could not be read (see cleanupError). */
   cleanup: CleanupData | null;
   cleanupError: string | null;
+  /** Heartbeats and owed auto-resumes, read with the rest; an archive must not end either (see gateArchive). */
+  gates: AgentGates;
 }
 
 interface CleanupData {
@@ -206,7 +208,7 @@ function group<T>(map: Map<string, T[]>, key: string, value: T): void {
  * listing) and the terminals, which only workspace cleanup reads: if either fails or is incomplete,
  * only cleanup is left out (`cleanup` null), never the worker sweep.
  */
-async function snapshot(api: ArchiverApi, withCleanup: DeliverySource | null): Promise<Snapshot> {
+async function snapshot(api: ArchiverApi, withCleanup: DeliverySource | null, resumeState: ResumeStateReader | undefined): Promise<Snapshot> {
   if (typeof api.supportsBackgroundWorkspaces !== "function") throw new Error("daemon client cannot tell whether background workspaces exist");
   const background = api.supportsBackgroundWorkspaces() === true;
   const backgroundFilter = background ? { includeBackground: true } : {};
@@ -230,7 +232,9 @@ async function snapshot(api: ArchiverApi, withCleanup: DeliverySource | null): P
       cleanupError = error instanceof Error ? error.message : String(error);
     }
   }
-  return { workspaces, agentsByWorkspace, liveAgents, projectRoots: roots, cleanup, cleanupError };
+  // Never throws: a schedule list or resume state that cannot be read blocks every archive of an agent instead.
+  const gates = await readAgentGates(api, resumeState);
+  return { workspaces, agentsByWorkspace, liveAgents, projectRoots: roots, cleanup, cleanupError, gates };
 }
 
 async function cleanupData(
@@ -278,7 +282,7 @@ export function formatDecision(decision: Decision, action: string, extra: Record
 
 /**
  * The worker decision, or for a full sweep the workspace cleanup decision it hands over to. Without
- * cleanup data in the snapshot the worker decision stands.
+ * cleanup data in the snapshot the worker decision stands. Either way an archive must pass gateArchive.
  */
 async function decide(
   workspace: WorkspaceView,
@@ -289,8 +293,8 @@ async function decide(
 ): Promise<Decision> {
   const agents = state.agentsByWorkspace.get(workspace.id) ?? [];
   const decision = await evaluateWorkspace(workspace, agents, config, deps, state.projectRoots);
-  if (!cleanup || !state.cleanup || !isCleanupEntry(decision)) return decision;
-  return evaluateCleanup(workspace, {
+  if (!cleanup || !state.cleanup || !isCleanupEntry(decision)) return gateArchive(decision, agents, state.gates);
+  return gateArchive(await evaluateCleanup(workspace, {
     config,
     deps,
     agents,
@@ -298,7 +302,21 @@ async function decide(
     terminals: state.cleanup.terminalsByWorkspace.get(workspace.id) ?? 0,
     deliveries: state.cleanup.deliveries,
     notified: cleanup.notified,
-  });
+  }), agents, state.gates);
+}
+
+/**
+ * A workspace archive also archives every agent in it, which ends that agent's heartbeats and supersedes a resume
+ * usage-limit-auto-resume still owes it. So an archive decision becomes a skip while any of its live agents has an active
+ * or paused heartbeat or an unsettled resume record, or while either cannot be read (see agentGateBlock).
+ */
+function gateArchive(decision: Decision, agents: readonly AgentView[], gates: AgentGates): Decision {
+  if (decision.action !== "archive") return decision;
+  for (const agent of agents) {
+    const block = agentGateBlock(agent, gates);
+    if (block) return { ...decision, action: "skip", reason: `${block} on agent ${agent.id.slice(0, 8)}; else archivable: ${decision.reason}` };
+  }
+  return decision;
 }
 
 interface ReportItem {
@@ -485,17 +503,11 @@ function isChildOf(child: AgentView, parentId: string): boolean {
 const ARCHIVABLE_AGENT_STATUSES = new Set(["idle", "closed"]);
 
 /**
- * Why a stale agent may not be archived, or null: the worker path's agent gates, nothing that still reports to it, and no
- * resume owed by usage-limit-auto-resume.
+ * Why archiving this agent would end something it is still owed, or null: an active or paused heartbeat (a schedule
+ * whose target is the agent), or a resume usage-limit-auto-resume has not settled. Unreadable state blocks too.
  */
-function agentArchiveBlock(agent: AgentView, gates: AgentGates, children: number): string | null {
+function agentGateBlock(agent: AgentView, gates: AgentGates): string | null {
   const { byAgent: heartbeats, error: heartbeatError } = gates.heartbeats;
-  if (agent.archivedAt) return "already archived";
-  if (isPmAgent(agent)) return "pm-agent";
-  if (!ARCHIVABLE_AGENT_STATUSES.has(agent.status)) return `agent-status-${agent.status}`;
-  if ((agent.pendingPermissions?.length ?? 0) > 0) return "pending-permission";
-  if (agent.requiresAttention && agent.attentionReason !== "finished") return `attention-${agent.attentionReason ?? "unknown"}`;
-  if (children > 0) return `live-children(${children})`;
   if (!heartbeats) return `heartbeats-unknown(${heartbeatError ?? "no schedule list"})`;
   const own = heartbeats.get(agent.id);
   if (own && own.length > 0) return `heartbeat(${own.join(",")})`;
@@ -503,6 +515,17 @@ function agentArchiveBlock(agent: AgentView, gates: AgentGates, children: number
   const owed = gates.resume.byAgent.get(agent.id);
   if (owed && owed.length > 0) return `auto-resume(${owed.join(",")})`;
   return null;
+}
+
+/** Why a stale agent may not be archived, or null: the worker path's agent gates, nothing that still reports to it, and agentGateBlock. */
+function agentArchiveBlock(agent: AgentView, gates: AgentGates, children: number): string | null {
+  if (agent.archivedAt) return "already archived";
+  if (isPmAgent(agent)) return "pm-agent";
+  if (!ARCHIVABLE_AGENT_STATUSES.has(agent.status)) return `agent-status-${agent.status}`;
+  if ((agent.pendingPermissions?.length ?? 0) > 0) return "pending-permission";
+  if (agent.requiresAttention && agent.attentionReason !== "finished") return `attention-${agent.attentionReason ?? "unknown"}`;
+  if (children > 0) return `live-children(${children})`;
+  return agentGateBlock(agent, gates);
 }
 
 export class Sweeper {
@@ -583,7 +606,7 @@ export class Sweeper {
         reader: this.deps.deliveries,
         sinceMs: this.deps.now() - config.staleWorkspaceMinutes * 60_000 - LAST_TURN_ALLOWANCE_MS,
       };
-      const state = await snapshot(lease.api, fullSweep ? deliverySource : null);
+      const state = await snapshot(lease.api, fullSweep ? deliverySource : null, this.deps.resumeState);
       // Cleanup data that cannot be read leaves out workspace cleanup only; the worker sweep goes on.
       const cleanupRuns = fullSweep && state.cleanup !== null;
       if (fullSweep && !cleanupRuns) {
@@ -664,7 +687,7 @@ export class Sweeper {
           continue;
         }
         // Re-read live state and re-run every gate immediately before acting.
-        const fresh = await snapshot(lease.api, decision.cleanup ? deliverySource : null);
+        const fresh = await snapshot(lease.api, decision.cleanup ? deliverySource : null, this.deps.resumeState);
         const freshWorkspace = fresh.workspaces.find((candidate) => candidate.id === workspace.id);
         if (!freshWorkspace) {
           log(formatDecision({ ...decision, reason: "recheck: workspace gone" }, "skip"));
@@ -793,7 +816,7 @@ export class Sweeper {
     let current = state;
     let confirmed = candidates;
     if (!wouldOnly) {
-      current = await snapshot(api, deliverySource);
+      current = await snapshot(api, deliverySource, this.deps.resumeState);
       if (!current.cleanup) {
         for (const candidate of candidates) {
           log(formatDecision(candidate, "notify-deferred", { why: `cleanup data unavailable, next full sweep: ${current.cleanupError}` }));
@@ -989,7 +1012,7 @@ export class Sweeper {
     };
     let state: Snapshot;
     try {
-      state = await snapshot(api, deliverySource);
+      state = await snapshot(api, deliverySource, this.deps.resumeState);
     } catch (error) {
       return skipped(`listing failed: ${errorText(error)}`);
     }
@@ -1000,8 +1023,7 @@ export class Sweeper {
     } catch (error) {
       return skipped(`stale-flags state unreadable: ${errorText(error)}`);
     }
-    const gates = await readAgentGates(api, this.deps.resumeState);
-    const items = await this.staleItems(state, config, now, gates, options.archivedNow, bump);
+    const items = await this.staleItems(state, config, now, state.gates, options.archivedNow, bump);
     bump("stale", items.length);
     const kept = await this.keptReports(state, config, options.kept);
 
@@ -1354,7 +1376,7 @@ export class Sweeper {
   private async archiveStale(api: ArchiverApi, item: StaleItem, config: ArchiverConfig, deliverySource: DeliverySource): Promise<string | null> {
     let fresh: Snapshot;
     try {
-      fresh = await snapshot(api, deliverySource);
+      fresh = await snapshot(api, deliverySource, this.deps.resumeState);
     } catch (error) {
       return `recheck: listing failed: ${errorText(error)}`;
     }
@@ -1369,7 +1391,7 @@ export class Sweeper {
       const last = agentLastActivity(agent, fresh.cleanup.deliveries);
       if (last === null || now - last < config.staleAgentMinutes * 60_000) return "recheck: active again";
       const children = fresh.liveAgents.filter((other) => other.id !== agent.id && isChildOf(other, agent.id)).length;
-      const block = agentArchiveBlock(agent, await readAgentGates(api, this.deps.resumeState), children);
+      const block = agentArchiveBlock(agent, fresh.gates, children);
       if (block) return `recheck: ${block}`;
       try {
         await api.agents.archive(agent.id);

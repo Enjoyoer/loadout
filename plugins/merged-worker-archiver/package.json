@@ -1,7 +1,7 @@
 {
   "name": "merged-worker-archiver",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Paseo server-only plugin that archives worker worktree workspaces (and their agents) once the worker branch is merged into its base, cleans up stale agentless workspaces, and can flag stale agents and workspaces to their PM once a day (off by default). Dry-run by default.",
   "type": "module",
   "scripts": {

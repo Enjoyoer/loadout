@@ -19,7 +19,9 @@ worktree whose only ignored files are regenerable output counts as clean. Since 
 stale sweep (`staleSweep`, off by default) tells each PM once a day about its non-PM agents idle
 for 3 days and its worktree or scratch workspaces with no live agent, in one message per daemon
 that also carries that day's kept-worktree report, and archives them instead for PMs or projects
-that opt in (see Stale sweep).
+that opt in (see Stale sweep). Since 0.6.1 no workspace is archived while one of its live
+agents has an active or paused heartbeat or is owed a usage-limit-auto-resume resume (see Skip
+rules, `heartbeat` and `auto-resume`).
 
 ## What counts as merged
 
@@ -121,6 +123,8 @@ Every decision is `skip` unless its applicable gates pass. Reasons appear verbat
 | `attention-<reason>` | `requiresAttention` for anything other than `finished`. |
 | `workspace-running` / `workspace-needs_input` / `workspace-failed` | Workspace status. |
 | `script-running(name)` | A workspace script or service is running. |
+| `heartbeat(<ids>) on agent <id>; else archivable: ...` | An archive decision whose workspace holds a live agent that an active or paused schedule targets (a heartbeat, `target.agentId`). The archive would archive the agent, and Paseo then completes its schedules. Delete or move the heartbeat (`paseo schedule delete <id>`), and the next sweep archives. `heartbeats-unknown(...)`: the daemon's schedule list could not be read, which blocks every archive of a workspace with a live agent. |
+| `auto-resume(<records>) on agent <id>; else archivable: ...` | Likewise for an agent that usage-limit-auto-resume still owes a resume: a record for it in `<PASEO_HOME>/plugin-state/usage-limit-auto-resume/state.json` that is not settled (only `done`, `exhausted`, `opted-out` and `superseded` are). Archiving would supersede it, and a weekly quota hold can wait days. `auto-resume-unknown(...)`: the file cannot be read or parsed, or is missing while that plugin is installed (the daemon's plugin list, which must be readable). A missing file without the plugin means no records. Either blocks every archive of a workspace with a live agent. |
 | `grace-period(idle, remaining)` | Latest activity (workspace activity/status time, agent updated, last user message, attention time) is younger than `graceMinutes` (default 0, so this only applies when raised). |
 | `ambiguous(...)` | No activity timestamp, path not statable, empty reflog, PR merged without merge commit, PR head commit not local, a submodule path that is not UTF-8, a git top level (`rev-parse --show-toplevel`, only its line end removed) whose realpath is not the workspace directory's. |
 | `path-missing` | Directory gone; left to Paseo's own reconciliation. |
@@ -146,7 +150,9 @@ That abort applies to both paths: nothing is archived. Invalid settings also abo
 ## What archiving does
 
 The only action is the official `paseo.workspaces.archive(workspaceId)` (the same
-request as `paseo workspace archive`). In Paseo 0.9.1 that (`archiveByScope`):
+request as `paseo workspace archive`). Because it archives the workspace's agents, which ends
+their heartbeats and supersedes a resume usage-limit-auto-resume owes them, the `heartbeat` and
+`auto-resume` gates above hold it back first. In Paseo 0.9.1 the archive (`archiveByScope`):
 
 - archives every agent in the workspace, kills its terminals, and archives the record;
 - runs the project's worktree teardown commands, if any;
@@ -760,6 +766,19 @@ ssh://peerb is not a PM and has no PM above it there`) and that worker got nothi
 usage-limit-auto-resume record named it (`auto-resume(<record>)`), with that state file missing
 (`auto-resume-unknown(installed, state file missing)`) and with it unreadable, and was archived
 once its only record was `done`. The ssh transport itself was not part of this check.
+
+The worker-path gates (0.6.1) were checked on such a daemon, with usage-limit-auto-resume listed as
+installed and disabled, `sweepIntervalMinutes` 1, and three merged worktrees, each with a live idle
+worker: a control, one whose worker had a heartbeat, and one whose worker had a `parked` resume
+record. With 0.6.0 the first armed sweep archived all three, and Paseo marked the heartbeat
+`completed`. With 0.6.1 the dry run and the armed sweeps archived only the control. The other two
+logged `heartbeat(<id>) on agent <id>; else archivable: merged-ancestry(...)` and
+`auto-resume(<record>) on agent <id>; ...`, and the heartbeat stayed `active`. The worktree stayed
+while the state file was unreadable (`auto-resume-unknown(state unreadable: ...)`) and while it was
+missing (`auto-resume-unknown(installed, state file missing)`). Once the heartbeat was deleted and
+the record was `done`, the next sweep archived both. In a second run, a plain schedule targeting
+the worker (`paseo schedule create --target <agent>`) blocked it the same way while paused, and
+the next sweep after its deletion archived it.
 
 Paseo compiles the plugin from source with esbuild and bundles `@getpaseo/client`
 (with `@getpaseo/protocol`), about 8.4 MB, so `npm install` must have run here before
