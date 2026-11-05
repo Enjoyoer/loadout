@@ -252,7 +252,7 @@ class RemotePreflightTest(unittest.TestCase):
 HOSTS = {
     "schema_version": 2, "source_host": "laptop", "transport": "ssh",
     "hosts": [
-        {"name": "laptop", "os": "macos", "clients": ["claude"], "exclude_skills": ["grilling"]},
+        {"name": "laptop", "os": "macos", "clients": ["claude"], "exclude_skills": ["sample"]},
         {"name": "desktop", "os": "linux", "clients": ["codex", "claude"]},
         {"name": "tablet", "os": "linux", "transport": "paseo-relay", "sync": ["providers"], "paseo_offer": "t.offer"},
     ],
@@ -286,7 +286,7 @@ class SkillsSyncTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def run_sync(self, *args):
-        done = subprocess.run(with_fake_ssh(SCRIPTS / "skills_sync.py", self.ssh, "--skills", "handoff,grilling", *args),
+        done = subprocess.run(with_fake_ssh(SCRIPTS / "skills_sync.py", self.ssh, "--skills", "handoff,sample", *args),
                               env=self.env, capture_output=True, text=True, timeout=120)
         return done.returncode, done.stdout + done.stderr
 
@@ -390,11 +390,11 @@ class SkillsSyncTest(unittest.TestCase):
             for root in ("hosts/desktop/.codex/skills", "hosts/desktop/.claude/skills", "hosts/laptop/.claude/skills"):
                 data = (self.root / root / "handoff" / rel).read_bytes()
                 self.assertEqual(hashlib.sha256(data).hexdigest(), e["sha256"])
-        self.assertTrue(self.installed("desktop", ".claude/skills/grilling/SKILL.md").exists())
-        self.assertFalse(self.installed("laptop", ".claude/skills/grilling").exists(), "excluded on laptop")
+        self.assertTrue(self.installed("desktop", ".claude/skills/sample/SKILL.md").exists())
+        self.assertFalse(self.installed("laptop", ".claude/skills/sample").exists(), "excluded on laptop")
         self.assertEqual(self.installed("desktop", ".claude/CLAUDE.md").read_text(), "# Global\n")
         self.assertIn("laptop: skills updated", out)
-        self.assertIn("excluded grilling", out)
+        self.assertIn("excluded sample", out)
         self.assertIn("desktop: skills updated", out)
         self.assertNotIn("tablet", out)
         code, out = self.run_sync()
@@ -508,7 +508,7 @@ class SkillsSyncTest(unittest.TestCase):
                "retires anything; restore it, or leave an empty skills/ to retire its skills")
         self.assertIn("desktop: skills blocked (+", out)
         self.assertIn(f"; codex present, claude present; {why}", out)
-        self.assertIn(f"; claude present; {why}; excluded grilling", out)
+        self.assertIn(f"; claude present; {why}; excluded sample", out)
         for root in (".claude/skills", ".codex/skills"):
             self.assertEqual(self.installed("desktop", f"{root}/moved/SKILL.md").read_bytes(), b"moved")
 

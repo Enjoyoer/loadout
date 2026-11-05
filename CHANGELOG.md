@@ -39,6 +39,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ### Removed
 
+- Removed grilling, domain-modeling and pake (unused).
 - `pm-native-worker-guard` plugin, with its CI, Dependabot, vendoring and docs entries. PMs legitimately launch native Codex workers (OPC routes browser work to native Codex), and in dry-run the guard only logged false would-archive decisions. The fleet sync does not uninstall it from hosts; remove it there by hand.
 
 ### Changed

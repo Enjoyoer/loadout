@@ -29,7 +29,7 @@ HOSTS = {
     "hosts": [
         {"name": "laptop", "os": "macos", "clients": ["claude"], "sync": ["skills"]},
         {"name": "desktop", "os": "linux", "clients": ["claude", "codex"], "sync": ["skills"],
-         "exclude_skills": ["pake"]},
+         "exclude_skills": ["tco-search"]},
     ],
 }
 
@@ -63,7 +63,7 @@ def main() -> int:
         step("2. Sync: copy the fleet to desktop, install verified skills on both hosts", env, ssh)
         step("3. Run again: everything is already current", env, ssh)
 
-        edited = root / "hosts/desktop/.claude/skills/grilling/SKILL.md"
+        edited = root / "hosts/desktop/.claude/skills/sample/SKILL.md"
         edited.write_bytes(edited.read_bytes() + b"\nMy local tweak.\n")
         step("4. A hand edit on desktop is a conflict: nothing is written there", env, ssh)
 
