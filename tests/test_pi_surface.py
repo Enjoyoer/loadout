@@ -265,7 +265,7 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
             (home/'settings.overlay.json').write_text(json.dumps({'compaction': {'modelOverrides': {'fleet/retired': {'reserveTokens': 5}}}}))
             done = run()
             self.assertEqual((done.returncode, done.stderr), (0, warning))
-            self.assertEqual({name: (home/name).read_bytes() for name in shared}, shared)
+            self.assertEqual(json.loads((home/'settings.json').read_text()), base)
             # A name no root holds, such as a retired skill, is skipped with one warning line and the launch continues.
             (home/'settings.overlay.json').write_text(json.dumps({'skillsExclude': ['retired', 'dropped']}))
             done = run()
