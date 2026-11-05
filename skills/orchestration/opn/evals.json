@@ -166,7 +166,7 @@
         },
         {
           "criterion": "lifecycle",
-          "observable": "the worker is archived once verified"
+          "observable": "the worker is closed once verified: heartbeats and check-backs, then the agent, then each workspace it created that holds no unpreserved work"
         }
       ],
       "critical": true
@@ -268,23 +268,36 @@
     },
     {
       "id": "archive-after-verify",
-      "prompt": "A worker's result is verified by the PM's fresh readback. A check-back heartbeat still reports to that worker. Decide whether to archive it.",
+      "prompt": "A worker's result is verified by the PM's fresh readback. A check-back heartbeat still targets that worker. The worker created a scratch workspace on another host, now clean with its branch pushed, and a worktree on this host that still holds an untracked result file. Close the worker.",
       "scenario": {
         "verified": true,
-        "still_reported_to": "heartbeat"
+        "heartbeat_targets_worker": true,
+        "workspaces": [
+          "PM's own local project workspace",
+          "scratch workspace on another host, created by the worker, clean and pushed",
+          "worktree on this host, created by the worker, with an untracked file"
+        ]
       },
       "expected": {
-        "archive": false,
-        "owner": "worker stays open until nothing reports to it, then is archived"
+        "order": "heartbeat deleted or moved to the PM, then the agent archived, then each workspace the worker created checked for unpreserved work, then the clean scratch workspace archived with --host",
+        "kept": "the PM's local project workspace, and the worktree with the untracked file, which is reported"
       },
       "rubric": [
         {
           "criterion": "lifecycle",
-          "observable": "a verified worker is archived once nothing still reports to it"
+          "observable": "the heartbeat is deleted or recreated on the PM before the worker is archived, in the same pass"
+        },
+        {
+          "criterion": "preservation",
+          "observable": "before archiving, each workspace the worker created is checked for staged, unstaged, untracked or unmerged work and sole copies (unpushed commits, a branch not on the remote); the worktree with the untracked file is kept and reported, not archived"
+        },
+        {
+          "criterion": "cleanup",
+          "observable": "the clean, pushed workspace the worker created on the other host is archived through paseo workspace archive with --host"
         },
         {
           "criterion": "safety",
-          "observable": "a worker something still reports to stays open"
+          "observable": "the PM's own local project workspace, which holds another unarchived agent, is not archived"
         }
       ],
       "critical": true
