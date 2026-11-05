@@ -314,8 +314,8 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog,
     if (uiClass(taskKind) && isGptOrWebRoute(ownerRoute, rows)) {
       throw Error(`${taskKind} work never uses a GPT or web model (owner rule); name a Claude model or use the ${taskKind} class route`);
     }
-    if (CLAUDE_ONLY_CLASSES.includes(taskKind) && isGptOrWebRoute(ownerRoute, rows)) {
-      throw Error(`the ${taskKind} class never runs a GPT or web model (owner rule); name a Claude model or use the class route`);
+    if (taskKind === 'review-security' && isGptOrWebRoute(ownerRoute, rows)) {
+      throw Error('review-security never runs a GPT or web model (owner rule); name a Claude model or use the class route');
     }
     return Object.freeze({ ...ownerRoute });
   }
