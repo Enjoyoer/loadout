@@ -39,7 +39,7 @@ function isDescendant(root: string, directory: string): boolean {
   return child !== "" && child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
 }
 
-async function isDisposableDirectory(directory: string, deps: EvaluateDeps): Promise<boolean> {
+export async function isDisposableDirectory(directory: string, deps: EvaluateDeps): Promise<boolean> {
   if (!isAbsolute(directory)) return false;
   const roots = deps.cleanupRoots ?? [
     join(resolve(paseoHome()), "worktrees"),

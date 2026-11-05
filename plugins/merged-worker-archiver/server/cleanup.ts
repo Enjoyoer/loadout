@@ -141,7 +141,7 @@ function hasNoArchiveWorkspaceLabel(workspace: WorkspaceView): boolean {
  * A worktree's HEAD commit: `<sha7> <committer date> <subject>` for the report, and the committer
  * date as activity (work committed after the last message). Null when git cannot tell.
  */
-async function headCommit(directory: string, ctx: CleanupContext): Promise<{ line: string; at: number } | null> {
+export async function headCommit(directory: string, ctx: Pick<CleanupContext, "config" | "deps">): Promise<{ line: string; at: number } | null> {
   const result = await ctx.deps.merge.run("git", ["log", "-1", "--format=%h %cI %s"], directory, ctx.config.commandTimeoutSeconds * 1000);
   const line = result.code === 0 ? result.stdout.trim().split("\n")[0]?.trim() ?? "" : "";
   const at = parse(/^\S+ (\S+)/.exec(line)?.[1]);
@@ -312,9 +312,15 @@ export function formatAge(ms: number): string {
 
 /** One message per PM per sweep, listing each newly kept worktree once. */
 export function formatNotification(items: ReadonlyArray<{ decision: Decision; directory: string }>, staleMinutes: number, now: number): string {
-  const lines = [
+  return [
     `[merged-worker-archiver] ${items.length === 1 ? "This worktree workspace has" : `These ${items.length} worktree workspaces have`} no agents and no activity for at least ${formatAge(staleMinutes * 60_000)}. I will not archive ${items.length === 1 ? "it" : "them"}: the branch is not merged into its base, or the tree is not clean. Merge or clean up and archive ${items.length === 1 ? "it" : "them"}, or archive ${items.length === 1 ? "it" : "them"} if no longer needed. You get this once per worktree.`,
-  ];
+    ...keptWorktreeLines(items, now),
+  ].join("\n");
+}
+
+/** Each kept worktree's lines, numbered from 1, each after a blank line. */
+export function keptWorktreeLines(items: ReadonlyArray<{ decision: Decision; directory: string }>, now: number): string[] {
+  const lines: string[] = [];
   items.forEach(({ decision, directory }, index) => {
     const age = decision.lastActivityAt ? formatAge(now - Date.parse(decision.lastActivityAt)) : null;
     lines.push(
@@ -327,5 +333,5 @@ export function formatNotification(items: ReadonlyArray<{ decision: Decision; di
       `   why kept: ${decision.reason.replace(/; idle=[^;]*$/, "")}`,
     );
   });
-  return lines.join("\n");
+  return lines;
 }

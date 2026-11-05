@@ -148,7 +148,7 @@ A package may read an optional private `references/local.md` for host-specific s
 | Plugin | Does | Default on a fresh install |
 |---|---|---|
 | [`cache-aware-autocompact`](plugins/cache-aware-autocompact/README.md) | Sends `/compact` to idle Claude, Codex and Pi agents before their prompt cache expires; by default it also compacts cold Claude-family agents above the context threshold (Pi GPT models are off by default) | Dry-run until `armed` |
-| [`merged-worker-archiver`](plugins/merged-worker-archiver/README.md) | Archives clean, idle worker worktree workspaces whose branch is merged into its base | Dry-run until `armed` |
+| [`merged-worker-archiver`](plugins/merged-worker-archiver/README.md) | Archives clean, idle worker worktree workspaces whose branch is merged into its base; optionally flags stale agents and workspaces to their PM once a day | Dry-run until `armed`; stale flags off until `staleSweep` |
 | [`usage-limit-auto-resume`](plugins/usage-limit-auto-resume/README.md) | Resumes an agent after a usage limit or a transient provider error, in the same session | Dry-run until `armed` |
 | [`orphan-project-sweeper`](plugins/orphan-project-sweeper/README.md) | Deletes Paseo project rows with no active workspace and a missing root path | Dry-run until `armed` |
 | [`workspace-folder-title`](plugins/workspace-folder-title/README.md) | Titles new workspaces with their folder name instead of a bare git branch name, without replacing caller-supplied titles | Active when installed |

@@ -10,6 +10,17 @@ it("defaults to dry-run, with workspace cleanup armed separately", () => {
   assert.equal(defaultConfig().staleWorkspaceMinutes, 3 * 24 * 60);
 });
 
+it("stale sweep: off by default, flag-only (no opt-in lists, no exclusions), 3 days; entries must be non-empty strings", () => {
+  const config = defaultConfig();
+  assert.equal(config.staleSweep, false);
+  assert.equal(config.staleAgentMinutes, 3 * 24 * 60);
+  assert.deepEqual([config.staleArchivePms, config.staleArchiveProjects, config.staleExclude], [[], [], []]);
+  assert.deepEqual(ConfigSchema.safeParse({ staleSweep: true, staleExclude: ["keep=1", " wks_1 "] }).data?.staleExclude, ["keep=1", "wks_1"]);
+  for (const bad of [{ staleExclude: [""] }, { staleExclude: [1] }, { staleArchivePms: "pm" }, { staleAgentMinutes: 0 }, { staleSweep: "yes" }]) {
+    assert.equal(ConfigSchema.safeParse(bad).success, false, JSON.stringify(bad));
+  }
+});
+
 it("loads a live settings file that sets maxArchivesPerSweep and keeps its value", () => {
   const parsed = ConfigSchema.safeParse({ armed: true, maxArchivesPerSweep: 50 });
   assert.equal(parsed.success, true);

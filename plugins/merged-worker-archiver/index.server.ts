@@ -7,6 +7,7 @@ import { NotifyStore } from "./server/notify-store.ts";
 import { openPeerSession } from "./server/peer-session.ts";
 import { ReceiptReader } from "./server/receipts.ts";
 import { EventScheduler, realTimers } from "./server/scheduler.ts";
+import { FlagStore, ResumeStateFile } from "./server/stale.ts";
 import { Sweeper, type ApiLease } from "./server/sweeper.ts";
 
 // Server-only plugin. Archives worktree workspaces (and, through Paseo's own workspace
@@ -16,7 +17,8 @@ import { Sweeper, type ApiLease } from "./server/sweeper.ts";
 // Triggers: every agent.turn_ended (any agent, PMs included) evaluates the worktrees of
 // that agent's project and repository within seconds; a slow periodic sweep is only a
 // backstop for merges made outside Paseo. Workspace cleanup (stale agentless workspaces)
-// runs in the full sweeps only, and acts only when armed and armWorkspaceCleanup are both true.
+// runs in the full sweeps only, and acts only when armed and armWorkspaceCleanup are both true. The stale sweep
+// (staleSweep, off by default) also runs in full sweeps and flags stale agents and workspaces to their PM once a day.
 
 const STARTUP_DELAY_MS = 30_000;
 
@@ -45,6 +47,10 @@ export default function contribute(server: PluginServerContext) {
     deliveries: new ReceiptReader(),
     // Peer daemons (peerHosts): ssh to their daemon port, then the bundled client (see server/peer-session.ts).
     peerConnector: openPeerSession,
+    // Stale sweep (staleSweep): when each item was last flagged and each PM last messaged.
+    flagStore: new FlagStore(),
+    // Stale sweep: usage-limit-auto-resume's resume records, read only; an agent owed a resume is never archived.
+    resumeState: new ResumeStateFile(),
   });
 
   const loadConfig = async (): Promise<ArchiverConfig | null> => {
@@ -133,6 +139,7 @@ export default function contribute(server: PluginServerContext) {
       `[merged-worker-archiver] started ${JSON.stringify({
         mode: config ? (config.armed ? "armed" : "dry-run") : "config-invalid",
         cleanupMode: config ? (config.armed && config.armWorkspaceCleanup ? "armed" : "dry-run") : "config-invalid",
+        staleSweep: config ? (config.staleSweep ? "on" : "off") : "config-invalid",
         config,
         daemon: target,
       })}`,
