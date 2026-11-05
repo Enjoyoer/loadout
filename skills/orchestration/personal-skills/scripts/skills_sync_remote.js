@@ -342,11 +342,13 @@ try {
   // skips such a name with a warning, so the entry is harmless; the owner may drop it.
   const retiring = new Set(drops.filter(d => d.dir).map(d => d.skill));
   const agentsDir = CLIENT_HOMES.pi && path.join(runtimeRoot, 'agents');
-  if (retiring.size && agentsDir && fs.existsSync(agentsDir) && fs.lstatSync(agentsDir).isDirectory())
+  if (retiring.size && agentsDir && probe(fs, agentsDir)?.isDirectory())
     for (const agent of fs.readdirSync(agentsDir).sort()) {
       const file = path.join(agentsDir, agent, 'settings.overlay.json');
+      if (!probe(fs, file)?.isFile()) continue;
+      // A malformed overlay is the launcher's to refuse; this report only names the ones it can read.
       let names;
-      try { if (fs.lstatSync(file).isFile()) names = JSON.parse(fs.readFileSync(file, 'utf8')).skillsExclude; } catch { continue; }
+      try { names = JSON.parse(fs.readFileSync(file, 'utf8')).skillsExclude; } catch (e) { if (e instanceof SyntaxError) continue; throw e; }
       const hits = Array.isArray(names) ? [...new Set(names.filter(n => retiring.has(n)))] : [];
       if (hits.length) result.pi_excludes.push(`${agent} (${hits.join(', ')})`);
     }
