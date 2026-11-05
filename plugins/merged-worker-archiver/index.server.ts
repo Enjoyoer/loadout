@@ -49,7 +49,7 @@ export default function contribute(server: PluginServerContext) {
     peerConnector: openPeerSession,
     // Stale sweep (staleSweep): when each item was last flagged and each PM last messaged.
     flagStore: new FlagStore(),
-    // Stale sweep: usage-limit-auto-resume's resume records, read only; an agent owed a resume is never archived.
+    // usage-limit-auto-resume's resume records, read only: an agent owed a resume is never archived, by either path.
     resumeState: new ResumeStateFile(),
   });
 

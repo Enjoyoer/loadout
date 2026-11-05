@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { defaultConfig } from "../server/config.ts";
 import { Sweeper, type ArchiverApi } from "../server/sweeper.ts";
 import type { AgentView, WorkspaceView } from "../server/types.ts";
-import { agent, fakeFs, fakePeers, fakeRunner, LONG_AGO, memoryNotifyStore, NOW, scenario, workspace, type PeerFixtureAgent } from "./fakes.ts";
+import { agent, fakeFs, fakePeers, fakeRunner, LONG_AGO, memoryNotifyStore, noResumeState, NOW, scenario, workspace, type PeerFixtureAgent } from "./fakes.ts";
 
 it("with the default cap, one sweep over 7 eligible candidates archives 5 and reports 2 deferred; the next sweep archives the 2", async () => {
   const workspaces = Array.from({ length: 7 }, (_, i) => workspace({ id: `wks_${i}`, name: `worker-${i}` }));
@@ -22,12 +22,14 @@ it("with the default cap, one sweep over 7 eligible candidates archives 5 and re
     agents: { list: async () => page(live().map((ws) => ({ agent: agent({ id: `agent-${ws.id}`, workspaceId: ws.id }) }))) },
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
+    schedules: { list: async () => [] },
     supportsBackgroundWorkspaces: () => false,
   };
   const s = scenario({ ancestors: { "refs/heads/main": 0 } });
   const fs = fakeFs(s);
   const lines: string[] = [];
   const sweeper = new Sweeper({
+    resumeState: noResumeState,
     acquireApi: async () => ({ api, release: async () => undefined }),
     log: (line) => lines.push(line),
     fs,
@@ -88,12 +90,14 @@ function armedSweeps(workspaces: WorkspaceView[], failure: (workspaceId: string)
     agents: { list: async () => page(live().map((ws) => ({ agent: agent({ id: `agent-${ws.id}`, workspaceId: ws.id }) }))) },
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
+    schedules: { list: async () => [] },
     supportsBackgroundWorkspaces: () => false,
   };
   const s = scenario({ ancestors: { "refs/heads/main": 0 } });
   const fs = fakeFs(s);
   const lines: string[] = [];
   const sweeper = new Sweeper({
+    resumeState: noResumeState,
     acquireApi: async () => ({ api, release: async () => undefined }),
     log: (line) => lines.push(line),
     fs,
@@ -219,6 +223,7 @@ it("workspace cleanup previews until armWorkspaceCleanup is also on, then archiv
     },
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
+    schedules: { list: async () => [] },
     supportsBackgroundWorkspaces: () => false,
     sendAgentMessage: async (agentId, _text, options) => {
       sends.push({ agentId, messageId: options.messageId });
@@ -229,6 +234,7 @@ it("workspace cleanup previews until armWorkspaceCleanup is also on, then archiv
   const notifyStore = memoryNotifyStore();
   const lines: string[] = [];
   const sweeper = new Sweeper({
+    resumeState: noResumeState,
     acquireApi: async () => ({ api, release: async () => undefined }),
     log: (line) => lines.push(line),
     fs,
@@ -285,6 +291,7 @@ it("an agent history listing that fails leaves out workspace cleanup only: the w
     },
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
+    schedules: { list: async () => [] },
     supportsBackgroundWorkspaces: () => false,
   };
   const s = scenario({ ancestors: { "refs/heads/main": 0 } });
@@ -292,6 +299,7 @@ it("an agent history listing that fails leaves out workspace cleanup only: the w
   const lines: string[] = [];
   const notifyStore = memoryNotifyStore();
   const sweeper = new Sweeper({
+    resumeState: noResumeState,
     acquireApi: async () => ({ api, release: async () => undefined }),
     log: (line) => lines.push(line),
     fs,
@@ -332,6 +340,7 @@ function peerCleanup(options: { worktrees: Array<{ id: string; labels: Record<st
     },
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
+    schedules: { list: async () => [] },
     supportsBackgroundWorkspaces: () => false,
     sendAgentMessage: async (agentId, text) => {
       localSends.push({ agentId, text });
@@ -343,6 +352,7 @@ function peerCleanup(options: { worktrees: Array<{ id: string; labels: Record<st
   const peer = fakePeers(options.peers);
   const lines: string[] = [];
   const sweeper = new Sweeper({
+    resumeState: noResumeState,
     acquireApi: async () => ({ api, release: async () => undefined }),
     log: (line) => lines.push(line),
     fs,

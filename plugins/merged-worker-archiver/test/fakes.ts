@@ -1,6 +1,7 @@
 import type { NotifiedEntry } from "../server/cleanup.ts";
 import type { NotifyStateStore } from "../server/notify-store.ts";
 import type { PeerConnector } from "../server/peers.ts";
+import type { ResumeStateReader } from "../server/stale.ts";
 import type { CommandResult, CommandRunner, FileSystem } from "../server/types.ts";
 import type { AgentView, WorkspaceView } from "../server/types.ts";
 
@@ -224,6 +225,9 @@ export function fakePeers(peers: Record<string, PeerFixtureAgent[] | "down">) {
 }
 
 /** In-memory reported-worktree state; `writes` counts persisted writes. */
+/** usage-limit-auto-resume's state file with no records (worker archives need a readable one). */
+export const noResumeState: ResumeStateReader = { read: async () => new Map() };
+
 export function memoryNotifyStore(initial: Record<string, NotifiedEntry> = {}): NotifyStateStore & { entries: Map<string, NotifiedEntry>; writes: number } {
   const store = {
     entries: new Map(Object.entries(initial)),
