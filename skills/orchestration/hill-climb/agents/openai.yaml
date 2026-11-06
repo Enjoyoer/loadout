@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hill Climb"
+  short_description: "Raise an agreed score round by round with separate judges"
+  default_prompt: "Use $hill-climb to agree a score for this task, then raise it round by round until the bar is met."

@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "d2ab11f0145545e80ccaaa46e792fdc97d4c93b1",
-  "skill_count": 24,
-  "file_count": 141,
+  "source_commit": "463629764ba1f0964e73ffc9da03dea79734238d",
+  "skill_count": 25,
+  "file_count": 143,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -193,6 +193,20 @@
       "skill": "handoff",
       "bytes": 301,
       "sha256": "fd19a7e7e7eff1045d7bce231221798605b6edc5f98a1fb1411d2a414c2f0b2a"
+    },
+    {
+      "path": "skills/orchestration/hill-climb/SKILL.md",
+      "category": "orchestration",
+      "skill": "hill-climb",
+      "bytes": 6407,
+      "sha256": "159547a13856ee57dfc54d9de11f680f3592adbadb7744e96221ea219ff831df"
+    },
+    {
+      "path": "skills/orchestration/hill-climb/agents/openai.yaml",
+      "category": "orchestration",
+      "skill": "hill-climb",
+      "bytes": 240,
+      "sha256": "aaf34798e3b348f327ed7e4b424d3481e42b710eb7c812de76c6374ce61f40b3"
     },
     {
       "path": "skills/orchestration/opc/SKILL.md",
