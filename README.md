@@ -8,7 +8,7 @@ New here and want to copy a few skills? Read [START-HERE.md](START-HERE.md) firs
 
 Agent skills for Claude Code and Codex, a fleet sync that keeps them identical across machines, and plugins for the [Paseo](https://paseo.sh) agent daemon. Together they run coding agents as a small team: you give a project manager (PM) agent an outcome; it delegates bounded work to workers, reviews their changes, lands approved work, and syncs the fleet. You remain the owner who sets scope and approves decisions.
 
-- **24 skills** for multi-agent orchestration, project memory and handoffs, architecture, docs lookup, PDFs, total-cost shopping research, frontend design, browser automation, and interactive setup wizards.
+- **25 skills** for multi-agent orchestration, project memory and handoffs, architecture, docs lookup, PDFs, total-cost shopping research, frontend design, browser automation, and interactive setup wizards.
 - **Fleet sync**: one command installs verified skills (every file checked against a SHA256 manifest) on every host over SSH, and never overwrites a local edit.
 - **7 Paseo plugins**: four server plugins that resume agents after usage limits, archive merged worker workspaces, compact idle agents to save prompt-cache cost, and clean up orphaned projects, each only logging what it would do until you arm it; plus `workspace-folder-title`, which titles new workspaces with their folder name, `history-cwd-fallback`, which opens the history of archived agents whose Paseo worktree was deleted, and `pi-fast-toggle`, composer Fast shortcuts and a per-agent thinking level menu.
 
@@ -100,6 +100,7 @@ Invoke an installed skill by asking the agent to **use its name**. Codex also ac
 | [`handoff`](skills/orchestration/handoff/SKILL.md) / [`reassign-pm`](skills/orchestration/reassign-pm/SKILL.md) | Ask the outgoing PM to "use handoff" to update and commit its memory pair, then ask the replacement to "use reassign-pm" to take over, retain workers, and archive the previous PM after verification. |
 | [`unstuck`](skills/orchestration/unstuck/SKILL.md) | "Why isn't this done?" or "scope explosion". A fresh PM on a strong model reviews a stalled project without touching it: numbers, scope timeline, one-line cause, minimal path, and owner decisions with defaults. |
 | [`trial`](skills/orchestration/trial/SKILL.md) | "Trial this idea" or "replay". Tests a proposed rule or workflow change against the last 14 days of real work, replays up to 3 cases in scratch copies, and reports Adopt, Adopt modified or Drop per rule without adopting anything. |
+| [`hill-climb`](skills/orchestration/hill-climb/SKILL.md) | "Hill-climb this" or "make this faster". Agrees a score with you first, then has a builder raise it round by round while separate judges score each category against a known-good reference, until the bar is met, the budget is spent, or 2 rounds bring no gain. Its time section maps stages and proves each cut with before and after numbers. |
 
 ### 4. Add plugins deliberately
 
@@ -113,13 +114,13 @@ Keep secrets in a secrets manager and authenticate locally. Never commit credent
 
 ## Skills
 
-All 24 active packages. Install them flat under the target client's `skills` directory, or through the Claude Code plugin that groups them. There are no archived packages in this public repository.
+All 25 active packages. Install them flat under the target client's `skills` directory, or through the Claude Code plugin that groups them. There are no archived packages in this public repository.
 
 | Category (`skills/<category>`) | Packages | Claude Code plugin |
 |---|---|---|
 | Engineering (`engineering`) | `codebase-design`, `improve-codebase-architecture`, `uv-python` | `loadout-engineering` |
 | Operations and integrations (`operations-integrations`) | `bw-login`, `project-icon`, `recover-mouse-input`, `wizard` | `loadout-ops` |
-| Orchestration (`orchestration`) | `dispatching-parallel-agents`, `handoff`, `opc`, `opn`, `reassign-pm`, `repo-lessons`, `trial`, `unstuck`, `wo` | `loadout-orchestration` |
+| Orchestration (`orchestration`) | `dispatching-parallel-agents`, `handoff`, `hill-climb`, `opc`, `opn`, `reassign-pm`, `repo-lessons`, `trial`, `unstuck`, `wo` | `loadout-orchestration` |
 | Orchestration (`orchestration`) | `personal-skills` | none; install from a clone |
 | Planning and writing (`planning-writing`) | `sample` | `loadout-writing` |
 | Research and documentation (`research-docs`) | `find-docs`, `liteparse`, `tco-search` | `loadout-research` |
