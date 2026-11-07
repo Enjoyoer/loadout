@@ -23,8 +23,8 @@ async function fixture(){
 }
 test('backend validates catalog and writes only requested label with readback',async()=>{
  const f=await fixture();try{
-  // No label on a priority route is the fleet default, Fast; Off writes Standard and On writes Fast.
-  assert.deepEqual(await f.call('fast.inspect',{agentId:'a'}),{capable:true,fast:true,tier:'inherit'});
+  // No label on a priority route is the fleet default, Standard; Off writes Standard and On writes Fast.
+  assert.deepEqual(await f.call('fast.inspect',{agentId:'a'}),{capable:true,fast:false,tier:'inherit'});
   assert.deepEqual(await f.call('fast.toggle',{agentId:'a',fast:false}),{capable:true,fast:false,tier:'standard'});
   assert.equal(f.agent.labels.unrelated,'keep');assert.equal(f.agent.model,'fleet/example-sol');
   assert.deepEqual(await f.call('fast.toggle',{agentId:'a',fast:true}),{capable:true,fast:true,tier:'fast'});assert.equal(f.writes,2);

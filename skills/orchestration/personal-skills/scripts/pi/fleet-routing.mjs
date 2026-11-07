@@ -52,8 +52,8 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
       } else input.unshift(environment);
       result.input = input;
     }
-    // A resolved tier (explicit or the Fast default) is sent as-is; an inherited preference sends no
-    // tier so the fleet default applies upstream. A stray client tier never survives an inherit.
+    // A resolved tier (explicit or the Standard default) is sent as-is; an inherited preference sends no
+    // tier so the upstream default applies. A stray client tier never survives an inherit.
     if (tier?.wire) result.service_tier = tier.wire;
     else delete result.service_tier;
   }
@@ -62,8 +62,10 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
 
 // Tier semantics. opc.service-tier (fast|standard|ultrafast|inherit, with priority/default
 // aliases) wins; legacy opc.fast-requested 'true'/'false' (written by OPC) means fast/standard;
-// absent means inherit the fleet default rather than "off". On a GPT route whose catalog lists
-// the priority tier the default is Fast (tierDecision); only an explicit Standard turns it off.
+// absent means inherit the fleet default. Fast is off by default fleet-wide (owner decision
+// 2026-11-06): on a GPT route whose catalog lists the priority tier, no choice sends an explicit
+// Standard (tierDecision), so a Fast-capable route never depends on an upstream default; only an
+// explicit fast/priority/ultrafast label turns Fast on.
 const TIER_ALIASES = { fast: 'fast', priority: 'fast', standard: 'standard', default: 'standard', ultrafast: 'ultrafast', inherit: 'inherit' };
 export const TIER_WIRE = { fast: 'priority', standard: 'default', ultrafast: 'ultrafast' };
 const CATALOG_TIER = { fast: 'priority', ultrafast: 'ultrafast' };
@@ -86,9 +88,9 @@ export function tierDecision(intent, model, catalogTiers) {
   // Known Zen free IDs also fail closed: a missing lookup could hide explicit Fast.
   if (intent?.lookupFailed) return codexRoute || zenFree ? { status: 'lookup-failed', error: intent.error } : { status: 'lookup-failed-untiered' };
   if (intent?.error) return { status: 'invalid', error: intent.error };
-  // No choice (absent or inherit) is Fast where the catalog offers it, and inherits elsewhere.
+  // No choice (absent or inherit) is an explicit Standard where the catalog offers Fast, and inherits elsewhere.
   if (!intent || intent.tier === 'inherit') return codexRoute && catalogTiers?.includes(CATALOG_TIER.fast)
-    ? { status: 'fleet-default-fast', wire: TIER_WIRE.fast, header: 'fast' }
+    ? { status: 'fleet-default-standard', wire: TIER_WIRE.standard, header: 'standard' }
     : { status: 'inherited', header: codexRoute ? 'inherit' : undefined };
   // A tier label left over from a GPT route must not break a later swap to an untiered route
   // (Claude, web, free Zen IDs): send no tier and record it.
