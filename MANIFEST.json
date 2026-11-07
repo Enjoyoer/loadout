@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "5a2edf1e06014d013ff952470c82c305e69c07d2",
+  "source_commit": "7408745f3c8813b7868b40ee6e025da67b783167",
   "skill_count": 25,
   "file_count": 143,
   "files": [
@@ -387,8 +387,8 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 5744,
-      "sha256": "9c43648fbd47eb51e6a2ab8bc354c5f3f729d641cc6b7135bfd72edee1a4a436"
+      "bytes": 5792,
+      "sha256": "32909423bf8ab8bf20f176a3981fb2dad470e24b3d4e2a075c9fde07d4572754"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
@@ -401,8 +401,8 @@
       "path": "skills/orchestration/opn/evals.json",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 12547,
-      "sha256": "ac496da465876fd14704f7f34f923227d4370ac62c232e21e2b74194347da165"
+      "bytes": 12559,
+      "sha256": "51d83f8a82be9fa753dcf7db35774b8e7aa5a7e67dd27109c3ff5b164079bf9d"
     },
     {
       "path": "skills/orchestration/opn/references/host-adapters.md",
