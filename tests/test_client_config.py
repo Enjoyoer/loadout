@@ -379,9 +379,13 @@ class VersionAndCatalogTest(unittest.TestCase):
         self.check(lambda d: d["claude"]["env"].update(ANTHROPIC_BASE_URL="x"), "both managed and listed for removal")
         self.check(lambda d: d["hosts"].update(desktop={"codex": {"top": {"model": "x"}, "reportOnly": ["model"]}}),
                    "both in top and reportOnly")
-        self.check(lambda d: d["hosts"].update(desktop={"codex": {"top": {"model": "x"}}}), "reportOnly in a lower layer")
-        self.check(lambda d: d["hosts"].update(desktop={"codex": {"reportOnly": ["model_provider"]}}),
-                   "both reportOnly and listed for removal")
+        overlap = "reportOnly overlaps managed or removed keys"
+        self.check(lambda d: d["hosts"].update(desktop={"codex": {"reportOnly": ["model_provider"]}}), overlap)
+        self.check(lambda d: d["hosts"].update(desktop={"codex": {"reportOnly": ["model_providers.example_router.wire_api"]}}),
+                   overlap)
+        self.check(lambda d: d["hosts"].update(desktop={"codex": {"reportOnly": ["model_provider.x"]}}), overlap)
+        self.check(lambda d: d["hosts"].update(desktop={"codex": {"reportOnly": ["approval_policy.x"]}}), overlap)
+        self.check(lambda d: d["hosts"].update(desktop={"codex": {"reportOnly": ["model_providers"]}}), overlap)
 
     def test_example_is_valid_and_layers(self):
         fleet_doc = fleet.load(EXAMPLE)

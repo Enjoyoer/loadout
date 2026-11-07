@@ -115,8 +115,8 @@ def role_of(catalog: dict, fleet_doc: dict, host: str) -> str:
 def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
     """Base, then role, then host overrides. Top-level Claude settings replace whole values.
 
-    reportOnly lists add up across layers, and a key one layer lists is dropped from the top keys lower
-    layers manage, so the host owns it. A higher layer may not manage a key a lower one lists.
+    reportOnly lists add up across layers. A top key equal to a reportOnly path leaves the host's managed set;
+    any other overlap of a reportOnly path with a managed or removed path is refused (see reportonly_overlap).
     """
     codex = {"top": {}, "sections": {}, "removeTop": [], "reportOnly": []}
     claude = {"settings": {}, "env": {}, "token_env": None, "removeEnv": [],
@@ -125,14 +125,8 @@ def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
     layers = [catalog, catalog.get("roles", {}).get(role, {}), catalog.get("hosts", {}).get(host, {})]
     for layer in layers:
         c = layer.get("codex", {})
-        shadowed = sorted(set(c.get("top", {})) & set(codex["reportOnly"]))
-        if shadowed:
-            raise fleet.FleetError(f"{host}: {shadowed} managed in codex.top but reportOnly in a lower layer")
         codex["top"].update(c.get("top", {}))
-        for key in c.get("reportOnly", []):
-            codex["top"].pop(key, None)
-            if key not in codex["reportOnly"]:
-                codex["reportOnly"].append(key)
+        codex["reportOnly"] += [key for key in c.get("reportOnly", []) if key not in codex["reportOnly"]]
         for name, keys in c.get("sections", {}).items():
             codex["sections"].setdefault(name, {}).update(keys)
         codex["removeTop"] += [key for key in c.get("removeTop", []) if key not in codex["removeTop"]]
@@ -146,9 +140,8 @@ def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
     both += sorted(set(claude["removeEnv"]) & (set(claude["env"]) | {claude["token_env"]}))
     if both:
         raise fleet.FleetError(f"{host}: {both} both managed and listed for removal")
-    both = sorted(set(codex["removeTop"]) & set(codex["reportOnly"]))
-    if both:
-        raise fleet.FleetError(f"{host}: {both} both reportOnly and listed for removal")
+    for key in codex["reportOnly"]:
+        codex["top"].pop(key, None)
     host_doc = next(h for h in fleet_doc['hosts'] if h['name'] == host)
     servers = mcp_config.for_host(catalog.get('mcpServers', {}), host_doc)
     for server in servers:
@@ -164,7 +157,25 @@ def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
         if 'exclude' in policy:
             raise fleet.FleetError('shell_environment_policy.exclude is managed from mcpServers; remove it from codex.sections')
         policy['exclude'] = sorted({server['bearerTokenEnvVar'] for server in servers})
+    overlap = reportonly_overlap(codex)
+    if overlap:
+        raise fleet.FleetError(f"{host}: codex.reportOnly overlaps managed or removed keys: {overlap}")
     return {"role": role, "codex": codex, "claude": claude, "mcpServers": servers}
+
+
+def reportonly_overlap(codex: dict) -> list:
+    """reportOnly paths that equal, contain or sit inside a path the host writes or removes, compared by TOML
+    path segments: top keys, removeTop keys, and each section key (generated sections included) as section.key."""
+    managed = [("top", key) for key in codex["top"]] + [("removeTop", key) for key in codex["removeTop"]]
+    managed += [("sections", f"{name}.{key}") for name, keys in codex["sections"].items() for key in keys]
+    found = []
+    for report in codex["reportOnly"]:
+        r = report.split(".")
+        for where, path in managed:
+            p = path.split(".")
+            if r[:len(p)] == p or p[:len(r)] == r:
+                found.append(f"{report} vs {where} {path}")
+    return found
 
 
 def describe(name: str, result: dict) -> list:
