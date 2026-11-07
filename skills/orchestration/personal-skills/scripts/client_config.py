@@ -165,8 +165,10 @@ def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
 
 def reportonly_overlap(codex: dict) -> list:
     """reportOnly paths that equal, contain or sit inside a path the host writes or removes, compared by TOML
-    path segments: top keys, removeTop keys, and each section key (generated sections included) as section.key."""
+    path segments: top keys, removeTop keys, each section name and each section key as section.key, generated
+    sections included."""
     managed = [("top", key) for key in codex["top"]] + [("removeTop", key) for key in codex["removeTop"]]
+    managed += [("sections", name) for name in codex["sections"]]
     managed += [("sections", f"{name}.{key}") for name, keys in codex["sections"].items() for key in keys]
     found = []
     for report in codex["reportOnly"]:
