@@ -148,14 +148,20 @@
           "service answers",
           "setting applied"
         ],
+        "changes_live_system": true,
         "other_reporters": false
       },
       "expected": {
+        "reviewer": "one separate reviewer agent, findings sent to the same worker, a second review only after substantial fixes, reviewer archived when done",
         "pm_action": "fresh readback of each acceptance check",
         "owner_message": "plain-words relay citing the readback",
         "archive_worker": "after verification"
       },
       "rubric": [
+        {
+          "criterion": "review",
+          "observable": "because the result changed a live system, the PM starts one separate reviewer agent, sends its findings to the same worker rather than a new one, and archives the reviewer when done"
+        },
         {
           "criterion": "verification",
           "observable": "the PM runs its own fresh readback before telling the owner"
