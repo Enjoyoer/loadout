@@ -135,8 +135,8 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
       initialPrompt: prompt,
       notifyOnFinish: true,
       settings: { ...requestedSettings, ...(modeId ? { modeId } : {}) },
-      // Fast is the Pi Fast toggle label. A GPT route with no label runs Fast (the fleet default), so Off on a GPT
-      // route is an explicit Standard; other routes have no service tier and get no label.
+      // Fast is the Pi Fast toggle label. A GPT route with no label runs Standard (Fast is off by default), and Off
+      // on a GPT route is still an explicit Standard; other routes have no service tier and get no label.
       labels: { ...labels(workerLabels), role: 'worker', 'opc.worker-task': taskId, 'opc.worker-lane': lane,
         ...(pi && route?.fastMode === true ? { 'opc.service-tier': 'fast' }
           : pi && isGptOrWebRoute(route, capabilities?.models) ? { 'opc.service-tier': 'standard' } : {}),
