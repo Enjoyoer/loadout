@@ -1,7 +1,7 @@
 {
   "mcpServers": {},
   "codex": {
-    "top": { "approval_policy": "on-request", "sandbox_mode": "workspace-write" },
+    "top": { "approval_policy": "on-request", "sandbox_mode": "workspace-write", "model_reasoning_effort": "high" },
     "reportOnly": ["model"]
   },
   "claude": {
@@ -21,6 +21,9 @@
     }
   },
   "hosts": {
-    "desktop": { "claude": { "settings": { "theme": "light" } } }
+    "desktop": {
+      "codex": { "reportOnly": ["model_reasoning_effort"] },
+      "claude": { "settings": { "theme": "light" } }
+    }
   }
 }
