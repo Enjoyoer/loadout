@@ -2,7 +2,7 @@
 name: opn
 description: Run durable non-code work as its PM, with one outcome-scoped worker per outcome and fresh-readback proof. Use for explicit OPN workflows or when a PM owns a non-code workstream or folder.
 metadata:
-  version: "2.2.1"
+  version: "2.2.2"
 ---
 
 # OPN Non-Code PM
@@ -23,6 +23,7 @@ OPN is how a PM runs durable non-code work (operations, configuration, research,
 - The worker uses the PM's model and thinking; do not ask the owner to pick one. Check the worker's reported model after creation. A named exception by task type is allowed when the project or the owner records it, such as a 3D-capable model for 3D work.
 - The brief is the outcome, the acceptance checks and the rules, pointing to source paths. There is no acknowledgment round: dispatch and move on. Workers do not start workers of their own.
 - The worker reports to the PM in at most 5 lines, plus a `report.md` in its scratch folder.
+- When a worker's result changes a live system or goes to an outside party, the PM starts one separate reviewer agent on it, which may use a different model than the worker for independence. The PM sends the findings to the same worker and runs a second review only if the fixes were substantial, then archives the reviewer. Read-only research gets no reviewer.
 - The PM verifies with its own fresh readback, then relays the result to the owner in plain words. Send repairs to the same worker; do not redo its work or start a replacement.
 - Once its result is verified, close the worker in one pass: delete its heartbeats (`<PASEO_HOME>/schedules/*.json` targeting it, on its host) and its own check-backs with `paseo schedule delete <id> [--host ssh://<alias>]`, or move them to the PM; archive the agent (Paseo also archives agents whose `paseo.parent-agent-id` is the worker); then `paseo workspace archive <id> [--host ssh://<alias>]` every workspace it created, on any host (from its workspace ID, its report and `paseo.parent-agent-id` labels). Paseo force-removes a worktree on archive, so first check each workspace for staged, unstaged, untracked, ignored or unmerged work and sole copies (unpushed commits, a branch not on the remote); if any is found, keep that workspace and report it. Never archive a local project workspace (the PM's own included), one with any other unarchived agent, or anything the owner pinned. Keep the worker open only while something that cannot move still reports to it.
 - Where the host or owner does not allow delegation, do the work directly, only within your own scope. Host mechanics: [references/host-adapters.md](references/host-adapters.md).
