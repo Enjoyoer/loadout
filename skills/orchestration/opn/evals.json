@@ -117,7 +117,7 @@
         "workers": 2,
         "workspace": "the PM's own workspace, no new workspace",
         "remote_host": "the worker reaches it over ssh",
-        "model": "inherits the PM's model and thinking",
+        "model": "uses the PM's model and thinking",
         "asks_owner_for_model": false,
         "acknowledgment_round": false,
         "notify_on_finish": true
@@ -129,7 +129,7 @@
         },
         {
           "criterion": "model",
-          "observable": "workers inherit the PM's model and thinking without asking the owner, and a GPT worker would stay read-only"
+          "observable": "workers use the PM's model and thinking without asking the owner, unless the project or owner records a task-type exception"
         },
         {
           "criterion": "brief",
