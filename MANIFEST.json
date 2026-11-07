@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "58690d1097de36931bdf15b13c9c84cd28d1ac49",
+  "source_commit": "8ba4abb32a877d22b6a132a6f6e972239bc0bf92",
   "skill_count": 25,
   "file_count": 143,
   "files": [
@@ -213,7 +213,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5374,
-      "sha256": "dc4ddf1fe2fcbcd30854ea671b82ccf13af4272a50a0060731a7b053e215feff"
+      "sha256": "f87f119e9c1ea77113289267d86a79be9e9a38673da8a7755d356878db343bd1"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -310,8 +310,8 @@
       "path": "skills/orchestration/opc/references/web-reviewer.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4446,
-      "sha256": "8a424644d55795e6a91cefcdec2f214ba76d3ef1715b8aaaf876c66376530c74"
+      "bytes": 4991,
+      "sha256": "611a2e8a4350a6cba6da8b747f9bee3ee25e1c331f60440e99be38030e19d64a"
     },
     {
       "path": "skills/orchestration/opc/references/worktree-lifecycle.md",
