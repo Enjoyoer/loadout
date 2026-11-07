@@ -34,7 +34,7 @@ UPDATE_TIMEOUT_SECONDS = 900
 CATALOG_KEYS = {"token_file", "codex", "claude", "roles", "hosts", "mcpServers"}
 CODEX_KEYS = {"top", "sections", "reportOnly", "removeTop"}
 CLAUDE_KEYS = {"minVersion", "settings", "env", "token_env", "removeEnv"}
-LAYER_CODEX_KEYS = {"top", "sections", "removeTop"}
+LAYER_CODEX_KEYS = {"top", "sections", "reportOnly", "removeTop"}
 LAYER_CLAUDE_KEYS = {"settings", "env", "token_env", "removeEnv"}
 ROLES = ("local", "remote")
 
@@ -72,6 +72,10 @@ def _layer(layer, where, base=False):
         raise fleet.FleetError(f"{where}.claude.token_env must be an env name or null")
     # Keys an earlier sync managed and this one drops: removed from the host file, never ones we did not manage.
     fleet._strings(codex.get("removeTop", []), f"{where}.codex.removeTop")
+    fleet._strings(codex.get("reportOnly", []), f"{where}.codex.reportOnly")
+    both = sorted(set(codex.get("reportOnly", [])) & set(codex.get("top", {})))
+    if both:
+        raise fleet.FleetError(f"{where}.codex: {both} both in top and reportOnly")
     fleet._strings(claude.get("removeEnv", []), f"{where}.claude.removeEnv")
 
 
@@ -83,7 +87,6 @@ def load_catalog(path: Path, fleet_doc: dict) -> dict:
     fleet._keys(data, CATALOG_KEYS, path.name)
     mcp_config.validate(data.get('mcpServers', {}), fleet_doc, path.parent / 'paseo-providers.json')
     _layer({"codex": data.get("codex", {}), "claude": data.get("claude", {})}, "base", base=True)
-    fleet._strings(data.get("codex", {}).get("reportOnly", []), "codex.reportOnly")
     if "minVersion" in data.get("claude", {}) and not isinstance(data["claude"]["minVersion"], str):
         raise fleet.FleetError("claude.minVersion must be a string")
     if "token_file" in data and not isinstance(data["token_file"], str):
@@ -110,16 +113,26 @@ def role_of(catalog: dict, fleet_doc: dict, host: str) -> str:
 
 
 def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
-    """Base, then role, then host overrides. Top-level Claude settings replace whole values."""
-    codex = {"top": {}, "sections": {}, "removeTop": [],
-             "reportOnly": list(catalog.get("codex", {}).get("reportOnly", []))}
+    """Base, then role, then host overrides. Top-level Claude settings replace whole values.
+
+    reportOnly lists add up across layers, and a key one layer lists is dropped from the top keys lower
+    layers manage, so the host owns it. A higher layer may not manage a key a lower one lists.
+    """
+    codex = {"top": {}, "sections": {}, "removeTop": [], "reportOnly": []}
     claude = {"settings": {}, "env": {}, "token_env": None, "removeEnv": [],
               "minVersion": catalog.get("claude", {}).get("minVersion")}
     role = role_of(catalog, fleet_doc, host)
     layers = [catalog, catalog.get("roles", {}).get(role, {}), catalog.get("hosts", {}).get(host, {})]
     for layer in layers:
         c = layer.get("codex", {})
+        shadowed = sorted(set(c.get("top", {})) & set(codex["reportOnly"]))
+        if shadowed:
+            raise fleet.FleetError(f"{host}: {shadowed} managed in codex.top but reportOnly in a lower layer")
         codex["top"].update(c.get("top", {}))
+        for key in c.get("reportOnly", []):
+            codex["top"].pop(key, None)
+            if key not in codex["reportOnly"]:
+                codex["reportOnly"].append(key)
         for name, keys in c.get("sections", {}).items():
             codex["sections"].setdefault(name, {}).update(keys)
         codex["removeTop"] += [key for key in c.get("removeTop", []) if key not in codex["removeTop"]]
@@ -133,6 +146,9 @@ def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
     both += sorted(set(claude["removeEnv"]) & (set(claude["env"]) | {claude["token_env"]}))
     if both:
         raise fleet.FleetError(f"{host}: {both} both managed and listed for removal")
+    both = sorted(set(codex["removeTop"]) & set(codex["reportOnly"]))
+    if both:
+        raise fleet.FleetError(f"{host}: {both} both reportOnly and listed for removal")
     host_doc = next(h for h in fleet_doc['hosts'] if h['name'] == host)
     servers = mcp_config.for_host(catalog.get('mcpServers', {}), host_doc)
     for server in servers:

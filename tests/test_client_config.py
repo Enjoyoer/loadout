@@ -377,6 +377,11 @@ class VersionAndCatalogTest(unittest.TestCase):
         self.check(lambda d: d["codex"]["top"].update(bad=[1]), "codex.top.bad")
         self.check(lambda d: d["roles"]["remote"].update(claude={"minVersion": "1"}), "unknown keys ['minVersion']")
         self.check(lambda d: d["claude"]["env"].update(ANTHROPIC_BASE_URL="x"), "both managed and listed for removal")
+        self.check(lambda d: d["hosts"].update(desktop={"codex": {"top": {"model": "x"}, "reportOnly": ["model"]}}),
+                   "both in top and reportOnly")
+        self.check(lambda d: d["hosts"].update(desktop={"codex": {"top": {"model": "x"}}}), "reportOnly in a lower layer")
+        self.check(lambda d: d["hosts"].update(desktop={"codex": {"reportOnly": ["model_provider"]}}),
+                   "both reportOnly and listed for removal")
 
     def test_example_is_valid_and_layers(self):
         fleet_doc = fleet.load(EXAMPLE)
@@ -385,7 +390,10 @@ class VersionAndCatalogTest(unittest.TestCase):
         self.assertEqual(desktop["role"], "remote")
         self.assertEqual(desktop["claude"]["settings"]["theme"], "light")
         self.assertEqual((desktop["claude"]["token_env"], desktop["codex"]["removeTop"]), (None, ["model_provider"]))
+        self.assertEqual(desktop["codex"]["reportOnly"], ["model", "model_reasoning_effort"])
+        self.assertNotIn("model_reasoning_effort", desktop["codex"]["top"])
         laptop = client_config.settings_for(catalog, fleet_doc, "laptop")
+        self.assertEqual((laptop["codex"]["reportOnly"], laptop["codex"]["top"]["model_reasoning_effort"]), (["model"], "high"))
         self.assertEqual((laptop["role"], laptop["codex"]["removeTop"]), ("local", []))
         self.assertEqual(laptop["claude"]["removeEnv"], ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"])
 
