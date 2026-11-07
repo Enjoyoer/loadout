@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "ac361b020a9b5c016c5027948f4de26a2219a0b4",
+  "source_commit": "58690d1097de36931bdf15b13c9c84cd28d1ac49",
   "skill_count": 25,
   "file_count": 143,
   "files": [
@@ -212,8 +212,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5372,
-      "sha256": "b95f49dfcc83301d59a0816506851db40762b4a2449fadc23b26de9732144955"
+      "bytes": 5374,
+      "sha256": "dc4ddf1fe2fcbcd30854ea671b82ccf13af4272a50a0060731a7b053e215feff"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -275,8 +275,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 13534,
-      "sha256": "79afe1240c50275c35e2392fb31352ffbb954f7601cbfa916dc1ffd0fd40db00"
+      "bytes": 13550,
+      "sha256": "47352c7ff7a4b5cf544adc208ce860775d647d9d0e0148d4710d21f044961056"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -338,8 +338,8 @@
       "path": "skills/orchestration/opc/scripts/paseo-worker.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 12320,
-      "sha256": "8ceb57ca606f302e67d80043d465f57b206dfaa3fb5fc5395db95d0cc6ea9f23"
+      "bytes": 12336,
+      "sha256": "64bbe5cc2062ee63d64f3d8dd63a879c00f8f4189497287c5a9304418b3beb3a"
     },
     {
       "path": "skills/orchestration/opc/scripts/planner.mjs",
@@ -443,8 +443,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 65281,
-      "sha256": "ce222e37276a0992bb6e533486031276bffb3c7477e2e34d870cf1d4ea95cb7c"
+      "bytes": 65332,
+      "sha256": "b9f107079b8ff98ce1c2aa702d07019f39f3084574b414448e121d21711877d0"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -646,8 +646,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 20289,
-      "sha256": "3c5a5df5e623e7f2345269f39a3232343688a2ea9cbbb47af067c4ed9e1be3a1"
+      "bytes": 20470,
+      "sha256": "b58e7a952dcbbd09d86550cbbf0a934438bf3af0c6a0367460bb11b81a071b25"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
@@ -1547,8 +1547,8 @@
     {
       "path": "plugins/pi-fast-toggle/README.md",
       "plugin": "pi-fast-toggle",
-      "bytes": 15456,
-      "sha256": "4b4602c8f0eba234918512f39c9d341c160e1182cdb7ab32cd133ed280a85826"
+      "bytes": 15512,
+      "sha256": "58a7a28cb8fc6d214a262b05fd15d594ffa99d129753c64fb4b02fd799fe90d3"
     },
     {
       "path": "plugins/pi-fast-toggle/client/effort.tsx",
@@ -1590,13 +1590,13 @@
       "path": "plugins/pi-fast-toggle/package-lock.json",
       "plugin": "pi-fast-toggle",
       "bytes": 162275,
-      "sha256": "93b95e5912b160699dc4249f899cba38f859607f88b8f20c03bda748ad20195a"
+      "sha256": "331d658230ad67d2ad1addd8416b31d4b512a29900afbe37e74f86965e94e53b"
     },
     {
       "path": "plugins/pi-fast-toggle/package.json",
       "plugin": "pi-fast-toggle",
       "bytes": 719,
-      "sha256": "6d8d453e681d613d7e8d4511099564d87e03a32b5ccee0616c6aa45a64dd9232"
+      "sha256": "49fc9196e24d6e8be894585f8a2b9e285ae15f430cc8a63fa069a46af448940f"
     },
     {
       "path": "plugins/pi-fast-toggle/paseo-plugin.json",
@@ -1631,14 +1631,14 @@
     {
       "path": "plugins/pi-fast-toggle/shared/model.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 1074,
-      "sha256": "8a7a38cfc6c209a3dbc7d05b48f50e69808e4c4c4f740cb98e497b5e2df27b8b"
+      "bytes": 1067,
+      "sha256": "19bc7f0467f3bee64a05fb171792d963a06867c994b00940bf61d1cf151dc9e1"
     },
     {
       "path": "plugins/pi-fast-toggle/test/model.test.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 1740,
-      "sha256": "ae92471ce8f504b19577957a86954a09c1f7ef2acb8e9c1596842cd9f32130f3"
+      "bytes": 1742,
+      "sha256": "18dfd2f9fb7bb943866cf6d9a381832ab0838babd9b75f5ee50cea02be25eaf3"
     },
     {
       "path": "plugins/pi-fast-toggle/test/pagination.test.ts",
@@ -1655,8 +1655,8 @@
     {
       "path": "plugins/pi-fast-toggle/test/server.test.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 6610,
-      "sha256": "9e5b327343b48797ae0631e3e28cac7ee6376ea19f24bdcfeaa33f22a52ff189"
+      "bytes": 6615,
+      "sha256": "b4a5cffd3c019de345dcd8ee7b8e736d3c1a8279bfc35ea72a04781dcd64d7f7"
     },
     {
       "path": "plugins/pi-fast-toggle/tsconfig.json",
