@@ -44,7 +44,13 @@ def validate(servers, fleet_doc, providers_path=None):
         if not re.fullmatch(r'[A-Za-z0-9_-]+', name) or normalized in names | {'paseo'}:
             raise fleet.FleetError("invalid, duplicate or reserved mcpServers name: " + name)
         names.add(normalized)
-        fleet._keys(server, {'url', 'bearerTokenEnvVar', 'envFile', 'hosts'}, 'mcpServers.' + name)
+        fleet._keys(server, {'url', 'bearerTokenEnvVar', 'envFile', 'hosts', 'description'}, 'mcpServers.' + name)
+        # Pi lists the server in its system prompt with this line; pinned, it does not change once the server connects.
+        description = server.get('description')
+        if description is not None and (not isinstance(description, str) or not description.strip()
+                                        or len(description) > 2000 or re.search(r'[\x00-\x1f\x7f]', description)):
+            raise fleet.FleetError('mcpServers.' + name + '.description must be one non-empty line of at most 2000 '
+                                   'characters without control characters')
         _check_url(server.get('url'), 'mcpServers.' + name + '.url')
         if not isinstance(server.get('bearerTokenEnvVar'), str) or not re.fullmatch(r'[A-Z_][A-Z0-9_]*', server['bearerTokenEnvVar']):
             raise fleet.FleetError('mcpServers.' + name + '.bearerTokenEnvVar must be an env name')
@@ -83,5 +89,6 @@ def for_host(servers, host):
     return [dict(name=name, url=(s['hosts'][host['name']] if isinstance(s['hosts'][host['name']], dict) else s)['url'],
                  bearerTokenEnvVar=s['bearerTokenEnvVar'],
                  envFile=s.get('envFile', '~/.config/' + name + '/mcp.env'),
-                 enabled=s['hosts'][host['name']] is not False)
+                 enabled=s['hosts'][host['name']] is not False,
+                 **({'description': s['description']} if 'description' in s else {}))
             for name, s in servers.items() if host['name'] in s['hosts']]

@@ -86,7 +86,9 @@ function mcpEntry(path, os, server, pi) {
   if (!/^[A-Za-z0-9_-]+$/.test(server.name)) throw new Error("invalid MCP server name: " + server.name);
   const command = [quote(process.execPath), quote(path.join(loadoutDir(path, os), "mcp-env.cjs")), "--mcp-header",
     pi ? "pi" : "claude", server.name].join(" ");
-  return pi ? { url: server.url, headers: { Authorization: "!" + command }, enabled: server.enabled, exposure: "codemode" }
+  // Pi alone gets the pinned description, the server's line in its system prompt.
+  return pi ? { ...(server.description ? { description: server.description } : {}), url: server.url,
+    headers: { Authorization: "!" + command }, enabled: server.enabled, exposure: "codemode" }
     : { type: "http", url: server.url, headersHelper: command };
 }
 

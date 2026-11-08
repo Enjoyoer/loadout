@@ -66,7 +66,8 @@ try {
   const launcher = path.join(envRoot, 'mcp-env.cjs');
   // The servers the launcher reads: each one's owner-only env file, for Codex at launch and for Claude Code and Pi
   // when they connect.
-  const envServers = servers.filter(s => s.envFile);
+  // The launcher needs no description, so mcp-env.json leaves it out.
+  const envServers = servers.filter(s => s.envFile).map(({ description, ...s }) => s);
   // Per provider launch settings, read by the launcher for the harness it names: token files, leading args, and for
   // Codex mcpTokens, the MCP bearers in its environment.
   const launch = { ...(p.launch || {}) };

@@ -3,6 +3,7 @@
     "gmail": {
       "url": "http://192.0.2.10:8770/mcp",
       "bearerTokenEnvVar": "GMAIL_MCP_TOKEN",
+      "description": "Search and read mail, read-only.",
       "hosts": { "laptop": { "url": "http://127.0.0.1:8770/mcp" }, "desktop": true }
     }
   }
