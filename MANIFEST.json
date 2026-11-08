@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "22cb37042b1678b5142c88ce53075ef9d2a458d7",
+  "source_commit": "f1bbdfe7ff882c120b8365472e50a6837b0b329c",
   "skill_count": 25,
   "file_count": 143,
   "files": [
@@ -1271,8 +1271,8 @@
     {
       "path": "plugins/merged-worker-archiver/README.md",
       "plugin": "merged-worker-archiver",
-      "bytes": 63610,
-      "sha256": "ed338a5cddf6ce8b3be0a5f0714347aebd4f8379dac52c59958bd8b04117ca62"
+      "bytes": 64747,
+      "sha256": "9ea9f183cb05a8c02306444d05f750b5e161e09e45cb9660c46bc7e7f7752af4"
     },
     {
       "path": "plugins/merged-worker-archiver/index.server.ts",
@@ -1284,13 +1284,13 @@
       "path": "plugins/merged-worker-archiver/package-lock.json",
       "plugin": "merged-worker-archiver",
       "bytes": 23597,
-      "sha256": "f699a96c6f282dfe3318b5f601ba4448d6f6384a8bb13d5c87d462b2d1e8a4d1"
+      "sha256": "b05232c10192cf9862089253d16269fe18e8656ede87fff3ffdb28224fa1547f"
     },
     {
       "path": "plugins/merged-worker-archiver/package.json",
       "plugin": "merged-worker-archiver",
       "bytes": 1132,
-      "sha256": "7e911c05f9097ec4fd6b6650b1b3eab6d020046c5ffcacfa8201c1fbd3a49a60"
+      "sha256": "d7d2462bc5bb15aec5726cee619ed820ec17f6c00afc8393751ad304db12e78e"
     },
     {
       "path": "plugins/merged-worker-archiver/paseo-plugin.json",
@@ -1313,8 +1313,8 @@
     {
       "path": "plugins/merged-worker-archiver/server/config.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 4488,
-      "sha256": "d5ee13ab7e2015aad17cbb7894d809c79226a6e1c15b14c3c87854465ff3292c"
+      "bytes": 4824,
+      "sha256": "5640db48ac3f43896e58d396ba230b6afc24710b6dba373fb3fe0b4bc74c691b"
     },
     {
       "path": "plugins/merged-worker-archiver/server/daemon.ts",
@@ -1373,14 +1373,14 @@
     {
       "path": "plugins/merged-worker-archiver/server/stale.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 15366,
-      "sha256": "70780eef84d1df2c3561e26ab971a7e5de3d6a74cacad4de8379b1d22cd65653"
+      "bytes": 15426,
+      "sha256": "29c3f9ac53a909cc78f4bc0e109aad5e48d04c7dfbafdb7b18417beb9df2118c"
     },
     {
       "path": "plugins/merged-worker-archiver/server/sweeper.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 71289,
-      "sha256": "0b1d8fdf511e9000be0e060d62e6b6bd20f2944f6f8f5b25d2ce2c85e853f217"
+      "bytes": 71517,
+      "sha256": "31d00e9ea98a9664ddc0a985d176c87a06ba9a5316b8852548fe670b4d720157"
     },
     {
       "path": "plugins/merged-worker-archiver/server/types.ts",
@@ -1409,8 +1409,8 @@
     {
       "path": "plugins/merged-worker-archiver/test/config.test.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 2962,
-      "sha256": "6f69bf6aa3e78917fd4a6abca96d7d9f953abc5f06026ece30dc45a55caabe62"
+      "bytes": 3037,
+      "sha256": "fdb6da3e1c272912589a787f27e9493239f4136c37de808f622d0600812f1139"
     },
     {
       "path": "plugins/merged-worker-archiver/test/daemon.test.ts",
@@ -1451,8 +1451,8 @@
     {
       "path": "plugins/merged-worker-archiver/test/sweeper.test.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 24265,
-      "sha256": "cddd03e26acb1f72acf16c8bff9c14b587ee0e2a0c73c9a03dace92226e17f9e"
+      "bytes": 28576,
+      "sha256": "daf8b5dfcacb320e8b94fcf2a6f525f6669821fa61010f92a6fae410397bea92"
     },
     {
       "path": "plugins/merged-worker-archiver/tsconfig.json",

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { defaultConfig } from "../server/config.ts";
 import { Sweeper, type ArchiverApi } from "../server/sweeper.ts";
+import type { FlagEntry, FlagStateStore } from "../server/stale.ts";
 import type { AgentView, WorkspaceView } from "../server/types.ts";
 import { agent, fakeFs, fakePeers, fakeRunner, LONG_AGO, memoryNotifyStore, noResumeState, NOW, scenario, workspace, type PeerFixtureAgent } from "./fakes.ts";
 
@@ -462,4 +463,84 @@ it("peer routing: an unreachable peer is asked once, logged, and leaves this dae
   assert.equal(unrouted?.workspaceId, "wks_remote");
   assert.match(unrouted?.owner, /owner unknown on peers: no role=pm agent on the peers that answered, and unreachable: ssh:\/\/peer-down$/);
   assert.deepEqual(unrouted?.peerErrors, { "ssh://peer-down": peerErrors[0]!.error });
+});
+
+it("staleArchiveAll: an unrouted stale agent is archived only while armed; staleExclude (label key), noarchive and PMs still win; the cap holds", async () => {
+  const page = <T>(entries: T[]) => ({ entries, pageInfo: { nextCursor: null, hasMore: false } });
+  const workspaces = [workspace({ id: "wks_home", name: "home", workspaceKind: "local_checkout", workspaceDirectory: "/home" })];
+  // No parent and no project label anywhere: no item has a PM to route to.
+  const agents = [
+    agent({ id: "pm-0001", workspaceId: "wks_home", title: "Lead", labels: { role: "pm" } }),
+    agent({ id: "worker-a", workspaceId: "wks_home", labels: { role: "worker" } }),
+    agent({ id: "worker-b", workspaceId: "wks_home", labels: { role: "worker" } }),
+    agent({ id: "worker-keep", workspaceId: "wks_home", labels: { role: "worker", keep: "yes" } }),
+    agent({ id: "worker-noarchive", workspaceId: "wks_home", labels: { role: "worker", noarchive: "1" } }),
+  ];
+  const archived: string[] = [];
+  const api: ArchiverApi = {
+    workspaces: { list: async () => page(workspaces), archive: async () => ({ archivedAt: null, error: "not expected" }) },
+    agents: {
+      list: async () => page(agents.filter((entry) => !archived.includes(entry.id)).map((entry) => ({ agent: entry }))),
+      get: async (agentId) => agents.find((entry) => entry.id === agentId) ?? null,
+      archive: async (agentId) => {
+        archived.push(agentId);
+      },
+    },
+    projects: { list: async () => ({ projects: [] }) },
+    terminals: { list: async () => ({ entries: [] }) },
+    schedules: { list: async () => [] },
+    supportsBackgroundWorkspaces: () => false,
+  };
+  let flags = new Map<string, FlagEntry>();
+  const flagStore: FlagStateStore = {
+    read: async () => new Map(flags),
+    write: async (entries) => {
+      flags = new Map(entries);
+    },
+  };
+  const s = scenario();
+  const fs = fakeFs(s);
+  const lines: string[] = [];
+  const sweeper = new Sweeper({
+    resumeState: noResumeState,
+    acquireApi: async () => ({ api, release: async () => undefined }),
+    log: (line) => lines.push(line),
+    fs,
+    merge: { run: fakeRunner(s), fs },
+    resolveCommonDir: async () => null,
+    now: () => NOW,
+    notifyStore: memoryNotifyStore(),
+    flagStore,
+  });
+  const sweep = async (overrides: Record<string, unknown>) => {
+    lines.length = 0;
+    const config = { useGh: false, staleSweep: true, staleArchiveAll: true, staleAgentMinutes: 60, staleExclude: ["keep"], maxArchivesPerSweep: 1, ...overrides };
+    await sweeper.sweep(defaultConfig(config), { trigger: "test" });
+    return lines
+      .filter((line) => line.startsWith("[merged-worker-archiver] {"))
+      .map((line) => JSON.parse(line.replace(/^\[merged-worker-archiver\] /, "")))
+      .filter((entry) => entry.kind === "agent");
+  };
+
+  // Not armed: would-archive (reason staleArchiveAll), still logged stale-unrouted, nothing archived.
+  let entries = await sweep({});
+  assert.deepEqual(entries.map((entry) => `${entry.action} ${entry.id}`), ["would-archive worker-a", "stale-unrouted worker-a", "would-archive worker-b", "stale-unrouted worker-b"]);
+  assert.equal(entries[0].reason, "staleArchiveAll");
+  assert.deepEqual(archived, []);
+
+  // Armed: archived with reason staleArchiveAll and no owner, one per sweep (the cap); the PM, the excluded and the noarchive agent never.
+  entries = await sweep({ armed: true });
+  assert.deepEqual(entries.map((entry) => `${entry.action} ${entry.id}`), ["stale-archived worker-a", "stale-deferred worker-b"]);
+  assert.equal(entries[0].reason, "staleArchiveAll");
+  assert.equal("owner" in entries[0], false);
+  entries = await sweep({ armed: true });
+  assert.deepEqual(entries.map((entry) => `${entry.action} ${entry.id}`), ["stale-archived worker-b"]);
+  assert.deepEqual(archived, ["worker-a", "worker-b"]);
+
+  // Without staleArchiveAll an unrouted item is never archived.
+  agents.push(agent({ id: "worker-c", workspaceId: "wks_home", labels: { role: "worker" } }));
+  flags.clear();
+  entries = await sweep({ armed: true, staleArchiveAll: false });
+  assert.deepEqual(entries.map((entry) => `${entry.action} ${entry.id}`), ["stale-unrouted worker-c"]);
+  assert.deepEqual(archived, ["worker-a", "worker-b"]);
 });

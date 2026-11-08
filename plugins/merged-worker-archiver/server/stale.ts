@@ -16,7 +16,8 @@ import { isAbsent } from "./vendor/fs-probe.ts";
 //
 // One message per PM, at most one per FLAG_INTERVAL_MS, each item listed at most once per FLAG_INTERVAL_MS; workspace
 // cleanup's kept-worktree report goes into the same message, so this daemon sends a PM at most one a day. Items whose PM
-// or project opted in (staleArchivePms, staleArchiveProjects) are archived instead when armed and every gate passes.
+// or project opted in (staleArchivePms, staleArchiveProjects), or every item with staleArchiveAll (unrouted ones too), are
+// archived instead when armed and every gate passes.
 // Pinned workspaces, `noarchive` labels, staleExclude entries and PMs are never flagged or archived, and an agent owed a
 // usage-limit-auto-resume resume is never archived. Only this daemon's agents and workspaces are swept; peer daemons are
 // only asked for the PM, as in workspace cleanup.

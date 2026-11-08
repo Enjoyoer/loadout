@@ -21,7 +21,8 @@ for 3 days and its worktree or scratch workspaces with no live agent, in one mes
 that also carries that day's kept-worktree report, and archives them instead for PMs or projects
 that opt in (see Stale sweep). Since 0.6.1 no workspace is archived while one of its live
 agents has an active or paused heartbeat or is owed a usage-limit-auto-resume resume (see Skip
-rules, `heartbeat` and `auto-resume`).
+rules, `heartbeat` and `auto-resume`). Since 0.7.0 `staleArchiveAll` (off by default) opts every
+stale item in to that archive, including items with no PM to tell.
 
 ## What counts as merged
 
@@ -428,7 +429,8 @@ name. With none here, the `peerHosts` daemons are asked as for workspace cleanup
 parent not live here, then project PMs), except that a parent found on a peer that is not a PM is
 never told: it is climbed there, up its own parent labels, to the first PM, and with none above it
 the project names met on the way are matched to a peer's `role=pm` agent. With none or several,
-the item is logged `stale-unrouted` once a day and nothing is sent.
+the item is logged `stale-unrouted` once a day and nothing is sent, unless `staleArchiveAll` is on
+(below): then, while `armed` is true, it is archived once every gate passes.
 
 **Messages.** Each PM gets one message listing its items (at most 50): name and id, status or
 kind, where, branch, idle time and, when known, why it cannot be archived now
@@ -455,7 +457,12 @@ or removed.
 **Opt-in archive.** Items whose PM is listed in `staleArchivePms` (agent ids), or whose project
 is listed in `staleArchiveProjects` (names, case-insensitive), are archived instead of flagged,
 but only while `armed` is true; with `armed` off they are flagged and `would-archive` is logged.
-Every gate, and `staleExclude`, pinned and `noarchive`, is re-checked on a fresh read right
+`staleArchiveAll` (default false) opts in every stale item the same way, so new projects need no
+listing, and also covers items with no PM to tell (no routable PM and no project label), which
+would otherwise be logged `stale-unrouted` every day. It is one switch: there is no `*` project
+match. An item archived only because of it logs `stale-archived` (or `would-archive` with `armed`
+off) with `reason` `staleArchiveAll`; an unrouted one has no `owner`, and nobody is told. With
+`armed` off nothing is archived: items are flagged, or logged `stale-unrouted`, as before. Every gate, and `staleExclude`, pinned and `noarchive`, is re-checked on a fresh read right
 before the archive:
 
 - An agent must be idle or closed, with no pending permission, no attention other than
@@ -478,7 +485,7 @@ before the archive:
 
 Opt-in archives log `stale-archived` and take at most `maxArchivesPerSweep` per sweep (counted
 apart from the worker pass; the rest log `stale-deferred`). An item that fails a gate is flagged
-with the reason (`stale-archive-skipped`).
+with the reason (`stale-archive-skipped`), or, when unrouted, logged `stale-unrouted` with it.
 
 **Hosts.** Only this daemon's agents and workspaces are swept, by its own plugin and settings.
 Peer daemons are only asked who the PM is, so a host where the plugin or `staleSweep` is off is
@@ -607,6 +614,7 @@ every sweep, so edits take effect on the next sweep without a reload.
 | `staleAgentMinutes` | `4320` | Idle time before the stale sweep flags a non-PM agent (1 to 525600; 3 days by default). Workspaces use `staleWorkspaceMinutes`. |
 | `staleArchivePms` | `[]` | PM agent ids whose stale items are archived instead of flagged, while `armed` and every gate passes (at most 100). |
 | `staleArchiveProjects` | `[]` | Project names (case-insensitive) whose stale items are archived instead of flagged, likewise (at most 100). |
+| `staleArchiveAll` | `false` | `true` opts every stale item in to that archive, including items with no PM to route to, with the same `armed` switch, gates and re-check. |
 | `staleExclude` | `[]` | Never flagged or archived by the stale sweep: agent ids, workspace ids, or labels as `key` or `key=value`, for example `keep=1` (at most 200, non-empty). |
 
 ## Logs
@@ -820,7 +828,8 @@ Disarm by setting `armed` to `false` (takes effect at the next evaluation) or
 The stale sweep is its own switch: preview it with `npm run dry-run -- --stale --config
 <settings.json>`, then add `"staleSweep":true` to `values`. It flags only; add PM ids to
 `staleArchivePms` or project names to `staleArchiveProjects` (with `armed` on) to archive their
-items instead, and `staleExclude` entries such as `"keep=1"` for what must stay.
+items instead, or set `"staleArchiveAll":true` to archive every stale item that passes the gates,
+unrouted ones included, and `staleExclude` entries such as `"keep=1"` for what must stay.
 
 Workspace cleanup is a separate, later step: review its `would-archive` and `would-notify`
 lines (for example `npm run dry-run -- --cleanup-only --config <settings.json>`), then add
