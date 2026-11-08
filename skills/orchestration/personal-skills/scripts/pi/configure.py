@@ -135,6 +135,7 @@ def build(spec, root):
         "headers": headers, "api": "openai-responses", "models": models}}}
     model["providers"].update(direct_providers(spec, helper))
     mcp = {"autoEnableCodemode": True, "mcpServers": {"paseo": {
+           "description": "Paseo agents, workspaces, schedules and browser tools, reached through codemode.",
            "command": spec.get("python", sys.executable), "args": [str(root / "mcp_bridge.py")], "exposure": "codemode",
            "env": {"LOADOUT_PI_MCP_URL": "${LOADOUT_PI_MCP_URL}", "LOADOUT_PI_PARENT_MODEL": "${LOADOUT_PI_PARENT_MODEL}", "LOADOUT_PI_PARENT_THINKING": "${LOADOUT_PI_PARENT_THINKING}"}}}}
     if "gmail" in spec: mcp["mcpServers"]["gmail"] = gmail_server(spec["gmail"])
