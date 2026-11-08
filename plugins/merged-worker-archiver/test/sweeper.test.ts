@@ -544,3 +544,72 @@ it("staleArchiveAll: an unrouted stale agent is archived only while armed; stale
   assert.deepEqual(entries.map((entry) => `${entry.action} ${entry.id}`), ["stale-unrouted worker-c"]);
   assert.deepEqual(archived, ["worker-a", "worker-b"]);
 });
+
+it("stale pass back-off: a stale archive that keeps failing sits out its back-off, and an item deferred at the cap is still logged, then archived", async () => {
+  const page = <T>(entries: T[]) => ({ entries, pageInfo: { nextCursor: null, hasMore: false } });
+  const workspaces = [workspace({ id: "wks_home", name: "home", workspaceKind: "local_checkout", workspaceDirectory: "/home" })];
+  const agents = [
+    agent({ id: "worker-a", workspaceId: "wks_home", labels: { role: "worker" } }),
+    agent({ id: "worker-b", workspaceId: "wks_home", labels: { role: "worker" } }),
+  ];
+  const archived: string[] = [];
+  const api: ArchiverApi = {
+    workspaces: { list: async () => page(workspaces), archive: async () => ({ archivedAt: null, error: "not expected" }) },
+    agents: {
+      list: async () => page(agents.filter((entry) => !archived.includes(entry.id)).map((entry) => ({ agent: entry }))),
+      get: async (agentId) => agents.find((entry) => entry.id === agentId) ?? null,
+      archive: async (agentId) => {
+        if (agentId === "worker-a") throw new Error("archive keeps failing");
+        archived.push(agentId);
+      },
+    },
+    projects: { list: async () => ({ projects: [] }) },
+    terminals: { list: async () => ({ entries: [] }) },
+    schedules: { list: async () => [] },
+    supportsBackgroundWorkspaces: () => false,
+  };
+  let flags = new Map<string, FlagEntry>();
+  const flagStore: FlagStateStore = {
+    read: async () => new Map(flags),
+    write: async (entries) => {
+      flags = new Map(entries);
+    },
+  };
+  const s = scenario();
+  const fs = fakeFs(s);
+  const lines: string[] = [];
+  const sweeper = new Sweeper({
+    resumeState: noResumeState,
+    acquireApi: async () => ({ api, release: async () => undefined }),
+    log: (line) => lines.push(line),
+    fs,
+    merge: { run: fakeRunner(s), fs },
+    resolveCommonDir: async () => null,
+    now: () => NOW,
+    notifyStore: memoryNotifyStore(),
+    flagStore,
+  });
+  const actions: string[][] = [];
+  for (let sweep = 0; sweep < 5; sweep += 1) {
+    lines.length = 0;
+    await sweeper.sweep(defaultConfig({ useGh: false, staleSweep: true, staleArchiveAll: true, armed: true, staleAgentMinutes: 60, maxArchivesPerSweep: 1 }), { trigger: "test" });
+    actions.push(
+      lines
+        .filter((line) => line.startsWith("[merged-worker-archiver] {"))
+        .map((line) => JSON.parse(line.replace(/^\[merged-worker-archiver\] /, "")))
+        .filter((entry) => entry.kind === "agent")
+        .map((entry) => `${entry.action} ${entry.id}`),
+    );
+  }
+  assert.deepEqual(actions, [
+    // worker-a fails (back-off 1 sweep); worker-b is past the cap and is logged unrouted, not left silent.
+    ["stale-archive-skipped worker-a", "stale-unrouted worker-a", "stale-deferred worker-b", "stale-unrouted worker-b"],
+    // worker-a sits out and takes no slot, so worker-b gets it.
+    ["stale-backoff worker-a", "stale-archived worker-b"],
+    // worker-a is retried, fails again (back-off 2 sweeps), and sits out the next two.
+    ["stale-archive-skipped worker-a"],
+    ["stale-backoff worker-a"],
+    ["stale-backoff worker-a"],
+  ]);
+  assert.deepEqual(archived, ["worker-b"]);
+});

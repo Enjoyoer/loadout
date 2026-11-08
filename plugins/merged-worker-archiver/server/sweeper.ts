@@ -123,7 +123,7 @@ const PAGE_LIMIT = 200;
 const MAX_PAGES = 50;
 
 /**
- * After its Nth consecutive failed archive call a workspace sits out the next
+ * After its Nth consecutive failed archive call a workspace (or, in the stale pass, a stale item) sits out the next
  * 2^(N-1) sweeps that find it eligible (1, 2, 4, then at most 8), so it stops taking
  * cap slots from the candidates behind it. Kept in memory only; it is always retried.
  */
@@ -532,6 +532,8 @@ export class Sweeper {
   private running: Promise<SweepResult> | null = null;
   private readonly deps: SweeperDeps;
   private readonly backoffs = new Map<string, Backoff>();
+  /** The stale pass's own back-offs, by itemKey: a stale archive that failed takes no slot until its back-off ends. */
+  private readonly staleBackoffs = new Map<string, Backoff>();
   /** Workspaces an armed sweep deferred at the cap, with the number of the sweep that first deferred them. */
   private readonly waitingSince = new Map<string, number>();
   private sweepCount = 0;
@@ -540,11 +542,11 @@ export class Sweeper {
     this.deps = deps;
   }
 
-  private noteArchiveFailure(workspaceId: string): Backoff {
-    const failures = (this.backoffs.get(workspaceId)?.failures ?? 0) + 1;
+  private noteArchiveFailure(key: string, backoffs: Map<string, Backoff> = this.backoffs): Backoff {
+    const failures = (backoffs.get(key)?.failures ?? 0) + 1;
     const sweeps = 2 ** Math.min(failures - 1, MAX_BACKOFF_EXPONENT);
     const backoff = { failures, sweeps, skipsLeft: sweeps };
-    this.backoffs.set(workspaceId, backoff);
+    backoffs.set(key, backoff);
     return backoff;
   }
 
@@ -1053,6 +1055,9 @@ export class Sweeper {
       // Opt-in archive, else flag.
       const optInProjects = new Set(config.staleArchiveProjects.map((name) => name.toLowerCase()));
       let archiveSlots = config.maxArchivesPerSweep;
+      // The stale pass runs on full sweeps only: forget back-offs of items that are no longer stale.
+      const staleKeys = new Set(items.map(itemKey));
+      for (const key of this.staleBackoffs.keys()) if (!staleKeys.has(key)) this.staleBackoffs.delete(key);
       for (const [index, item] of items.entries()) {
         const route = routes[index]!;
         const listed = (route.owner !== null && config.staleArchivePms.includes(route.owner)) || item.projects.some((name) => optInProjects.has(name));
@@ -1071,20 +1076,31 @@ export class Sweeper {
             log(staleLine("would-archive", item, now, { ...owned, why: `armed is false; ${route.owner ? "flagged" : "logged stale-unrouted"} instead` }));
             item.blocked = "opt-in archive waits for armed";
           }
+          // A recently failed item sits out its back-off and takes no slot; it is flagged (or logged unrouted) meanwhile.
+          const backoff = item.blocked ? undefined : this.staleBackoffs.get(itemKey(item));
+          if (backoff && backoff.skipsLeft > 0) {
+            backoff.skipsLeft -= 1;
+            item.blocked = `archive back-off sweep ${backoff.sweeps - backoff.skipsLeft}/${backoff.sweeps} after ${backoff.failures} failed archive attempt(s)`;
+            log(staleLine("stale-backoff", item, now, owned));
+            bump("backoff");
+          }
+          // Past the cap the item waits for the next full sweep, and takes its normal flag or unrouted path now.
           if (!item.blocked && archiveSlots <= 0) {
             log(staleLine("stale-deferred", item, now, { ...owned, why: `maxArchivesPerSweep=${config.maxArchivesPerSweep} reached; next full sweep` }));
             bump("deferred");
-            continue;
+            item.blocked = `maxArchivesPerSweep=${config.maxArchivesPerSweep} reached; next full sweep`;
           }
           if (!item.blocked) {
             archiveSlots -= 1;
             const failure = await this.archiveStale(api, item, config, deliverySource);
             if (failure === null) {
+              this.staleBackoffs.delete(itemKey(item));
               log(staleLine("stale-archived", item, now, owned));
               bump("archived");
               continue;
             }
-            item.blocked = failure;
+            const { sweeps } = this.noteArchiveFailure(itemKey(item), this.staleBackoffs);
+            item.blocked = `${failure}; back-off ${sweeps} sweep(s)`;
             log(staleLine("stale-archive-skipped", item, now, owned));
           }
         }

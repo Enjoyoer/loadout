@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "f1bbdfe7ff882c120b8365472e50a6837b0b329c",
+  "source_commit": "6ca67bdfbe97753f5ef856c80871ec675fceb219",
   "skill_count": 25,
   "file_count": 143,
   "files": [
@@ -1271,8 +1271,8 @@
     {
       "path": "plugins/merged-worker-archiver/README.md",
       "plugin": "merged-worker-archiver",
-      "bytes": 64747,
-      "sha256": "9ea9f183cb05a8c02306444d05f750b5e161e09e45cb9660c46bc7e7f7752af4"
+      "bytes": 65669,
+      "sha256": "1ca12feabb44f484809e9aad7a4e6fb560075b2e32db0e7a98a54a4cfb49f981"
     },
     {
       "path": "plugins/merged-worker-archiver/index.server.ts",
@@ -1284,13 +1284,13 @@
       "path": "plugins/merged-worker-archiver/package-lock.json",
       "plugin": "merged-worker-archiver",
       "bytes": 23597,
-      "sha256": "b05232c10192cf9862089253d16269fe18e8656ede87fff3ffdb28224fa1547f"
+      "sha256": "da73054430860fa2b8504b8a4029d355e4db6128af24abe519737275d29acfb5"
     },
     {
       "path": "plugins/merged-worker-archiver/package.json",
       "plugin": "merged-worker-archiver",
       "bytes": 1132,
-      "sha256": "d7d2462bc5bb15aec5726cee619ed820ec17f6c00afc8393751ad304db12e78e"
+      "sha256": "9e54093c5f681bf64d8ea421965bd0f9d5401a0cbb0209a6c3af8b3681ffa970"
     },
     {
       "path": "plugins/merged-worker-archiver/paseo-plugin.json",
@@ -1379,8 +1379,8 @@
     {
       "path": "plugins/merged-worker-archiver/server/sweeper.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 71517,
-      "sha256": "31d00e9ea98a9664ddc0a985d176c87a06ba9a5316b8852548fe670b4d720157"
+      "bytes": 72959,
+      "sha256": "ade833bf463e28e8ab50c7736eb55dabde96f59299c9fe7d1c2ea4129120ece1"
     },
     {
       "path": "plugins/merged-worker-archiver/server/types.ts",
@@ -1451,8 +1451,8 @@
     {
       "path": "plugins/merged-worker-archiver/test/sweeper.test.ts",
       "plugin": "merged-worker-archiver",
-      "bytes": 28576,
-      "sha256": "daf8b5dfcacb320e8b94fcf2a6f525f6669821fa61010f92a6fae410397bea92"
+      "bytes": 31762,
+      "sha256": "cd0535281e98c0cbbf66eb5e816e41842d653f9141d731579bece8d8ae4ad69f"
     },
     {
       "path": "plugins/merged-worker-archiver/tsconfig.json",
