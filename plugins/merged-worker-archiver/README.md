@@ -22,7 +22,9 @@ that also carries that day's kept-worktree report, and archives them instead for
 that opt in (see Stale sweep). Since 0.6.1 no workspace is archived while one of its live
 agents has an active or paused heartbeat or is owed a usage-limit-auto-resume resume (see Skip
 rules, `heartbeat` and `auto-resume`). Since 0.7.0 `staleArchiveAll` (off by default) opts every
-stale item in to that archive, including items with no PM to tell.
+stale item in to that archive, including items with no PM to tell. Since 0.7.1 a stale archive
+that keeps failing backs off instead of taking a slot every sweep, and an item past the cap is
+still flagged or logged unrouted.
 
 ## What counts as merged
 
@@ -484,15 +486,24 @@ before the archive:
   the reason, never archived. `armWorkspaceCleanup` is not needed here.
 
 Opt-in archives log `stale-archived` and take at most `maxArchivesPerSweep` per sweep (counted
-apart from the worker pass; the rest log `stale-deferred`). An item that fails a gate is flagged
-with the reason (`stale-archive-skipped`), or, when unrouted, logged `stale-unrouted` with it.
+apart from the worker pass). The rest log `stale-deferred`, wait for the next full sweep, and
+meanwhile take their normal path: flagged to their PM, or logged `stale-unrouted`, with
+`maxArchivesPerSweep=N reached` as the reason. An item that fails a gate is flagged with the
+reason (`stale-archive-skipped`), or, when unrouted, logged `stale-unrouted` with it.
+
+A stale archive that fails (the fresh re-check refused it, or the archive call errored or threw)
+backs off as in Back-off after a failed archive call: it sits out the next 1, 2, 4, then at most
+8 armed sweeps that would try it, logged `stale-backoff` and flagged or logged unrouted with the
+back-off as the reason, and takes no slot, so items behind it are not starved. When the back-off
+ends it is retried; an archive clears it. Back-offs live in memory, and an item that is no longer
+stale is forgotten. Previews and sweeps with `armed` off do not count toward it.
 
 **Hosts.** Only this daemon's agents and workspaces are swept, by its own plugin and settings.
 Peer daemons are only asked who the PM is, so a host where the plugin or `staleSweep` is off is
 never swept.
 
 `sweep-done` adds `stale` with counts (`stale`, `flagged`, `messages`, `held`, `deferred`,
-`archived`, `unrouted`, `excluded`, `kept`, `pm`, and for kept worktrees `reported`,
+`archived`, `backoff`, `unrouted`, `excluded`, `kept`, `pm`, and for kept worktrees `reported`,
 `reportDeferred`, `reportUnrouted`, `wouldNotify`, ...); its `reports` lists the kept worktrees
 reported.
 
@@ -634,7 +645,7 @@ Workspace cleanup lines also carry `cleanup` and `lastActivityAt`, and add the a
 fails logs `notify-peer-error` with `peer`, `query` (`connect`, `parent`, `list`, `state` or
 `send`) and `error`. The stale sweep logs `stale-flagged`, `stale-flag-deferred`,
 `stale-flag-failed`, `stale-unrouted`, `stale-archived`, `stale-archive-skipped`,
-`stale-deferred`, and in a preview `would-flag` and `would-archive`, each with `kind` (`agent` or
+`stale-backoff`, `stale-deferred`, and in a preview `would-flag` and `would-archive`, each with `kind` (`agent` or
 `workspace`), `id`, `name`, `where`, `status`, `idle`, `owner` and, when known, `blocked`; it logs
 `stale-skipped` when it cannot run. Each
 evaluation ends with a `sweep-done` summary; failures log `sweep-aborted`. Non-worktree
