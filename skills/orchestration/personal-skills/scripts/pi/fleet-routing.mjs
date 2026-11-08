@@ -109,7 +109,8 @@ async function agentLabels() {
 }
 // Hash of the file this process actually loaded, so deployment and loaded version can be told apart.
 export const EXTENSION_SHA256 = (() => { try { return createHash('sha256').update(readFileSync(fileURLToPath(import.meta.url))).digest('hex'); } catch { return null; } })();
-export const GUARD_SHA256 = (() => { try { return createHash('sha256').update(readFileSync(fileURLToPath(new URL('./service-guard.mjs', import.meta.url)))).digest('hex'); } catch { return null; } })();
+// The guard module was imported above, so it is readable; a read failure here should surface.
+export const GUARD_SHA256 = createHash('sha256').update(readFileSync(fileURLToPath(new URL('./service-guard.mjs', import.meta.url)))).digest('hex');
 // Shell tools the service guard checks. Any other tool whose input carries a string `command` is checked as POSIX.
 const GUARD_SHELLS = { bash: 'posix', powershell: 'powershell' };
 // Evidence keeps the start of a refused command with assignment values masked, so no env value is recorded.

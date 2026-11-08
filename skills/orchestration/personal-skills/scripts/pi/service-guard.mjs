@@ -9,7 +9,7 @@
 // powershell call, nested codemode calls included, through tool_call first, and a handler error blocks the call.
 // Variables, generated names, interpreters other than a shell (python, node) and binaries it never sees still pass.
 import { execFile } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 export const GUARD_RULE = 'shared fleet service: use one detached nohup script that changes, restarts, health-checks and rolls back';
@@ -19,6 +19,8 @@ export const DEFAULT_PROTECTED = ['Paseo Daemon', 'Paseo Supervisor', 'paseo-dae
 const SCRIPT_CAP = 256 * 1024;
 const MAX_DEPTH = 3;
 const norm = value => String(value).toLowerCase().replace(/[\s_]+/g, '-');
+// A pkill pattern as a case-insensitive regex, or null when it is not a valid one (then it is matched as text).
+const regex = pattern => { let re = null; try { re = new RegExp(pattern, 'i'); } catch { re = null; } return re; };
 const base = word => word.split(/[\\/]/).pop().replace(/\.exe$/, '');
 
 /** runtime.json's guard.protectedServices plus the defaults; a missing or invalid value keeps the defaults and warns. */
@@ -61,11 +63,13 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
   const patternHit = pattern => {
     const hit = targetHit(pattern);
     if (hit || pattern.length < 3) return hit;
-    try { const re = new RegExp(pattern, 'i'); return names.find(({ entry }) => re.test(entry))?.entry; } catch { return undefined; }
+    const re = regex(pattern);
+    return re ? names.find(({ entry }) => re.test(entry))?.entry : undefined;
   };
   const refuse = (what, entry) => ({ what, entry });
   let processes;
-  const running = async () => processes ??= (async () => { try { return await listProcesses(); } catch { return null; } })();
+  // The process list for pkill and killall: one read per checked command; a failed read refuses the call.
+  const running = () => processes ??= Promise.resolve().then(listProcesses);
 
   // Findings for one segment's words (anywhere in the segment, so wrappers such as sudo, env, nohup, xargs, eval
   // and an echo of the command are all seen through).
@@ -160,12 +164,14 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     }
     for (const pattern of patterns) { const hit = patternHit(pattern); if (hit) return refuse(`${cmd} ${pattern}`, hit); }
     if (!patterns.length) { const hit = textHit(whole); return hit ? refuse(`${cmd} of a computed target`, hit) : null; }
-    const list = await running();
+    let list;
+    try { list = await running(); }
+    catch { return refuse(`${cmd} ${patterns.join(' ')}`, 'a process list that could not be read in time'); }
     for (const pattern of patterns) {
-      let re; try { re = new RegExp(pattern, 'i'); } catch { re = null; }
+      const re = regex(pattern);
       const match = line => (cmd === 'killall' ? line.split(/\s+/).some(part => base(part).toLowerCase() === pattern.toLowerCase()) : false)
         || (re ? re.test(line) : line.toLowerCase().includes(pattern.toLowerCase()));
-      for (const proc of list ?? []) { const hit = match(proc.command) && textHit(proc.command); if (hit) return refuse(`${cmd} ${pattern}`, hit); }
+      for (const proc of list) { const hit = match(proc.command) && textHit(proc.command); if (hit) return refuse(`${cmd} ${pattern}`, hit); }
     }
     return null;
   }
@@ -265,9 +271,12 @@ async function defaultReadScript(path) {
   try {
     const info = statSync(path);
     if (!info.isFile()) return null;
-    const handle = readFileSync(path);
-    return handle.subarray(0, SCRIPT_CAP).toString('utf8');
-  } catch { return null; }
+    // Only the first SCRIPT_CAP bytes are read and checked.
+    const buffer = Buffer.alloc(Math.min(info.size, SCRIPT_CAP));
+    const fd = openSync(path, 'r');
+    try { readSync(fd, buffer, 0, buffer.length, 0); } finally { closeSync(fd); }
+    return buffer.toString('utf8');
+  } catch { return null; } // probe-ok: a script that cannot be read is skipped by design, so only the command line itself can refuse; expires 2027-05-08
 }
 const run = (file, args, timeout) => new Promise((done, fail) => {
   execFile(file, args, { timeout, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
@@ -275,14 +284,14 @@ const run = (file, args, timeout) => new Promise((done, fail) => {
     else done({ code: error ? error.code : 0, stdout: String(stdout) });
   });
 });
-/** The command line of one process, '' when there is none; throws when it cannot be read in time. */
+/** The name and command line of one process (ps comm and args), '' when there is none; throws when it cannot be read in time. */
 async function defaultResolvePid(pid) {
   if (process.platform === 'win32') {
     const { stdout } = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
       `$p=Get-CimInstance Win32_Process -Filter 'ProcessId=${Number(pid)}'; if($p){$p.Name+' '+$p.CommandLine}`], 5000);
     return stdout.trim();
   }
-  const { code, stdout } = await run('ps', ['-ww', '-o', 'command=', '-p', String(Number(pid))], 3000);
+  const { code, stdout } = await run('ps', ['-ww', '-o', 'comm=,args=', '-p', String(Number(pid))], 3000);
   return code === 0 ? stdout.trim() : '';
 }
 async function defaultListProcesses() {
@@ -291,7 +300,7 @@ async function defaultListProcesses() {
       "Get-CimInstance Win32_Process | ForEach-Object { [string]$_.ProcessId + ' ' + $_.Name + ' ' + $_.CommandLine }"], 8000);
     return stdout.split(/\r?\n/).filter(Boolean).map(line => ({ pid: line.split(' ')[0], command: line.slice(line.indexOf(' ') + 1) }));
   }
-  const { stdout } = await run('ps', ['-axww', '-o', 'pid=,command='], 5000);
+  const { stdout } = await run('ps', ['-axww', '-o', 'pid=,comm=,args='], 5000);
   return stdout.split('\n').filter(Boolean).map(line => { const m = /^\s*(\d+)\s+(.*)$/.exec(line); return m ? { pid: m[1], command: m[2] } : null; }).filter(Boolean);
 }
 
