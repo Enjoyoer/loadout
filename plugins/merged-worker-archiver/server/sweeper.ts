@@ -982,7 +982,8 @@ export class Sweeper {
    * The stale sweep (setting staleSweep; see stale.ts), on a fresh read. Each stale item goes to the PM that owns it, one
    * message per PM and at most one a day, each item listed at most once a day. Workspace cleanup's kept worktrees
    * (`kept`, its notify decisions) go into that same message, re-checked here and each reported once, so this daemon
-   * sends a PM at most one message a day. An item whose PM or project opted in is archived instead when armed and every
+   * sends a PM at most one message a day. An item whose PM or project opted in (or every item, with staleArchiveAll,
+   * unrouted ones included) is archived instead when armed and every
    * gate passes (re-checked on a fresh read right before). `preview` (the dry-run script) sends, archives and writes
    * nothing. Returns counts for sweep-done and the kept worktrees reported.
    */
@@ -1054,9 +1055,12 @@ export class Sweeper {
       let archiveSlots = config.maxArchivesPerSweep;
       for (const [index, item] of items.entries()) {
         const route = routes[index]!;
-        const owned = route.owner ? { owner: route.owner, ...(route.host ? { host: route.host } : {}), via: route.via } : {};
-        const optIn = (route.owner !== null && config.staleArchivePms.includes(route.owner)) || item.projects.some((name) => optInProjects.has(name));
-        if (optIn) {
+        const listed = (route.owner !== null && config.staleArchivePms.includes(route.owner)) || item.projects.some((name) => optInProjects.has(name));
+        const owned = {
+          ...(route.owner ? { owner: route.owner, ...(route.host ? { host: route.host } : {}), via: route.via } : {}),
+          ...(listed ? {} : { reason: "staleArchiveAll" }),
+        };
+        if (listed || config.staleArchiveAll) {
           if (item.kind === "workspace") item.blocked = await this.workspaceArchiveBlock(item.id, state, config);
           if (!item.blocked && options.preview) {
             log(staleLine("would-archive", item, now, owned));
@@ -1064,7 +1068,7 @@ export class Sweeper {
             continue;
           }
           if (!item.blocked && config.armed !== true) {
-            log(staleLine("would-archive", item, now, { ...owned, why: "armed is false; flagged instead" }));
+            log(staleLine("would-archive", item, now, { ...owned, why: `armed is false; ${route.owner ? "flagged" : "logged stale-unrouted"} instead` }));
             item.blocked = "opt-in archive waits for armed";
           }
           if (!item.blocked && archiveSlots <= 0) {

@@ -65,6 +65,12 @@ export const ConfigSchema = z
     staleArchivePms: z.array(z.string().trim().min(1)).max(100).default([]),
     staleArchiveProjects: z.array(z.string().trim().min(1)).max(100).default([]),
     /**
+     * Opt every stale item in to archive, as if its PM and project were listed above, including items with no PM to
+     * route to. Same switch (`armed`), gates and fresh re-check; an item that fails a gate is flagged, or logged
+     * stale-unrouted, with the reason.
+     */
+    staleArchiveAll: z.boolean().default(false),
+    /**
      * Never flagged or archived by the stale sweep: agent ids, workspace ids, or labels as `key` (any value) or
      * `key=value`, for example `keep=1`.
      */

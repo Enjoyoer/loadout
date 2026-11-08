@@ -15,8 +15,9 @@ it("stale sweep: off by default, flag-only (no opt-in lists, no exclusions), 3 d
   assert.equal(config.staleSweep, false);
   assert.equal(config.staleAgentMinutes, 3 * 24 * 60);
   assert.deepEqual([config.staleArchivePms, config.staleArchiveProjects, config.staleExclude], [[], [], []]);
+  assert.equal(config.staleArchiveAll, false);
   assert.deepEqual(ConfigSchema.safeParse({ staleSweep: true, staleExclude: ["keep=1", " wks_1 "] }).data?.staleExclude, ["keep=1", "wks_1"]);
-  for (const bad of [{ staleExclude: [""] }, { staleExclude: [1] }, { staleArchivePms: "pm" }, { staleAgentMinutes: 0 }, { staleSweep: "yes" }]) {
+  for (const bad of [{ staleExclude: [""] }, { staleExclude: [1] }, { staleArchivePms: "pm" }, { staleAgentMinutes: 0 }, { staleSweep: "yes" }, { staleArchiveAll: "yes" }]) {
     assert.equal(ConfigSchema.safeParse(bad).success, false, JSON.stringify(bad));
   }
 });
