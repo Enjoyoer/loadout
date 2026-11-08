@@ -15,7 +15,7 @@ def sha(data): return hashlib.sha256(data).hexdigest()
 
 PASEO_RANGE = ((0, 15, 0), (0, 16, 0))  # >=0.15.0 <0.16.0, release versions only
 # The runtime files apply writes and rollback restores, relative to the runtime root. Rollback touches no other path.
-RUNTIME = ('runtime.json','credential.py','launch.mjs','mcp_bridge.py','fleet-routing.mjs','agent/models.json','agent/settings.json','agent/mcp.json')
+RUNTIME = ('runtime.json','credential.py','launch.mjs','mcp_bridge.py','fleet-routing.mjs','service-guard.mjs','agent/models.json','agent/settings.json','agent/mcp.json')
 
 
 def supported_paseo(version):

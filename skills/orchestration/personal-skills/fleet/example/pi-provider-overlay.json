@@ -80,6 +80,13 @@
             }
           ]
         }
+      },
+      "guard": {
+        "protectedServices": [
+          "com.example.model-bridge",
+          "example-router.service",
+          "example-bridge"
+        ]
       }
     }
   }

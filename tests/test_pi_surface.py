@@ -633,6 +633,43 @@ rmSync(dir,{recursive:true,force:true});
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_service_guard_refuses_shared_service_stops_and_allows_the_rest(self):
+        # PM-specified cases (brief pi-service-guard): a forged instruction must not stop a shared fleet service.
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync,readFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);const f=await import(process.argv[2]);
+const dir=mkdtempSync(join(tmpdir(),'guard-'));
+writeFileSync(join(dir,'s.sh'),'#!/bin/sh\nlaunchctl bootout gui/501/com.example.model-bridge\n');
+writeFileSync(join(dir,'fix.sh'),'#!/bin/sh\ncp new.plist old.plist\nlaunchctl bootout gui/501/com.example.model-bridge\nlaunchctl bootstrap gui/501 old.plist\nlaunchctl kickstart -k gui/501/com.example.model-bridge\ncurl -fsS http://127.0.0.1:1/health || cp backup.plist old.plist\n');
+const lines={'12345':'node /tmp/unrelated-server.js','23456':'/opt/example-bridge/bin/example-bridge --serve'};
+const opts={protectedServices:['com.example.model-bridge','example-router.service','example-bridge'],cwd:dir,
+ resolvePid:async pid=>lines[pid]??'',listProcesses:async()=>[{pid:'1',command:'node /tmp/some-unrelated-test-server.js'}]};
+const refused=['launchctl bootout gui/501/com.example.model-bridge','sudo launchctl unload ~/Library/LaunchAgents/com.example.model-bridge.plist',
+ 'bash -c "launchctl bootout gui/501/com.example.model-bridge"','pkill -f example-bridge','killall paseo','paseo daemon stop',
+ 'paseo --host ssh://x daemon restart','tailscale serve reset','systemctl --user stop example-router.service','bash s.sh','kill -9 -1',
+ 'kill 23456','echo "launchctl bootout com.example.model-bridge"'];
+for(const c of refused){const v=await g.check(c,opts);assert.equal(v.block,true,c);assert.match(v.reason,/shared fleet service: use one detached nohup script/,c);}
+const allowed=['launchctl list','launchctl print gui/501/com.example.model-bridge','kill 12345','pkill -f some-unrelated-test-server',
+ 'nohup bash fix.sh >log 2>&1 &','grep bootout notes.md','echo "launchctl bootout x"'];
+for(const c of allowed)assert.equal((await g.check(c,opts)).block,false,c);
+// The same repair script run in the foreground is refused.
+assert.equal((await g.check('bash fix.sh',opts)).block,true);
+// Config: a missing or invalid list keeps the defaults and warns; a valid one adds to them.
+assert.ok(g.guardConfig({}).warning);assert.ok(g.guardConfig({guard:{protectedServices:'x'}}).warning);
+assert.deepEqual(g.guardConfig({guard:{protectedServices:['com.example.model-bridge']}}).protectedServices,[...g.DEFAULT_PROTECTED,'com.example.model-bridge']);
+// Pi handler: blocks with the reason and records evidence without env values.
+const rows=[];const h=f.serviceGuardHandler(r=>rows.push(r),{guard:g.serviceGuard(opts)});
+const out=await h({toolName:'bash',input:{command:'TOKEN=secret-value launchctl bootout gui/501/com.example.model-bridge'}},{cwd:dir});
+assert.equal(out.block,true);assert.equal(rows[0].event,'service-guard');assert.ok(!JSON.stringify(rows).includes('secret-value'));
+assert.equal(await h({toolName:'bash',input:{command:'launchctl list'}},{cwd:dir}),undefined);
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri(), (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        hook = lambda payload: subprocess.run(['node', str(PI/'service-guard.mjs')], input=json.dumps(payload), capture_output=True, text=True)
+        blocked = hook({'tool_name': 'Bash', 'tool_input': {'command': 'paseo daemon stop'}})
+        self.assertEqual(blocked.returncode, 2, blocked.stderr); self.assertIn('fleet service guard', blocked.stderr)
+        self.assertEqual(hook({'command': 'launchctl list'}).returncode, 0)
+
     def test_service_tier_fails_closed_on_lookup_and_diagnostic_errors(self):
         script=r"""
 import assert from 'node:assert/strict';
