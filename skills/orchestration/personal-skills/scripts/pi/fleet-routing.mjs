@@ -82,18 +82,16 @@ export function resolveTierIntent(labels = {}) {
 }
 // catalogTiers: the model's catalog service_tiers ids, or null when the catalog could not be read.
 export function tierDecision(intent, model, catalogTiers) {
-  const zenFree = model?.provider === 'opencode' && ['space-bunny-free', 'muse-spark-1.3-contributor-free'].includes(model.id);
-  const codexRoute = !zenFree && model?.api === 'openai-responses' && !model.id.startsWith('chatgpt-web/');
+  const codexRoute = model?.api === 'openai-responses' && !model.id.startsWith('chatgpt-web/');
   // A failed or unfinished label lookup must never fall back to a stale or inherited tier.
-  // Known Zen free IDs also fail closed: a missing lookup could hide explicit Fast.
-  if (intent?.lookupFailed) return codexRoute || zenFree ? { status: 'lookup-failed', error: intent.error } : { status: 'lookup-failed-untiered' };
+  if (intent?.lookupFailed) return codexRoute ? { status: 'lookup-failed', error: intent.error } : { status: 'lookup-failed-untiered' };
   if (intent?.error) return { status: 'invalid', error: intent.error };
   // No choice (absent or inherit) is an explicit Standard where the catalog offers Fast, and inherits elsewhere.
   if (!intent || intent.tier === 'inherit') return codexRoute && catalogTiers?.includes(CATALOG_TIER.fast)
     ? { status: 'fleet-default-standard', wire: TIER_WIRE.standard, header: 'standard' }
     : { status: 'inherited', header: codexRoute ? 'inherit' : undefined };
   // A tier label left over from a GPT route must not break a later swap to an untiered route
-  // (Claude, web, free Zen IDs): send no tier and record it.
+  // (Claude, web): send no tier and record it.
   if (!codexRoute) return { status: 'ignored-untiered' };
   if (intent.tier === 'standard') return { status: 'explicit', wire: TIER_WIRE.standard, header: 'standard' };
   if (catalogTiers && !catalogTiers.includes(CATALOG_TIER[intent.tier]))
