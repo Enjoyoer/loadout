@@ -676,19 +676,6 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         response={'result':{'tools':[{'name':'create_agent','inputSchema':{'required':['provider','title'],'properties':{'provider':{}}}}]}}
         self.assertEqual(transform_list(response)['result']['tools'][0]['inputSchema']['required'],['title'])
 
-    def test_app_defaults_keep_other_preferences_and_roll_back(self):
-        script=r'''
-import assert from 'node:assert/strict';import vm from 'node:vm';
-const {appDefaultsScript}=await import(process.argv[1]);
-const key='@paseo:create-agent-preferences';const original=JSON.stringify({provider:'codex',isolation:'worktree',providerPreferences:{codex:{model:'example',thinkingByModel:{example:'high'},featureValues:{fast_mode:true}}}});
-const data=new Map([[key,original]]);const localStorage={getItem:k=>data.get(k)??null,setItem:(k,v)=>data.set(k,v),removeItem:k=>data.delete(k)};
-vm.runInNewContext(appDefaultsScript('route/example','high'),{localStorage});
-const got=JSON.parse(data.get(key));assert.equal(got.provider,'pi');assert.equal(got.isolation,'worktree');assert.equal(got.providerPreferences.pi.thinkingByModel['route/example'],'high');assert.equal(got.providerPreferences.codex.model,'example');
-vm.runInNewContext(appDefaultsScript('route/example','high',true),{localStorage});assert.equal(data.get(key),original);
-'''
-        done=subprocess.run(['node','--input-type=module','-e',script,(PI/'app-defaults.mjs').as_uri()],capture_output=True,text=True)
-        self.assertEqual(done.returncode,0,done.stderr)
-
     def test_runtime_rejects_ancestor_symlink(self):
         sys.path.insert(0,str(PI))
         from configure import safe_target
@@ -844,18 +831,5 @@ vm.runInNewContext(appDefaultsScript('route/example','high',true),{localStorage}
             with self.assertRaisesRegex(ValueError,'junction'):configure(spec,root)
             self.assertEqual(list(elsewhere.iterdir()),[])
             self.assertFalse((root/'runtime.json').exists())
-
-    def test_app_default_carries_saved_or_catalog_route_and_refuses_unsupported(self):
-        script=r"""
-import assert from 'node:assert/strict';
-const {carryPreferences}=await import(process.argv[1]);
-const catalogs={codex:[{id:'example',isDefault:true,defaultThinkingOptionId:'high'}],pi:[{id:'route/example',thinkingOptions:[{id:'high'},{id:'medium'}]}]};
-assert.deepEqual(carryPreferences({},catalogs),{modelId:'route/example',thinking:'high'});
-assert.deepEqual(carryPreferences({provider:'codex',providerPreferences:{codex:{model:'example',thinkingByModel:{example:'medium'}}}},catalogs),{modelId:'route/example',thinking:'medium'});
-assert.throws(()=>carryPreferences({provider:'claude'},catalogs));
-assert.deepEqual(carryPreferences({provider:'claude'},{claude:[{id:'native[1m]',label:'Opus',defaultThinkingOptionId:'high'}],pi:[{id:'route/backend',label:'Opus',thinkingOptions:[{id:'high'}]}]}),{modelId:'route/backend',thinking:'high'});
-"""
-        done=subprocess.run(['node','--input-type=module','-e',script,(PI/'app-defaults.mjs').as_uri()],capture_output=True,text=True)
-        self.assertEqual(done.returncode,0,done.stderr)
 
 if __name__=='__main__':unittest.main()

@@ -194,7 +194,7 @@ def main():
     plan = configure(spec, root, dry_run=True)
     if args.action == 'plan':
         print(json.dumps({'daemonVersion':status['daemonVersion'], 'config_changed':before != after,
-            'pi':plan, 'app_preferences':'apply separately in each UI client origin; see app-defaults.mjs'})); return
+            'pi':plan})); return
     if state.exists(): raise ValueError('state already exists; use a new state path')
     backup = back_up(config, before)
     contents = runtime_contents(spec, root)
