@@ -29,7 +29,7 @@ try {
   // The host's paseo_home from hosts.json, ~ expanded here, or the default home; never an inherited PASEO_HOME.
   const home = p.paseo_home ? p.paseo_home.replace(/^~(?=[/\\]|$)/, os.homedir()) : path.join(os.homedir(), ".paseo");
   const cfgPath = p.config_path || path.join(home, "config.json");
-  // Standalone relay payload: mirror remote_common's home/root ancestor and regular-file checks.
+  // Mirror remote_common's home/root ancestor and regular-file checks.
   const check = (target = cfgPath) => {
     const root = path.dirname(path.resolve(target)), rel = path.relative(os.homedir(), root);
     const base = rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? os.homedir() : root;

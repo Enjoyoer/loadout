@@ -52,14 +52,12 @@ SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAl
 PUSH_TIMEOUT_SECONDS = 180
 RESULT = re.compile(r"@@LOADOUT-RESULT (.*?) @@END", re.S)
 SCHEMA_VERSIONS = {1, 2}
-TRANSPORTS = {"ssh", "paseo-relay"}
+TRANSPORTS = {"ssh"}
 SCOPES = ("skills", "plugins", "providers", "client-config")
-# Scopes that move files or secrets, or run a program on the host, so they need an ssh transport.
-SSH_SCOPES = {"skills", "plugins", "client-config"}
 OSES = {"macos", "windows", "linux"}
 # Paseo variables an agent session or a scratch daemon leaves in the environment. A program run on the source host
 # drops them all, so its config reads, gates, installs, reloads and confirmations address the host's own Paseo home
-# and the daemon that home names, as on an ssh host; only a relay call adds a host's own offer as PASEO_HOST.
+# and the daemon that home names, as on an ssh host; only an offer reload adds a host's own offer as PASEO_HOST.
 DAEMON_VARS = ("PASEO_HOST", "PASEO_HOME", "PASEO_AGENT_ID", "PASEO_AGENT_CWD")
 # Host names are ssh aliases and reach ssh's argv, so a leading '-' would read as an option.
 HOST_NAME = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
@@ -187,16 +185,8 @@ def validate(data: Any) -> dict:
             sync = _strings(host["sync"], f"{where}.sync", set(SCOPES))
             if not sync:
                 raise FleetError(f"{where}.sync must not be empty")
-        elif transport == "paseo-relay":
-            raise FleetError(f"{where}: a paseo-relay host needs an explicit sync list, such as [\"providers\"]")
         else:
             sync = ["skills"] + (["plugins"] if paseo is not None else [])
-        if transport == "paseo-relay":
-            blocked = sorted(set(sync) & SSH_SCOPES)
-            if blocked:
-                raise FleetError(f"{where}: paseo-relay has no file transport, so sync cannot include {blocked}")
-            if not isinstance(host.get("paseo_offer"), str):
-                raise FleetError(f"{where}: a paseo-relay host needs paseo_offer, the path to its pairing offer")
         if "paseo_offer" in host and not isinstance(host["paseo_offer"], str):
             raise FleetError(f"{where}.paseo_offer must be a string path")
         if "paseo_home" in host and not (isinstance(host["paseo_home"], str) and PASEO_HOME_PATH.match(host["paseo_home"])):
@@ -215,8 +205,6 @@ def validate(data: Any) -> dict:
     source = data.get("source_host")
     if source not in names:
         raise FleetError(f"source_host {source!r} is not a listed host")
-    if next(h for h in out if h["name"] == source)["transport"] != "ssh":
-        raise FleetError("source_host must use the ssh transport; it runs locally")
     if "global" in data:
         _keys(data["global"], CLIENTS, "global")
         for client, target in data["global"].items():
@@ -288,9 +276,7 @@ def envelope(program: Path, payload: dict, paseo_home: Optional[str] = None) -> 
 
 
 def parse_result(output: str) -> Optional[dict]:
-    # A relay terminal capture folds long lines, so a line break can fall anywhere in the result, markers included.
-    # The result is one line of JSON, which holds no raw line break of its own.
-    match = RESULT.search(output.replace("\r", "").replace("\n", ""))
+    match = RESULT.search(output)
     if not match:
         return None
     return json.loads(match.group(1))
@@ -384,13 +370,6 @@ def fleet_files(directory: Path) -> dict:
     return files
 
 
-def push_targets(fleet: dict) -> tuple:
-    """Hosts that receive the fleet (other ssh hosts) and relay hosts that do not need it."""
-    others = [host for host in fleet["hosts"] if host["name"] != fleet["source_host"]]
-    return ([host for host in others if host["transport"] == "ssh"],
-            [host for host in others if host["transport"] != "ssh"])
-
-
 def daemon_env(paseo_home: Optional[str] = None) -> dict:
     """What a command on the source host runs with: this environment without DAEMON_VARS, then PASEO_HOME set to the
     host's paseo_home, ~ expanded, when the fleet gives one."""
@@ -446,20 +425,16 @@ def describe_push(result: dict) -> str:
 
 def push_to(host: dict, files: dict, dry_run: bool, emit) -> str:
     """Push the fleet files to one host other than the source host. Returns its status."""
-    if host["transport"] != "ssh":
-        emit(f"{host['name']}: fleet not needed ({host['transport']})")
-        return "not needed"
     result = push_host(host["name"], files, dry_run)
     emit(f"{host['name']}: fleet {describe_push(result)}")
     return "FAILED" if result["status"] == "failed" else result["status"]
 
 
 def push(fleet: dict, directory: Path, dry_run: bool, only: Optional[str], emit) -> dict:
-    """Push the fleet to every other ssh host. Returns a status per host."""
+    """Push the fleet to every other host. Returns a status per host."""
     files = fleet_files(directory)
-    targets, relays = push_targets(fleet)
-    return {host["name"]: push_to(host, files, dry_run, emit) for host in relays + targets
-            if only in (None, host["name"])}
+    return {host["name"]: push_to(host, files, dry_run, emit) for host in fleet["hosts"]
+            if host["name"] != fleet["source_host"] and only in (None, host["name"])}
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -491,7 +466,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         except FleetError as error:
             print(f"invalid: {error}", file=sys.stderr)
             return 1
-        return 0 if all(s in ("same", "updated", "would update", "not needed") for s in statuses.values()) else 1
+        return 0 if all(s in ("same", "updated", "would update") for s in statuses.values()) else 1
     print(f"schema_version {fleet['schema_version']}, source_host {fleet['source_host']}")
     for host in fleet["hosts"]:
         skipped = [scope for scope in SCOPES if scope not in host["sync"]]

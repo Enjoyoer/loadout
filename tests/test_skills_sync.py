@@ -254,7 +254,7 @@ HOSTS = {
     "hosts": [
         {"name": "laptop", "os": "macos", "clients": ["claude"], "exclude_skills": ["sample"]},
         {"name": "desktop", "os": "linux", "clients": ["codex", "claude"]},
-        {"name": "tablet", "os": "linux", "transport": "paseo-relay", "sync": ["providers"], "paseo_offer": "t.offer"},
+        {"name": "tablet", "os": "linux", "sync": ["providers"], "paseo_offer": "t.offer"},
     ],
     "global": {"claude": "~/.claude/CLAUDE.md"},
 }

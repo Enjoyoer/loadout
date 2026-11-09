@@ -65,7 +65,7 @@ Use a new, empty destination. Windows uses `%APPDATA%\loadout\fleet\`; alternati
 
 Edit these copied files before running anything against your machines:
 
-- **`hosts.json`**: replace the made-up `laptop`, `desktop`, `devbox`, and `tablet` entries with your machines, OSes, SSH aliases, installed clients, and paths. Set `source_host` to the machine where you maintain the fleet. Remove unused hosts and choose each host's `sync` scopes. Start without plugin installation until you have read the plugin docs. Remote `ssh` hosts are reached over SSH; `paseo-relay` hosts are reached through their Paseo daemon and get provider sync only.
+- **`hosts.json`**: replace the made-up `laptop`, `desktop`, `devbox`, and `tablet` entries with your machines, OSes, SSH aliases, installed clients, and paths. Set `source_host` to the machine where you maintain the fleet. Remove unused hosts and choose each host's `sync` scopes. Start without plugin installation until you have read the plugin docs. Remote hosts are reached over SSH.
 - **`paseo-providers.json`**: use your available providers and exact catalog model IDs. Remove provider sync scope if you do not want managed pickers. Pi setup has extra steps in the [Pi surface guide](skills/orchestration/personal-skills/fleet/README.md#pi-surface-on-stock-paseo-0103); the example is not a ready-to-use router.
 - **`client-config.json`**: choose only the Codex and Claude Code settings you want managed, or omit `client-config` scope. Keep credentials out of it.
 - **`global/AGENTS.md`**: write your own working rules and check the `global` destinations in `hosts.json`. These instructions can apply across your projects.

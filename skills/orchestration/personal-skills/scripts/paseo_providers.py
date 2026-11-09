@@ -38,9 +38,6 @@ import fleet
 
 MERGE_JS = Path(__file__).resolve().parent / "paseo_providers_merge.js"
 RELOAD_JS = Path(__file__).resolve().parent / "paseo_reload_remote.js"
-# Short relay commands carry the program and payload on argv (see run_in_terminal); everything
-# else here uses the stdin envelope from staged_payload.
-BOOT = "eval(require('zlib').gunzipSync(Buffer.from(process.argv[1],'base64')).toString())"
 pack = fleet.pack
 parse_result = fleet.parse_result
 CONFIG_KEYS = {"providers", "env", "hosts", "pi", "disabledProviders", "launch"}
@@ -49,21 +46,11 @@ HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi", "disabledP
 LAUNCH_PROVIDERS = {"claude", "codex", "pi"}
 # Providers the fleet itself runs on; disabledProviders never turns these off.
 PROTECTED_PROVIDERS = {"pi", "claude", "codex"}
-RELAY_TITLE = "loadout-provider-sync"
 # argv prefix for every paseo call made here; tests replace it with their fake (production always runs bare "paseo").
 # An ssh host reloads through RELOAD_JS instead, which runs that host's own paseo.
 PASEO_COMMAND = ("paseo",)
-# Relay timings; the environment overrides exist for tests.
-RELAY_WAIT_SECONDS = float(os.environ.get("LOADOUT_RELAY_WAIT_SECONDS", 120))
-RELAY_POLL_SECONDS = float(os.environ.get("LOADOUT_RELAY_POLL_SECONDS", 2))
-RELAY_READY_SECONDS = float(os.environ.get("LOADOUT_RELAY_READY_SECONDS", 30))
-RELAY_SETTLE_SECONDS = float(os.environ.get("LOADOUT_RELAY_SETTLE_SECONDS", 3))
-RELAY_RESEND_SECONDS = float(os.environ.get("LOADOUT_RELAY_RESEND_SECONDS", 10))
-PROMPT = re.compile(r"[$#%>\u276f]\s*$")
 RELOAD_TIMEOUT_SECONDS = 90
 WRITE_TIMEOUT_SECONDS = 300
-RELAY_INLINE_LIMIT = 4000
-RELAY_CHUNK_SIZE = 2000
 # Beside the config fleet directory, never inside a fleet directory, so the fleet push never carries it.
 RELOADS_FILE = "provider-reloads.json"
 # Every read-modify-write of the record holds an OS lock on this file, waiting at most this long for another
@@ -468,9 +455,8 @@ class Runner:
         self.local = self.name == source_host
         offer = host.get("paseo_offer")
         self.offer_path = (fleet_dir / Path(offer).expanduser()) if offer else None
-        self.mode = "local" if self.local else host["transport"]
+        self.mode = "local" if self.local else "ssh"
         self.paseo_home: Optional[str] = host.get("paseo_home")
-        self.cleanup_warning: Optional[str] = None
 
     def base_env(self) -> dict:
         """No inherited daemon target: a local write and reload address this host's own daemon, never the one an
@@ -478,143 +464,24 @@ class Runner:
         merge finds the host's paseo_home in its payload."""
         return fleet.daemon_env()
 
-    def relay_env(self) -> dict:
+    def offer_env(self) -> dict:
         if self.offer_path is None or not self.offer_path.is_file():
             raise RuntimeError(f"missing pairing offer {self.offer_path}")
         return {**self.base_env(), "PASEO_HOST": self.offer_path.read_text(encoding="utf-8").strip()}
 
-    def paseo(self, *args: str, timeout: int = 60) -> str:
-        done = subprocess.run([*PASEO_COMMAND, *args], env=self.relay_env(), capture_output=True, text=True,
-                              timeout=timeout)
-        if done.returncode != 0:
-            raise RuntimeError(f"paseo {args[0]} {args[1] if len(args) > 1 else ''}: {done.stderr.strip() or done.stdout.strip()}")
-        return done.stdout
-
     def write(self, program: str, data: str) -> str:
-        if self.mode in {"local", "ssh"}:
-            raw, boot = staged_payload(program, data)
-            command = (["node", "-e", boot] if self.mode == "local" else
-                       [*fleet.SSH_COMMAND, *fleet.SSH_OPTIONS, "--", self.name, f'node -e "{boot}"'])
-            # Without the agent session's PASEO_HOME, the merge finds the host's own Paseo home.
-            try:
-                done = subprocess.run(command, input=raw, capture_output=True, text=True, env=self.base_env(),
-                                      timeout=WRITE_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                raise RuntimeError(f"timed out after {WRITE_TIMEOUT_SECONDS}s")
-            if done.returncode and "@@LOADOUT-RESULT" not in done.stdout:
-                raise RuntimeError(f"provider transport failed (exit {done.returncode})")
-            return done.stdout + done.stderr
-        return self.write_relay(program, data)
-
-    def write_relay(self, program: str, data: str) -> str:
-        if self.host["os"] == "windows":
-            raise RuntimeError("paseo-relay provider sync needs a POSIX shell on the host")
-        terminal = output = None
-        try:
-            self.cleanup(None)
-            workspace = json.loads(self.paseo("workspace", "create", "--isolation", "local", "--path", "/tmp",
-                                              "--title", RELAY_TITLE, "--json"))["workspaceId"]
-            terminal = json.loads(self.paseo("terminal", "create", "--workspace", workspace,
-                                             "--name", RELAY_TITLE, "--json"))["id"]
-            output = self.run_in_terminal(terminal, program, data)
-            return output
-        finally:
-            # Every exit path, including a create that failed after the host made
-            # the workspace, ends with no sync workspace left on the host.
-            try:
-                self.cleanup(terminal)
-            except RuntimeError as error:
-                if output is None:
-                    raise
-                # The merge already ran: keep its result and report the leftover after it.
-                self.cleanup_warning = str(error)
-
-    def run_in_terminal(self, terminal: str, program: str, data: str) -> str:
-        # Input sent before the shell is up is lost, so nothing at all is sent until a prompt shows; the caller then
-        # cleans up the workspace and this host's write fails.
-        if not self.wait_for_prompt(terminal):
-            raise RuntimeError(f"relay terminal showed no shell prompt within {int(RELAY_READY_SECONDS)}s "
-                               "(readiness timeout); nothing was sent")
-        # Keep the payload out of shell history. This is its own command because zsh with
-        # SHARE_HISTORY saves a line as it is read, before a same-line unset runs.
-        self.terminal_command(terminal, "unset HISTFILE", require_success=True)
-        inline = f"node -e \"{BOOT}\" -- '{program}' '{data}'"
-        if len(inline) <= RELAY_INLINE_LIMIT:
-            return self.terminal_command(terminal, inline)
         raw, boot = staged_payload(program, data)
-        path = '"${TMPDIR:-/tmp}/loadout-provider-' + secrets.token_hex(16) + '"'
+        command = (["node", "-e", boot] if self.mode == "local" else
+                   [*fleet.SSH_COMMAND, *fleet.SSH_OPTIONS, "--", self.name, f'node -e "{boot}"'])
+        # Without the agent session's PASEO_HOME, the merge finds the host's own Paseo home.
         try:
-            for offset in range(0, len(raw), RELAY_CHUNK_SIZE):
-                chunk = raw[offset:offset + RELAY_CHUNK_SIZE]
-                # Offset writes make the bounded no-echo resend idempotent.
-                self.terminal_command(terminal, f"umask 077; printf %s '{chunk}' | "
-                                      f"dd of={path} bs=1 seek={offset} conv=notrunc 2>/dev/null",
-                                      require_success=True)
-            # Open first, then unlink before evaluating any merge code.
-            return self.terminal_command(terminal, f"(exec 3<{path}; rm -f {path}; "
-                                         f"node -e \"{boot}\" <&3)")
-        finally:
-            self.terminal_command(terminal, f"rm -f {path}", require_success=True)
-
-    def terminal_command(self, terminal: str, body: str, require_success: bool = False) -> str:
-        nonce = secrets.token_hex(4)
-        done = re.compile(rf"@@LOADOUT-EXIT-{nonce}:(\d+)")
-        command = body + f"; printf '\\n@@LOADOUT-EXIT-{nonce}:%s\\n' \"$?\""
-        self.paseo("terminal", "send-keys", terminal, command, "Enter")
-        sent = time.monotonic()
-        resent = False
-        deadline = sent + RELAY_WAIT_SECONDS
-        while True:
-            output = self.paseo("terminal", "capture", terminal, "--scrollback")
-            match = done.search(output)
-            if match:
-                if require_success and match[1] != "0":
-                    raise RuntimeError(f"relay staging command failed (exit {match[1]})")
-                return output
-            # One bounded resend, only when the shell never echoed the command:
-            # without the nonce on screen the first send cannot have run.
-            if not resent and nonce not in "".join(output.split()) and time.monotonic() - sent >= RELAY_RESEND_SECONDS:
-                self.paseo("terminal", "send-keys", terminal, command, "Enter")
-                resent = True
-            if time.monotonic() > deadline:
-                tail = "".join(output.strip().split())[-200:] or "(terminal output empty)"
-                raise RuntimeError(f"relay terminal did not finish within {int(RELAY_WAIT_SECONDS)}s; last output: {tail}")
-            time.sleep(RELAY_POLL_SECONDS)
-
-    def wait_for_prompt(self, terminal: str) -> bool:
-        deadline = time.monotonic() + RELAY_READY_SECONDS
-        while True:
-            lines = [line for line in self.paseo("terminal", "capture", terminal).splitlines() if line.strip()]
-            if lines and PROMPT.search(lines[-1]):
-                time.sleep(RELAY_SETTLE_SECONDS)
-                return True
-            if time.monotonic() > deadline:
-                return False
-            time.sleep(RELAY_POLL_SECONDS)
-
-    def stale(self) -> list:
-        return [entry["workspaceId"] for entry in json.loads(self.paseo("workspace", "ls", "--json") or "[]")
-                if entry.get("name") == RELAY_TITLE]
-
-    def cleanup(self, terminal: Optional[str]) -> None:
-        """Kill the sync terminal and archive every sync workspace on the host."""
-        if terminal:
-            try:
-                self.paseo("terminal", "kill", terminal)
-            except (RuntimeError, subprocess.SubprocessError):
-                pass
-        left = ["?"]
-        for _ in range(5):
-            try:
-                left = self.stale()
-                if not left:
-                    return
-                for workspace in left:
-                    self.paseo("workspace", "archive", workspace)
-            except (RuntimeError, subprocess.SubprocessError, ValueError):
-                pass
-            time.sleep(RELAY_POLL_SECONDS)
-        raise RuntimeError(f"relay workspace cleanup failed: {', '.join(left)}")
+            done = subprocess.run(command, input=raw, capture_output=True, text=True, env=self.base_env(),
+                                  timeout=WRITE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"timed out after {WRITE_TIMEOUT_SECONDS}s")
+        if done.returncode and "@@LOADOUT-RESULT" not in done.stdout:
+            raise RuntimeError(f"provider transport failed (exit {done.returncode})")
+        return done.stdout + done.stderr
 
     def reload(self) -> str:
         """Reload the daemon the merge wrote for: the one the host's paseo_home names, or the default home's, or the
@@ -624,7 +491,7 @@ class Runner:
             env = fleet.daemon_env(self.paseo_home)
         elif self.offer_path is not None:
             command = [*PASEO_COMMAND, "reload"]
-            env = self.relay_env()
+            env = self.offer_env()
         else:
             result, output = fleet.run_node(self.name, False, RELOAD_JS, {}, RELOAD_TIMEOUT_SECONDS, self.paseo_home)
             error = output if result is None else result["error"]
@@ -724,8 +591,6 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
             emit(f"{name}: MCP " + '; '.join(result['mcp']))
         if result and result.get('launch'):
             emit(f"{name}: launch " + '; '.join(result['launch']))
-        if runner.cleanup_warning:
-            emit(f"{name}: cleanup warning: {runner.cleanup_warning}; the next run archives it")
         if result is None or result["error"] or not result["verified"]:
             settle()
             return "FAILED"
@@ -771,10 +636,8 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
 
 
 def merge_program() -> str:
-    """The merge program packed without its whole-line comments and indentation, so a relay still sends a typical
-    payload inline (RELAY_INLINE_LIMIT). The program holds no multiline string or template literal to change."""
-    lines = (fleet.COMMON_JS.read_text(encoding='utf-8') + '\n' + MERGE_JS.read_text(encoding='utf-8')).splitlines()
-    return pack("\n".join(line.strip() for line in lines if not line.lstrip().startswith("//")).encode())
+    """The merge program, with remote_common.js ahead of it, packed."""
+    return pack((fleet.COMMON_JS.read_text(encoding='utf-8') + '\n' + MERGE_JS.read_text(encoding='utf-8')).encode())
 
 
 def load_for_hosts(fleet_doc: dict, fleet_dir: Path) -> dict:
@@ -819,7 +682,7 @@ def main(argv: Optional[list] = None) -> int:
     if source.path is None:
         print("no fleet directory; nothing to sync", file=sys.stderr)
         return 1
-    # Turn SIGTERM and SIGHUP into exits so relay cleanup still runs.
+    # Turn SIGTERM and SIGHUP into exits so an interrupted run still records the reload it may owe.
     for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
         if sig is not None:
             signal.signal(sig, lambda number, _frame: sys.exit(128 + number))

@@ -25,7 +25,7 @@ import plugins_sync
 import skills_sync
 
 STEPS = ("fleet", "skills", "plugins", "providers", "client-config")
-OK = {"same", "updated", "would update", "not needed", "source", "skipped", "-"}
+OK = {"same", "updated", "would update", "source", "skipped", "-"}
 STOPS = {"conflict"}
 
 
@@ -114,7 +114,7 @@ def main(argv: Optional[list] = None) -> int:
         return 2
     hosts = [args.host] if args.host else names
     print(f"fleet valid: schema_version {doc['schema_version']}, {len(names)} hosts" + (" (dry run)" if args.dry_run else ""))
-    # Relay cleanup in the provider step runs from finally blocks; make SIGTERM reach them.
+    # Turn SIGTERM and SIGHUP into exits so an interrupted provider step still records the reload it may owe.
     for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
         if sig is not None:
             signal.signal(sig, lambda number, _frame: sys.exit(128 + number))

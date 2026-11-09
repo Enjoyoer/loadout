@@ -17,7 +17,7 @@
     },
     { "name": "devbox", "os": "linux", "checkout": null, "clients": ["codex"] },
     {
-      "name": "tablet", "os": "linux", "transport": "paseo-relay", "sync": ["providers"],
+      "name": "tablet", "os": "linux", "sync": ["providers"],
       "paseo_offer": "~/.paseo/hosts/tablet.offer"
     }
   ],

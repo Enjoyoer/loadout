@@ -88,7 +88,7 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(by_name["laptop"]["sync"], ["skills", "plugins", "providers", "client-config"])
         self.assertEqual(by_name["desktop"]["sync"], ["skills", "plugins", "providers", "client-config"])
         self.assertEqual(by_name["devbox"]["sync"], ["skills"])
-        self.assertEqual(by_name["tablet"]["transport"], "paseo-relay")
+        self.assertEqual(by_name["tablet"]["transport"], "ssh")
         self.assertEqual([h["name"] for h in fleet.hosts_for(got, "skills")], ["laptop", "desktop", "devbox"])
         self.assertEqual([h["name"] for h in fleet.hosts_for(got, "providers")], ["laptop", "desktop", "tablet"])
 
@@ -118,20 +118,8 @@ class ValidateTest(unittest.TestCase):
         self.check_error(fleet_doc(host("a"), host("b", synk=["skills"])), "unknown keys ['synk']")
         self.check_error(fleet_doc(extra=1), "unknown keys ['extra']")
 
-    def test_relay_host_rules(self):
-        relay = {"name": "r", "os": "linux", "transport": "paseo-relay", "paseo_offer": "r.offer"}
-        self.assertEqual(fleet.validate(fleet_doc(host("a"), {**relay, "sync": ["providers"]}))["hosts"][1]["sync"],
-                         ["providers"])
-        self.check_error(fleet_doc(host("a"), relay), "explicit sync")
-        self.check_error(fleet_doc(host("a"), {**relay, "sync": ["skills", "providers"]}), "no file transport")
-        self.check_error(fleet_doc(host("a"), {**relay, "sync": ["client-config"]}), "['client-config']")
-        no_offer = {k: v for k, v in relay.items() if k != "paseo_offer"}
-        self.check_error(fleet_doc(host("a"), {**no_offer, "sync": ["providers"]}), "paseo_offer")
-
-    def test_source_host_must_be_listed_and_local(self):
+    def test_source_host_must_be_listed(self):
         self.check_error(fleet_doc(source_host="z"), "source_host")
-        relay = {"name": "a", "os": "linux", "transport": "paseo-relay", "sync": ["providers"], "paseo_offer": "a.offer"}
-        self.check_error(fleet_doc(relay), "source_host must use the ssh transport")
 
     def test_skills_scope_needs_clients(self):
         bare = {"name": "b", "os": "linux", "sync": ["skills"]}
