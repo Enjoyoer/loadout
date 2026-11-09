@@ -39,8 +39,8 @@ To sync the fleet, run `python3 scripts/sync.py --dry-run` beside this `SKILL.md
 
 ## Fleet
 
-- Resolve the fleet directory with `python3 scripts/fleet.py resolve` beside this `SKILL.md`, or by the same rule by hand: `$LOADOUT_FLEET` (must be a directory), else `${XDG_CONFIG_HOME:-~/.config}/loadout/fleet/` (`%APPDATA%\loadout\fleet\` on Windows), else the legacy `fleet/local/` beside this `SKILL.md`. Start the sync report with the source used, as the script prints it.
-- The fleet directory is the user's private fleet: never commit, publish, or quote it into a public file. It is not a package file, so sync never overwrites or removes it, and never replaces a symlinked `fleet/local/` on a host that already has one.
+- Resolve the fleet directory with `python3 scripts/fleet.py resolve` beside this `SKILL.md`, or by the same rule by hand: `$LOADOUT_FLEET` (must be a directory), else `${XDG_CONFIG_HOME:-~/.config}/loadout/fleet/` (`%APPDATA%\loadout\fleet\` on Windows). Start the sync report with the source used, as the script prints it.
+- The fleet directory is the user's private fleet: never commit, publish, or quote it into a public file. It is not a package file, so sync never overwrites or removes it.
 - `fleet/README.md` defines the format and `fleet/example/` shows a made-up fleet. A user starts by copying `fleet/example/` to the fleet directory and editing it. Never treat the example as a real target.
 - Without a fleet directory, `fleet.py resolve` reports `fleet: none (current host only)` and `sync.py` and every step stop with nothing synced, asking for a fleet. To sync only the current host, create a fleet whose `hosts.json` lists just this host as `source_host`.
 - An invalid fleet stops the whole run. Skill sync covers hosts whose `sync` includes `skills`, and plugin sync hosts whose `sync` includes `plugins`; report every other host as skipped for that scope, not failed. `paseo-relay` hosts have no file transport and never receive files.

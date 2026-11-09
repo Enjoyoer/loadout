@@ -3,7 +3,7 @@
 
 Order: $LOADOUT_FLEET, then the per-user config directory
 (${XDG_CONFIG_HOME:-~/.config}/loadout/fleet, or %APPDATA%\\loadout\\fleet on
-Windows), then the legacy fleet/local/ beside the installed SKILL.md.
+Windows).
 
 `push` carries the source host's published fleet files (PUBLISHED) to every other
 ssh host, so the source host is the only place the fleet is edited.
@@ -24,7 +24,6 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple, Optional
 
-SKILL_DIR = Path(__file__).resolve().parent.parent
 PUSH_JS = Path(__file__).resolve().parent / "fleet_push_remote.js"
 # Helpers the remote programs share; run_node ships it ahead of each program.
 COMMON_JS = Path(__file__).resolve().parent / "remote_common.js"
@@ -80,7 +79,7 @@ PASEO_HOME_PATH = re.compile(r"(~([\\/]|$)|/|[A-Za-z]:[\\/])")
 
 
 class FleetSource(NamedTuple):
-    kind: str  # "env", "config", "legacy", or "none"
+    kind: str  # "env", "config", or "none"
     path: Optional[Path]
 
 
@@ -94,7 +93,6 @@ def config_fleet_dir(env: Mapping[str, str], windows: bool) -> Optional[Path]:
 
 def resolve(
     env: Mapping[str, str] = os.environ,
-    skill_dir: Path = SKILL_DIR,
     windows: bool = os.name == "nt",
 ) -> FleetSource:
     explicit = env.get("LOADOUT_FLEET")
@@ -106,9 +104,6 @@ def resolve(
     config = config_fleet_dir(env, windows)
     if config is not None and config.is_dir():
         return FleetSource("config", config)
-    legacy = skill_dir / "fleet" / "local"
-    if legacy.is_dir():
-        return FleetSource("legacy", legacy)
     return FleetSource("none", None)
 
 
