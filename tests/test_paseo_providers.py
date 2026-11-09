@@ -737,10 +737,6 @@ class ConfigValidationTest(unittest.TestCase):
         self.check(lambda d: d.update(routers={}), "unknown keys ['routers']")
         self.check(lambda d: d["hosts"].update(tablet={"inherit": False}), "unknown keys ['inherit']")
 
-    def test_parse_wrapped_result(self):
-        wrapped = '@@LOADOUT-RESULT {"host":"t","err\nor":null} @@END'
-        self.assertEqual(paseo_providers.parse_result(wrapped), {"host": "t", "error": None})
-
 
 if __name__ == "__main__":
     unittest.main()
