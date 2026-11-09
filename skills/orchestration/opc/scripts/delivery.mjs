@@ -77,7 +77,7 @@ function cleanupTests(tests) {
 }
 // Only the recorded process clears 'running'; once it is gone, or its pid names a process with another start time, the
 // run was interrupted. A live pid whose start time cannot be read still counts as the runner. Every entry point that
-// judges whether the task is busy (test, verify, merge, planner launch, reconcile) runs this first.
+// judges whether the task is busy (test, verify, merge, reconcile) runs this first.
 export function recoverTests(taskPath) {
   const stale=t=>t.tests?.status==='running'&&['gone','reused'].includes(processIdentity(t.tests.pid,t.tests.pid_start));
   if(!stale(readTask(taskPath)))return null;

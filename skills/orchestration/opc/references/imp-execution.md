@@ -8,7 +8,7 @@ Call `createTask({workingDirectory, runDirectory, owner, baseRef, delivery:'merg
 
 Use Paseo children that survive PM steering. Inspect every target provider. For Pi, require availability and an empty modes list, then omit `modeId`. Other providers require the unique advertised unattended full-permission mode; ambiguity stops the lane. Paseo profiles are not part of OPC; do not discover them or narrate their absence. CLI launch and wait cannot install the `notifyOnFinish` callback; never substitute them through a shell or adapter.
 
-Only explicitly read-only scouts, planners, reviewers, and advisors may share the PM workspace with `workspaceId` omitted. Any possible editing requires the Worker placement below.
+Only explicitly read-only scouts, `plan` Workers, reviewers, and advisors may share the PM workspace with `workspaceId` omitted. Any possible editing requires the Worker placement below.
 
 ## Worker placement
 

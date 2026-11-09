@@ -1,6 +1,6 @@
 # Web-model risk record
 
-Historical evidence and unresolved safety risk. Runtime authority belongs to [web lane](web-lane.md "runtime"), [planner](planner.md "branch:planning"), and [reviewer operation](web-reviewer.md "branch:review"). This record does not expand their authority.
+Historical evidence and unresolved safety risk. Runtime authority belongs to [web lane](web-lane.md "runtime") and [reviewer operation](web-reviewer.md "branch:review"). This record does not expand their authority.
 
 ## Reviewer proof receipt and limits
 

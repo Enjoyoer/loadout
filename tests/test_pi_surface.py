@@ -411,7 +411,7 @@ server.close();
 import assert from 'node:assert/strict';
 const after=await import(process.argv[1]);
 // Owner-approved fixed roles follow catalog labels.
-const baseline={scout:{model:'gpt-6.1-sol',effort:'xhigh',fastMode:true,label:'Sol'},planner:{model:'gpt-6.1-sol',effort:'xhigh',fastMode:true,label:'Sol'},reviewer:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'}};
+const baseline={scout:{model:'gpt-6.1-sol',effort:'xhigh',fastMode:true,label:'Sol'},reviewer:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'}};
 const source=[['gpt-6-astra','Astra'],['gpt-6.1-sol','Sol'],['gpt-6-luna','Luna'],['chatgpt-web/extra-high','Web Extra'],['chatgpt-web/pro','Web Pro'],['claude-fable-5-1[1m]','Fable'],['claude-opus-5-5[1m]','Opus']].map(([id,label])=>({id,label,thinkingOptions:['low','medium','high','xhigh','max'].map(id=>({id}))}));
 const catalog=source.map(row=>({...row,id:'route/'+row.id}));
 let count=0;
@@ -443,7 +443,7 @@ for(const model of ['gpt-6-astra','gpt-6.1-sol','gpt-6-luna','gpt-5.6-luna','cha
   assert.throws(()=>after.resolveAgentSurface('worker',{explicitRoute:route},catalog,'codex'),/explicit owner authorization/);
   assert.equal(after.resolveAgentSurface('worker',native,catalog,'codex').provider,'codex/'+model);count++;
  }
-assert.equal(count,63);
+assert.equal(count,62);
 assert.throws(()=>after.resolveCatalogLabel([{id:'a',label:'Sol'},{id:'b',label:'Sol'}],'Sol'),/exactly one/);
 const next=catalog.map(row=>row.label==='Sol'?{...row,id:'route/new-catalog-id'}:row);
 assert.equal(after.resolveAgentSurface('scout',{},next).model,'route/new-catalog-id');
@@ -632,28 +632,6 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             self.assertEqual([row['label'] for row in after['agents']['providers']['pi']['models']],['Luna'])
             # The backup is the revision the write replaced, the daemon's change included.
             self.assertEqual(json.loads((base/got['backup']).read_text())['daemon'],{'port':4321})
-
-    def test_real_planner_builder_persists_pi_route_and_stops_on_failure(self):
-        script=r"""
-import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {execFileSync} from 'node:child_process';
-const base=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'pi-planner-')));const repo=path.join(base,'repo');const run=path.join(base,'run');fs.mkdirSync(repo);fs.mkdirSync(run);
-const git=(...args)=>execFileSync('git',['-C',repo,...args],{stdio:'pipe'});
-try{
- git('init','-q','-b','main');git('config','user.name','Test');git('config','user.email','test@example.test');git('remote','add','origin','https://github.com/example/project.git');fs.writeFileSync(path.join(repo,'seed'),'seed');git('add','.');git('commit','-qm','seed');
- const state=await import(process.argv[1]);const planner=await import(process.argv[2]);const {taskPath}=state.createTask({workingDirectory:repo,runDirectory:run,owner:'test'});
- const contextPack=Object.fromEntries(['outcome','scope','constraints','exploration','ambiguities','checks'].map(k=>[k,'test '+k]));
- const capabilities={enabled:true,status:'available',modes:[],models:[{id:'fleet/sol-current',label:'Sol',thinkingOptions:[{id:'xhigh'}]}]};
- const prepared=planner.preparePlannerLaunch(taskPath,{contextPack,capabilities});assert.equal(prepared.request.provider,'pi/fleet/sol-current');assert.equal(prepared.request.settings.modeId,undefined);
- assert.equal(prepared.request.settings.thinkingOptionId,'xhigh');assert.equal(prepared.request.labels['opc.service-tier'],'fast');
- assert.match(prepared.request.initialPrompt,/Do not edit/);
- assert.equal(state.readTask(taskPath).planner.rounds[0].catalog_label,'Sol');
- planner.recordPlannerLaunchFailure(taskPath,{roundId:prepared.round.id,error:'controlled failure',terminal:true});
- assert.throws(()=>planner.preparePlannerLaunch(taskPath,{contextPack,capabilities}),/planner failed; stop/);
- assert.equal(state.readTask(taskPath).planner.rounds.length,1);
-}finally{fs.rmSync(base,{recursive:true,force:true});}
-"""
-        done=subprocess.run(['node','--input-type=module','-e',script,(ROOT/'skills/orchestration/opc/scripts/task-state.mjs').as_uri(),(ROOT/'skills/orchestration/opc/scripts/planner.mjs').as_uri()],capture_output=True,text=True)
-        self.assertEqual(done.returncode,0,done.stderr)
 
     def test_runtime_uses_references_and_inherited_settings(self):
         sys.path.insert(0,str(PI))
