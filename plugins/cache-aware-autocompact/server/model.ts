@@ -5,11 +5,6 @@ import { turnInput } from "./vendor/turn-input.ts";
 
 export type AgentSnapshot = AgentSnapshotPayload;
 export type Decision = { ok: true; reason: string } | { ok: false; reason: string };
-export type StrictnessTier = "safe" | "recall";
-
-export function strictnessTier(contextUsedTokens: number | undefined, config: AutoCompactConfig): StrictnessTier {
-  return typeof contextUsedTokens === "number" && contextUsedTokens >= config.softThreshold ? "recall" : "safe";
-}
 
 // Pi is a harness, not a cache family. Only known fleet routes are eligible;
 // web routes and unknown/missing models deliberately fail closed.
@@ -29,9 +24,9 @@ export function cacheExpired(provider: string, model: string | null | undefined,
   return ttlMs !== null && (!Number.isFinite(ended) || now - ended >= ttlMs);
 }
 
-/** Cache expiry as a terminal skip. With extendIdleCompaction, a cold Claude-family agent still compacts once. */
-export function cacheExpiredSkip(provider: string, model: string | null | undefined, endedAt: string, now: number, config: AutoCompactConfig): boolean {
-  if (config.extendIdleCompaction && cacheFamily(provider, model) === "claude") return false;
+/** Cache expiry as a terminal skip. A cold Claude-family agent still compacts once. */
+export function cacheExpiredSkip(provider: string, model: string | null | undefined, endedAt: string, now: number): boolean {
+  if (cacheFamily(provider, model) === "claude") return false;
   return cacheExpired(provider, model, endedAt, now);
 }
 
@@ -61,16 +56,12 @@ export function unsettledTool(item: AgentTimelineItem): item is ToolCallTimeline
  * The only boundary check is a running tool. Heuristics on the final answer,
  * open todos, or coordination wording are intentionally absent: an idle agent
  * with an ended turn is compactable, and the summary preserves open questions.
- * The tier only labels the decision for logs.
  */
-export function safeBoundary(
-  timeline: readonly AgentTimelineItem[],
-  tier: StrictnessTier = "safe",
-): Decision {
+export function safeBoundary(timeline: readonly AgentTimelineItem[]): Decision {
   if (timeline.some(unsettledTool)) {
     return { ok: false, reason: "running-tool" };
   }
-  return { ok: true, reason: tier === "recall" ? "safe-boundary-recall" : "safe-boundary" };
+  return { ok: true, reason: "safe-boundary" };
 }
 
 /**
@@ -112,7 +103,7 @@ export function guardDecision(
   const used = agent.lastUsage?.contextWindowUsedTokens;
   if (typeof used !== "number") return { ok: false, reason: "context-unknown" };
   if (used < config.thresholdTokens) return { ok: false, reason: `context-below-threshold(${used})` };
-  return safeBoundary(timeline, strictnessTier(used, config));
+  return safeBoundary(timeline);
 }
 
 /**

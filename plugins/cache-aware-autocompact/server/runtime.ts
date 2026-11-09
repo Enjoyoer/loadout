@@ -2,10 +2,9 @@ import type { PaseoAgentHandle, PaseoApi, PaseoClient } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { AutoCompactConfig } from "./config.ts";
-import { cacheExpired, cacheExpiredSkip, checkpointKey, checkpointTimeline, disabledReason, guardDecision, providerDelayMinutes, strictnessTier, withFreshToolState } from "./model.ts";
+import { cacheExpired, cacheExpiredSkip, checkpointKey, checkpointTimeline, disabledReason, guardDecision, providerDelayMinutes, withFreshToolState } from "./model.ts";
 import { StateStore, type StateEntry, type WriteJson } from "./store.ts";
 import { AgentTimers, realTimers, type TimerApi } from "./timer.ts";
-import { MetricsLog } from "./metrics.ts";
 import { MAX_RETRIES, nextRetryCount, RETRY_DELAY_MS } from "./retry.ts";
 
 import { openDaemonClient } from "./daemon.ts";
@@ -57,7 +56,6 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   store?: StateStore;
   /** Writes state for the store this scheduler creates when none is passed in. */
   writeJson?: WriteJson;
-  metrics?: Pick<MetricsLog, "append">;
   timerApi?: TimerApi;
   openApi?: () => Promise<PaseoClient>;
   /** Closes an agent the way a user's kill does; the daemon's kill_agent unless a test passes one. */
@@ -67,21 +65,13 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   log?: (action: string, data: Record<string, unknown>) => void;
 }) {
   const store = dependencies.store ?? new StateStore(undefined, dependencies.writeJson);
-  const metrics = dependencies.metrics ?? new MetricsLog();
   const timers = new AgentTimers(dependencies.timerApi ?? realTimers);
   const now = dependencies.now ?? Date.now;
   const random = dependencies.random ?? Math.random;
   const lifetime = new AbortController();
   let startupClient: PaseoClient | null = null;
-  // The synchronous agent-update listener uses the last loaded flag; null keeps the previous behavior.
-  let extended: boolean | null = null;
-  const readConfig = async () => {
-    const config = await dependencies.readConfig();
-    if (config) extended = config.extendIdleCompaction;
-    return config;
-  };
-  // A failed turn leaves the agent in `error`, which is settled, not busy, when the extension is on.
-  const busyStatus = (status: string) => status !== "idle" && !(extended === true && status === "error");
+  // A failed turn leaves the agent in `error`, which is settled, not busy.
+  const busyStatus = (status: string) => status !== "idle" && status !== "error";
   const inFlight = new Set<string>();
   const expectedUserMessage = new Map<string, string | null>();
   const recoveryFailures = new Map<string, Set<string>>();
@@ -154,7 +144,6 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       retryCount: retry.retryCount,
       maxRetries: MAX_RETRIES,
       delayMinutes: RETRY_DELAY_MS / 60_000,
-      configSoftThreshold: config.softThreshold,
     });
     return true;
   };
@@ -164,7 +153,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     inFlight.add(checkpoint.key);
     const generation = generations.get(checkpoint.agentId) ?? 0;
     try {
-      const config = await readConfig();
+      const config = await dependencies.readConfig();
       if (!config || stopped) return;
       if (await store.has(checkpoint.key) || await store.has(stateKey(checkpoint, false))) {
         log("skip", { agentId: checkpoint.agentId, reason: "deduplicated", key: checkpoint.key });
@@ -176,10 +165,10 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       const agent = refreshed?.agent;
       if (!agent) {
         await record(checkpoint, "skip", "agent-unavailable", config);
-        log("skip", { agentId: checkpoint.agentId, reason: "agent-unavailable", strictnessTier: "safe" });
+        log("skip", { agentId: checkpoint.agentId, reason: "agent-unavailable" });
         return;
       }
-      if (cacheExpiredSkip(agent.provider, agent.model, checkpoint.endedAt, now(), config)) {
+      if (cacheExpiredSkip(agent.provider, agent.model, checkpoint.endedAt, now())) {
         await record(checkpoint, "skip", "cache-expired", config);
         log("skip", { agentId: checkpoint.agentId, reason: "cache-expired", retryCount: checkpoint.retryCount });
         return;
@@ -212,7 +201,6 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         log("skip", { agentId: agent.id, reason: "compaction-backoff" });
         return;
       }
-      const tier = strictnessTier(agent.lastUsage?.contextWindowUsedTokens, config);
       // A retry re-reads the turn's tools: one recorded as running may have settled since.
       const timeline = withFreshToolState(checkpoint.timeline, baseline.entries.map((entry) => entry.item));
       const decision = guardDecision(agent, timeline, config, checkpoint.lastUserMessageAt);
@@ -220,18 +208,18 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         const retryable = nextRetryCount(decision.reason, checkpoint.retryCount) !== null;
         await record(checkpoint, "skip", decision.reason, config, !retryable);
         if (retryable || decision.reason === "running-tool" || decision.reason === "not-idle") scheduleRetry(checkpoint, api, config, decision.reason);
-        log("skip", { agentId: checkpoint.agentId, reason: decision.reason, strictnessTier: tier, retryCount: checkpoint.retryCount });
+        log("skip", { agentId: checkpoint.agentId, reason: decision.reason, retryCount: checkpoint.retryCount });
         return;
       }
       if (!config.armed) {
         await record(checkpoint, "would-compact", decision.reason, config);
-        log("would-compact", { agentId: checkpoint.agentId, reason: `${decision.reason}; disarmed`, command: COMMAND, strictnessTier: tier });
+        log("would-compact", { agentId: checkpoint.agentId, reason: `${decision.reason}; disarmed`, command: COMMAND });
         return;
       }
       // The snapshot is refreshed immediately before the send. A busy agent is never messaged.
       if (agent.status !== "idle" || agent.activeTurn) {
         await record(checkpoint, "skip", "became-busy-before-send", config);
-        log("skip", { agentId: checkpoint.agentId, reason: "became-busy-before-send", strictnessTier: tier });
+        log("skip", { agentId: checkpoint.agentId, reason: "became-busy-before-send" });
         return;
       }
       const attemptedAt = new Date(now()).toISOString();
@@ -242,13 +230,13 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         if (stopped || generation !== (generations.get(checkpoint.agentId) ?? 0)) return;
         const beforeSend = (await handle.refresh())?.agent;
         if (stopped || generation !== (generations.get(checkpoint.agentId) ?? 0)) return;
-        const sendDecision = beforeSend && (cacheExpiredSkip(beforeSend.provider, beforeSend.model, checkpoint.endedAt, now(), config)
+        const sendDecision = beforeSend && (cacheExpiredSkip(beforeSend.provider, beforeSend.model, checkpoint.endedAt, now())
           ? { ok: false, reason: "cache-expired" }
           : guardDecision(beforeSend, timeline, config, checkpoint.lastUserMessageAt));
         if (!sendDecision || !sendDecision.ok) {
           const reason = sendDecision ? sendDecision.reason : "agent-unavailable";
           await record(checkpoint, "skip", reason, config);
-          log("skip", { agentId: checkpoint.agentId, reason, strictnessTier: tier });
+          log("skip", { agentId: checkpoint.agentId, reason });
           return;
         }
         const afterSeq = baseline.entries.at(-1)?.seqEnd ?? -1;
@@ -262,7 +250,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         await handle.send(COMMAND);
         const finished = await handle.waitForFinish(windowMs);
         if (finished.status !== "idle") {
-          log("wait-for-finish", { agentId: checkpoint.agentId, status: finished.status, error: finished.error, strictnessTier: tier });
+          log("wait-for-finish", { agentId: checkpoint.agentId, status: finished.status, error: finished.error });
         }
         // Each look is decided on the snapshot taken once the /compact turn settled, so a newer user message since then
         // shows the owner opened the agent again, as on every other read.
@@ -277,21 +265,20 @@ export function startScheduler(server: PluginServerContext, dependencies: {
           // No completed row and no error by the end of the window. Backed off like a failure, but not reported as one.
           const reason = `no completed compaction row within ${config.compactionWindowMinutes}m and no error`;
           await record(checkpoint, "compaction-unconfirmed", reason, config, true, attemptedAt);
-          log("compaction-unconfirmed", { agentId: checkpoint.agentId, reason, strictnessTier: tier });
+          log("compaction-unconfirmed", { agentId: checkpoint.agentId, reason });
           return;
         }
         await record(checkpoint, "compacted", decision.reason, config, true, attemptedAt);
-        void metrics.append({ event: "compacted", agentId: checkpoint.agentId, provider: agent.provider, model: agent.model ?? null, usage: agent.lastUsage ?? null });
-        log("compacted", { agentId: checkpoint.agentId, reason: decision.reason, command: COMMAND, strictnessTier: tier });
+        log("compacted", { agentId: checkpoint.agentId, reason: decision.reason, command: COMMAND });
       } catch (error) {
         // The agent ended while the compaction was observed: it is put back, and nothing more is written for it.
         if (error instanceof ReadEnded) return;
         if (stopped) {
-          log("compaction-abandoned", { agentId: checkpoint.agentId, reason: `plugin stopped: ${safeError(error)}`, strictnessTier: tier });
+          log("compaction-abandoned", { agentId: checkpoint.agentId, reason: `plugin stopped: ${safeError(error)}` });
           return;
         }
         await record(checkpoint, "compaction-failed", safeError(error), config, true, attemptedAt);
-        log("compaction-failed", { agentId: checkpoint.agentId, reason: safeError(error), strictnessTier: tier });
+        log("compaction-failed", { agentId: checkpoint.agentId, reason: safeError(error) });
       } finally {
         unwatch();
       }
@@ -315,19 +302,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     }
     const endedAt = new Date(now()).toISOString();
     const generation = generations.get(event.agent.id) ?? 0;
-    if (["claude", "codex", "pi"].includes(event.agent.provider)) {
-      const snapshot = await api.agents.ref(event.agent.id).refresh().catch(() => null);
-      void metrics.append({
-        event: "turn-ended",
-        agentId: event.agent.id,
-        provider: event.agent.provider,
-        model: snapshot?.agent?.model ?? null,
-        turnId: event.turnId,
-        lastUserMessageAt: snapshot?.agent?.lastUserMessageAt ?? null,
-        usage: snapshot?.agent?.lastUsage ?? null,
-      });
-    }
-    const config = await readConfig();
+    const config = await dependencies.readConfig();
     if (!config || stopped) return;
     const refreshed = await api.agents.ref(event.agent.id).refresh();
     if (!refreshed?.agent) {
@@ -366,7 +341,6 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       agentId: event.agent.id,
       key: checkpoint.key,
       delayMinutes: minutes,
-      strictnessTier: strictnessTier(refreshed.agent.lastUsage?.contextWindowUsedTokens, config),
     });
   };
 
@@ -397,7 +371,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
   const recover = (api: PaseoApi, trigger: string) => {
     recoveryQueue = recoveryQueue.then(async () => {
       if (stopped) return;
-      const config = await readConfig();
+      const config = await dependencies.readConfig();
       if (!config || stopped) return;
       const skipped: Record<string, number> = {};
       let rearmed = 0;
@@ -417,7 +391,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
         })).finally(listing.done);
         for (const { agent, handle, watching } of listed) {
           if (stopped) return;
-          const reason = rearmSkipReason(agent, config.extendIdleCompaction) ?? disabledReason(agent.provider, config, agent.model);
+          const reason = rearmSkipReason(agent) ?? disabledReason(agent.provider, config, agent.model);
           if (reason) { skip(reason); watching.done(); continue; }
           if (timers.has(agent.id) || inFlightHasAgent(agent.id)) { skip("already-pending"); watching.done(); continue; }
           expectedUserMessage.set(agent.id, agent.lastUserMessageAt ?? null);
@@ -434,7 +408,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
             const fresh = read.after ?? (await handle.refresh())?.agent;
             if (stopped) return;
             if (!fresh) { skip("agent-unavailable"); continue; }
-            const freshReason = rearmSkipReason(fresh, config.extendIdleCompaction);
+            const freshReason = rearmSkipReason(fresh);
             if (freshReason) { skip(freshReason); continue; }
             const remembered = await store.latestTurn(agent.id);
             const recovered = recoverTurn(fresh, history, remembered);
@@ -458,7 +432,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
             if (generation !== (generations.get(agent.id) ?? 0) || timers.has(agent.id)) { skip("changed-during-recovery"); continue; }
             const cold = cacheExpired(fresh.provider, fresh.model, checkpoint.endedAt, now());
             // A cold agent is compacted only when its context reaches the threshold; otherwise it stays a cache-expired skip.
-            if (cold && (cacheExpiredSkip(fresh.provider, fresh.model, checkpoint.endedAt, now(), config) ||
+            if (cold && (cacheExpiredSkip(fresh.provider, fresh.model, checkpoint.endedAt, now()) ||
               (fresh.lastUsage?.contextWindowUsedTokens ?? 0) < config.thresholdTokens)) { skip("cache-expired"); continue; }
             const delay = recoveryDelay(fresh.provider, checkpoint.endedAt, config, now(), random, fresh.model);
             expectedUserMessage.set(agent.id, checkpoint.lastUserMessageAt);
@@ -623,7 +597,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     ensureSubscription(client, "startup");
   }).catch((error) => { if (!stopped) log("startup-rearm-failed", { reason: safeError(error) }); });
 
-  void readConfig().then((config) => {
+  void dependencies.readConfig().then((config) => {
     log("started", {
       mode: config?.armed === true ? "armed" : "dry-run",
       armed: config?.armed === true,
