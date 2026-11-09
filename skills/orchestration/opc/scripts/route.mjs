@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { canonicalWorkerClass, isUiRoute, materializeFixedRoute, OWNER_RULE_ROUTES, recordedLaneEntry, routeReason, selectWorkerRoute,
+import { canonicalWorkerClass, isUiRoute, OWNER_RULE_ROUTES, recordedLaneEntry, routeReason, selectWorkerRoute,
   uiTaskLaneClass, validateLaneClass, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
 import { defaultRoutingPath, readQuota, readRoutingSettings, ROUTING_DEFAULTS } from './quota-pace.mjs';
 import { readTask, updateTask } from './task-state.mjs';
@@ -135,12 +135,6 @@ async function main(argv) {
         'without route flags, or resolve a new lane');
     }
     return { route: recorded.route, reason: recorded.reason };
-  }
-  if (flags.class === 'planner' && !flags['owner-model']) {
-    if (flags.task) throw Error('planner rounds are recorded by planner.mjs, not as a Worker lane');
-    const catalog = await readCatalog(flags.catalog);
-    return { route: materializeFixedRoute('planner', catalog),
-      reason: 'planner fixed: Sol xhigh, Fast on, read-only Pi lane' };
   }
   if (!ownerRoute && !flags.class) throw Error(usage);
   const catalog = ownerRoute ? null : await readCatalog(flags.catalog);

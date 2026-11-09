@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { validateRecordedWorkerRoute } from './agent-routing.mjs';
 
-// Recorded routes and planner rounds are checked for shape only; the routing tables apply once, when they are recorded.
+// Recorded routes are checked for shape only; the routing tables apply once, when they are recorded.
 const efforts = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 const identity = task => JSON.stringify([
@@ -80,40 +80,6 @@ export function within(child, parent) {
 function catalogRound(round, label, role) {
   return round.role === role && round.catalog_label === label && typeof round.catalog_model_id === 'string' &&
     round.catalog_model_id.length > 0 && ['pi', 'codex', 'claude'].some(provider => round.provider === `${provider}/${round.catalog_model_id}`);
-}
-
-function validatePlanner(planner) {
-  if (planner == null) return;
-  const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-  const text = value => typeof value === 'string' && value.trim().length > 0;
-  const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(value);
-  if (!object(planner) || !Array.isArray(planner.rounds) || planner.rounds.length > 1) throw Error('invalid planner record');
-  const ids = new Set(), agents = new Set();
-  for (const [index, round] of planner.rounds.entries()) {
-    if (!object(round) || !uuid(round.id) ||
-        !(catalogRound(round, 'Sol', 'planner') && round.provider.startsWith('pi/')) ||
-        !['launching', 'running', 'uncertain', 'failed', 'planned'].includes(round.status)) {
-      throw Error('invalid planner round');
-    }
-    if (ids.has(round.id)) throw Error('duplicate planner round identity');
-    ids.add(round.id);
-    if (index !== 0 || round.effort !== 'xhigh') throw Error('invalid Sol planner route');
-    const terminal = ['failed', 'planned'].includes(round.status);
-    const active = !terminal;
-    if (active && index !== planner.rounds.length - 1) throw Error('only the latest planner round may be nonterminal');
-    if (!Object.hasOwn(round, 'agent_id') || (round.agent_id !== null && !text(round.agent_id)) ||
-        ((round.status === 'running' || round.status === 'planned') && !text(round.agent_id)) ||
-        (['launching', 'uncertain'].includes(round.status) && round.agent_id !== null)) {
-      throw Error('invalid planner agent identity for state');
-    }
-    if (round.agent_id !== null) {
-      if (agents.has(round.agent_id)) throw Error('duplicate planner agent identity');
-      agents.add(round.agent_id);
-    }
-    if (round.status === 'failed' && !text(round.failure)) throw Error('failed planner round requires a reason');
-    if (round.status === 'planned' && !text(round.plan)) throw Error('completed planner round requires a plan');
-    if (!terminal && ['failure', 'plan'].some(key => Object.hasOwn(round, key))) throw Error('nonterminal planner round carries terminal fields');
-  }
 }
 
 // Structural bookkeeping checks, not a tamper-resistance boundary. GitHub remains authoritative.
@@ -203,7 +169,7 @@ function validate(task, path) {
   if (task.worker != null) {
     throw Error('task.worker holds a native CLI Worker record, which OPC 7.28 removed; create a fresh task');
   }
-  validatePlanner(task.planner);
+  // task.planner is the fixed planner record from OPC 7.58 and earlier. Nothing reads or checks it; an update carries it unchanged.
   validateReviewer(task.reviewer, task);
   // task.cloud is a lane record from OPC 7.40 and earlier. Nothing reads or checks it; an update carries it unchanged.
   validateRoutes(task.routes);
@@ -258,7 +224,6 @@ export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'H
     },
     contract_version: 2,
     status: 'ready',
-    planner: null,
     tests: null,
     merge: null,
     reviewer: null,

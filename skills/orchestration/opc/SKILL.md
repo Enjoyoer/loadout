@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.58.2"
+  version: "7.59"
 ---
 
 # OPC
@@ -25,7 +25,7 @@ Enable browser review only when the initial request explicitly asks; the choice 
 
 ## 2. Optional scouting
 
-Choose minimal useful scouting topology, splitting only independent questions. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify the [planner](references/planner.md "branch:planning").
+Choose minimal useful scouting topology, splitting only independent questions. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify a read-only `plan` Worker.
 
 ## 3. Worker
 
@@ -51,6 +51,6 @@ Independently check required behavior and final committed deliverable bytes usin
 
 ## 7. Merge and cleanup
 
-PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. Report test, integration, and PR evidence, review verdict/head or unavailability, planner outcome and Worker usage, remaining issues, and cleanup gaps separately.
+PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. Report test, integration, and PR evidence, review verdict/head or unavailability, Worker usage, remaining issues, and cleanup gaps separately.
 
 For package maintenance only, use [maintenance](references/maintenance.md "branch:maintenance").

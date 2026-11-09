@@ -13,7 +13,6 @@ export function isValidModelId(value) {
 
 export const FIXED_ROLE_ROUTES = Object.freeze({
   scout: Object.freeze({ label: 'Sol', fallbackProvider: 'codex', effort: 'xhigh', fastMode: true }),
-  planner: Object.freeze({ label: 'Sol', fallbackProvider: 'codex', effort: 'xhigh', fastMode: true }),
   reviewer: Object.freeze({ label: 'Web Pro', fallbackProvider: 'codex', effort: null, fastMode: false }),
 });
 
@@ -405,27 +404,19 @@ export function buildDelegatedBrief({ role, route, brief, reason = null, task = 
   return `Fixed route for this ${role} lane: ${line}. This route is not a suggestion. You cannot delegate, launch another agent, choose another route, or substitute a model or effort. If this route fails, stop this lane and report the failure to the PM.\n\n${role === 'worker' ? `${WORKER_TESTING_RULE}\n\n` : ''}${brief}`;
 }
 
-export function selectTopology({ scale, independentQuestions = 0, findingsConverged = false,
-  materialAmbiguity = false, crossLaneDecision = false, browserReview = false, ui = false } = {}) {
+export function selectTopology({ scale, independentQuestions = 0, browserReview = false, ui = false } = {}) {
   if (!['trivial', 'normal', 'cross-cutting'].includes(scale)) throw Error('task scale must be trivial, normal, or cross-cutting');
   if (!Number.isSafeInteger(independentQuestions) || independentQuestions < 0) throw Error('independent question count must be a nonnegative integer');
-  if ([findingsConverged, materialAmbiguity, crossLaneDecision, browserReview, ui].some(value => typeof value !== 'boolean')) {
+  if ([browserReview, ui].some(value => typeof value !== 'boolean')) {
     throw Error('topology decisions must be explicit booleans');
   }
   if (ui && browserReview) throw Error('UI work never uses the web reviewer (owner rule)');
-  // UI work runs no GPT scouts or planner (owner rule); the PM explores and plans itself.
+  // UI work runs no GPT scouts (owner rule); the PM explores itself.
   const cap = scale === 'trivial' || ui ? 0 : scale === 'normal' ? 2 : 3;
   const scoutCount = Math.min(cap, independentQuestions);
-  const plannerNeeded = scale !== 'trivial' && !findingsConverged && (materialAmbiguity || crossLaneDecision);
-  const planner = plannerNeeded && !ui;
   return Object.freeze({
     scoutCount,
     scoutRoute: scoutCount ? FIXED_ROLE_ROUTES.scout : null,
-    planner,
-    plannerRoute: planner ? FIXED_ROLE_ROUTES.planner : null,
-    plannerSkipReason: planner ? null : ui && plannerNeeded ? 'UI work never uses the GPT planner'
-      : findingsConverged ? 'scout findings converge into an implementable plan'
-        : scale === 'trivial' ? 'trivial or localized work' : 'no material synthesis ambiguity',
   });
 }
 
