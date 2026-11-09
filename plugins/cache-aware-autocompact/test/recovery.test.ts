@@ -80,7 +80,6 @@ function harness() {
   const timers = new FakeTimers();
   const histories = new Map<string, FetchAgentTimelinePayload>();
   const historyErrors = new Map<string, Error>();
-  const metrics: Record<string, unknown>[] = [];
   let pageSize = 200;
   let historyGate: Promise<void> | null = null;
   let historyCalls = 0;
@@ -121,7 +120,7 @@ function harness() {
     hooks.set(name, callback); return () => { hooks.delete(name); };
   } } as unknown as PluginServerContext;
   return {
-    timers, logs, sends, kills, archives, histories, historyErrors, metrics, api,
+    timers, logs, sends, kills, archives, histories, historyErrors, api,
     setAgents(agents: PaseoAgent[]) { snapshots = agents; },
     setNow(value: number) { now = value; },
     failBootstrap() { bootstrapFails = true; },
@@ -137,10 +136,10 @@ function harness() {
       hooks.get(name)?.(event as never, { paseo: contextApi, signal: new AbortController().signal });
     },
     writeStateWith(writer: WriteJson) { writeJson = writer; },
-    start(store: StateStore | undefined, armed = true, piGptEnabled = false, extendIdleCompaction = true) {
+    start(store: StateStore | undefined, armed = true, piGptEnabled = false) {
       if (store) stores.add(store);
-      cleanup = startScheduler(server, { store, writeJson, timerApi: timers, metrics: { append: async (record) => { metrics.push(record); } },
-        now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed, codexEnabled: true, piGptEnabled, extendIdleCompaction }),
+      cleanup = startScheduler(server, { store, writeJson, timerApi: timers,
+        now: () => now, random: () => 0.5, readConfig: async () => defaultConfig({ armed, codexEnabled: true, piGptEnabled }),
         openApi: async () => { if (bootstrapFails) throw new Error("Unavailable"); return api; },
         // kill_agent closes the agent, so the daemon lists it closed from then on, as a later recovery's list shows.
         killAgent: async (agentId) => { kills.push(agentId); snapshots = snapshots.map((a) => a.id === agentId ? { ...a, status: "closed" as const } : a); },
@@ -263,19 +262,16 @@ describe("Pi scheduler", () => {
 });
 
 describe("cache TTL guards", () => {
+  // Claude-family agents compact once when cold; Codex-family cold skips are terminal.
   const routes = [
-    { provider: "claude", model: "model", ttl: 60 },
     { provider: "codex", model: "model", ttl: 30 },
-    { provider: "pi", model: "fleet/claude-opus-5-5", ttl: 60 },
     { provider: "pi", model: "fleet/gpt-6.1-sol", ttl: 30 },
   ];
   for (const route of routes) {
-    // Claude-family cold skips are the extendIdleCompaction=false behavior; Codex-family skips hold by default.
-    const extend = route.ttl !== 60;
     it(`skips cold ${route.provider}/${route.model} recovery at and beyond TTL`, async () => {
       await fixture(async f => {
         f.setAgents([agent(route)]); f.setNow(endedMs + route.ttl * 60_000);
-        f.start(f.store, true, true, extend); await f.recovered();
+        f.start(f.store, true, true); await f.recovered();
         assert.equal(f.timers.pending.size, 0);
         assert.equal((f.logs.find(l => l.action === "rearm-summary")!.data.skipped as Record<string, number>)["cache-expired"], 1);
         f.timers.fire(); assert.deepEqual(f.sends, []);
@@ -284,7 +280,7 @@ describe("cache TTL guards", () => {
     });
     it(`refuses a late ${route.provider}/${route.model} timer at TTL`, async () => fixture(async f => {
       f.setAgents([agent(route)]); f.setNow(endedMs + (route.ttl - 1) * 60_000);
-      f.start(f.store, true, true, extend); await f.recovered();
+      f.start(f.store, true, true); await f.recovered();
       assert.equal(f.timers.pending.size, 1);
       f.setNow(endedMs + route.ttl * 60_000); f.timers.fire();
       await until(() => f.logs.some(l => l.data.reason === "cache-expired"));
@@ -297,7 +293,7 @@ describe("cache TTL guards", () => {
       page.entries[0]!.item = { type: "tool_call", callId: "tool1", name: "tool", detail: { type: "plain_text", text: "work" }, status: "running", error: null };
       f.setAgents([a]); f.histories.set(a.id, page);
       f.setNow(endedMs + (route.ttl - 1) * 60_000);
-      f.start(f.store, true, true, extend); await f.recovered(); f.timers.fire();
+      f.start(f.store, true, true); await f.recovered(); f.timers.fire();
       await until(() => f.logs.some(l => l.action === "retry-scheduled"));
       f.setNow(endedMs + (route.ttl + 1) * 60_000); f.timers.fire();
       await until(() => f.logs.some(l => l.data.reason === "cache-expired"));
@@ -329,12 +325,6 @@ describe("extended idle compaction", () => {
     f.update(agent({ status: "error", attentionReason: "error" }));
     await until(() => f.logs.some(l => l.action === "timer-started"));
     assert.equal(f.timers.pending.size, 1);
-  }));
-  it("skips the cold 150k Claude agent as cache-expired with the flag off", async () => fixture(async f => {
-    f.setAgents([agent({ lastUsage: { contextWindowUsedTokens: 150_000 } })]);
-    f.setNow(cold); f.start(f.store, true, false, false); await f.recovered();
-    assert.equal(f.timers.pending.size, 0);
-    assert.equal((f.logs.find(l => l.action === "rearm-summary")!.data.skipped as Record<string, number>)["cache-expired"], 1);
   }));
 });
 
@@ -447,7 +437,7 @@ describe("restart recovery", () => {
     assert.equal(f.timers.pending.size, 2);
   }));
 
-  it("records unknown context as a terminal skip with no retry or compaction metric", async () => fixture(async (f) => {
+  it("records unknown context as a terminal skip with no retry", async () => fixture(async (f) => {
     f.setAgents([agent({ lastUsage: undefined })]);
     f.start(f.store); await f.recovered();
     f.timers.fire();
@@ -460,7 +450,6 @@ describe("restart recovery", () => {
     assert.equal(records[0]?.reason, "context-unknown");
     assert.equal(f.timers.pending.size, 0);
     assert.deepEqual(f.sends, []);
-    assert.deepEqual(f.metrics, []);
     assert.equal(f.logs.some((line) => line.action === "retry-scheduled"), false);
     f.snapshot();
     await until(() => f.logs.some((line) => line.action === "rearm-summary" &&
