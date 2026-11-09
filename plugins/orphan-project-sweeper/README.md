@@ -36,13 +36,10 @@ project's custom icon when deleting its row (see Recovery).
 ## Triggers
 
 - **Startup sweep**: 5 seconds after the plugin loads, every project is evaluated once.
-- **`workspace.archived` hook**: the hook records the `projectId` and returns
-  immediately (hooks abort after 30 seconds). A module-scope timer re-checks live
-  state up to 5 times over about 5 minutes (10s, 30s, 60s, 90s, 120s), because archive
-  events can fire before worktree cleanup. A re-check ends early only once the project is
-  deleted (or `would-delete` when unarmed) or gone; a final check that changed or a failed
-  `removeProject` leaves the remaining attempts. Candidates are deduplicated per project and
-  capped at 64; anything dropped is caught by the next startup sweep.
+  The daemon may not accept connections yet while it is still loading plugins, so a sweep
+  that cannot connect retries after 5s, 10s, 20s, 40s, then every 60s, for up to 10 minutes.
+- **Periodic sweep**: when a sweep ends (or gives up), the next full sweep runs after
+  `sweepIntervalHours` (default 6), with the same connection retries.
 
 Every decision logs one stdout line (`paseo plugin logs orphan-project-sweeper`) with
 `projectId`, `path`, and a reason (including `would-delete` when unarmed and
@@ -52,7 +49,7 @@ or `project-missing`. The project is re-evaluated immediately before each delete
 mount checks first, then the daemon's workspace count, then the root, parent and mount checks
 once more right before `removeProject`; any absent or unverifiable state skips the delete. A
 workspace listing that is incomplete (a page reports more without a cursor, a cursor repeats,
-or it runs past 50 pages) aborts the sweep or re-check without deleting anything. The
+or it runs past 50 pages) aborts the sweep without deleting anything. The
 daemon's `project.remove.request` carries only the project ID, so it cannot refuse a row that
 changed after that last check; closing the remaining gap needs a daemon-side precondition on the
 request.
@@ -79,7 +76,7 @@ from 0.9.2 to 0.13.0.
 Paseo 0.12 and later leave background workspaces out of `fetchWorkspaces` unless the
 request asks for them, and Paseo's own project delete archives them with the project. So
 whenever the daemon advertises background workspaces (`supportsBackgroundWorkspaces()`),
-every workspace page of a sweep, a re-verify and an archive re-check asks for them with
+every workspace page of a sweep and a re-verify asks for them with
 `filter: { includeBackground: true }`. Older daemons have no background workspaces, and the
 0.13.0 client refuses that filter there, so their pages carry none. The 0.11.1 client
 could not send the filter at all: through 0.2.0, a project whose only active workspaces were
@@ -92,10 +89,10 @@ and a removed directory, and armed it deleted that row while the live fixture pr
 remained. Version 0.2.1 (0.13.0 client) was proven on disposable 0.10.3, 0.11.1 and 0.13.0
 daemons: a project whose root was removed but which kept one active workspace (background
 on 0.13.0, where 0.2.0 logged `would-delete` for it) was kept as `active-workspaces` by the
-archive re-check and by the armed sweep, and a truly orphaned project was deleted.
+armed sweep, and a truly orphaned project was deleted.
 Re-check before admitting 0.14.
 
-The plugin opens a short-lived local connection per sweep or re-check, the same way the
+The plugin opens a short-lived local connection per sweep, the same way the
 Paseo CLI does. The daemon address is resolved from `PASEO_HOST`, then
 `$PASEO_HOME/paseo.pid`, then `127.0.0.1:6767` only for the default home. A non-default home without valid listen metadata refuses to connect. esbuild bundles `@getpaseo/client`
 into the server bundle (only the plugin SDK specifiers and `zod` stay external), so
@@ -106,14 +103,14 @@ into the server bundle (only the plugin SDK specifiers and `zod` stay external),
 Host-scoped settings registered with `server.registerSettings`, stored at
 `<PASEO_HOME>/plugin-settings/orphan-project-sweeper/config.json` as
 `{"version":1,"values":{...}}`. A missing file uses defaults. Settings are re-read
-before each startup sweep or deferred archive re-check, so edits apply to the next
-sweep without a reload. Unknown keys, malformed documents, unsupported settings
+before each sweep, so edits apply to the next sweep without a reload. Unknown keys, malformed documents, unsupported settings
 versions, or read failures log a settings error and evaluate in dry-run with defaults.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `armed` | `false` | Only JSON boolean `true` allows deletion. Every other value is dry-run. |
 | `maxDeletesPerSweep` | `5` | Positive safe integer limiting successful deletions per sweep. Invalid values fall back to `5` and log the invalid setting. |
+| `sweepIntervalHours` | `6` | Integer hours from 1 to 168 between the end of one sweep and the next. Read when a sweep ends. Invalid values fall back to `6` and log the invalid setting. |
 
 To arm, set `values.armed` to `true` in that host's settings document. For example:
 
@@ -123,9 +120,7 @@ To arm, set `values.armed` to `true` in that host's settings document. For examp
 
 A full sweep deletes at most the cap, then logs `cap-reached` with each remaining
 candidate's project ID, path, and reason. Those rows stay for the next sweep.
-There is no periodic full sweep: the next startup sweep (plugin load) or a later
-archive event can revisit them. Each deferred archive re-check evaluates one project
-and has its own sweep budget. Dry-run uses the same cap for `would-delete` previews.
+The next periodic sweep revisits them. Dry-run uses the same cap for `would-delete` previews.
 Skipped candidates and failed deletions do not consume the cap. Every delete or
 `would-delete` preview re-evaluates the project against live daemon and filesystem
 state immediately before the decision.

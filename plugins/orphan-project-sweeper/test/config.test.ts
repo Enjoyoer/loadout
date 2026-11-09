@@ -23,7 +23,7 @@ it("invalid caps fall back to five and log the setting and fallback", () => {
   for (const cap of [0, -1, 1.5, "2", null, false, {}, [], NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
     const logs: string[] = [];
     const config = readConfig({ armed: true, maxDeletesPerSweep: cap }, (line) => logs.push(line));
-    assert.deepEqual(config, { armed: true, maxDeletesPerSweep: 5 });
+    assert.deepEqual(config, { armed: true, maxDeletesPerSweep: 5, sweepIntervalHours: 6 });
     assert.equal(logs.length, 1);
     assert.match(logs[0]!, /config-invalid setting=maxDeletesPerSweep .*fallback=5/);
   }
@@ -32,7 +32,7 @@ it("invalid caps fall back to five and log the setting and fallback", () => {
 it("malformed documents and unknown keys fall back to unarmed defaults with a log", () => {
   for (const values of [null, [], "true", { armed: true, armd: true }]) {
     const logs: string[] = [];
-    assert.deepEqual(readConfig(values, (line) => logs.push(line)), { armed: false, maxDeletesPerSweep: 5 });
+    assert.deepEqual(readConfig(values, (line) => logs.push(line)), { armed: false, maxDeletesPerSweep: 5, sweepIntervalHours: 6 });
     assert.match(logs[0]!, /config-invalid fallback=dry-run/);
   }
 });

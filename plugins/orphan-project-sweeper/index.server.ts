@@ -28,17 +28,10 @@ export default function contribute(server: PluginServerContext) {
     },
   });
 
-  // Archive events can fire before worktree cleanup and are best effort, so the hook
-  // only records the candidate; a module-scope timer re-checks live state later.
-  // Hooks abort after 30s, so nothing here waits.
-  const removeHook = server.on("workspace.archived", (event) => {
-    sweeper.noteArchivedWorkspace(event.workspace);
-  });
-
+  // A startup sweep that retries until the daemon accepts connections, then a slow periodic sweep.
   sweeper.scheduleStartupSweep();
 
   return () => {
-    removeHook();
     sweeper.stop();
   };
 }

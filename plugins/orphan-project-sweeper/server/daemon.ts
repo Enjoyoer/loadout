@@ -14,6 +14,9 @@ export { resolveDaemonTarget, type DaemonTarget } from "./vendor/daemon-target.t
 const CONNECT_TIMEOUT_MS = 10_000;
 const clientId = `cid_plugin_orphan_sweeper_${randomUUID().replace(/-/g, "")}`;
 
+/** The daemon did not accept the connection; nothing was read or changed. */
+export class DaemonConnectError extends Error {}
+
 /** Open a connection, run `fn`, and always close the connection afterwards. */
 export async function withDaemon<T>(fn: (client: DaemonClient) => Promise<T>): Promise<T> {
   const target = resolveDaemonTarget();
@@ -30,7 +33,7 @@ export async function withDaemon<T>(fn: (client: DaemonClient) => Promise<T>): P
   } catch (error) {
     await client.close().catch(() => undefined);
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`cannot connect to Paseo daemon at ${target.url} (${target.source}): ${message}`);
+    throw new DaemonConnectError(`cannot connect to Paseo daemon at ${target.url} (${target.source}): ${message}`);
   }
   try {
     return await fn(client);
