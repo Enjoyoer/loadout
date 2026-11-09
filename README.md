@@ -83,7 +83,7 @@ python3 scripts/sync.py
 
 Sync validates and pushes fleet config, then handles skills, global instructions, plugins, provider pickers, and Codex and Claude Code settings for opted-in hosts. It verifies published bytes and protects local edits. Resolve `conflict`, `blocked`, or `FAILED` rows instead of forcing past them; a skipped scope is not a successful install. Edit fleet files only on the source host.
 
-Skills you keep private (personal, account-bound, or holding credentials) go in `skills/<name>/` inside your fleet directory. The same sync installs them next to the published ones, and they are never committed or pushed. After changing a host's `plugin_root`, plugins installed from the old directory report `blocked`; `sync.py --migrate-path` moves them and keeps their settings (see the `personal-skills` skill).
+Skills you keep private (personal, account-bound, or holding credentials) go in `skills/<name>/` inside your fleet directory. The same sync installs them next to the published ones, and they are never committed or pushed. After changing a host's `plugin_root`, plugins installed from the old directory report `blocked`; move them by hand as the `personal-skills` skill describes.
 
 ### 3. Run the core loop
 
