@@ -177,6 +177,8 @@ def validate(data: Any) -> dict:
         paseo = host.get("paseo")
         if paseo is not None:
             _keys(paseo, PASEO_KEYS, f"{where}.paseo")
+            if not isinstance(paseo.get("plugin_root"), str) or not paseo["plugin_root"]:
+                raise FleetError(f"{where}.paseo.plugin_root must be a directory path")
             stage = _strings(paseo.get("stage", []), f"{where}.paseo.stage")
             install = _strings(paseo.get("install", []), f"{where}.paseo.install")
             if not set(install) <= set(stage):

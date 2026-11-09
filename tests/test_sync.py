@@ -192,22 +192,5 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(built.call_count, 1)
 
 
-class SyncFlagsTest(unittest.TestCase):
-    def test_migrate_path_reaches_the_plugins_step(self):
-        sys.path.insert(0, str(SCRIPTS))
-        import plugins_sync
-        import sync
-        seen = []
-        original = plugins_sync.preflight
-        plugins_sync.preflight = lambda *args: seen.append(args[-1]) or {}
-        try:
-            for flag in ([], ["--migrate-path"]):
-                args = sync.argparse.Namespace(dry_run=True, migrate_path=bool(flag), update_claude=False)
-                sync.preflight("plugins", {}, None, [], args, print)
-        finally:
-            plugins_sync.preflight = original
-        self.assertEqual(seen, [False, True])
-
-
 if __name__ == "__main__":
     unittest.main()

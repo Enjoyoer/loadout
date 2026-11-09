@@ -67,7 +67,7 @@ Put skills that must stay private (personal, account-bound, or holding credentia
   - `checkout`: path to a local Git checkout of this repository, or `null` (the default). A host without a checkout receives verified bytes from the source host and reverifies them.
   - `clients`: clients to sync, from `codex`, `claude`, `opencode`. Required when `sync` includes `skills`. Absent clients are skipped and reported.
   - `paseo`: optional. Paseo plugin sync for this host's daemon. Required when `sync` includes `plugins`.
-    - `plugin_root`: directory where verified plugin sources are staged, one subdirectory per plugin ID. `null` means this host's plugins are managed outside the sync; the sync only reports whether they match the manifest. Changing it for a host with installed plugins needs `sync.py --migrate-path` once.
+    - `plugin_root`: directory where verified plugin sources are staged, one subdirectory per plugin ID. Changing it for a host with installed plugins needs the manual move in the `Paseo plugins` section of `SKILL.md`.
     - `stage`: plugin IDs whose verified source is copied to `plugin_root`, installed with `npm ci`, and checked.
     - `install`: plugin IDs, a subset of `stage`, authorized for `paseo plugin install` on this daemon. List a plugin here only after its host-local settings and arming have been decided.
 - `global`: optional. Maps each client to where `global/AGENTS.md` is installed. A target is a path starting with `~`, `/`, `$VAR` or `${VAR}`, `%VAR%`, or a drive such as `C:\`, and must be absolute once the host expands it. `fleet.py validate` rejects anything else, and a host refuses a target that is not absolute or names a variable it does not set, so text is never written as a file.

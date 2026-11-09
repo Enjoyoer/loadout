@@ -93,7 +93,7 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual([h["name"] for h in fleet.hosts_for(got, "providers")], ["laptop", "desktop", "tablet"])
 
     def test_version_1_keeps_free_text_transport_and_default_sync(self):
-        paseo = {"plugin_root": None, "stage": [], "install": []}
+        paseo = {"plugin_root": "~/plugins", "stage": [], "install": []}
         got = fleet.validate(fleet_doc(host("a", paseo=paseo), host("b"), transport="ssh over a VPN"))
         self.assertEqual([(h["transport"], h["sync"]) for h in got["hosts"]],
                          [("ssh", ["skills", "plugins"]), ("ssh", ["skills"])])
@@ -142,7 +142,7 @@ class ValidateTest(unittest.TestCase):
         self.check_error(fleet_doc(host("a"), host("b", sync=["plugins"])), "no paseo entry")
 
     def test_install_subset_of_stage(self):
-        paseo = {"plugin_root": None, "stage": ["x"], "install": ["y"]}
+        paseo = {"plugin_root": "~/plugins", "stage": ["x"], "install": ["y"]}
         self.check_error(fleet_doc(host("a", paseo=paseo)), "subset")
 
     def test_duplicate_host_and_bad_os(self):

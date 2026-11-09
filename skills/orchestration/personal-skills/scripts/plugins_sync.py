@@ -4,13 +4,8 @@
 Each host's `paseo` entry authorizes the steps: `stage` copies verified source to
 `plugin_root` and runs `npm ci` plus the package check; `install` (a subset)
 installs or reloads on the daemon, only when the daemon version is inside the
-plugin's pin and `pluginsEnabled` is already true. A host with
-`plugin_root: null` only reports whether its installed source matches.
-The sync never writes plugin settings, plugin state, or pluginsEnabled. The
-exception is --migrate-path, for a plugin installed from another directory:
-`paseo plugin remove` deletes its settings, so the migration backs them up,
-removes, installs from plugin_root, restores the same bytes (hash-verified),
-and reloads.
+plugin's pin and `pluginsEnabled` is already true.
+The sync never writes plugin settings, plugin state, or pluginsEnabled.
 """
 
 from __future__ import annotations
@@ -62,32 +57,27 @@ def describe(result: dict, dry_run: bool = False) -> list:
         cli = f" (CLI {daemon['cli']})" if daemon.get("cli") and daemon["cli"] != daemon["version"] else ""
         lines[0] += f"; daemon {daemon['version']}{cli}, pluginsEnabled {str(daemon['pluginsEnabled']).lower()}"
     for plugin_id, info in result["plugins"].items():
-        if "state" in info:
-            detail = f" ({', '.join(info['differ'])})" if info.get("differ") else ""
-            lines.append(f"  {plugin_id}: installed source {info['state']}{detail}")
-        else:
-            parts = [f"staged {info['staged']}"]
-            removed = info.get("removed", [])
-            if removed:
-                more = f" (+{len(removed) - 8} more)" if len(removed) > 8 else ""
-                parts.append(f"{'would remove' if dry_run else 'removed'} unpublished {', '.join(removed[:8])}{more}")
-            if info["checked"]:
-                parts.append(f"check {info['checked']}")
-            if info["installed"]:
-                # owed: why an unchanged plugin is reloaded (an earlier activation was never confirmed).
-                parts.append(info["installed"] + (f" (reload owed: {info['owed']})" if info.get("owed") else ""))
-            if info["running"] is not None:
-                parts.append("running" if info["running"] else "NOT running")
-            lines.append(f"  {plugin_id}: {'; '.join(parts)}")
+        parts = [f"staged {info['staged']}"]
+        removed = info.get("removed", [])
+        if removed:
+            more = f" (+{len(removed) - 8} more)" if len(removed) > 8 else ""
+            parts.append(f"{'would remove' if dry_run else 'removed'} unpublished {', '.join(removed[:8])}{more}")
+        if info["checked"]:
+            parts.append(f"check {info['checked']}")
+        if info["installed"]:
+            # owed: why an unchanged plugin is reloaded (an earlier activation was never confirmed).
+            parts.append(info["installed"] + (f" (reload owed: {info['owed']})" if info.get("owed") else ""))
+        if info["running"] is not None:
+            parts.append("running" if info["running"] else "NOT running")
+        lines.append(f"  {plugin_id}: {'; '.join(parts)}")
     return lines
 
 
-def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[str], None],
-              migrate_path: bool = False) -> dict:
+def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool, emit: Callable[[str], None]) -> dict:
     """Read the publication once per sync, so every host gets the same source commit."""
     pub = publication.Publication(publication.find_checkout(fleet_doc))
     emit(f"source_commit {pub.source[:12]}")
-    return {"fleet_doc": fleet_doc, "dry_run": dry_run, "migrate_path": migrate_path, "pub": pub}
+    return {"fleet_doc": fleet_doc, "dry_run": dry_run, "pub": pub}
 
 
 def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
@@ -95,10 +85,8 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
     paseo = host["paseo"]
     pub = state["pub"]
     ids = paseo.get("stage", []) or [p["id"] for p in pub.manifest["plugins"]]
-    payload = {"dry_run": state["dry_run"], "migrate_path": state["migrate_path"],
-               "plugin_root": paseo.get("plugin_root"),
-               "stage": paseo.get("stage", []) if paseo.get("plugin_root") is not None else [],
-               "install": paseo.get("install", []) if paseo.get("plugin_root") is not None else [],
+    payload = {"dry_run": state["dry_run"], "plugin_root": paseo["plugin_root"],
+               "stage": paseo.get("stage", []), "install": paseo.get("install", []),
                "plugins": plugin_payload(pub, ids)}
     # Config reads, settings backups, installs, reloads and `plugin ls` all address the host's paseo_home, if set.
     result, output = fleet.run_node(name, name == state["fleet_doc"]["source_host"], REMOTE_JS, payload,
@@ -112,9 +100,8 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
     return "FAILED" if result["status"] == "failed" else result["status"]
 
 
-def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Callable[[str], None],
-        migrate_path: bool = False) -> dict:
-    state = preflight(fleet_doc, fleet_dir, dry_run, emit, migrate_path)
+def run(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, emit: Callable[[str], None]) -> dict:
+    state = preflight(fleet_doc, fleet_dir, dry_run, emit)
     return {host["name"]: run_host(state, host, emit) for host in targets}
 
 
@@ -122,8 +109,6 @@ def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true", help="preflight and report without writing")
     parser.add_argument("--host", help="sync only this fleet host")
-    parser.add_argument("--migrate-path", action="store_true",
-                        help="move plugins installed from another directory to plugin_root, keeping their settings")
     args = parser.parse_args(argv)
     source = fleet.resolve()
     print(fleet.describe(source))
@@ -132,12 +117,11 @@ def main(argv: Optional[list] = None) -> int:
             raise fleet.FleetError("no fleet directory")
         fleet_doc = fleet.load(source.path)
         targets = fleet.select(fleet_doc, "plugins", args.host)
-        statuses = run(fleet_doc, source.path, targets, args.dry_run, lambda line: print("  " + line, flush=True),
-                       args.migrate_path)
+        statuses = run(fleet_doc, source.path, targets, args.dry_run, lambda line: print("  " + line, flush=True))
     except fleet.FleetError as error:
         print(f"invalid: {error}", file=sys.stderr)
         return 2 if isinstance(error, fleet.HostSelectionError) else 1
-    return 0 if all(s in ("same", "updated", "would update", "drift") for s in statuses.values()) else 1
+    return 0 if all(s in ("same", "updated", "would update") for s in statuses.values()) else 1
 
 
 if __name__ == "__main__":

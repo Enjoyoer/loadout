@@ -25,7 +25,7 @@ import plugins_sync
 import skills_sync
 
 STEPS = ("fleet", "skills", "plugins", "providers", "client-config")
-OK = {"same", "updated", "would update", "not needed", "source", "drift", "skipped", "-"}
+OK = {"same", "updated", "would update", "not needed", "source", "skipped", "-"}
 STOPS = {"conflict"}
 
 
@@ -37,7 +37,7 @@ def preflight(step: str, doc: dict, fleet_dir, targets: list, args, emit: Callab
     if step == "skills":
         module, state = skills_sync, skills_sync.preflight(doc, fleet_dir, args.dry_run, emit)
     elif step == "plugins":
-        module, state = plugins_sync, plugins_sync.preflight(doc, fleet_dir, args.dry_run, emit, args.migrate_path)
+        module, state = plugins_sync, plugins_sync.preflight(doc, fleet_dir, args.dry_run, emit)
     elif step == "providers":
         module, state = paseo_providers, paseo_providers.preflight(doc, fleet_dir, args.dry_run)
     else:
@@ -87,8 +87,6 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="preflight and report everything without writing")
     parser.add_argument("--host", help="sync only this fleet host")
     parser.add_argument("--only", help=f"comma-separated steps from {','.join(STEPS)} (default: all)")
-    parser.add_argument("--migrate-path", action="store_true",
-                        help="plugins: move plugins installed from another directory to plugin_root, keeping settings")
     parser.add_argument("--update-claude", action="store_true", help="client-config: run `claude update` below minVersion")
     args = parser.parse_args(argv)
     steps = list(STEPS)
