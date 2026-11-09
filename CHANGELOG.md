@@ -69,6 +69,14 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ### Removed
 
+- personal-skills: the `paseo-relay` transport. `hosts.json` takes only `ssh` (top level and per host); a host's optional `paseo_offer` still reloads its daemon through the offer. Gone with it: the relay workspace terminal, prompt wait, resend, chunked staging, workspace cleanup and its warning, the `LOADOUT_RELAY_*` test timings, the fleet push's `not needed` status, and the relay line-fold handling in result parsing. The example `tablet` host is now an ssh host with `paseo_offer`.
+- personal-skills: the desktop picker patch (`scripts/pi/picker-patch.py`), its Windows launch guard (`picker-launch.ps1`) and the client preference script (`app-defaults.mjs`), with their tests and docs. The Pi deploy plan no longer prints an `app_preferences` hint.
+- personal-skills: native OpenCode Zen free-model support: the README section, `fleet/example/opencode-free-overlay.json`, its test file, the two free-ID checks in `paseo_providers.py`, and the `zenFree` branch in `fleet-routing.mjs`. The `opencode` client for skills and AGENTS.md is unchanged.
+- personal-skills: the `plugin_root: null` drift mode and `--migrate-path` (`sync.py`, `plugins_sync.py`). `plugin_root` is now a required path. A plugin installed from another directory is still `blocked`; `SKILL.md` keeps the manual move.
+- personal-skills: the `mds-bye` verify-only scope, the vendored `hosts/macos/mds-bye/` tree, `mds_bye.py`, `mds_bye_remote.js`, and the manifest's `host_files` section. A private fleet that lists `mds-bye` in a host's `sync` must drop it, or validation fails.
+- personal-skills: the legacy `fleet/local/` fallback beside the installed `SKILL.md`. The fleet resolves from `$LOADOUT_FLEET` or the config directory only.
+- `deprecated/` (the retired `claude-cloud` skill); git history keeps it.
+- OPC 7.58.3: `references/maintenance.md` drops two stale lines (a missing development folder and the OPC 5 cutover) and keeps the validate sentence.
 - Removed grilling, domain-modeling and pake (unused).
 - `pm-native-worker-guard` plugin, with its CI, Dependabot, vendoring and docs entries. PMs legitimately launch native Codex workers (OPC routes browser work to native Codex), and in dry-run the guard only logged false would-archive decisions. The fleet sync does not uninstall it from hosts; remove it there by hand.
 
