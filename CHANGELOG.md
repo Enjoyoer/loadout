@@ -4,6 +4,10 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 ## Unreleased
 
+### Removed
+
+- `dispatching-parallel-agents`: the skill is retired. It restated rules that OPC section 3 and OPN already carry (independent scopes, one integrator, verify returned work). It is gone from the `loadout-orchestration` Claude Code plugin and the README skill table, which now lists 24 skills. The skills sync retires an installed copy on its next run; git history keeps the files.
+
 ### Changed
 
 - `usage-limit-auto-resume` 0.3.9: the settings keys `maxAttempts`, `transientMaxAttempts` and `pmFallbackOptOutLabel`, ignored since 0.3.0, are removed from the schema. The schema stays strict, so a settings file that still sets any of them no longer parses; remove those keys before updating. Every other setting is unchanged.

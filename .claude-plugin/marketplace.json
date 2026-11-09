@@ -33,7 +33,6 @@
       "skills": [
         "./skills/orchestration/opc",
         "./skills/orchestration/opn",
-        "./skills/orchestration/dispatching-parallel-agents",
         "./skills/orchestration/handoff",
         "./skills/orchestration/repo-lessons",
         "./skills/orchestration/reassign-pm",
