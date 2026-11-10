@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { setImmediate } from "node:timers/promises";
 import { it, type TestContext } from "node:test";
 import { readConfig } from "../server/config.ts";
 import { OrphanProjectSweeper, type SweeperApi, type SweeperHost } from "../server/sweeper.ts";
@@ -264,43 +263,6 @@ it("a daemon without background workspaces gets no background filter, and its or
   await f.sweeper.sweep();
   assert.deepEqual(f.removed, ["project-0"]);
   assert.ok(f.fetchOptions.length > 0 && f.fetchOptions.every((options) => options?.filter === undefined), JSON.stringify(f.fetchOptions));
-});
-
-for (const armed of [false, true]) {
-  it(`archive re-check honors armed=${armed} and re-evaluates`, { timeout: 2000 }, async (t) => {
-    const f = await fixture(t, { armed });
-    t.mock.timers.enable({ apis: ["setTimeout"] });
-    f.sweeper.noteArchivedWorkspace({ id: "workspace-0", projectId: "project-0", cwd: path.join(f.root, "missing-0") });
-    t.mock.timers.tick(10_000);
-    // Drain async filesystem work, without advancing the re-check timer again. The wait is bounded by wall time, not by
-    // event-loop turns: thread-pool fs calls (the mount check reads fstab and mountinfo) can outlast many fast turns.
-    const decisionLogged = () => f.logs.some((line) => line.includes(`decision=${armed ? "delete" : "would-delete"} source=re-check`));
-    const deadline = Date.now() + 1500;
-    while (!decisionLogged() && Date.now() < deadline) await setImmediate();
-    assert.ok(decisionLogged(), "archive re-check completed");
-    assert.deepEqual(f.removed, armed ? ["project-0"] : []);
-    assert.deepEqual(f.calls, ["list", "fetch", "list", "fetch", ...(armed ? ["remove:project-0"] : [])]);
-  });
-}
-
-it("an archive re-check whose removeProject fails keeps its remaining re-checks", { timeout: 3000 }, async (t) => {
-  const f = await fixture(t, { armed: true });
-  f.state.failDelete = true;
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const drain = async (text: string) => {
-    const deadline = Date.now() + 1500;
-    while (!f.logs.some((line) => line.includes(text)) && Date.now() < deadline) await setImmediate();
-    // Let the re-check schedule its next attempt before the timer is advanced.
-    await setImmediate();
-    return f.logs.some((line) => line.includes(text));
-  };
-  f.sweeper.noteArchivedWorkspace({ id: "workspace-0", projectId: "project-0", cwd: path.join(f.root, "missing-0") });
-  t.mock.timers.tick(10_000);
-  assert.ok(await drain("decision=delete-failed source=re-check attempt=1/5"), f.logs.join("\n"));
-  f.state.failDelete = false;
-  t.mock.timers.tick(30_000);
-  assert.ok(await drain("decision=delete source=re-check attempt=2/5"), f.logs.join("\n"));
-  assert.deepEqual(f.removed, ["project-0"]);
 });
 
 it("on Windows a missing root under a junction is kept as mount-unverifiable, and one under plain folders stays a candidate", async (t) => {

@@ -1,6 +1,6 @@
 import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { withDaemon, type DaemonClient } from "./daemon.ts";
+import { DaemonConnectError, withDaemon, type DaemonClient } from "./daemon.ts";
 import { readConfig, type SweeperConfig } from "./config.ts";
 
 export type SweeperApi = Pick<DaemonClient, "listProjects" | "removeProject" | "supportsBackgroundWorkspaces"> & {
@@ -10,12 +10,14 @@ export type SweeperApi = Pick<DaemonClient, "listProjects" | "removeProject" | "
 
 const TAG = "[orphan-project-sweeper]";
 
-/** Delay before the one-shot startup sweep so plugin load does not race the daemon. */
+/** Delay before the startup sweep so plugin load does not race the daemon. */
 export const STARTUP_SWEEP_DELAY_MS = 5_000;
-/** Deferred re-check schedule after workspace.archived: 5 attempts over about 5 minutes. */
-export const RECHECK_DELAYS_MS: readonly number[] = [10_000, 30_000, 60_000, 90_000, 120_000];
-/** Upper bound on simultaneously tracked archive candidates. */
-export const MAX_TRACKED_CANDIDATES = 64;
+/**
+ * The daemon may not accept connections while it is still loading plugins, so a scheduled sweep that cannot connect
+ * retries with these delays (the last one repeats) until it has tried for CONNECT_RETRY_WINDOW_MS.
+ */
+export const CONNECT_RETRY_DELAYS_MS: readonly number[] = [5_000, 10_000, 20_000, 40_000, 60_000];
+export const CONNECT_RETRY_WINDOW_MS = 10 * 60_000;
 const WORKSPACE_PAGE_LIMIT = 200;
 const WORKSPACE_MAX_PAGES = 50;
 
@@ -321,9 +323,7 @@ export interface SweeperLogger {
 }
 
 export class OrphanProjectSweeper {
-  private readonly candidates = new Map<string, { attempts: number; timer: NodeJS.Timeout | null }>();
-  private startupTimer: NodeJS.Timeout | null = null;
-  private queue: Promise<unknown> = Promise.resolve();
+  private timer: NodeJS.Timeout | null = null;
   private stopped = false;
 
   private readonly connect: <T>(fn: (client: SweeperApi) => Promise<T>) => Promise<T>;
@@ -342,95 +342,45 @@ export class OrphanProjectSweeper {
     this.host = options.host ?? nodeHost;
   }
 
-  /** One serialized full sweep, also used by the forced dry-run CLI. */
+  /** One full sweep, also used by the forced dry-run CLI. */
   sweep(options: { forceDryRun?: boolean; source?: string } = {}): Promise<void> {
-    return this.exclusive(() => this.runStartupSweep(options));
+    return this.runSweep(options);
   }
 
-  /** Serialize daemon work so a sweep and a re-check never race on the same project. */
-  private exclusive<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.queue.then(fn, fn);
-    this.queue = next.catch(() => undefined);
-    return next;
-  }
-
+  /** Schedule the startup sweep; each scheduled sweep schedules the next periodic one when it ends. */
   scheduleStartupSweep(delayMs: number = STARTUP_SWEEP_DELAY_MS): void {
-    if (this.stopped || this.startupTimer) return;
+    if (this.stopped || this.timer) return;
     this.logger.log(`${TAG} startup sweep scheduled in ${delayMs}ms`);
-    this.startupTimer = setTimeout(() => {
-      this.startupTimer = null;
-      void this.sweep().catch((error) => {
-        this.logger.error(`${TAG} startup sweep failed: ${message(error)}`);
-      });
+    this.schedule(delayMs, "startup-sweep");
+  }
+
+  private schedule(delayMs: number, source: string, retry?: { since: number; attempt: number }): void {
+    if (this.stopped) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.runScheduled(source, retry ?? { since: Date.now(), attempt: 0 });
     }, delayMs);
   }
 
-  /** Record an archive candidate. Returns promptly; all daemon work is deferred. */
-  noteArchivedWorkspace(workspace: { id: string; projectId: string; cwd: string }): void {
-    const prefix = `${TAG} hook=workspace.archived workspaceId=${workspace.id} projectId=${workspace.projectId} cwd=${quote(workspace.cwd)}`;
-    if (this.stopped) return;
-    if (this.candidates.has(workspace.projectId)) {
-      this.logger.log(`${prefix} action=deduplicated (re-check already pending)`);
-      return;
-    }
-    if (this.candidates.size >= MAX_TRACKED_CANDIDATES) {
-      this.logger.log(`${prefix} action=dropped reason=candidate-cap(${MAX_TRACKED_CANDIDATES}); next startup sweep will re-check`);
-      return;
-    }
-    this.candidates.set(workspace.projectId, { attempts: 0, timer: null });
-    this.scheduleRecheck(workspace.projectId);
-    this.logger.log(`${prefix} action=scheduled re-check attempt=1 in ${RECHECK_DELAYS_MS[0]}ms`);
-  }
-
-  private scheduleRecheck(projectId: string): void {
-    const candidate = this.candidates.get(projectId);
-    if (!candidate || this.stopped) return;
-    const delay = RECHECK_DELAYS_MS[candidate.attempts] ?? RECHECK_DELAYS_MS[RECHECK_DELAYS_MS.length - 1] ?? 60_000;
-    candidate.timer = setTimeout(() => {
-      candidate.timer = null;
-      void this.exclusive(() => this.recheck(projectId)).catch((error) => {
-        this.logger.error(`${TAG} re-check crashed projectId=${projectId}: ${message(error)}`);
-        this.candidates.delete(projectId);
-      });
-    }, delay);
-  }
-
-  private async recheck(projectId: string): Promise<void> {
-    const candidate = this.candidates.get(projectId);
-    if (!candidate || this.stopped) return;
-    candidate.attempts += 1;
-    const attempt = `attempt=${candidate.attempts}/${RECHECK_DELAYS_MS.length}`;
-    let outcome: "done" | "retry";
+  private async runScheduled(source: string, retry: { since: number; attempt: number }): Promise<void> {
     try {
-      const config = await this.loadConfig();
-      outcome = await this.connect(async (client) => {
-        const verdict = await evaluateProject(client, projectId, this.host);
-        if (verdict.kind === "delete") {
-          // A failed removeProject or a changed final check keeps the remaining re-checks.
-          return (await this.deleteVerified(client, verdict, `re-check ${attempt}`, config)) ? "done" : "retry";
-        }
-        if (verdict.reason === "project-missing") {
-          this.logger.log(`${TAG} decision=skip source=re-check ${attempt} ${describe(verdict)}`);
-          return "done";
-        }
-        this.logger.log(`${TAG} decision=skip source=re-check ${attempt} ${describe(verdict)}`);
-        return "retry";
-      });
+      await this.sweep({ source });
     } catch (error) {
-      this.logger.error(`${TAG} re-check error source=re-check ${attempt} projectId=${projectId}: ${message(error)}`);
-      outcome = "retry";
-    }
-    if (outcome === "done" || candidate.attempts >= RECHECK_DELAYS_MS.length) {
-      if (outcome === "retry") {
-        this.logger.log(`${TAG} giving up projectId=${projectId} after ${candidate.attempts} re-checks; next startup sweep will re-evaluate`);
+      if (error instanceof DaemonConnectError && Date.now() - retry.since < CONNECT_RETRY_WINDOW_MS) {
+        const delay = CONNECT_RETRY_DELAYS_MS[Math.min(retry.attempt, CONNECT_RETRY_DELAYS_MS.length - 1)]!;
+        this.logger.log(`${TAG} ${source} cannot connect yet attempt=${retry.attempt + 1}, retrying in ${delay}ms: ${message(error)}`);
+        this.schedule(delay, source, { since: retry.since, attempt: retry.attempt + 1 });
+        return;
       }
-      this.candidates.delete(projectId);
-      return;
+      this.logger.error(`${TAG} ${source} failed: ${message(error)}`);
     }
-    this.scheduleRecheck(projectId);
+    if (this.stopped) return;
+    const { sweepIntervalHours } = await this.loadConfig();
+    this.logger.log(`${TAG} periodic sweep scheduled in ${sweepIntervalHours}h`);
+    this.schedule(sweepIntervalHours * 3_600_000, "periodic-sweep");
   }
 
-  private async runStartupSweep(options: { forceDryRun?: boolean; source?: string }): Promise<void> {
+  private async runSweep(options: { forceDryRun?: boolean; source?: string }): Promise<void> {
     if (this.stopped) return;
     const config = await this.loadConfig();
     const source = options.source ?? "startup-sweep";
@@ -438,7 +388,7 @@ export class OrphanProjectSweeper {
     await this.connect(async (client) => {
       const { projects } = await client.listProjects();
       const counts = await countActiveWorkspaces(client);
-      this.logger.log(`${TAG} startup sweep begin projects=${projects.length} activeWorkspaces=${[...counts.values()].reduce((a, b) => a + b, 0)}`);
+      this.logger.log(`${TAG} sweep begin source=${source} projects=${projects.length} activeWorkspaces=${[...counts.values()].reduce((a, b) => a + b, 0)}`);
       let deleted = 0;
       let wouldDelete = 0;
       for (const project of projects) {
@@ -457,7 +407,7 @@ export class OrphanProjectSweeper {
           else deleted += 1;
         }
       }
-      this.logger.log(`${TAG} startup sweep end deleted=${deleted} wouldDelete=${wouldDelete}`);
+      this.logger.log(`${TAG} sweep end source=${source} deleted=${deleted} wouldDelete=${wouldDelete}`);
     });
   }
 
@@ -493,16 +443,12 @@ export class OrphanProjectSweeper {
     }
   }
 
-  /** Clear every timer; in-flight work observes `stopped` and winds down. */
+  /** Clear the sweep timer; in-flight work observes `stopped` and winds down. */
   stop(): void {
     this.stopped = true;
-    if (this.startupTimer) {
-      clearTimeout(this.startupTimer);
-      this.startupTimer = null;
-    }
-    for (const [projectId, candidate] of this.candidates) {
-      if (candidate.timer) clearTimeout(candidate.timer);
-      this.candidates.delete(projectId);
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
     }
     this.logger.log(`${TAG} stopped; timers cleared`);
   }
