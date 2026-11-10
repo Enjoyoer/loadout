@@ -205,12 +205,14 @@ def configure(spec, root, dry_run=False):
             safe_target(root, temp)
             temp.write_bytes(contents[name]); temp.chmod(0o600); temp.replace(target)
             if target.read_bytes() != contents[name]: raise ValueError("Pi write verification failed")
-            # Keep this file's newest 5 backups by this step: <file>.bak-<UTC %Y%m%dT%H%M%S%fZ>.
-            if name in backed:
-                pruned += prune_backups(target, target.name + ".bak-" + stamp, r"\.bak-(?P<stamp>\d{8}T\d{12}Z)",
-                                        "%Y%m%dT%H%M%S%fZ")
         secure_windows_user(root)
         validate_settings(json.loads((root / 'agent/settings.json').read_text()))
+        # Only once every write and check passed, keep each backed-up file's newest 5 backups by this step:
+        # <file>.bak-<UTC %Y%m%dT%H%M%S%fZ>.
+        for name in backed:
+            target = root / name
+            pruned += prune_backups(target, target.name + ".bak-" + stamp, r"\.bak-(?P<stamp>[0-9]{8}T[0-9]{12}Z)",
+                                    "%Y%m%dT%H%M%S%fZ")
     for error in pruned: print(error, file=sys.stderr)
     return {"changed": changed, "dry_run": dry_run, "root": str(root), "prune_errors": pruned}
 

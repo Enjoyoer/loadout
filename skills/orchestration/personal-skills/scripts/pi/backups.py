@@ -10,7 +10,7 @@ KEEP = 5
 def prune_backups(file, written, pattern, stamp_format, keep=KEEP):
     """Keep the newest `keep` backups of file that this writer made, counting written, and delete the rest.
 
-    pattern is a regex for the rest of a sibling's name after file's name, matched whole; its group `stamp` must
+    pattern is a regex for the rest of a sibling's name after file's name, matched whole and ASCII-only (\\d is 0-9); its group `stamp` must
     parse with stamp_format, and the stamp in the name (not mtime) orders them. written is never deleted. A sibling
     counts only when lstat finds a regular file, so a symlink is never followed or removed, and a hand-made backup
     under another name (.before-*, .bak-pr*, ...) never matches. Never raises: returns the errors, so a failed prune
@@ -21,7 +21,7 @@ def prune_backups(file, written, pattern, stamp_format, keep=KEEP):
         for entry in file.parent.iterdir():
             name = entry.name
             if name == Path(written).name or not name.startswith(file.name): continue
-            m = re.fullmatch(pattern, name[len(file.name):])
+            m = re.fullmatch(pattern, name[len(file.name):], re.ASCII)
             if not m: continue
             try: stamp = datetime.strptime(m["stamp"], stamp_format)
             except ValueError: continue

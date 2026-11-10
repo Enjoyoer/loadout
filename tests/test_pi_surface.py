@@ -727,6 +727,18 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             self.assertTrue(all(e.startswith('backup prune failed, kept: ') for e in report['prune_errors']))
             self.assertEqual(len(backups),8)
 
+    def test_runtime_prune_ignores_a_name_with_non_ascii_digits(self):
+        # Arabic-Indic digits in the year and in the second digit of hour, minute and second: strptime alone reads it as 2020.
+        mixed = 'settings.json.bak-\u0662\u0660\u0662\u06600101T0\u06600\u06600\u0660000000Z'
+        with tempfile.TemporaryDirectory() as tmp:
+            report, agent, seeded, backups = self.pruned_runtime(tmp, extra=[mixed])
+            self.assertEqual((agent/mixed).read_text(),'hand-made')
+            self.assertEqual([n for n in backups if n in seeded], seeded[3:])
+            from backups import prune_backups
+            self.assertEqual(prune_backups(agent/'settings.json', 'none', r'\.bak-(?P<stamp>\d{8}T\d{12}Z)', '%Y%m%dT%H%M%S%fZ', keep=1), [])
+            self.assertEqual((agent/mixed).read_text(),'hand-made')
+            self.assertEqual(list(agent.glob('settings.json.bak-[0-9]*')), [])
+
     def test_runtime_dry_run_prunes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             report, agent, seeded, backups = self.pruned_runtime(tmp, dry_run=True)

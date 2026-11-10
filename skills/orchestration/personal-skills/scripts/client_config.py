@@ -18,7 +18,7 @@ import argparse
 import hashlib
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -218,7 +218,7 @@ def preflight(fleet_doc: dict, fleet_dir: Path, targets: list, dry_run: bool, up
         except fleet.FleetError as error:
             providers_error = f"paseo-providers.json is unusable: {error}"
     return {"fleet_doc": fleet_doc, "catalog": catalog, "token": token, "dry_run": dry_run,
-            "update_claude": update_claude, "stamp": datetime.now().strftime("%Y%m%d-%H%M%S"),
+            "update_claude": update_claude, "stamp": datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S"),
             "providers_scoped": providers_scoped, "providers": providers, "providers_error": providers_error}
 
 

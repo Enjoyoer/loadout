@@ -255,7 +255,7 @@ try {
       if(!p.dry_run && report.changed.length) result.wrote=true;
     } finally {fs.rmSync(temp,{recursive:true,force:true});}
   }
-  let published = false;
+  let published = false, written = null;
   if (!p.dry_run) {
     // Replace the config only while it still holds the revision this merge read. A change another writer (the
     // daemon, an editor) made since then is merged again, never overwritten, and the backup is the revision
@@ -279,9 +279,7 @@ try {
         fs.renameSync(next, cfgPath);
         result.backup = path.basename(bak);
         result.wrote = published = true;
-        // Keep config.json's newest 5 backups by this merge: config.json.bak-loadout-<%Y%m%d-%H%M%S>-<8 hex>.
-        result.prune_errors.push(...pruneBackups(fs, path, cfgPath, bak,
-          /^\.bak-loadout-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-[0-9a-f]{8}$/));
+        written = bak;
         break;
       }
       fs.rmSync(next, { force: true });
@@ -299,6 +297,9 @@ try {
   result.changed = Boolean(result.pi?.changed?.length) || m.rows || envChanged.length > 0;
   const now = published ? JSON.parse(read()).agents.providers : m.merged;
   result.verified = labelsMatch(now);
+  // Only once the labels read back as pinned, keep config.json's newest 5 backups by this merge:
+  // config.json.bak-loadout-<%Y%m%d-%H%M%S>-<8 hex>.
+  if (written && result.verified) result.prune_errors.push(...pruneBackups(fs, path, cfgPath, written, /^\.bak-loadout-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-[0-9a-f]{8}$/));
   done(result.verified ? 0 : 4);
 } catch (e) {
   result.error = String(e && e.message || e);
