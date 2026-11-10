@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "796f681148e875516d0f0388bdc941999cfd0e6b",
+  "source_commit": "5f65adaba3b9f88834dee7aeebb16cd2c2c768bf",
   "skill_count": 24,
-  "file_count": 139,
+  "file_count": 133,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -198,8 +198,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5323,
-      "sha256": "857d3cda565410229b4ed130dc99a4b95c606b45b0ed699ef1c67f41a20175b6"
+      "bytes": 5325,
+      "sha256": "3d3edd51efbfdee189c681e32d22f99cddf7a7c4ac9c6ed38af92af0eb405ed5"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -233,8 +233,8 @@
       "path": "skills/orchestration/opc/references/maintenance.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 652,
-      "sha256": "1378abac39dcb600bfd3ad4af705fb72f9b143b42e985bcae615057206d5b17f"
+      "bytes": 279,
+      "sha256": "ce295937470ab699c6cbbd952d045ae91949d991aa29f39549218070c3d37fbf"
     },
     {
       "path": "skills/orchestration/opc/references/pr-evidence.md",
@@ -401,8 +401,8 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 27107,
-      "sha256": "7d20f2f56c0242252a409b538665199086cdcb235f8142a792de1affa010e037"
+      "bytes": 24476,
+      "sha256": "5a7fc97b5742996daf77138305e9a49819d6e48f7083c6246ed56f111dd232e9"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 66172,
-      "sha256": "b3cb853522677c91f858d0d0d2a90ae4ea316b1679059e184772ff19df7bef8c"
+      "bytes": 57443,
+      "sha256": "3233a4bf48dca55c60b0cdbf89354993952f3137fea630e8e8e6a7f6f8367607"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -443,8 +443,8 @@
       "path": "skills/orchestration/personal-skills/fleet/example/hosts.json",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 1253,
-      "sha256": "94db768f602bdd17f5b455b3371d88f6990d79dc10c67f90f9b1238e6891f549"
+      "bytes": 1214,
+      "sha256": "67d95ad47f9920977d7556cc302a9e0a1d0a7ff74d6fd10ad04ffdfe781f7e90"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/mcp-servers-overlay.json",
@@ -452,13 +452,6 @@
       "skill": "personal-skills",
       "bytes": 278,
       "sha256": "faf993e6dd9828c8518b5ed0ad99e04e4840950f5600227f1a943525bf6ad88c"
-    },
-    {
-      "path": "skills/orchestration/personal-skills/fleet/example/opencode-free-overlay.json",
-      "category": "orchestration",
-      "skill": "personal-skills",
-      "bytes": 210,
-      "sha256": "68923590971c7aee0cb7fc2353a7cb032442f4f4aa45c87ef9a6101c72de29ac"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/paseo-providers.json",
@@ -499,8 +492,8 @@
       "path": "skills/orchestration/personal-skills/scripts/fleet.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 25365,
-      "sha256": "9a7cd4aed4c71654ee2b476a9db59ebe32713be3d79a3b2182060ec9abd4185d"
+      "bytes": 23338,
+      "sha256": "f40a495e3b2325406f06b8405f0857a47d85a177bc80aa81d5b71559de7d74f8"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/fleet_push_remote.js",
@@ -524,20 +517,6 @@
       "sha256": "baa2d78fd4ef9bb47e137e913ca16557ec763990a7f9ace888e064cb9fe4c202"
     },
     {
-      "path": "skills/orchestration/personal-skills/scripts/mds_bye.py",
-      "category": "orchestration",
-      "skill": "personal-skills",
-      "bytes": 4861,
-      "sha256": "6ab13ad5c9a79c3a6950ba32ce97d68eb46227375f035074da588f913392a621"
-    },
-    {
-      "path": "skills/orchestration/personal-skills/scripts/mds_bye_remote.js",
-      "category": "orchestration",
-      "skill": "personal-skills",
-      "bytes": 2670,
-      "sha256": "4027c161a816b4f441937221a14652b23ff35493c47852bc731ba912afb11616"
-    },
-    {
       "path": "skills/orchestration/personal-skills/scripts/new_token_file.ps1",
       "category": "orchestration",
       "skill": "personal-skills",
@@ -548,15 +527,15 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 43555,
-      "sha256": "f1770f09a0eb9b2892275ef1232c5710bccf8e710cab8c53266ce8f444c88a1e"
+      "bytes": 35254,
+      "sha256": "fb507e6ddc7133d6a7dff059b8da3f4f29723b5bff74630bf80bf46c48f11e0d"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 20010,
-      "sha256": "e87951d7f3cfeb86b6fdbf10edbf8e9bda90f9ba59bb8f6cf721af9b3e1821b7"
+      "bytes": 19984,
+      "sha256": "283262750c11bd75addb1e111cdaca16c664c3fe979ce8b123f0bb7ad7a4d661"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_reload_remote.js",
@@ -564,13 +543,6 @@
       "skill": "personal-skills",
       "bytes": 1147,
       "sha256": "1a9d8e25637aebfc2d98f36cde9b96933bcc71a7713ee0354836844399fe81ca"
-    },
-    {
-      "path": "skills/orchestration/personal-skills/scripts/pi/app-defaults.mjs",
-      "category": "orchestration",
-      "skill": "personal-skills",
-      "bytes": 2972,
-      "sha256": "ffbb846acd60b45527fc401874e3d2e4916eb827079075a304ac3aa8b9c023c5"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/apply.ps1",
@@ -611,15 +583,15 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/deploy.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 14041,
-      "sha256": "5c0e7fd5eff467f1c1c1aed40616a277d8a0aef1bd4710d9fc1a0f04c3254e9c"
+      "bytes": 13956,
+      "sha256": "25ff5dc9b0e53b59232da782841fc52b63102a64924edac9828379818a3f1e7c"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 20470,
-      "sha256": "b58e7a952dcbbd09d86550cbbf0a934438bf3af0c6a0367460bb11b81a071b25"
+      "bytes": 20220,
+      "sha256": "7e9d95e7038f14d295a24c64f4defd52947b40ca93123ffba282b1f1b77e8a3e"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
@@ -636,32 +608,18 @@
       "sha256": "acba0be23221b799c87de4dc6493b7258d1a4887a4e530629554bf7013186ff0"
     },
     {
-      "path": "skills/orchestration/personal-skills/scripts/pi/picker-launch.ps1",
-      "category": "orchestration",
-      "skill": "personal-skills",
-      "bytes": 2060,
-      "sha256": "ac5e6f0e74d8b4e8b634365774504809f16e10ed39517eec7e62f8e09d9a4d77"
-    },
-    {
-      "path": "skills/orchestration/personal-skills/scripts/pi/picker-patch.py",
-      "category": "orchestration",
-      "skill": "personal-skills",
-      "bytes": 8271,
-      "sha256": "865190c4577dc4f2b1d50774457443734695085270285e6fd45649d0f8918aed"
-    },
-    {
       "path": "skills/orchestration/personal-skills/scripts/plugins_sync.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 7289,
-      "sha256": "6dc47a42eb01c35f8c92cd56bd42244e7d844d484a95c67c35f3af16077715e9"
+      "bytes": 6174,
+      "sha256": "8842fd6e032b59f8f2e91a85f0896b49f99ee8ce39000c5217cb892d1695e5da"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/plugins_sync_remote.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 19410,
-      "sha256": "dacfbc9c4604aa2d1560e5cd0e047c29dea69d8a3fc284ad5e35f9bdeddbf358"
+      "bytes": 15988,
+      "sha256": "d4d2533f54a4cf3f0f62ad6e71cede46cacaec0d3ed360a96ae47df2db1fbf5f"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/probe.py",
@@ -702,8 +660,8 @@
       "path": "skills/orchestration/personal-skills/scripts/sync.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 7671,
-      "sha256": "b654b1dd2df7fe9242b129dcf19c9c96dc0ccfed9e6066ceb5fe8bc36c05954f"
+      "bytes": 7289,
+      "sha256": "666db84f7d2d1d79d538bb5f810994f88a4d06f8d0622d0808ac341b5dbfdbae"
     },
     {
       "path": "skills/orchestration/reassign-pm/SKILL.md",
@@ -1839,69 +1797,6 @@
       "plugin": "workspace-folder-title",
       "bytes": 470,
       "sha256": "02762367fc58004ef5d053f645436ac4734f633b3f61753d0e164622eac37630"
-    }
-  ],
-  "host_file_count": 10,
-  "host_files": [
-    {
-      "path": "hosts/macos/mds-bye/LICENSE",
-      "component": "macos/mds-bye",
-      "bytes": 1072,
-      "sha256": "b4e04f9ec2f8ab8cf3d6eb5fa98b02a623e5a753a392293dd37c1282d3ebf790"
-    },
-    {
-      "path": "hosts/macos/mds-bye/PROVENANCE.md",
-      "component": "macos/mds-bye",
-      "bytes": 780,
-      "sha256": "abb057a0631c7808a765f1e87956d9f2ac3a5789f4e94543e823af257331ff0b"
-    },
-    {
-      "path": "hosts/macos/mds-bye/README.md",
-      "component": "macos/mds-bye",
-      "bytes": 4420,
-      "sha256": "ebe53d53dbb18d643c70340cb56e57e2b391d01da53af9a662681f67d2b20ca9"
-    },
-    {
-      "path": "hosts/macos/mds-bye/install.sh",
-      "component": "macos/mds-bye",
-      "bytes": 1675,
-      "sha256": "b48f00b7ada4e5b2457d98da0701cef327bd350d9f24002782566b7457278544"
-    },
-    {
-      "path": "hosts/macos/mds-bye/launchd/com.rayhanadev.disable-indexers.agent.plist",
-      "component": "macos/mds-bye",
-      "bytes": 498,
-      "sha256": "3b33486d4c2818aee401d5416681dad1d60cf11f7a8a964dbaaa1938bca0fa22"
-    },
-    {
-      "path": "hosts/macos/mds-bye/launchd/com.rayhanadev.disable-indexers.daemon.plist",
-      "component": "macos/mds-bye",
-      "bytes": 503,
-      "sha256": "3c5f745853b1798083c68cbc24e946c8f4b00ac3073cb5e081ecf8cf275d3938"
-    },
-    {
-      "path": "hosts/macos/mds-bye/scripts/disable-indexers-system.sh",
-      "component": "macos/mds-bye",
-      "bytes": 8023,
-      "sha256": "781577999ba95a47d080cbcd82fa296baef190a66f946c47c07f6b353cf9c44f"
-    },
-    {
-      "path": "hosts/macos/mds-bye/scripts/disable-indexers.sh",
-      "component": "macos/mds-bye",
-      "bytes": 6526,
-      "sha256": "f61d08b0ee2426ddedded8dcbd5234a5ff72a2bf750346d78def9b0d42ccd828"
-    },
-    {
-      "path": "hosts/macos/mds-bye/status.sh",
-      "component": "macos/mds-bye",
-      "bytes": 4068,
-      "sha256": "03f8f65763e26b459ce7f1104e0964b2c67b805516f67d9cef3afbf4497f60b7"
-    },
-    {
-      "path": "hosts/macos/mds-bye/uninstall.sh",
-      "component": "macos/mds-bye",
-      "bytes": 4114,
-      "sha256": "3e4cf7bfa9eea72831d5cd7c5c09d711cc6d8770d1f37c802c5cac1f28868516"
     }
   ]
 }
