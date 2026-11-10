@@ -131,7 +131,7 @@ class ProviderSyncTest(unittest.TestCase):
         package.write_text('{"version":"1.0.0"}')
         daemon_bin = self.root / 'daemon-bin'
         daemon_bin.mkdir()
-        (daemon_bin / 'paseo').write_text("#!/bin/sh\necho '{\"daemonVersion\":\"0.10.3\",\"connectedDaemon\":\"reachable\"}'\n")
+        (daemon_bin / 'paseo').write_text("#!/bin/sh\necho '{\"daemonVersion\":\"0.15.3\",\"connectedDaemon\":\"reachable\"}'\n")
         (daemon_bin / 'paseo').chmod(0o755)
         self.env['PATH'] = str(daemon_bin) + os.pathsep + self.env['PATH']
         catalog = json.loads((self.fleet / 'paseo-providers.json').read_text())

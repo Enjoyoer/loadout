@@ -5,10 +5,10 @@
 // Edit plugins/_shared/turn-input.ts only, copy it over every vendored copy, and
 // run python3 scripts/check_vendored.py, which CI also runs.
 //
-// Paseo 0.11 records every prompt as a user_message row. Paseo 0.13 records a prompt from another agent (create_agent's
-// initial prompt, send_agent_prompt) and an agent notification (a child that finished, errored, needs permission or
-// closed) as a completed tool_call row named agent_message instead: the message's own ID is in its callId, its sender,
-// event and text in agentMessage. Paseo 0.14 also projects scheduled system prompts as completed heartbeat tool rows,
+// Paseo records a human prompt as a user_message row. A prompt from another agent (create_agent's initial prompt,
+// send_agent_prompt) and an agent notification (a child that finished, errored, needs permission or closed) arrive as a
+// completed tool_call row named agent_message instead: the message's own ID is in its callId, its sender, event and
+// text in agentMessage. Paseo also projects scheduled system prompts as completed heartbeat tool rows,
 // with a stable content hash in callId and the unwrapped body in detail.text. These rows are turn inputs too.
 
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";

@@ -5,7 +5,7 @@
 // Edit plugins/_shared/ended-read.ts only, copy it over every vendored copy, and
 // run python3 scripts/check_vendored.py, which CI also runs.
 //
-// Every Paseo 0.11 and 0.13 timeline read loads an unloaded agent first, and none can be told to refuse a closed one,
+// Every Paseo timeline read loads an unloaded agent first, and none can be told to refuse a closed one,
 // so a read still in flight when a user stops or archives the agent brings it back (closed -> idle, "Agent resumed from
 // persistence"). A plugin cannot prevent that: whatever it checks before the read, the close can land between the
 // daemon answering the check and receiving the read. Instead each read is watched, and afterwards the agent is put back:

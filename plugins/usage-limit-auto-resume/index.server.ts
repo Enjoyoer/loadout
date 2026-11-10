@@ -19,7 +19,7 @@ const errorMessage = (error: unknown) => error instanceof Error ? error.message 
 // Thrown before anything reaches the socket, so the message was never delivered.
 const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/.test(errorMessage(error));
 
-type OpenedClient = PaseoClient & { agentSettings?: AgentSettingsPort; daemonVersion?: () => string | null };
+type OpenedClient = PaseoClient & { agentSettings?: AgentSettingsPort };
 
 // The daemon run: the parent process, with its start where the host shows it (daemon-run.ts). Read once.
 let thisRun: string | null = null;
@@ -68,7 +68,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
   const lifecycles = new Map<string, number>();
   let lastLifecycle = 0;
   const endLifecycle = (agentId: string) => { lifecycles.set(agentId, ++lastLifecycle); };
-  // Bumped by every agent.turn_started, before any await. On Paseo 0.13 a turn end's work runs only while no turn of the
+  // Bumped by every agent.turn_started, before any await. A turn end's work runs only while no turn of the
   // agent began since that end (endedTimeline, bindFailure): a newer turn means newer work, so the ended turn is stale.
   const turnStarts = new Map<string, number>();
   // Synchronous, so it is checked again right before each timeline read and claim: a close seen while the caller awaited
@@ -245,7 +245,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
     return entries;
   }
 
-  // Paseo 0.13 sends agent.turn_ended with an empty timeline (0.11 sent the agent's in-memory one), so the tail is read
+  // Paseo sends agent.turn_ended with an empty timeline, so the tail is read
   // instead, back to the turn's own input, and only the turn's own rows are kept (endedTurnRows): a newer turn's input
   // and answer in the tail are never this turn's. Called before the handler's first await, so the read is as close to
   // the end as it can be. The read loads an unloaded agent again, so each page is read only right after a fetch (which
@@ -653,7 +653,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
         return;
       }
     } else if (record.expectedUserText !== undefined) {
-      // A usage record detected on Paseo 0.13 names its input. An agent message since then does not move
+      // A usage record names its input. An agent message since then does not move
       // lastUserMessageAt, so the newest input is read: it must still be that one, or this record's own last send.
       // An unreadable timeline holds the send until a later sweep; a newer input ends the record.
       if (heldByClose(record)) return;
@@ -987,23 +987,21 @@ export default function contribute(server: PluginServerContext, openClient: () =
     // cut off by a stop (markInterrupted, settleRunning).
     let answer: Promise<string> | null = null;
     const probe = () => answer ??= daemonProbe(event.agent.id);
-    // The turn's timeline: the event's own (Paseo 0.11), else the tail, read before any other await (endedTimeline).
+    // The turn's timeline: the tail, read before any other await (endedTimeline).
     // A canceled turn is not read: a kill, delete, archive or daemon shutdown cancels the turn just before it unloads
     // the agent, and a read landing after that loads it again. Without its rows a canceled turn still ends as before;
     // only an older record's supersede by this turn's new user message waits for the send checks.
-    const eventTimeline = event.timeline?.length ? event.timeline : null;
-    // Paseo 0.13 only: a turn of this agent that began after this one ended is newer work (endedTimeline, bindFailure).
-    // On 0.11 the event's own timeline binds the turn, and staleFailure sees the newer input.
+    // A turn of this agent that began after this one ended is newer work (endedTimeline, bindFailure).
     const startsSeen = turnStarts.get(event.agent.id) ?? 0;
-    const newerTurn = () => !eventTimeline && (turnStarts.get(event.agent.id) ?? 0) !== startsSeen;
-    const timeline: Promise<readonly AgentTimelineItem[] | null> = eventTimeline ? Promise.resolve(eventTimeline)
-      : event.outcome.kind === "canceled" ? Promise.resolve([]) : endedTimeline(context.paseo, event.agent.id, event.turnId, newerTurn);
+    const newerTurn = () => (turnStarts.get(event.agent.id) ?? 0) !== startsSeen;
+    const timeline: Promise<readonly AgentTimelineItem[] | null> = event.outcome.kind === "canceled" ? Promise.resolve([])
+      : endedTimeline(context.paseo, event.agent.id, event.turnId, newerTurn);
     // The input the failed turn ran on (a user row, or an agent message), taken from that timeline. A record built after
     // the awaits binds to it, never to a later snapshot's user message (bindFailure).
     const eventUser = timeline.then((items) => lastInput(items ?? []));
-    // On Paseo 0.13 a usage record names that input too, so each send first checks it is still the newest
-    // (verifyUsageInput): an agent message does not move lastUserMessageAt. On 0.11 every input does.
-    const named = (record: ResumeRecord, user: TurnInput | null): ResumeRecord => !eventTimeline && record.kind !== "transient" && user
+    // A usage record names that input too, so each send first checks it is still the newest
+    // (verifyUsageInput): an agent message does not move lastUserMessageAt.
+    const named = (record: ResumeRecord, user: TurnInput | null): ResumeRecord => record.kind !== "transient" && user
       ? { ...record, expectedUserText: user.text, expectedUserMessageId: user.messageId ?? user.clientMessageId ?? null } : record;
     // The agent, and the close this process had seen before the read began. A close that lands while the read is in
     // flight may postdate a snapshot that still shows the agent open, so it differs from closeSeen and stops
@@ -1013,7 +1011,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
       const agent = await fetchAgent(context.paseo, event.agent.id);
       return { agent, closeSeen };
     };
-    // After the awaits: is a different, later input now the agent's latest (staleFailure), or on Paseo 0.13 did another
+    // After the awaits: is a different, later input now the agent's latest (staleFailure), or did another
     // turn begin since this one ended? The timeline is read back to the bound row. Null when the agent ended while it was
     // read (ends): nothing more for this turn.
     const bindFailure = async (agent: AgentSnapshot, closeSeen: AgentClose | undefined, predecessor: ResumeRecord | null) => {
@@ -1042,7 +1040,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
     // This turn is the send's own, and the send has not returned yet: a quick turn can end first.
     const sending = pending?.sendStarted && pending.turnId === event.turnId ? pending : null;
     const handled = (async () => {
-      const items = eventTimeline ?? await timeline;
+      const items = await timeline;
       // The agent ended while its tail was read, and was put back (endedTimeline): nothing more for this turn. The close
       // or archive itself holds and ends the agent's records.
       if (!items) return;
@@ -1311,8 +1309,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
     })().catch((error) => failed("permission-handler-failed", error)));
   });
 
-  // Paseo sends agent.closed for an explicit close or kill and for every agent when the daemon shuts down. In 0.14 and
-  // 0.15 automatic idle collection emits it too, with no distinguishing field; operators must disable that collector.
+  // Paseo sends agent.closed for an explicit close or kill and for every agent when the daemon shuts down. Its
+  // automatic idle collection emits it too, with no distinguishing field; operators must disable that collector.
   // The close is stored for the agent, with this daemon run, whether or not it has a record
   // yet, and closeGate decides on every later sweep: work of this agent is held, and ended once this run outlives the
   // close, while a new daemon run clears it.
@@ -1334,26 +1332,20 @@ export default function contribute(server: PluginServerContext, openClient: () =
   async function inspectDaemonAtStartup(): Promise<void> {
     if (stopped) return;
     let connected = false;
-    let checkingCleanup = false;
     try {
       const api = await acquire();
       connected = true;
       if (stopped) { await release(); return; }
-      // 0.15 keeps 0.14's idle collector unchanged, so it gets the same inspection.
-      checkingCleanup = /^0\.1[45]\./.test(api.daemonVersion?.() ?? "");
-      if (checkingCleanup) {
-        // Read the effective setting, never patch it. 0.14 and 0.15 resolve an absent persisted key to true. The host
-        // version gate keeps older daemons on their existing path without attempting the newer config inspection.
-        const { config: daemonConfig } = await api.config.get();
-        if (!stopped && daemonConfig.idleRuntimeCleanup !== false) {
-          console.error('[usage-limit-auto-resume] WARNING: agents.idleRuntimeCleanup is enabled (also the Paseo 0.14 and 0.15 default when unset). Parked retries can be closed automatically and canceled as intentional stops. Config must set agents.idleRuntimeCleanup=false after installing 0.14 or 0.15 and before starting it with this plugin. This plugin only reads daemon config.');
-        }
+      // Read the effective setting, never patch it. Paseo resolves an absent persisted key to true.
+      const { config: daemonConfig } = await api.config.get();
+      if (!stopped && daemonConfig.idleRuntimeCleanup !== false) {
+        console.error('[usage-limit-auto-resume] WARNING: agents.idleRuntimeCleanup is enabled (also the Paseo default when unset). Parked retries can be closed automatically and canceled as intentional stops. Config must set agents.idleRuntimeCleanup=false before starting the daemon with this plugin. This plugin only reads daemon config.');
       }
     } catch {
-      if (!stopped && checkingCleanup) console.error('[usage-limit-auto-resume] WARNING: daemon config could not be read at startup; verify agents.idleRuntimeCleanup=false on Paseo 0.14 or 0.15 so parked retries cannot be closed automatically.');
+      if (!stopped && connected) console.error('[usage-limit-auto-resume] WARNING: daemon config could not be read at startup; verify agents.idleRuntimeCleanup=false so parked retries cannot be closed automatically.');
     } finally {
       // The supervisor publishes its listen address after plugins start. A missing endpoint is not a completed
-      // inspection: retry until the first connection succeeds, then keep the version-gated read/warning one-time.
+      // inspection: retry until the first connection succeeds, then keep the read/warning one-time.
       if (!stopped && !connected) {
         startupInspectionTimer = setTimeout(() => {
           startupInspectionTimer = null;

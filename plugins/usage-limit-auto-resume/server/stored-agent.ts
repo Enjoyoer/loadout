@@ -1,5 +1,5 @@
-// What a daemon reload or restart would load for an agent: its stored record under <PASEO_HOME>/agents. Paseo 0.10.3
-// and 0.11.1 keep one JSON file per agent in a project directory (older homes also at the top level), with the agent's
+// What a daemon reload or restart would load for an agent: its stored record under <PASEO_HOME>/agents. Paseo keeps
+// one JSON file per agent in a project directory (older homes also at the top level), with the agent's
 // model and thinking option under config and its labels at the top. Settings acknowledged in memory can still fail to
 // reach this file, so a return is confirmed here, never on the in-memory snapshot alone.
 import { readdir, readFile } from "node:fs/promises";

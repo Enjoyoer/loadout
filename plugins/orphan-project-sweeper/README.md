@@ -2,7 +2,7 @@
 
 Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.pid` runtime listen metadata. An explicit non-default `PASEO_HOME` without valid endpoint metadata refuses to connect instead of falling back to another daemon. Invalid explicit hosts also fail closed. The standard local endpoint is a fallback only for an unset home or `~/.paseo`.
 
-Server-only Paseo plugin (Paseo >=0.10.3 <0.16.0) that deletes an orphaned Paseo project row.
+Server-only Paseo plugin (requires Paseo 0.15) that deletes an orphaned Paseo project row.
 A project is orphaned only when all of these hold at evaluation time:
 
 1. it has zero active (non-archived) workspaces, joined on `projectId`, background workspaces
@@ -68,29 +68,13 @@ unversioned export, for two reasons:
 
 Because that internal surface can change in any minor release, and a plugin that
 deletes rows must fail closed on an unknown Paseo version, `paseo-plugin.json` pins
-`"paseo": ">=0.10.3 <0.16.0"` and `package.json` pins `@getpaseo/client`,
-`@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.13.0`. `DaemonClient`,
-`listProjects()`, `fetchWorkspaces()`, and `removeProject()` keep the same signatures
-from 0.9.2 to 0.13.0.
+`"paseo": ">=0.15.0 <0.16.0"` and `package.json` pins `@getpaseo/client`,
+`@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.15.3`. Re-check before
+admitting 0.16.
 
-Paseo 0.12 and later leave background workspaces out of `fetchWorkspaces` unless the
-request asks for them, and Paseo's own project delete archives them with the project. So
-whenever the daemon advertises background workspaces (`supportsBackgroundWorkspaces()`),
-every workspace page of a sweep and a re-verify asks for them with
-`filter: { includeBackground: true }`. Older daemons have no background workspaces, and the
-0.13.0 client refuses that filter there, so their pages carry none. The 0.11.1 client
-could not send the filter at all: through 0.2.0, a project whose only active workspaces were
-background ones counted as having none on 0.12 and 0.13.
-
-Recovery and settings behavior below were verified against the 0.9.2 server source and
-local CLI help. Version 0.2.0 (0.11.1 client) was proven on disposable 0.10.3 and 0.11.1
-daemons: unarmed it logged `would-delete` for a fixture project with no active workspace
-and a removed directory, and armed it deleted that row while the live fixture project
-remained. Version 0.2.1 (0.13.0 client) was proven on disposable 0.10.3, 0.11.1 and 0.13.0
-daemons: a project whose root was removed but which kept one active workspace (background
-on 0.13.0, where 0.2.0 logged `would-delete` for it) was kept as `active-workspaces` by the
-armed sweep, and a truly orphaned project was deleted.
-Re-check before admitting 0.14.
+Paseo leaves background workspaces out of `fetchWorkspaces` unless the request asks for
+them, and Paseo's own project delete archives them with the project. So every workspace
+page of a sweep and a re-verify asks for them with `filter: { includeBackground: true }`.
 
 The plugin opens a short-lived local connection per sweep, the same way the
 Paseo CLI does. The daemon address is resolved from `PASEO_HOST`, then

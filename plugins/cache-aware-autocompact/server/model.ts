@@ -108,9 +108,9 @@ export function guardDecision(
 
 /**
  * The part of a timeline a checkpoint keeps: every unsettled tool call (the boundary guard), the
- * latest turn input, a user message or a Paseo 0.13 agent message (the automatic-compact check), and
- * the last three items (the key of a turn without an ID). A turn-end hook carries the agent's whole
- * in-memory timeline, so keeping all of it held every tool output of every agent with a pending timer.
+ * latest turn input, a user message or an agent message (the automatic-compact check), and
+ * the last three items (the key of a turn without an ID). Keeping a whole timeline would hold every tool
+ * output of every agent with a pending timer.
  * The guard, the key and the compact check read the same values from this subset as from the whole timeline.
  */
 export function checkpointTimeline(timeline: readonly AgentTimelineItem[]): AgentTimelineItem[] {

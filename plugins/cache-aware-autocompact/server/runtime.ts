@@ -24,8 +24,8 @@ export type Checkpoint = {
   timeline: readonly AgentTimelineItem[];
   lastUserMessageAt: string | null;
   /**
-   * The message ID of the turn's input when it is a Paseo 0.13 agent message, which does not move lastUserMessageAt.
-   * Restart recovery tells such turns apart by it (recover). Absent for a human prompt and on Paseo 0.11.
+   * The message ID of the turn's input when it is an agent message, which does not move lastUserMessageAt.
+   * Restart recovery tells such turns apart by it (recover). Absent for a human prompt.
    */
   inputId?: string;
   retryCount: number;
@@ -190,7 +190,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
       const attempts = (await store.read()).filter(entry => entry.agentId === agent.id &&
         ["compact-requested", "compaction-failed", "compaction-unconfirmed", "send-failed"].includes(entry.outcome));
       const lastAttempt = attempts.at(-1);
-      // The latest turn input: a user message, or a Paseo 0.13 agent message (turnInput). Either is new work.
+      // The latest turn input: a user message, or an agent message (turnInput). Either is new work.
       const latestUser = baseline.entries.findLast(entry => turnInput(entry.item) !== null);
       const latestInput = latestUser ? turnInput(latestUser.item) : null;
       const realUserAfterAttempt = lastAttempt && latestInput &&
@@ -293,7 +293,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
 
   const primeAndArm = async (event: { agent: { id: string; provider: string; model?: string | null }; turnId: string | null; timeline: readonly AgentTimelineItem[] }, api: PaseoApi) => {
     // Automatic compact turns must not create a fresh timer, including failed turns. The turn's own input decides: a later
-    // Paseo 0.13 agent message is a turn input too (turnInput), so the /compact row before it is an earlier turn's.
+    // agent message is a turn input too (turnInput), so the /compact row before it is an earlier turn's.
     const latestUser = lastInput(event.timeline);
     if (latestUser && latestUser.text.trim() === COMMAND) return;
     if (inFlightHasAgent(event.agent.id)) {
@@ -415,7 +415,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
             if (!recovered) { skip("no-ended-turn"); continue; }
             const entries = await store.read();
             // Without a turn ID (provider history after a restart), the same input marks the same turn: the same
-            // lastUserMessageAt, and on Paseo 0.13 the same agent message, which does not move it.
+            // lastUserMessageAt, and the same agent message, which does not move it.
             if (entries.some((entry) => entry.agentId === agent.id && (entry.key === recovered.key ||
               (!entry.key.match(/:retry-\d+$/) && (Date.parse(entry.createdAt) >= Date.parse(recovered.endedAt) ||
                 (!recovered.turnId && entry.lastUserMessageAt === recovered.lastUserMessageAt && (entry.inputId ?? null) === (recovered.inputId ?? null))))))) {
@@ -546,13 +546,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     timers.cancel(event.agent.id);
     log("turn-ended", { agentId: event.agent.id, turnId: event.turnId, outcome: event.outcome.kind });
     const armFailed = (error: unknown) => log("arm-failed", { agentId: event.agent.id, reason: safeError(error) });
-    if (event.timeline?.length) {
-      // Paseo 0.11: the event's timeline is the agent's whole in-memory timeline. Nothing past this handler holds it.
-      const ended = { agent: event.agent, turnId: event.turnId, timeline: checkpointTimeline(event.timeline) };
-      void primeAndArm(ended, context.paseo).catch(armFailed);
-      return;
-    }
-    // Paseo 0.13 sends an empty timeline, so the tail is read instead. A turn start, close or archive seen before the
+    // Paseo sends an empty timeline, so the tail is read instead. A turn start, close or archive seen before the
     // read supersedes this turn and skips the read (endedTimeline), and one seen while it is read drops its result, as
     // it cancels a timer; an agent the read loaded again after that close or archive is put back. A canceled turn is not
     // read: a kill, delete, archive or daemon shutdown cancels the turn just before it unloads the agent, and a read
@@ -590,7 +584,7 @@ export function startScheduler(server: PluginServerContext, dependencies: {
     forgetAgent(event.agent.id);
   });
 
-  // 0.9.2 has no SDK handle on PluginServerContext before the first hook.
+  // PluginServerContext has no SDK handle before the first hook.
   void (dependencies.openApi ?? openDaemonClient)().then(async (client) => {
     if (stopped) { await client.close(); return; }
     startupClient = client;

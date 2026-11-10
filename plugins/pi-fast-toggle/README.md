@@ -1,6 +1,6 @@
 # Pi Fast toggle
 
-Per-agent composer controls for **Paseo >=0.11.1 <0.16.0**. Fast requests a service tier for eligible Pi agents. Effort offers the selected model's advertised thinking levels for any provider. Neither changes models, global provider defaults, prompts, or other agents. Fast never changes thinking; Effort never changes labels.
+Per-agent composer controls. Requires **Paseo 0.15**. Fast requests a service tier for eligible Pi agents. Effort offers the selected model's advertised thinking levels for any provider. Neither changes models, global provider defaults, prompts, or other agents. Fast never changes thinking; Effort never changes labels.
 
 ## Keyboard shortcuts: desktop and web only
 
@@ -111,4 +111,4 @@ npm run check
 python3 -m unittest discover -s tests
 ```
 
-Unit tests cover label state, exact catalog capability, client action/cleanup/races/pagination, and fail-closed gates. An isolated Paseo 0.10.3 daemon with the real Pi 1.0.0 CLI and a local fixture Responses router additionally verified the actual pill callback, preserved unrelated labels/session/model, and next-turn `priority` then `default` route evidence without a reload. Fixture responses are not evidence that a real upstream account will honor priority. The 0.11.1 build was later rerun on disposable 0.10.3 and 0.11.1 daemons with a credential-free Pi fixture and a loopback catalog: unconfigured it reported not capable and wrote nothing; configured, the real client callbacks wrote `fast` then `standard` through `update_agent` and kept the other labels and model. No live installation, settings edit, reload, or restart was performed. 0.1.6 was installed on a disposable 0.15.3 daemon with its MCP endpoint disabled: the plugin's RPCs wrote `fast`, then `standard`, then a thinking level on a disposable Pi agent, each read back, with its other labels and model unchanged.
+Unit tests cover label state, exact catalog capability, client action/cleanup/races/pagination, and fail-closed gates. 0.1.6 was installed on a disposable 0.15.3 daemon with its MCP endpoint disabled: the plugin's RPCs wrote `fast`, then `standard`, then a thinking level on a disposable Pi agent, each read back, with its other labels and model unchanged.

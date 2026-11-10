@@ -169,7 +169,7 @@ describe("Pi scheduler", () => {
     const page = history(next, "real-user");
     page.entries[0] = { ...page.entries[0]!, timestamp: next.lastUserMessageAt!, item: { type: "user_message", text: "New real request" } };
     f.histories.set(next.id, page);
-    f.event("agent.turn_ended", { agent: { ...next, parentAgentId: null }, turnId: "real-user", timeline: [page.entries[0]!.item], outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"]);
+    f.event("agent.turn_ended", { agent: { ...next, parentAgentId: null }, turnId: "real-user", timeline: [], outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"]);
     f.pauseSend(null); release();
     await until(() => f.logs.some(l => l.action === "compaction-failed") && f.timers.pending.size === 1);
     const failed = (await f.store.read()).find(entry => entry.outcome === "compaction-failed")!;
@@ -255,7 +255,7 @@ describe("Pi scheduler", () => {
     const pi = agent({ provider: "pi", model: "fleet/gpt-6.1-sol" });
     f.setAgents([pi]); f.start(f.store, true, true); await f.recovered();
     f.event("agent.turn_started", { agent: { ...pi, parentAgentId: null }, turnId: "new" } as PluginLifecycleEvents["agent.turn_started"]);
-    f.event("agent.turn_ended", { agent: { ...pi, parentAgentId: null, model: "fleet/claude-opus-5-5" }, turnId: "new", timeline: [{ type: "assistant_message", text: "Done" }], outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"]);
+    f.event("agent.turn_ended", { agent: { ...pi, parentAgentId: null, model: "fleet/claude-opus-5-5" }, turnId: "new", timeline: [], outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"]);
     await until(() => f.logs.some(l => l.action === "timer-started"));
     assert.equal(f.logs.find(l => l.action === "timer-started")!.data.delayMinutes, 22);
   }));
@@ -499,7 +499,7 @@ describe("restart recovery", () => {
     const a = agent({ attentionReason: null, attentionTimestamp: null });
     f.setAgents([a]);
     f.event("agent.turn_ended", { agent: { ...a, workspaceId: "w1", parentAgentId: null }, turnId: "t1",
-      outcome: { kind: "completed" }, timeline: history(a).entries.map((entry) => entry.item) });
+      outcome: { kind: "completed" }, timeline: [] });
     await until(() => f.logs.some((line) => line.action === "timer-started"));
     await f.cleanup();
     assert.equal(f.timers.pending.size, 0);

@@ -31,9 +31,8 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1, options:
     beforeList: async (_call: number) => {},
     beforeFetch: async (_call: number) => {},
     active: [] as { projectId: string }[],
-    // Like Paseo 0.12+, the daemon lists background workspaces only when the request asks for them.
+    // Like Paseo, the daemon lists background workspaces only when the request asks for them.
     background: [] as { projectId: string }[],
-    backgroundSupported: true,
     pageInfo: { nextCursor: null } as { nextCursor: string | null; hasMore?: boolean },
     failDelete: false,
     forgetProjects() { projects = []; },
@@ -44,12 +43,9 @@ async function fixture(t: TestContext, values: unknown = {}, count = 1, options:
       await state.beforeList(++listCalls);
       return { projects, requestId: "test" };
     },
-    supportsBackgroundWorkspaces: () => state.backgroundSupported,
     async fetchWorkspaces(options) {
       calls.push("fetch");
       fetchOptions.push(options);
-      // The real client refuses the filter when the daemon does not advertise background workspaces.
-      if (options?.filter?.includeBackground && !state.backgroundSupported) throw new Error("Update the host to use background workspaces.");
       await state.beforeFetch(++fetchCalls);
       const entries = [...state.active, ...(options?.filter?.includeBackground ? state.background : [])];
       return { entries, pageInfo: state.pageInfo } as Awaited<ReturnType<SweeperApi["fetchWorkspaces"]>>;
@@ -255,14 +251,6 @@ it("a background workspace on any listing page keeps its project, and every page
   assert.equal(f.fetchOptions.length, 2);
   assert.ok(f.fetchOptions.every((options) => options?.filter?.includeBackground === true), JSON.stringify(f.fetchOptions));
   assert.equal(f.fetchOptions[1]?.page?.cursor, "cursor-1");
-});
-
-it("a daemon without background workspaces gets no background filter, and its orphan is still deleted", async (t) => {
-  const f = await fixture(t, { armed: true });
-  f.state.backgroundSupported = false;
-  await f.sweeper.sweep();
-  assert.deepEqual(f.removed, ["project-0"]);
-  assert.ok(f.fetchOptions.length > 0 && f.fetchOptions.every((options) => options?.filter === undefined), JSON.stringify(f.fetchOptions));
 });
 
 it("on Windows a missing root under a junction is kept as mount-unverifiable, and one under plain folders stays a candidate", async (t) => {

@@ -50,7 +50,7 @@ export function recoverTurn(agent: PaseoAgent, history: FetchAgentTimelinePayloa
   let entries = history.entries;
   if (turnId) entries = entries.filter((entry) => entry.turnId === turnId);
   else {
-    // The latest turn input: a user message, or a Paseo 0.13 agent message (turnInput).
+    // The latest turn input: a user message, or an agent message (turnInput).
     const userIndex = lastInputIndex(entries);
     if (userIndex >= 0) entries = entries.slice(userIndex);
   }

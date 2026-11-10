@@ -16,7 +16,7 @@ export type AgentSettingsPort = {
   setLabels(agentId: string, labels: Record<string, string>): Promise<void>;
 };
 
-export type DaemonHandle = PaseoClient & { agentSettings: AgentSettingsPort; daemonVersion(): string | null };
+export type DaemonHandle = PaseoClient & { agentSettings: AgentSettingsPort };
 
 // The same construction as createPaseoClient, keeping the underlying client for agentSettings.
 export async function openDaemonClient(env: NodeJS.ProcessEnv = process.env): Promise<DaemonHandle> {
@@ -38,7 +38,6 @@ export async function openDaemonClient(env: NodeJS.ProcessEnv = process.env): Pr
     },
     ensureConnected: () => daemon.ensureConnected(),
     getConnectionState: () => daemon.getConnectionState(),
-    daemonVersion: () => daemon.getLastServerInfoMessage()?.version ?? null,
     agentSettings: {
       apply: (agentId, config) => daemon.applyAgentConfig(agentId, config),
       setLabels: (agentId, labels) => daemon.updateAgent(agentId, { labels }),

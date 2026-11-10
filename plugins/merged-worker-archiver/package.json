@@ -1,7 +1,7 @@
 {
   "name": "merged-worker-archiver",
   "private": true,
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Paseo server-only plugin that archives worker worktree workspaces (and their agents) once the worker branch is merged into its base, cleans up stale agentless workspaces, and can flag stale agents and workspaces to their PM once a day (off by default). Dry-run by default.",
   "type": "module",
   "scripts": {
@@ -12,11 +12,11 @@
     "check": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
-    "@getpaseo/client": "0.13.0"
+    "@getpaseo/client": "0.15.3"
   },
   "devDependencies": {
-    "@getpaseo/plugin": "0.13.0",
-    "@getpaseo/protocol": "0.13.0",
+    "@getpaseo/plugin": "0.15.3",
+    "@getpaseo/protocol": "0.15.3",
     "@types/node": "^22.20.5",
     "esbuild": "^0.28.2",
     "typescript": "^5.9.3",

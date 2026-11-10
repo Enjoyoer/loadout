@@ -24,7 +24,6 @@ it("with the default cap, one sweep over 7 eligible candidates archives 5 and re
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
     schedules: { list: async () => [] },
-    supportsBackgroundWorkspaces: () => false,
   };
   const s = scenario({ ancestors: { "refs/heads/main": 0 } });
   const fs = fakeFs(s);
@@ -92,7 +91,6 @@ function armedSweeps(workspaces: WorkspaceView[], failure: (workspaceId: string)
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
     schedules: { list: async () => [] },
-    supportsBackgroundWorkspaces: () => false,
   };
   const s = scenario({ ancestors: { "refs/heads/main": 0 } });
   const fs = fakeFs(s);
@@ -225,7 +223,6 @@ it("workspace cleanup previews until armWorkspaceCleanup is also on, then archiv
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
     schedules: { list: async () => [] },
-    supportsBackgroundWorkspaces: () => false,
     sendAgentMessage: async (agentId, _text, options) => {
       sends.push({ agentId, messageId: options.messageId });
     },
@@ -293,7 +290,6 @@ it("an agent history listing that fails leaves out workspace cleanup only: the w
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
     schedules: { list: async () => [] },
-    supportsBackgroundWorkspaces: () => false,
   };
   const s = scenario({ ancestors: { "refs/heads/main": 0 } });
   const fs = fakeFs(s);
@@ -342,7 +338,6 @@ function peerCleanup(options: { worktrees: Array<{ id: string; labels: Record<st
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
     schedules: { list: async () => [] },
-    supportsBackgroundWorkspaces: () => false,
     sendAgentMessage: async (agentId, text) => {
       localSends.push({ agentId, text });
     },
@@ -489,7 +484,6 @@ it("staleArchiveAll: an unrouted stale agent is archived only while armed; stale
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
     schedules: { list: async () => [] },
-    supportsBackgroundWorkspaces: () => false,
   };
   let flags = new Map<string, FlagEntry>();
   const flagStore: FlagStateStore = {
@@ -566,7 +560,6 @@ it("stale pass back-off: a stale archive that keeps failing sits out its back-of
     projects: { list: async () => ({ projects: [] }) },
     terminals: { list: async () => ({ entries: [] }) },
     schedules: { list: async () => [] },
-    supportsBackgroundWorkspaces: () => false,
   };
   let flags = new Map<string, FlagEntry>();
   const flagStore: FlagStateStore = {

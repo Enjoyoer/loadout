@@ -27,9 +27,9 @@ export type ResumeRecord = {
   // Usage failures also leave Pi in error, but retain the usage delay.
   usageFailedOutcome?: boolean;
   retryPrompt?: string;
-  // The turn input the record checks (a user row, or on Paseo 0.13 an agent message; see turnInput). A transient record
-  // always names it. A usage record names it only when detected on Paseo 0.13, where an agent message does not move
-  // lastUserMessageAt, so each send first checks that input is still the newest (verifyUsageInput).
+  // The turn input the record checks (a user row, or an agent message; see turnInput). A transient record always names
+  // it. A usage record names it when its turn's input was read; an agent message does not move lastUserMessageAt, so
+  // each send first checks that input is still the newest (verifyUsageInput).
   expectedUserText?: string;
   expectedUserMessageId?: string | null;
   failedAssistantText?: string;
@@ -102,7 +102,7 @@ export const RESTART_SETTLE_MS = 60_000;
 /** Paseo closed this agent (`agent.closed`): when, and which daemon run saw it (the plugin's parent process). */
 export type AgentClose = { agentId: string; at: string; daemon: string };
 
-// Paseo 0.11.1 closes every agent when the daemon shuts down, with the same `agent.closed` event an explicit close or
+// Paseo closes every agent when the daemon shuts down, with the same `agent.closed` event an explicit close or
 // kill sends, and stops plugins a few seconds later. A close this daemon run still outlives by this long was an
 // explicit one.
 export const AGENT_CLOSE_GRACE_MS = 60_000;
@@ -315,7 +315,7 @@ export function turnText(timeline: readonly AgentTimelineItem[]): { assistant: s
 }
 
 /**
- * A failed turn's own rows in a tail read after its end, for Paseo 0.13, whose turn_ended carries no timeline. A live
+ * A failed turn's own rows in a tail read after its end, since Paseo's turn_ended carries no timeline. A live
  * turn's rows, its input included, carry its turn ID; once a newer turn began, the tail also holds that turn's input and
  * answer, which are never this turn's. So the rows end at the turn's last row (`done` once they hold an input to bind).
  * A turn can have no row of its own: Paseo drops a schedule or heartbeat prompt from the timeline and appends a failed
@@ -810,7 +810,7 @@ export function releaseClaim(current: ResumeRecord, before: ResumeRecord, claime
 
 /**
  * A distinct turn on a newer external message replaces the old work, not its failure signature or retry attempt. A human
- * message moves lastUserMessageAt. An agent message (Paseo 0.13) does not, so a turn whose own input is an agent message
+ * message moves lastUserMessageAt. An agent message does not, so a turn whose own input is an agent message
  * other than the one the record checks is newer work too.
  */
 export function supersedeForNewUserTurn(record: ResumeRecord, agent: AgentSnapshot, turnId: string | null | undefined, timeline: readonly AgentTimelineItem[], now = Date.now()): ResumeRecord {
@@ -852,7 +852,7 @@ export function rebindRecord(record: ResumeRecord, agent: AgentSnapshot, now = D
 }
 
 /**
- * A usage record that names its input (Paseo 0.13) still resumes that input: the newest turn input is the named one, or
+ * A usage record that names its input still resumes that input: the newest turn input is the named one, or
  * the record's own last send. Any other input is newer work, from a human or another agent, and ends the record. A
  * timeline with no input at all shows nothing newer.
  */

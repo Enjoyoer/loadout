@@ -1,6 +1,6 @@
 # history-cwd-fallback
 
-Server-only Paseo plugin for Paseo >=0.10.3 <0.16.0. It lets an archived agent whose Paseo worktree was deleted open its history again.
+Server-only Paseo plugin. Requires Paseo 0.15. It lets an archived agent whose Paseo worktree was deleted open its history again.
 
 ## The problem
 
@@ -23,7 +23,7 @@ Each link and removal writes one log line. The plugin has no settings and no UI,
 
 ## Why six seconds
 
-Paseo 0.11.1 and 0.13.0 emit no hook or event after a provider is started for a history open, so the plugin cannot drop the link the moment Pi is up. The link must outlive Pi's whole start: Paseo spawns a short MCP probe in the directory, then the real process, and Pi then checks that its session's directory exists. These timings were measured on a Mac, from the link being made to the timeline response, which bounds that check from above:
+Paseo emits no hook or event after a provider is started for a history open, so the plugin cannot drop the link the moment Pi is up. The link must outlive Pi's whole start: Paseo spawns a short MCP probe in the directory, then the real process, and Pi then checks that its session's directory exists. These timings were measured on a Mac, from the link being made to the timeline response, which bounds that check from above:
 
 | Paseo | Idle (8 opens) | Heavy CPU load (5 opens) | Shortest link that sometimes failed |
 |---|---|---|---|

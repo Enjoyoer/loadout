@@ -2,7 +2,7 @@
 
 Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.pid` runtime listen metadata. An explicit non-default `PASEO_HOME` without valid endpoint metadata refuses to connect instead of falling back to another daemon. Invalid explicit hosts also fail closed. The standard local endpoint is a fallback only for an unset home or `~/.paseo`.
 
-Server-only Paseo plugin for Paseo >=0.10.3 <0.16.0. It archives worker **worktree** workspaces,
+Server-only Paseo plugin. Requires Paseo 0.15. It archives worker **worktree** workspaces,
 and through Paseo's own workspace archive the agents in them, once the worker branch
 is merged into its base. It is **event-driven**: every finished agent turn (PM or
 worker) evaluates the worktrees of that agent's project and repository within seconds.
@@ -155,7 +155,7 @@ That abort applies to both paths: nothing is archived. Invalid settings also abo
 The only action is the official `paseo.workspaces.archive(workspaceId)` (the same
 request as `paseo workspace archive`). Because it archives the workspace's agents, which ends
 their heartbeats and supersedes a resume usage-limit-auto-resume owes them, the `heartbeat` and
-`auto-resume` gates above hold it back first. In Paseo 0.9.1 the archive (`archiveByScope`):
+`auto-resume` gates above hold it back first. The archive (`archiveByScope`):
 
 - archives every agent in the workspace, kills its terminals, and archives the record;
 - runs the project's worktree teardown commands, if any;
@@ -217,8 +217,8 @@ Both paths first need all of these, else the line is `skip` with the reason show
 
 Last activity is the newest of these timestamps, as Paseo and git expose them:
 
-- the workspace: `createdAt` (0.13), `statusEnteredAt` (see below), `activityAt` and
-  `lastUserMessageAt` (0.13);
+- the workspace: `createdAt`, `statusEnteredAt` (see below), `activityAt` and
+  `lastUserMessageAt`;
 - every agent the workspace ever held, archived ones included: `createdAt`,
   `lastUserMessageAt`, `attentionTimestamp`, and `updatedAt` (see below);
 - every agent's newest delivered message, from Paseo's message receipts (see below), at most
@@ -239,7 +239,7 @@ its newest input leaves no other trace, so the 12 h last-turn allowance covers i
 archived within 12 h of its last input therefore counts as active until its archive.
 
 **Message receipts.** Messages from other agents, such as a PM's `paseo send`, do not set
-the recipient's `lastUserMessageAt` on 0.13. On 0.11.1 and 0.13.0 (the same code) the daemon
+the recipient's `lastUserMessageAt`. The daemon
 writes a receipt for every `send_agent_message_request` that carries a `messageId`, which the
 CLI and the app always set: `<PASEO_HOME>/agent-requests/<sha256>.json` with the recipient's
 `agentId`, written `pending` and rewritten `completed` once the message is delivered. So the
@@ -260,12 +260,12 @@ the workspace's `createdAt` there.
 
 Paseo does not expose the workspace record's `updatedAt`, and scripts report only their
 `lifecycle`, with no start or stop time, so neither can count; a running script or a live
-terminal blocks cleanup instead. On 0.11.1 and 0.13.0 `activityAt` is always null. File
+terminal blocks cleanup instead. Paseo reports `activityAt` as null. File
 edits made outside Paseo and not committed are not activity.
 
 ### What archiving a record does
 
-The plugin calls `paseo.workspaces.archive(workspaceId)`, which on 0.11.1 and 0.13.0 sends
+The plugin calls `paseo.workspaces.archive(workspaceId)`, which sends
 `archive_workspace_request` to `archiveByScope` (workspace scope). It stops the
 workspace's setup, archives its agents, kills its terminals and archives the record. It
 removes a directory, after running the project's worktree teardown commands, only for a
@@ -280,7 +280,7 @@ Archiving a project's last or main checkout record does **not** archive or remov
 project: Paseo only logs that the project has no active workspace left, and `project ls`
 still lists it. Only removing the project (`project.remove`) archives its workspaces, and
 `orphan-project-sweeper` removes a project only when its root folder is gone. Opening the
-folder again in Paseo makes a new workspace record in the same project (checked on 0.13.0).
+folder again in Paseo makes a new workspace record in the same project.
 
 ### Messages to the PM
 
@@ -374,11 +374,9 @@ Requirements and limits:
 
 ### Background workspaces
 
-Paseo 0.13 hides background workspaces and their agents from listings unless the request
-sets `filter.includeBackground`. Every sweep asks the daemon whether it has background
-workspaces (`supportsBackgroundWorkspaces()`, from the server info) and then includes them,
-as `orphan-project-sweeper` 0.2.1 does; 0.11.1 has none. A client that cannot answer aborts
-the sweep, so nothing is decided from a list that may be missing workspaces or agents.
+Paseo hides background workspaces and their agents from listings unless the request
+sets `filter.includeBackground`. Every sweep sets it on its workspace and agent listings, as
+`orphan-project-sweeper` does.
 
 ### Listings that only cleanup reads
 
@@ -509,7 +507,7 @@ reported.
 
 ## Triggers
 
-0.9.1 has no git, PR, or merge hook. A merge is almost always performed by a PM or
+Paseo has no git, PR, or merge hook. A merge is almost always performed by a PM or
 worker agent inside a Paseo turn, so the turn end is the trigger.
 
 - **`agent.turn_ended` (any agent, PMs in `local_checkout` workspaces included)**: the
@@ -653,8 +651,7 @@ workspaces are counted in the summary only unless `logNonCandidates` is on.
 
 ## Daemon access and version bound
 
-`PluginServerContext` has no Paseo SDK handle, and the `PaseoApi` that hooks receive
-cannot tell whether the daemon has background workspaces. So every sweep opens its own
+`PluginServerContext` has no Paseo SDK handle, so every sweep opens its own
 short-lived connection, as the Paseo CLI does, with the typed `DaemonClient` from
 `@getpaseo/client/internal/daemon-client` (an internal export, which is why the version is
 pinned exactly), and closes it when the sweep ends. The daemon is resolved at each sweep
@@ -662,52 +659,32 @@ from `PASEO_HOST`, then `$PASEO_HOME/paseo.pid`, then `127.0.0.1:6767` only for 
 default home. A non-default home without valid listen metadata refuses to connect, and
 that sweep logs `sweep-aborted`.
 
-`paseo-plugin.json` pins `"paseo": ">=0.10.3 <0.16.0"` and `package.json` pins
-`@getpaseo/client`, `@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.13.0`
-(0.4.0, from 0.11.1, for `supportsBackgroundWorkspaces()`; the same pins as
-`orphan-project-sweeper`). The 0.13.0 client works with older daemons: the workspace
-cleanup proof below ran this build on 0.13.0 and 0.11.1, and a 0.10.3 scratch daemon ran
-a dry-run sweep with cleanup lines and no error. The plugin depends on 0.9.1 archive semantics
-(directory removal, branch kept), the worktree metadata location, and snapshot field
-names. Those were checked against 0.9.2, 0.10.1, 0.10.3, and 0.11.1. The owner admitted
-0.12 and 0.13 after a 0.13.0 canary ran the plugin; in the 0.13.0 server the worktree
-metadata is still `<git-dir>/paseo/worktree.json` and archive still never deletes the
-branch. 0.13 hides background workspaces from `workspaces.list` unless asked; since 0.4.0
-the plugin asks (see Background workspaces). Re-check before admitting 0.14.
+`paseo-plugin.json` pins `"paseo": ">=0.15.0 <0.16.0"` and `package.json` pins
+`@getpaseo/client`, `@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.15.3`, the
+same pins as `orphan-project-sweeper`. The plugin depends on Paseo's archive semantics
+(directory removal, branch kept), the worktree metadata location
+(`<git-dir>/paseo/worktree.json`), and snapshot field names. Re-check before admitting 0.16.
 
-The 0.10.3 check used its installed client and plugin type declarations and a
-credential-free, disposable daemon with a fake ACP provider and scratch git repository.
-With no settings file, both the startup fallback client and a real `agent.turn_ended`
-hook logged `would-archive` for a clean, locally merged worker. After arming only the
-scratch daemon's settings, a completed fixture turn triggered a fresh-state recheck
-and the official archive action. The worker agent and workspace were archived, the
-Paseo-owned directory and git worktree entry were removed, and the branch remained.
-An unmerged worker in the same project was skipped and its directory remained.
-No runtime or dependency change was needed for 0.10.3; the existing manifest range
-already includes it. The same fixture was repeated with the 0.11.1 build on disposable
-0.10.3 and 0.11.1 daemons, with the same result. These checks do not exercise the GitHub
-squash-merge path, project teardown scripts, or concurrent live-agent races.
-
-Workspace cleanup (0.4.0) was checked on disposable 0.13.0 and 0.11.1 daemons, each with
+Workspace cleanup (0.4.0) was checked on disposable daemons, each with
 its own home and port, a fake ACP provider, scratch git repositories, and
 `staleWorkspaceMinutes` 4. Dry-run, and then `armed` alone, changed nothing: the same
 workspaces, projects, files, branches and PM timeline, and no state file. With both
 switches on, the first sweep archived the stale project checkout and local workspace
-records (and on 0.13.0 a background one) with their files intact and every project still
+records (and a background one) with their files intact and every project still
 listed, archived the merged clean agentless worktree, and kept the unmerged and the dirty
-(untracked file) agentless worktrees (and on 0.13.0 a background unmerged one). Their PM
+(untracked file) agentless worktrees (and a background unmerged one). Their PM
 got one message, routed by the parent label for one and by `role=pm` plus `project` for
 the others. Workspaces with an agent, a running script, a terminal or recent activity were
 kept. A plugin reload and a daemon restart each ran another sweep that sent nothing more.
 A worktree whose project has no PM, and one whose project has two, logged
-`notify-unrouted` and nothing was recorded for them. A second round on both versions
+`notify-unrouted` and nothing was recorded for them. A second round
 checked the activity and send rules. An agent archived just before the sweep left its
 workspace stale, and the record was archived with its files intact. A commit made just
 before the sweep kept a worktree `recent`. A worktree whose HEAD commit was its newest
 activity was reported with that age. A report to a PM in a running turn logged
 `notify-deferred` (`PM running`) and was sent at the next sweep, once the PM was idle.
-A third round checked the receipts on both versions. Each `paseo send` added one
-`completed` receipt for the recipient, with the send time as its file time. On 0.13.0 a
+A third round checked the receipts. Each `paseo send` added one
+`completed` receipt for the recipient, with the send time as its file time. A
 send from another agent (`PASEO_AGENT_ID` set) left `lastUserMessageAt` unchanged and
 still wrote a receipt. A workspace whose agent was archived more than 4 minutes after its
 last input stayed `recent`, dated by the archive, and became `would-archive` 4 minutes
@@ -715,7 +692,7 @@ after it. With the receipt directory made
 unreadable, the sweep showed `receiptsUnreadable` and dated the same workspaces by their
 archive.
 
-Peer routing and agentless cleanliness (0.5.0) were checked on a pair of disposable 0.13.0
+Peer routing and agentless cleanliness (0.5.0) were checked on a pair of disposable
 daemons on macOS, each with its own home and port and a fake ACP provider. The plugin ran on
 one; the other held the peer agents. The plugin's tunnel and client were used unchanged. Only
 `ssh` on the plugin daemon's `PATH` was a stand-in that bridged two fixture aliases to the
@@ -738,7 +715,7 @@ archived a merged agentless worktree whose only ignored files were two `__pycach
 directories (its branch was kept), reported an unmerged one as `not-merged(...)` instead of
 `dirty(ignored=2)`, and reported a merged one with an ignored `.env` as `dirty(ignored=1)`.
 
-On Windows (Win32-OpenSSH 10.0p2, node 25) a disposable 0.13.0 daemon with its own home and
+On Windows (Win32-OpenSSH 10.0p2, node 25) a disposable daemon with its own home and
 port ran the plugin from the same source, started from an ssh session with no window. In
 dry-run with the real `ssh.exe` from `PATH`, one fixture worktree was routed to a real project
 PM on a Linux peer and another to its real parent on a second Windows peer, both read only; an

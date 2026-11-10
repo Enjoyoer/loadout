@@ -41,7 +41,7 @@ cp -R skills/orchestration/handoff "${CODEX_HOME:-$HOME/.codex}/skills/"
 |---|---|
 | Claude Code | Current release with plugin marketplaces |
 | Codex | Current release with a `skills` folder |
-| Paseo plugins | Paseo `>=0.10.3 <0.16.0`, and `>=0.11.1 <0.16.0` for `pi-fast-toggle` (pinned in each `paseo-plugin.json`) |
+| Paseo plugins | Paseo `>=0.15.0 <0.16.0` (pinned in each `paseo-plugin.json`) |
 | Fleet sync and tests | Python 3 and Node on each host; CI runs Python 3.12 and Node 24 on Ubuntu, macOS and Windows |
 
 ## Set up your own agent fleet

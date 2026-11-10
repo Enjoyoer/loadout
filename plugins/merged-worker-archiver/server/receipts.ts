@@ -4,7 +4,7 @@ import { paseoHome } from "./vendor/daemon-target.ts";
 import { probe } from "./vendor/fs-probe.ts";
 
 // Paseo's message delivery receipts, read-only: <PASEO_HOME>/agent-requests/<sha256>.json holding
-// {fingerprint, agentId, state}. On 0.11.1 and 0.13.0 (identical code) the daemon writes one for
+// {fingerprint, agentId, state}. The daemon writes one for
 // every send_agent_message_request that carries a messageId, which the CLI and the app always set:
 // first `pending`, then, once the message was handed to the agent, rewritten (atomically) as
 // `completed`. So a receipt's modification time is when the message was delivered. Messages from
