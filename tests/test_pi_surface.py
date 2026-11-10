@@ -556,7 +556,9 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             data=paseo_providers.payload(cfg,'example', 'test',False);data['config_path']=str(config)
             packed=base64.b64encode(gzip.compress(json.dumps(data).encode())).decode()
             env={**os.environ,'PATH':str(bin_dir)+os.pathsep+os.environ['PATH']}
-            result=subprocess.run(['node',str(PI.parent/'paseo_providers_merge.js'),packed],env=env,capture_output=True,text=True)
+            # As shipped: remote_common.js ahead of the merge program.
+            program=base/'merge.js';program.write_text((PI.parent/'remote_common.js').read_text()+'\n'+(PI.parent/'paseo_providers_merge.js').read_text())
+            result=subprocess.run(['node',str(program),packed],env=env,capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             picker=json.loads(config.read_text())['agents']['providers']['pi']['models'];models=json.loads((root/'agent/models.json').read_text())['providers']['fleet']['models']
             self.assertEqual([row['label'] for row in picker],[row['name'] for row in models])
@@ -577,10 +579,12 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         source={'codex':{'models':[{'id':'backend-current','label':'Luna','isDefault':True,'thinkingOptions':[{'id':'max','label':'Max','isDefault':True}]}]}}
         pi={'root':str(base/'pi'),'runtime':{'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'EXISTING_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'}}}
         env={**os.environ,'PATH':str(bin_dir)+os.pathsep+os.environ['PATH']}
+        # As shipped: remote_common.js ahead of the merge program.
+        program=base/'merge.js';program.write_text((PI.parent/'remote_common.js').read_text()+'\n'+(PI.parent/'paseo_providers_merge.js').read_text())
         def run(catalog):
             data=paseo_providers.payload(catalog,'example','test',False);data['config_path']=str(base/'config.json')
             packed=base64.b64encode(gzip.compress(json.dumps(data).encode())).decode()
-            done=subprocess.run(['node',str(PI.parent/'paseo_providers_merge.js'),packed],env=env,capture_output=True,text=True)
+            done=subprocess.run(['node',str(program),packed],env=env,capture_output=True,text=True)
             return paseo_providers.parse_result(done.stdout) or {'error':done.stdout+done.stderr}
         return {'providers':source,'pi':pi}, run
 
@@ -662,6 +666,84 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             self.assertEqual(configure(spec,root)['changed'],[])
             spec['settings']['defaultThinkingLevel']='low';configure(spec,root)
             self.assertTrue(list((root/'agent').glob('settings.json.bak-*')))
+
+    def pruned_runtime(self, tmp, level='low', dry_run=False, extra=(), link=None, others=()):
+        """Configure a runtime, seed seven settings.json backups (2026-01-01 to 01-07, the oldest stamp with the newest
+        mtime), extra hand-made files, an optional symlink, and other files' backups, then change one setting."""
+        sys.path.insert(0,str(PI))
+        from configure import configure
+        root = Path(tmp)/'pi'; key = Path(tmp)/'key'; key.write_text('k')
+        spec = {'baseUrl':'https://router.example.test/v1','credential':{'kind':'text','path':str(key)},
+                'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'},
+                'models':[{'id':'example-model','name':'Astra','reasoning':True,'input':['text'],'contextWindow':100000,'maxTokens':4096,'cost':{'input':0,'output':0,'cacheRead':0,'cacheWrite':0}}],
+                'settings':{'defaultProvider':'fleet','defaultModel':'example-model','defaultThinkingLevel':'high'}}
+        configure(spec,root)
+        agent = root/'agent'
+        seeded = [f'settings.json.bak-2026010{d}T000000000000Z' for d in range(1,8)]
+        for age,name in enumerate(seeded + [f'{o}.bak-2026010{d}T000000000000Z' for o in others for d in range(1,8)]):
+            (agent/name).write_text(name); os.utime(agent/name,(1e9+1000*(20-age),)*2)
+        for name in extra: (agent/name).write_text('hand-made')
+        if link: (agent/link[0]).symlink_to(link[1])
+        spec['settings']['defaultThinkingLevel']=level
+        report = configure(spec,root,dry_run)
+        return report, agent, seeded, sorted(p.name for p in agent.glob('settings.json.bak-*'))
+
+    def test_runtime_keeps_the_newest_five_backups_by_stamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report, agent, seeded, backups = self.pruned_runtime(tmp)
+            self.assertEqual(report['prune_errors'],[])
+            new = [n for n in backups if n not in seeded]
+            self.assertEqual(len(new),1)
+            self.assertEqual(backups, sorted(seeded[3:]+new))
+
+    def test_runtime_prune_ignores_hand_made_backups_other_suffixes_and_symlinks(self):
+        extra = ['settings.json.before-edit','settings.json.bak-pr12','settings.json.bak-20250101T000000Z',
+                 'settings.json.bak-20250101T000000000000Z.old','settings.json.bak-20251399T000000000000Z',
+                 'settings.json.bak-loadout-20250101-000000-abcdef12']
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)/'linked-target'; target.write_text('keep me')
+            link = 'settings.json.bak-20250101T000000000000Z'
+            report, agent, seeded, backups = self.pruned_runtime(tmp, extra=extra, link=(link,target))
+            self.assertEqual(report['prune_errors'],[])
+            for name in extra: self.assertEqual((agent/name).read_text(),'hand-made')
+            self.assertTrue((agent/link).is_symlink()); self.assertEqual(target.read_text(),'keep me')
+            self.assertEqual([n for n in backups if n in seeded], seeded[3:])
+
+    def test_runtime_prune_ignores_another_files_backups_in_the_same_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report, agent, seeded, backups = self.pruned_runtime(tmp, others=('notes.json','settings.jsonx'))
+            for other in ('notes.json','settings.jsonx'):
+                self.assertEqual(len(list(agent.glob(other+'.bak-2026*'))),7)
+
+    def test_runtime_prune_failure_still_completes_the_write(self):
+        unlink = Path.unlink
+        def refuse(path, *a, **k):
+            if '.bak-' in path.name: raise PermissionError('test refusal')
+            return unlink(path, *a, **k)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(Path,'unlink',refuse):
+            report, agent, seeded, backups = self.pruned_runtime(tmp)
+            self.assertEqual(json.loads((agent/'settings.json').read_text())['defaultThinkingLevel'],'low')
+            self.assertEqual(len(report['prune_errors']),3)
+            self.assertTrue(all(e.startswith('backup prune failed, kept: ') for e in report['prune_errors']))
+            self.assertEqual(len(backups),8)
+
+    def test_runtime_prune_ignores_a_name_with_non_ascii_digits(self):
+        # Arabic-Indic digits in the year and in the second digit of hour, minute and second: strptime alone reads it as 2020.
+        mixed = 'settings.json.bak-\u0662\u0660\u0662\u06600101T0\u06600\u06600\u0660000000Z'
+        with tempfile.TemporaryDirectory() as tmp:
+            report, agent, seeded, backups = self.pruned_runtime(tmp, extra=[mixed])
+            self.assertEqual((agent/mixed).read_text(),'hand-made')
+            self.assertEqual([n for n in backups if n in seeded], seeded[3:])
+            from backups import prune_backups
+            self.assertEqual(prune_backups(agent/'settings.json', 'none', r'\.bak-(?P<stamp>\d{8}T\d{12}Z)', '%Y%m%dT%H%M%S%fZ', keep=1), [])
+            self.assertEqual((agent/mixed).read_text(),'hand-made')
+            self.assertEqual(list(agent.glob('settings.json.bak-[0-9]*')), [])
+
+    def test_runtime_dry_run_prunes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report, agent, seeded, backups = self.pruned_runtime(tmp, dry_run=True)
+            self.assertIn('agent/settings.json', report['changed'])
+            self.assertEqual(backups, seeded)
 
     def test_mcp_inheritance_preserves_overrides_and_request(self):
         sys.path.insert(0,str(PI))

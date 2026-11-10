@@ -16,7 +16,7 @@ function runTestClaude(arg, options) {
 // Test-only hook: LOADOUT_TEST_BEFORE_RENAME is a JSON [interpreter, script] run as argv with the target file between
 // the temp write and the re-read, so a test can change the file in that window. It is never set outside tests.
 const testBeforeRename = process.env.LOADOUT_TEST_BEFORE_RENAME;
-const result = { codex: null, claude: null, claude_code: null, error: null };
+const result = { codex: null, claude: null, claude_code: null, prune_errors: [], error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
   process.exit(code);
@@ -320,6 +320,9 @@ function update(p, file, merge) {
     if (now === null ? bytes === null : bytes !== null && now.equals(bytes)) {
       checkConfigPath(fs, path, os, file);
       fs.renameSync(tmp, file);
+      // Keep this file's newest 5 backups by this merge: <file>.bak-loadout-<%Y%m%d-%H%M%S>-<8 hex>.
+      if (backup) result.prune_errors.push(...pruneBackups(fs, path, file, backup,
+        /^\.bak-loadout-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-[0-9a-f]{8}$/));
       return { ...r, after: undefined, backup: backup && path.basename(backup) };
     }
     fs.rmSync(tmp, { force: true });

@@ -3,6 +3,7 @@ import argparse, copy, csv, io, json, os, re, shutil, stat, subprocess, sys, tom
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
+from backups import prune_backups
 from credential import check_source, expand
 
 FILES = ("credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs")
@@ -191,12 +192,12 @@ def configure(spec, root, dry_run=False):
     for name in contents: safe_target(root, root / name)
     changed = [name for name, data in contents.items() if not (root / name).exists() or (root / name).read_bytes() != data]
     # Back up all affected files before the first write. Caller provides a new root for install.
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    stamp, backed, pruned = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"), [], []
     if not dry_run:
         for name in changed:
             target = root / name
             safe_target(root, target)
-            if target.exists(): shutil.copy2(target, target.with_name(target.name + ".bak-" + stamp))
+            if target.exists(): shutil.copy2(target, target.with_name(target.name + ".bak-" + stamp)); backed.append(name)
         for name in changed:
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -206,7 +207,14 @@ def configure(spec, root, dry_run=False):
             if target.read_bytes() != contents[name]: raise ValueError("Pi write verification failed")
         secure_windows_user(root)
         validate_settings(json.loads((root / 'agent/settings.json').read_text()))
-    return {"changed": changed, "dry_run": dry_run, "root": str(root)}
+        # Only once every write and check passed, keep each backed-up file's newest 5 backups by this step:
+        # <file>.bak-<UTC %Y%m%dT%H%M%S%fZ>.
+        for name in backed:
+            target = root / name
+            pruned += prune_backups(target, target.name + ".bak-" + stamp, r"\.bak-(?P<stamp>[0-9]{8}T[0-9]{12}Z)",
+                                    "%Y%m%dT%H%M%S%fZ")
+    for error in pruned: print(error, file=sys.stderr)
+    return {"changed": changed, "dry_run": dry_run, "root": str(root), "prune_errors": pruned}
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)

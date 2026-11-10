@@ -272,11 +272,11 @@ class LocalMergeTest(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def merge(self, text, top=None, sections=None, stamp="20261010-000000"):
+    def merge(self, text, top=None, sections=None, stamp="20261010-000000", dry_run=False):
         (self.codex / "config.toml").write_bytes(text.encode())
         payload = {"codex": {"top": top or {}, "sections": sections or {}, "reportOnly": []},
                    "claude": {"settings": {}, "env": {}, "token_env": None, "minVersion": None},
-                   "token": None, "stamp": stamp, "dry_run": False, "update_claude": False}
+                   "token": None, "stamp": stamp, "dry_run": dry_run, "update_claude": False}
         result, output = fleet.run_node("here", True, client_config.MERGE_JS, payload, 60)
         self.assertIsNotNone(result, output)
         return result, (self.codex / "config.toml").read_bytes().decode()
@@ -286,6 +286,72 @@ class LocalMergeTest(unittest.TestCase):
         self.merge('model = "second"\n', {"model": "third"})
         backups = sorted(p.read_text() for p in self.codex.glob("config.toml.bak-loadout-20261010-000000-*"))
         self.assertEqual(backups, ['model = "first"\n', 'model = "second"\n'])
+
+    def seed_backups(self, file="config.toml"):
+        """Seven earlier backups of file, stamped 2026-01-01 to 01-07, the oldest stamp with the newest mtime."""
+        names = [f"{file}.bak-loadout-2026010{day}-000000-0000000{day}" for day in range(1, 8)]
+        for age, name in enumerate(names):
+            (self.codex / name).write_text(name)
+            os.utime(self.codex / name, (1e9 + 1000 * (7 - age),) * 2)
+        return names
+
+    def backups(self):
+        return sorted(p.name for p in self.codex.glob("config.toml.bak-loadout-*"))
+
+    def test_keeps_the_newest_five_backups_by_stamp(self):
+        seeded = self.seed_backups()
+        result, _ = self.merge('model = "first"\n', {"model": "second"})
+        self.assertEqual(result["prune_errors"], [])
+        new = [n for n in self.backups() if n not in seeded]
+        self.assertEqual(len(new), 1)
+        self.assertEqual(self.backups(), sorted(seeded[3:] + new))
+
+    def test_prune_ignores_hand_made_backups_other_suffixes_and_symlinks(self):
+        seeded = self.seed_backups()
+        others = ["config.toml.before-edit", "config.toml.bak-pr12", "config.toml.bak-loadout-20250101-000000",
+                  "config.toml.bak-loadout-20250101-000000-abcdef12.old", "config.toml.bak-loadout-20251399-000000-abcdef12",
+                  "config.toml.bak-20250101T000000Z"]
+        for name in others:
+            (self.codex / name).write_text("hand-made")
+        target = self.codex.parent / "linked-target"
+        target.write_text("keep me")
+        link = self.codex / "config.toml.bak-loadout-20250101-000000-deadbeef"
+        link.symlink_to(target)
+        result, _ = self.merge('model = "first"\n', {"model": "second"})
+        self.assertEqual(result["prune_errors"], [])
+        for name in others:
+            self.assertEqual((self.codex / name).read_text(), "hand-made")
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(target.read_text(), "keep me")
+        self.assertEqual([n for n in self.backups() if n in seeded], seeded[3:])
+
+    def test_prune_ignores_another_files_backups_in_the_same_dir(self):
+        others = self.seed_backups("other.toml") + self.seed_backups("config.tomlx")
+        self.merge('model = "first"\n', {"model": "second"})
+        self.assertEqual(sorted(p.name for p in self.codex.iterdir() if p.name in others), sorted(others))
+        self.assertEqual(len(self.backups()), 1)
+
+    def test_a_failed_prune_still_completes_the_write(self):
+        seeded = self.seed_backups()
+        hook = self.codex.parent / "no_unlink.js"
+        hook.write_text("const fs = require('fs'), unlink = fs.unlinkSync;\n"
+                        "fs.unlinkSync = f => { if (String(f).includes('.bak-loadout-')) "
+                        "throw Object.assign(new Error('EPERM: test'), { code: 'EPERM' }); return unlink(f); };\n")
+        with mock.patch.dict(os.environ, {"NODE_OPTIONS": f"--require={hook}"}):
+            result, after = self.merge('model = "first"\n', {"model": "second"})
+        self.assertIsNone(result["error"], result)
+        self.assertEqual(after, 'model = "second"\n')
+        self.assertEqual(len(result["prune_errors"]), 3, result)
+        self.assertTrue(all(e.startswith("backup prune failed, kept: ") for e in result["prune_errors"]))
+        self.assertEqual(len(self.backups()), 8)
+        self.assertIn("desktop: backup prune failed, kept: ", "\n".join(client_config.describe("desktop", result)))
+
+    def test_a_dry_run_prunes_nothing(self):
+        seeded = self.seed_backups()
+        result, after = self.merge('model = "first"\n', {"model": "second"}, dry_run=True)
+        self.assertIsNone(result["error"], result)
+        self.assertEqual(after, 'model = "first"\n')
+        self.assertEqual(self.backups(), seeded)
 
     def test_headers_with_comments_array_tables_and_multiline_strings_keep_their_scope(self):
         text = "\n".join(["# host settings", 'model = "m"', "", "[[skills.config]]", 'path = "/x"', "enabled = true", "",

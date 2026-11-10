@@ -19,7 +19,7 @@
 // Helpers come from remote_common.js, which fleet.run_node ships ahead of this file.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execFileSync } = require("child_process");
-const result = { status: null, clients: {}, added: [], changed: [], same: 0, conflicts: [], elevation: [], retired: [], kept: [], pi_excludes: [], error: null };
+const result = { status: null, clients: {}, added: [], changed: [], same: 0, conflicts: [], elevation: [], retired: [], kept: [], pi_excludes: [], prune_errors: [], error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
   process.exit(code);
@@ -164,6 +164,9 @@ function writeManaged(w) {
   if (typeof now.claudeMd !== "string" || sha(Buffer.from(now.claudeMd, "utf8")) !== sha(w.data)
       || others(now) !== others(plan.settings) || (st && (after.uid !== st.uid || (after.mode & 0o7777) !== mode)))
     throw new Error("verification failed after write: " + w.label + (backup ? "; backup at " + backup : ""));
+  // Keep this file's newest 5 backups by this sync: <file>.bak-<UTC %Y%m%dT%H%M%SZ>, removed as the user who wrote it.
+  if (backup) result.prune_errors.push(...pruneBackups(fs, path, file, backup,
+    /^\.bak-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/, elevate ? f => sudo("rm", "-f", "--", f) : undefined));
 }
 
 // Returns [kind, have]: "same", "added", "changed", or "conflict", and the hash a changed file has now.

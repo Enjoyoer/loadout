@@ -197,6 +197,24 @@ class RemotePreflightTest(unittest.TestCase):
         record = json.loads((self.home / ".config/loadout/global-sync.json").read_text())
         self.assertEqual(record, {str(target): sha(b"g2")})
 
+    def test_managed_settings_keeps_the_newest_five_backups_by_stamp(self):
+        target = self.home / "managed/managed-settings.json"
+        target.parent.mkdir()
+        target.write_text('{"theme": "x"}\n')
+        seeded = [f"managed-settings.json.bak-2026010{d}T000000Z" for d in range(1, 8)]
+        for age, name in enumerate(seeded):
+            (target.parent / name).write_text(name)
+            os.utime(target.parent / name, (1e9 + 1000 * (7 - age),) * 2)
+        (target.parent / "managed-settings.json.before-edit").write_text("hand-made")
+        got = self.run_remote({}, glob={**entry(b"g1"), "targets": {"claude": "managed-settings:claudeMd"}},
+                              extra_env={"LOADOUT_CLAUDE_MANAGED_SETTINGS": str(target)})
+        self.assertEqual((got["status"], got["prune_errors"]), ("updated", []), got)
+        self.assertEqual(json.loads(target.read_text()), {"theme": "x", "claudeMd": "g1"})
+        backups = sorted(p.name for p in target.parent.glob("managed-settings.json.bak-*"))
+        self.assertEqual(len(backups), 5)
+        self.assertEqual([n for n in backups if n in seeded], seeded[3:])
+        self.assertEqual((target.parent / "managed-settings.json.before-edit").read_text(), "hand-made")
+
     def test_global_target_shared_by_two_clients(self):
         (self.home / ".codex").mkdir()
         glob = lambda data: {**entry(data), "targets": {"claude": "~/AGENTS.md", "codex": "~/AGENTS.md"}}

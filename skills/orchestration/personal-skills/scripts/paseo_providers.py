@@ -25,7 +25,7 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -591,6 +591,8 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
             emit(f"{name}: MCP " + '; '.join(result['mcp']))
         if result and result.get('launch'):
             emit(f"{name}: launch " + '; '.join(result['launch']))
+        for error in (result or {}).get('prune_errors') or []:
+            emit(f"{name}: {error}")
         if result is None or result["error"] or not result["verified"]:
             settle()
             return "FAILED"
@@ -658,7 +660,7 @@ def preflight(fleet_doc: dict, fleet_dir: Path, dry_run: bool) -> dict:
     config = load_for_hosts(fleet_doc, fleet_dir)
     return {"fleet_doc": fleet_doc, "fleet_dir": fleet_dir, "dry_run": dry_run,
             "config": config,
-            "program": merge_program(), "stamp": datetime.now().strftime("%Y%m%d-%H%M%S")}
+            "program": merge_program(), "stamp": datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")}
 
 
 def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
