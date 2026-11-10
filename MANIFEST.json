@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "442430d39419860554f8d6bff3866a138bf24e5d",
+  "source_commit": "796f681148e875516d0f0388bdc941999cfd0e6b",
   "skill_count": 24,
   "file_count": 139,
   "files": [
@@ -51,8 +51,8 @@
       "path": "skills/engineering/improve-codebase-architecture/SKILL.md",
       "category": "engineering",
       "skill": "improve-codebase-architecture",
-      "bytes": 2835,
-      "sha256": "2250d6282bb6d130b4bea5d1b888ca2f24fdb0ba0f0695f9d92ceca7a0f24555"
+      "bytes": 4312,
+      "sha256": "bca7971fb65010dd26ef07ff77b6638d6f42cf7617a1e18303ea18d35624d39e"
     },
     {
       "path": "skills/engineering/improve-codebase-architecture/agents/openai.yaml",
