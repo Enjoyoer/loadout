@@ -28,7 +28,7 @@ export default function contribute(server: PluginServerContext) {
     // Recheck selection after the network lookup, before making a label-only update.
     const fresh = (await paseo.agents.ref(agentId).refresh())?.agent;
     if (!fresh || fresh.provider !== "pi" || fresh.archivedAt || (fresh.runtimeInfo?.model ?? fresh.model) !== selection) throw Error("Agent model changed; retry");
-    await writeTier(route.spec.paseoMcp.url, agentId, fast);
+    await writeTier(agentId, fast);
     const result = (await paseo.agents.ref(agentId).refresh())?.agent;
     if (result?.labels?.["opc.service-tier"] !== (fast ? "fast" : "standard")) throw Error("Tier update was not confirmed");
     return { capable: true, ...requestedState(result.labels) };

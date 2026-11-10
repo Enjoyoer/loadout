@@ -1,7 +1,7 @@
 {
   "name": "pi-fast-toggle",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "files": [
     "paseo-plugin.json",
     "index.client.ts",
@@ -16,6 +16,9 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p client/tsconfig.json",
     "test": "tsx --test test/*.test.ts",
     "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@getpaseo/client": "0.11.1"
   },
   "devDependencies": {
     "@getpaseo/plugin": "0.11.1",
