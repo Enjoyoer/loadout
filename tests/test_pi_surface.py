@@ -556,7 +556,9 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             data=paseo_providers.payload(cfg,'example', 'test',False);data['config_path']=str(config)
             packed=base64.b64encode(gzip.compress(json.dumps(data).encode())).decode()
             env={**os.environ,'PATH':str(bin_dir)+os.pathsep+os.environ['PATH']}
-            result=subprocess.run(['node',str(PI.parent/'paseo_providers_merge.js'),packed],env=env,capture_output=True,text=True)
+            # As shipped: remote_common.js ahead of the merge program.
+            program=base/'merge.js';program.write_text((PI.parent/'remote_common.js').read_text()+'\n'+(PI.parent/'paseo_providers_merge.js').read_text())
+            result=subprocess.run(['node',str(program),packed],env=env,capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             picker=json.loads(config.read_text())['agents']['providers']['pi']['models'];models=json.loads((root/'agent/models.json').read_text())['providers']['fleet']['models']
             self.assertEqual([row['label'] for row in picker],[row['name'] for row in models])
@@ -577,10 +579,12 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         source={'codex':{'models':[{'id':'backend-current','label':'Luna','isDefault':True,'thinkingOptions':[{'id':'max','label':'Max','isDefault':True}]}]}}
         pi={'root':str(base/'pi'),'runtime':{'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'EXISTING_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'}}}
         env={**os.environ,'PATH':str(bin_dir)+os.pathsep+os.environ['PATH']}
+        # As shipped: remote_common.js ahead of the merge program.
+        program=base/'merge.js';program.write_text((PI.parent/'remote_common.js').read_text()+'\n'+(PI.parent/'paseo_providers_merge.js').read_text())
         def run(catalog):
             data=paseo_providers.payload(catalog,'example','test',False);data['config_path']=str(base/'config.json')
             packed=base64.b64encode(gzip.compress(json.dumps(data).encode())).decode()
-            done=subprocess.run(['node',str(PI.parent/'paseo_providers_merge.js'),packed],env=env,capture_output=True,text=True)
+            done=subprocess.run(['node',str(program),packed],env=env,capture_output=True,text=True)
             return paseo_providers.parse_result(done.stdout) or {'error':done.stdout+done.stderr}
         return {'providers':source,'pi':pi}, run
 

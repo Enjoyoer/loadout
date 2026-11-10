@@ -535,7 +535,7 @@ class ProviderSyncTest(unittest.TestCase):
         """The step's inputs for an in-process run against the fakes, and an environment keeping its record here."""
         doc = fleet.validate(HOSTS)
         return (doc, paseo_providers.load_config(self.fleet / "paseo-providers.json", doc),
-                fleet.pack(paseo_providers.MERGE_JS.read_bytes()),
+                paseo_providers.merge_program(),
                 patch.dict(os.environ, {**self.env, "XDG_CONFIG_HOME": str(self.root / "hosts/laptop/.config")}))
 
     def test_a_clear_by_an_older_operation_leaves_newer_debt_in_place(self):
