@@ -62,11 +62,6 @@ export interface ArchiverApi {
     list(): Promise<{ entries: ReadonlyArray<TerminalView> }>;
   };
   /**
-   * True when the daemon has background workspaces (Paseo 0.12 and later), which every workspace and
-   * agent listing must then ask for; older daemons have none, and the client refuses the filter there.
-   */
-  supportsBackgroundWorkspaces(): boolean;
-  /**
    * Prompt an agent; the daemon keeps a receipt per (agent, messageId) and never delivers one twice.
    * "steer" adds the text to a turn that started meanwhile where the provider can steer.
    */
@@ -202,19 +197,16 @@ function group<T>(map: Map<string, T[]>, key: string, value: T): void {
 }
 
 /**
- * Live state. Background workspaces and their agents are listed whenever the daemon has them; a
- * client that cannot say whether it does aborts the sweep, as does a failed or incomplete workspace,
- * agent or project list. `withCleanup` also lists every agent with archived ones (a separate, larger
+ * Live state. Every workspace and agent listing asks for background workspaces and their agents,
+ * which Paseo leaves out otherwise. A failed or incomplete workspace, agent or project list aborts
+ * the sweep. `withCleanup` also lists every agent with archived ones (a separate, larger
  * listing) and the terminals, which only workspace cleanup reads: if either fails or is incomplete,
  * only cleanup is left out (`cleanup` null), never the worker sweep.
  */
 async function snapshot(api: ArchiverApi, withCleanup: DeliverySource | null, resumeState: ResumeStateReader | undefined): Promise<Snapshot> {
-  if (typeof api.supportsBackgroundWorkspaces !== "function") throw new Error("daemon client cannot tell whether background workspaces exist");
-  const background = api.supportsBackgroundWorkspaces() === true;
-  const backgroundFilter = background ? { includeBackground: true } : {};
   const page = (cursor?: string) => ({ page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) } });
-  const workspaces = await listAll((cursor) => api.workspaces.list({ ...(background ? { filter: backgroundFilter } : {}), ...page(cursor) }), "workspaces");
-  const agentEntries = await listAll((cursor) => api.agents.list({ ...(background ? { filter: backgroundFilter } : {}), ...page(cursor) }), "agents");
+  const workspaces = await listAll((cursor) => api.workspaces.list({ filter: { includeBackground: true }, ...page(cursor) }), "workspaces");
+  const agentEntries = await listAll((cursor) => api.agents.list({ filter: { includeBackground: true }, ...page(cursor) }), "agents");
   const agentsByWorkspace = new Map<string, AgentView[]>();
   const liveAgents: AgentView[] = [];
   for (const { agent } of agentEntries) {
@@ -227,7 +219,7 @@ async function snapshot(api: ArchiverApi, withCleanup: DeliverySource | null, re
   let cleanupError: string | null = null;
   if (withCleanup) {
     try {
-      cleanup = await cleanupData(api, backgroundFilter, page, withCleanup);
+      cleanup = await cleanupData(api, page, withCleanup);
     } catch (error) {
       cleanupError = error instanceof Error ? error.message : String(error);
     }
@@ -239,11 +231,10 @@ async function snapshot(api: ArchiverApi, withCleanup: DeliverySource | null, re
 
 async function cleanupData(
   api: ArchiverApi,
-  backgroundFilter: { includeBackground?: boolean },
   page: (cursor?: string) => PageRequest,
   source: DeliverySource,
 ): Promise<CleanupData> {
-  const history = await listAll((cursor) => api.agents.list({ filter: { ...backgroundFilter, includeArchived: true }, ...page(cursor) }), "agent history");
+  const history = await listAll((cursor) => api.agents.list({ filter: { includeBackground: true, includeArchived: true }, ...page(cursor) }), "agent history");
   const historyByWorkspace = new Map<string, AgentView[]>();
   for (const { agent } of history) if (agent.workspaceId) group(historyByWorkspace, agent.workspaceId, agent);
   if (typeof api.terminals?.list !== "function") throw new Error("terminal list unavailable");

@@ -133,7 +133,7 @@ describe("completed-turn transient classification", () => {
     assert.equal(buildTransientRecord(agent(), [{ type: "assistant_message", text: RATE_LIMIT }], config, NOW, "turn-1"), null);
     assert.equal(buildTransientRecord(agent(), timeline(RATE_LIMIT), config, NOW, null), null);
     assert.equal(turnText([...timeline(RATE_LIMIT), { type: "user_message", text: "New task" }]).assistant, null);
-    // Paseo 0.13: another agent's message is a turn input, and moves no lastUserMessageAt. No other tool row's text is.
+    // Another agent's message is a turn input, and moves no lastUserMessageAt. No other tool row's text is.
     const toolRow = (status = "completed", name = "agent_message", callId = "paseo-agent-message:pm-1") => ({ type: "tool_call", callId, name, status, error: null,
       detail: { type: "plain_text", text: "Delegated task", icon: "bot" }, agentMessage: { event: "message", text: "Delegated task" } }) as unknown as AgentTimelineItem;
     const worker = agent({ lastUserMessageAt: null });
@@ -219,7 +219,7 @@ describe("failed-turn transient classification", () => {
     const own = [row(failedTimeline[0]!, "t1"), row({ type: "assistant_message", text: `[System Error] ${CAPACITY}` }, "t1")];
     const newer = [row({ type: "user_message", text: "New task", messageId: "user-2" }, "t2"), row({ type: "assistant_message", text: "Done." }, "t2")];
     assert.deepEqual(endedTurnRows([...own, ...newer], "t1"), { rows: own, done: true });
-    // A heartbeat turn on Paseo 0.13: its prompt is not in the timeline and its error row has no turn ID, so the newest
+    // A heartbeat turn: its prompt is not in the timeline and its error row has no turn ID, so the newest
     // input is the previous turn's. That alone is no newer turn: the rows are taken as they are.
     const heartbeat = [...own, row({ type: "assistant_message", text: "[System Error] usage_limit_exceeded" })];
     assert.deepEqual(endedTurnRows(heartbeat, "t3"), { rows: heartbeat, done: true });

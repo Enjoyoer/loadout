@@ -1,10 +1,10 @@
 # Pi Fast toggle
 
-Per-agent composer controls for **Paseo >=0.11.1 <0.16.0**. Fast requests a service tier for eligible Pi agents. Effort offers the selected model's advertised thinking levels for any provider. Neither changes models, global provider defaults, prompts, or other agents. Fast never changes thinking; Effort never changes labels.
+Per-agent composer controls. Requires **Paseo 0.15**. Fast requests a service tier for eligible Pi agents. Effort offers the selected model's advertised thinking levels for any provider. Neither changes models, global provider defaults, prompts, or other agents. Fast never changes thinking; Effort never changes labels.
 
 ## Keyboard shortcuts: desktop and web only
 
-**Before using the Fast shortcut, clear or rebind Toggle focus mode in Settings > Keyboard shortcuts.** Paseo 0.11.1 binds that action to the same keys and its earlier window-capture listener wins. This plugin does not change settings or override that router. Click **Fast** when the prerequisite is not met.
+**Before using the Fast shortcut, clear or rebind Toggle focus mode in Settings > Keyboard shortcuts.** When this was checked on an older Paseo, that action used the same keys and its earlier window-capture listener won. This plugin does not change settings or override that router. Click **Fast** when the prerequisite is not met.
 
 | Action | Windows / Linux | macOS |
 | --- | --- | --- |
@@ -25,7 +25,7 @@ The new shortcuts and Effort UI are desktop/browser only; the existing mobile Fa
 - Failures retain the previous check and offer **Refresh / retry**. An uncertain write must be inspected before another selection is enabled. Errors are sanitized; daemon addresses, paths and backend bodies are not shown.
 - Effort does not require a Pi runtime.
 
-### Verified 0.11.1 limits
+### Host limits (checked on an older Paseo)
 
 The installed `@getpaseo/plugin` client contracts expose neither keybindings, focused-pane lookup, an imperative popover opener, nor shell layout/focus overrides. The web bundle confirms `workspace-pane-*`, `message-input-root` and `data-composer-input`: the adapter derives one pressable from its own icon, finds the smallest shared ancestor with one visible composer inside that pane, and requires both keyboard target and active element to belong to it. Missing or ambiguous DOM evidence disables keyboard actions, not composer editing or clickable controls.
 
@@ -47,7 +47,7 @@ These markers and overlay behaviors are implementation details, not public focus
 - Capability lookup uses the same `/models?client_version=0.160.0` endpoint, exact `slug ?? id` match, and `priority` catalog ID as the extension. Display discovery caches catalogs for ten minutes, including concurrent lookups; a press fetches a fresh catalog. Catalog errors hide the pill and block writes.
 - The directory subscription handles existing agents, pagination, live label/model changes, reconnect snapshots, removals, and late async results after cleanup. The button uses Paseo's native icon, label, accessible title, pending state, and error toast on desktop and compact/mobile layouts.
 
-There is no Command Center item: agent items in 0.10.3 and 0.11.1 have no per-model visibility predicate. An unconditional item would expose Fast for non-capable models, contrary to this plugin's scope.
+There is no Command Center item: agent items had no per-model visibility predicate when this was checked on an older Paseo. An unconditional item would expose Fast for non-capable models, contrary to this plugin's scope.
 
 ## Configure and install, only on an authorized host
 
@@ -94,7 +94,7 @@ Restore an originally explicit tier verbatim instead when appropriate. For an or
 
 ## Post-deploy acceptance (operator only)
 
-This change was not installed or reloaded on a host during implementation, and no user settings were edited. Installed 0.11.1 types and the shipped web bundle were inspected; rendered desktop/browser acceptance remains a deployment gate.
+This change was not installed or reloaded on a host during implementation, and no user settings were edited. The installed types and shipped web bundle of an older Paseo were inspected; rendered desktop/browser acceptance remains a deployment gate.
 
 1. Demonstrate the default Focus mode conflict, then manually clear/rebind it. Verify F toggles exactly once, leaves layout unchanged, retains Ultrafast semantics, and does not affect plain Find. Test Mac and Windows/Linux modifiers.
 2. Use two distinct agents in split panes, hidden tabs, duplicate-agent panes and two hosts. Verify only the focused composer changes; unrelated fields, transcript/body, terminals, editors and dialogs remain untouched. Verify duplicate-agent Effort fails closed.
@@ -111,4 +111,4 @@ npm run check
 python3 -m unittest discover -s tests
 ```
 
-Unit tests cover label state, exact catalog capability, client action/cleanup/races/pagination, and fail-closed gates. An isolated Paseo 0.10.3 daemon with the real Pi 1.0.0 CLI and a local fixture Responses router additionally verified the actual pill callback, preserved unrelated labels/session/model, and next-turn `priority` then `default` route evidence without a reload. Fixture responses are not evidence that a real upstream account will honor priority. The 0.11.1 build was later rerun on disposable 0.10.3 and 0.11.1 daemons with a credential-free Pi fixture and a loopback catalog: unconfigured it reported not capable and wrote nothing; configured, the real client callbacks wrote `fast` then `standard` through `update_agent` and kept the other labels and model. No live installation, settings edit, reload, or restart was performed. 0.1.6 was installed on a disposable 0.15.3 daemon with its MCP endpoint disabled: the plugin's RPCs wrote `fast`, then `standard`, then a thinking level on a disposable Pi agent, each read back, with its other labels and model unchanged.
+Unit tests cover label state, exact catalog capability, client action/cleanup/races/pagination, and fail-closed gates. 0.1.6 was installed on a disposable 0.15.3 daemon with its MCP endpoint disabled: the plugin's RPCs wrote `fast`, then `standard`, then a thinking level on a disposable Pi agent, each read back, with its other labels and model unchanged.

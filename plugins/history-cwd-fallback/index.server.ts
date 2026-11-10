@@ -11,10 +11,10 @@ import { paseoHome } from "./server/vendor/daemon-target.ts";
 // path is refused, as Paseo refuses a missing directory. The hook never changes the request.
 // See README.md.
 
-// Paseo 0.11.1 and 0.13.0 emit no hook or event after a resume spawn, so the link lives for a fixed time that
+// Paseo emits no hook or event after a resume spawn, so the link lives for a fixed time that
 // covers Pi's start: its MCP probe spawn, its real spawn, and its session cwd check. Measured on a Mac, from link
 // to the timeline response (an upper bound on that check): at most 1.7 s idle and 3.0 s under heavy CPU load.
-// Holds of 1.0 s (0.13.0) and 1.5 s (0.11.1) sometimes failed. 6 s is about twice the worst case. Paseo itself
+// Holds of 1.0 s and 1.5 s sometimes failed (older Paseo releases). 6 s is about twice the worst case. Paseo itself
 // does not need the link after that: the provider keeps running in the stand-in and a loaded agent does not
 // respawn for later timeline reads.
 const HOLD_MS = 6_000;

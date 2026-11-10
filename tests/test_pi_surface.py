@@ -550,7 +550,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         with tempfile.TemporaryDirectory() as tmp:
             base=Path(tmp);root=base/'pi';config=base/'config.json';config.write_text('{"agents":{"providers":{"codex":{"enabled":true}}},"daemon":{"agentProfiles":[{"id":"native","provider":"codex"}]}}')
             package=root/'app/node_modules/@earendil-works/pi-coding-agent/package.json';package.parent.mkdir(parents=True);package.write_text('{"version":"1.0.0"}')
-            bin_dir=base/"bin";bin_dir.mkdir();paseo=bin_dir/"paseo";paseo.write_text("#!/bin/sh\necho '{\"daemonVersion\":\"0.10.3\",\"connectedDaemon\":\"reachable\"}'\n");paseo.chmod(0o755)
+            bin_dir=base/"bin";bin_dir.mkdir();paseo=bin_dir/"paseo";paseo.write_text("#!/bin/sh\necho '{\"daemonVersion\":\"0.15.3\",\"connectedDaemon\":\"reachable\"}'\n");paseo.chmod(0o755)
             pi={'root':str(root),'runtime':{'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'EXISTING_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'}}}
             cfg={'providers':source,'pi':pi}
             data=paseo_providers.payload(cfg,'example', 'test',False);data['config_path']=str(config)
@@ -573,7 +573,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         sys.path.insert(0,str(PI));sys.path.insert(0,str(PI.parent))
         import gzip,base64,paseo_providers
         package=base/'pi/app/node_modules/@earendil-works/pi-coding-agent/package.json';package.parent.mkdir(parents=True);package.write_text('{"version":"1.0.0"}')
-        bin_dir=base/'bin';bin_dir.mkdir();paseo=bin_dir/'paseo';paseo.write_text("#!/bin/sh\necho '{\"daemonVersion\":\"0.10.3\",\"connectedDaemon\":\"reachable\"}'\n");paseo.chmod(0o755)
+        bin_dir=base/'bin';bin_dir.mkdir();paseo=bin_dir/'paseo';paseo.write_text("#!/bin/sh\necho '{\"daemonVersion\":\"0.15.3\",\"connectedDaemon\":\"reachable\"}'\n");paseo.chmod(0o755)
         source={'codex':{'models':[{'id':'backend-current','label':'Luna','isDefault':True,'thinkingOptions':[{'id':'max','label':'Max','isDefault':True}]}]}}
         pi={'root':str(base/'pi'),'runtime':{'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'EXISTING_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'}}}
         env={**os.environ,'PATH':str(bin_dir)+os.pathsep+os.environ['PATH']}
@@ -753,9 +753,9 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             runtime={'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'ROUTE_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'},'models':[{'id':'example','name':'Astra'}],'settings':{'defaultProvider':'fleet','defaultModel':'example','defaultThinkingLevel':'high'}}
             spec=base/'proposal.json';spec.write_text(json.dumps({'root':str(root),'runtime':runtime,'provider':{'models':[{'id':'fleet/example','label':'Astra'}]},'catalog_model_id':'fleet/example'}))
             state=base/'state.json'
-            with patch.object(deploy,'paseo_command',return_value='paseo'), patch.object(deploy.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout='{"daemonVersion":"0.10.2","connectedDaemon":"reachable"}')):
-                with self.assertRaisesRegex(ValueError,'0.10.3'):deploy.version_gate(home)
-            status={'daemonVersion':'0.10.3','connectedDaemon':'reachable','home':str(home)}
+            with patch.object(deploy,'paseo_command',return_value='paseo'), patch.object(deploy.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout='{"daemonVersion":"0.14.9","connectedDaemon":"reachable"}')):
+                with self.assertRaisesRegex(ValueError,'0.15.0'):deploy.version_gate(home)
+            status={'daemonVersion':'0.15.3','connectedDaemon':'reachable','home':str(home)}
             with patch.object(deploy,'version_gate',return_value=status),patch.object(sys,'argv',['deploy','apply','--spec',str(spec),'--state',str(state)]):deploy.main()
             self.assertTrue(json.loads((home/'config.json').read_text())['agents']['providers']['codex']['enabled'])
             record=json.loads(state.read_text())
@@ -778,7 +778,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             runtime={'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'ROUTE_KEY'},'paseoMcp':{'url':'http://127.0.0.1:6767/mcp/agents'},'models':[{'id':'example','name':'Astra'}],'settings':{'defaultProvider':'fleet','defaultModel':'example','defaultThinkingLevel':'high'}}
             spec=base/'proposal.json';spec.write_text(json.dumps({'root':str(root),'runtime':runtime,'provider':{'models':[{'id':'fleet/example','label':'Astra'}]},'catalog_model_id':'fleet/example'}))
             state=base/'state.json'
-            status={'daemonVersion':'0.10.3','connectedDaemon':'reachable','home':str(home)}
+            status={'daemonVersion':'0.15.3','connectedDaemon':'reachable','home':str(home)}
             with patch.object(deploy,'version_gate',return_value=status),patch.object(sys,'argv',['deploy','apply','--spec',str(spec),'--state',str(state)]):deploy.main()
             record=json.loads(state.read_text());applied=(home/'config.json').read_bytes();written=settings.read_bytes()
             # The owner edits a runtime file apply wrote, leaving the daemon config alone.
@@ -811,7 +811,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             # Someone who could guess the temp name plants a link there; the staging must not write through it.
             outside=base/'outside.json';outside.write_bytes(b'not the daemon config\n')
             (home/('config.json.loadout-'+'0'*32)).symlink_to(outside)
-            status={'daemonVersion':'0.10.3','connectedDaemon':'reachable','home':str(home)}
+            status={'daemonVersion':'0.15.3','connectedDaemon':'reachable','home':str(home)}
             with patch.object(deploy,'version_gate',return_value=status),patch.object(deploy.secrets,'token_hex',return_value='0'*32), \
                     patch.object(sys,'argv',['deploy','apply','--spec',str(spec),'--state',str(base/'state.json')]):
                 with self.assertRaisesRegex(ValueError,'already exists; refusing to stage through it'):deploy.main()

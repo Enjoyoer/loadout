@@ -19,7 +19,7 @@ const AUTH_UNAVAILABLE = "fleet API error (503): auth_unavailable: no auth avail
 // What the plugin logged in the current lane.
 let laneLogs: string[] = [];
 
-/** A Paseo 0.13 agent-message row: a prompt from another agent (create_agent, send_agent_prompt), or a notification. */
+/** An agent-message row: a prompt from another agent (create_agent, send_agent_prompt), or a notification. */
 const agentMessage = (id: string, text: string, event = "message") => ({
   type: "tool_call", callId: `paseo-agent-message:${id}`, name: "agent_message", status: "completed",
   detail: { type: "plain_text", text, icon: "bot" }, error: null,
@@ -63,13 +63,13 @@ async function setup(input: AgentTimelineItem = { type: "user_message", text: "F
   const snapshot: AgentSnapshot = {
     id: "retry-agent", provider: "pi", model: "fleet/gpt-6.1-sol", thinkingOptionId: "xhigh", cwd: "/repo",
     status: "error", lastError: OVERLOADED, requiresAttention: true, attentionReason: "error",
-    // Only a human prompt moves lastUserMessageAt (Paseo 0.13): a worker only another agent prompted has none.
+    // Only a human prompt moves lastUserMessageAt: a worker only another agent prompted has none.
     lastUserMessageAt: input.type === "user_message" ? new Date(START - 1000).toISOString() : null, updatedAt: new Date(START).toISOString(),
     persistence: { provider: "pi", sessionId: "retry-session", nativeHandle: "retry-session.jsonl" },
   };
   type Entry = { item: AgentTimelineItem; timestamp: string; turnId?: string; seqStart: number; seqEnd: number };
   let entries: Entry[] = [];
-  // A null turn ID appends a row without one, as Paseo 0.13 appends a failed outcome's error row.
+  // A null turn ID appends a row without one, as Paseo appends a failed outcome's error row.
   const append = (item: AgentTimelineItem, turnId: string | null = "source-turn") => {
     entries.push({ item, ...(turnId ? { turnId } : {}), timestamp: new Date().toISOString(), seqStart: entries.length + 1, seqEnd: entries.length + 1 });
   };
@@ -78,7 +78,7 @@ async function setup(input: AgentTimelineItem = { type: "user_message", text: "F
   const sends: Array<{ prompt: string; messageId: string }> = [];
   const handlers = new Map<string, (event: unknown, context?: unknown) => void>();
   let olderReads = 0;
-  // Timeline reads while the agent is closed: on Paseo 0.11.1 each one loads the agent again.
+  // Timeline reads while the agent is closed: each one loads the agent again.
   let closedReads = 0;
   // Returns "before" when the agent read answers with the snapshot taken before the hook ran.
   let beforeRefresh: (() => void | "before" | Promise<void | "before">) | null = null;
@@ -150,15 +150,16 @@ async function setup(input: AgentTimelineItem = { type: "user_message", text: "F
     closedReads: () => closedReads,
     beforeRefresh: (action: (() => void | Promise<void>) | null) => { beforeRefresh = action; },
     /**
-     * Holds the next agent read until release(); the lane releases it at cleanup too. With "before" the read answers
-     * with the snapshot taken when it began, as a daemon reply that arrives late does.
+     * Holds the next agent read, or the one `skip` reads later, until release(); the lane releases it at cleanup too.
+     * With "before" the read answers with the snapshot taken when it began, as a daemon reply that arrives late does.
      */
-    holdNextRefresh(snapshotAt: "before" | "after" = "after") {
+    holdNextRefresh(snapshotAt: "before" | "after" = "after", skip = 0) {
       let release!: () => void;
       const barrier = new Promise<void>((resolve) => { release = resolve; });
       held.push(release);
       let reached = false;
       beforeRefresh = async () => {
+        if (skip > 0) { skip--; return; }
         if (reached) return;
         reached = true;
         await barrier;
@@ -185,14 +186,14 @@ async function setup(input: AgentTimelineItem = { type: "user_message", text: "F
       snapshot.activeTurn = null;
       snapshot.lastError = undefined;
       snapshot.updatedAt = new Date().toISOString();
-      handlers.get("agent.turn_ended")!({ agent: { id: snapshot.id }, turnId, timeline: entries.map((entry) => entry.item), outcome: { kind: "completed" } }, { paseo: api });
+      handlers.get("agent.turn_ended")!({ agent: { id: snapshot.id }, turnId, timeline: [], outcome: { kind: "completed" } }, { paseo: api });
     },
     async sweep(at: number) {
       mock.timers.setTime(at);
       mock.timers.tick(30_000);
       await plugin.idle();
     },
-    async fail(at: number, message: string, long = false, ambiguous = false) {
+    async fail(at: number, message: string, long = false) {
       mock.timers.setTime(at);
       const turnId = snapshot.activeTurn?.turnId ?? "source-turn";
       if (long) for (let n = 0; n < 450; n++) append({ type: "reasoning", text: "provider-level retry" }, turnId);
@@ -202,7 +203,7 @@ async function setup(input: AgentTimelineItem = { type: "user_message", text: "F
       snapshot.lastError = message;
       snapshot.updatedAt = new Date().toISOString();
       handlers.get("agent.turn_ended")!({ agent: { id: snapshot.id }, turnId,
-        timeline: ambiguous ? entries.slice(-200).map((entry) => entry.item) : entries.map((entry) => entry.item),
+        timeline: [],
         outcome: { kind: "failed", error: { message } } }, { paseo: api });
       await plugin.idle();
     },
@@ -257,10 +258,6 @@ it("uncertain transient records re-verify and retry a live failed turn, includin
       await lane.sweep(START + 300_000);
       assert.deepEqual(lane.sends.map((send) => send.prompt), ["continue"]);
       assert.match(lane.sends[0]!.messageId, /:attempt:2$/);
-      await lane.fail(START + 400_000, OVERLOADED, true, true);
-      assert.equal((await lane.store.read())[0]?.state, "uncertain");
-      await lane.sweep(START + 800_000);
-      assert.equal(lane.sends.length, 2, "truncated retry end event is recovered on the next sweep");
     });
   }
 });
@@ -312,8 +309,8 @@ async function settles(check: () => boolean | Promise<boolean>, what: string) {
 /** The close handler logs once its store write has landed; waiting on the log reads no file. */
 const closeStored = (id: string) => () => laneLogs.some((line) => line.includes(`agent-closed agentId=${id} `));
 
-it("on Paseo 0.13 an agent message is the turn's input: a delegated worker retries its own task, a mixed conversation the agent's", async () => {
-  // Paseo 0.13 ends a turn with an empty timeline, so the plugin reads the tail. A worker whose only inputs are the PM's
+it("an agent message is the turn's input: a delegated worker retries its own task, a mixed conversation the agent's", async () => {
+  // Paseo ends a turn with an empty timeline, so the plugin reads the tail. A worker whose only inputs are the PM's
   // messages, and a human conversation whose newest turn came from another agent, both retry the failed turn's input.
   for (const kind of ["delegated", "mixed"] as const) {
     await recoveryLane(async (lane) => {
@@ -357,7 +354,7 @@ it("on Paseo 0.13 an agent message is the turn's input: a delegated worker retri
   }
 });
 
-it("on Paseo 0.13 a failed heartbeat turn, which has no row of its own, is retried or resumed as before", async () => {
+it("a failed heartbeat turn, which has no row of its own, is retried or resumed as before", async () => {
   // Paseo drops a heartbeat's prompt from the timeline and appends the failed outcome's error row with no turn ID, so the
   // tail's newest input is the previous turn's. No turn started since the end, so the failure is not stale.
   for (const kind of ["transient", "usage"] as const) {
@@ -378,7 +375,7 @@ it("on Paseo 0.13 a failed heartbeat turn, which has no row of its own, is retri
   }
 });
 
-it("on Paseo 0.13 a failed turn whose tail is read after a newer turn began is stale and sends nothing", async () => {
+it("a failed turn whose tail is read after a newer turn began is stale and sends nothing", async () => {
   // The turn ends with an empty timeline. Its read is held before the agent read or before the timeline read, while
   // the owner's next request runs and succeeds; the old failure must not bind that request and send a stale continue.
   for (const held of ["agent-read", "timeline-read"] as const) {
@@ -497,7 +494,7 @@ it("a duplicate end event for a failed usage resume turn never resets or resends
     const turnId = lane.snapshot.activeTurn!.turnId;
     lane.append({ type: "assistant_message", text: "[System Error] usage_limit_exceeded" }, turnId);
     Object.assign(lane.snapshot, { status: "error", activeTurn: null, lastError: "usage_limit_exceeded", updatedAt: new Date().toISOString() });
-    const event = { agent: { id: lane.snapshot.id }, turnId, outcome: { kind: "failed", error: { message: "usage_limit_exceeded" } }, timeline: lane.timeline() };
+    const event = { agent: { id: lane.snapshot.id }, turnId, outcome: { kind: "failed", error: { message: "usage_limit_exceeded" } }, timeline: [] };
     const first = lane.holdNextRefresh();
     lane.emit("agent.turn_ended", event);
     await settles(first.reached, "the first handler's agent read");
@@ -546,8 +543,11 @@ it("a close while a failed turn's handler is still building its record holds and
         Object.assign(lane.snapshot, { status: "error", activeTurn: null, lastError: failure, updatedAt: new Date().toISOString() });
       }
       const sends = lane.sends.length;
-      const handler = lane.holdNextRefresh();
-      lane.emit("agent.turn_ended", { agent: { id }, turnId, outcome: { kind: "failed", error: { message: failure } }, timeline: lane.timeline() });
+      // The agent that just ended its turn is loaded. The turn-end tail read fetches it twice (before and after the
+      // read); the third fetch is the handler's.
+      lane.snapshot.activeTurn = null;
+      const handler = lane.holdNextRefresh("after", 2);
+      lane.emit("agent.turn_ended", { agent: { id }, turnId, outcome: { kind: "failed", error: { message: failure } }, timeline: [] });
       await settles(handler.reached, "the failed turn handler's agent read");
       const closedAt = Date.now() + 1_000;
       mock.timers.setTime(closedAt);
@@ -591,8 +591,11 @@ it("a failure whose handler reads the agent after a newer user message never sen
       }
       const sends = lane.sends.length;
       const endedAt = Date.now();
-      const handler = lane.holdNextRefresh();
-      lane.emit("agent.turn_ended", { agent: { id }, turnId, outcome: { kind: "failed", error: { message: "usage_limit_exceeded" } }, timeline: lane.timeline() });
+      // The agent that just ended its turn is loaded. The turn-end tail read fetches it twice (before and after the
+      // read); the third fetch is the handler's.
+      lane.snapshot.activeTurn = null;
+      const handler = lane.holdNextRefresh("after", 2);
+      lane.emit("agent.turn_ended", { agent: { id }, turnId, outcome: { kind: "failed", error: { message: "usage_limit_exceeded" } }, timeline: [] });
       await settles(handler.reached, "the old failure's agent read");
       if (reopened) {
         mock.timers.setTime(endedAt + 100);
@@ -632,9 +635,9 @@ it("clock skew never makes a failure stale: its own user row stamped ahead of th
       mock.timers.setTime(START + ahead);
       lane.append({ type: "user_message", text: "Next step", messageId: "human-skewed" }, "skew-turn");
       lane.append({ type: "assistant_message", text: `[System Error] ${message}` }, "skew-turn");
-      Object.assign(lane.snapshot, { status: "error", lastError: message, lastUserMessageAt: new Date().toISOString() });
+      Object.assign(lane.snapshot, { status: "error", activeTurn: null, lastError: message, lastUserMessageAt: new Date().toISOString() });
       mock.timers.setTime(START);
-      lane.emit("agent.turn_ended", { agent: { id: lane.snapshot.id }, turnId: "skew-turn", outcome: { kind: "failed", error: { message } }, timeline: lane.timeline() });
+      lane.emit("agent.turn_ended", { agent: { id: lane.snapshot.id }, turnId: "skew-turn", outcome: { kind: "failed", error: { message } }, timeline: [] });
       await lane.plugin.idle();
       const [record] = await lane.store.read();
       assert.equal(record?.sourceTurnId, "skew-turn", `${kind} +${ahead}ms: the failure has its record`);
@@ -672,7 +675,7 @@ it("a close that lands while a failed turn's handler reads the agent stops its t
       if (closed === "before-the-read") await close();
       // The daemon answers the agent read with the open snapshot it took before the close, after the close landed.
       const handler = closed === "during-the-read" ? lane.holdNextRefresh("before") : null;
-      lane.emit("agent.turn_ended", { agent: { id }, turnId: "source-turn", outcome: { kind: "failed", error: { message: "usage_limit_exceeded" } }, timeline: lane.timeline() });
+      lane.emit("agent.turn_ended", { agent: { id }, turnId: "source-turn", outcome: { kind: "failed", error: { message: "usage_limit_exceeded" } }, timeline: [] });
       if (handler) {
         await settles(handler.reached, "the failed turn's agent read");
         await close();
@@ -690,15 +693,15 @@ it("a close that lands while a failed turn's handler reads the agent stops its t
 });
 
 it("a stop or archive while a failed turn's timeline is read, at its end or before its retry, puts the agent back and sends nothing", async () => {
-  // Read 1 binds the failure to its user row at the turn end; read 2 is the retry's own check before its send. The
-  // stop or archive lands while the read is in flight, and the read loads the agent again (activeTurn: null).
-  for (const [at, read] of [[1, "turn-end-bind"], [2, "transient"]] as const) for (const end of ["closed", "archived"] as const) {
+  // Read 1 is the turn-end tail read; read 2 binds the failure to its user row; read 3 is the retry's own check before
+  // its send. The stop or archive lands while the read is in flight, and the read loads the agent again (activeTurn: null).
+  for (const [at, read] of [[2, "turn-end-bind"], [3, "transient"]] as const) for (const end of ["closed", "archived"] as const) {
     await recoveryLane(async (lane) => {
       const id = lane.snapshot.id;
       const label = `${read} ${end}`;
       lane.snapshot.activeTurn = null;
       const hold = lane.holdRead(at);
-      lane.emit("agent.turn_ended", { agent: { id }, turnId: "source-turn", outcome: { kind: "failed", error: { message: OVERLOADED } }, timeline: lane.timeline() });
+      lane.emit("agent.turn_ended", { agent: { id }, turnId: "source-turn", outcome: { kind: "failed", error: { message: OVERLOADED } }, timeline: [] });
       await settles(hold.reached, `the ${read} read`);
       if (end === "closed") lane.emit("agent.closed", { agent: { id } });
       else {

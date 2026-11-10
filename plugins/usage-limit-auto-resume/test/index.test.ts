@@ -667,7 +667,7 @@ it("treats a repeated turn as handled after the history bound, through an uncert
     const handlers = new Map<string, (event: unknown, context?: unknown) => void>();
     let sends = 0;
     // The agent's model changed, so a record built for either turn now has another config fingerprint and record ID.
-    const changed: AgentSnapshot = { ...seen, model: "other-model" };
+    const changed: AgentSnapshot = { ...seen, model: "other-model", activeTurn: null };
     const user = { type: "user_message", text: "Process the queue.", messageId: "user-1" };
     const api = {
       agents: { ref: () => ({
@@ -688,7 +688,7 @@ it("treats a repeated turn as handled after the history bound, through an uncert
         turnId,
         agent: { id: agent.id },
         outcome: { kind: "failed", error: { message: "Selected model is at capacity. Please try a different model." } },
-        timeline: [user],
+        timeline: [],
       }, { paseo: api });
     }
     await until(() => logs.filter((line) => /duplicate-turn|duplicate-detected|detected kind=/.test(line)).length === 2);

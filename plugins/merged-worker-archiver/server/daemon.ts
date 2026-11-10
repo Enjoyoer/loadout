@@ -6,10 +6,7 @@ import { resolveDaemonTarget } from "./vendor/daemon-target.ts";
 export { resolveDaemonTarget, type DaemonTarget } from "./vendor/daemon-target.ts";
 
 // Every sweep opens its own short-lived connection, as the Paseo CLI does, through the typed
-// DaemonClient (an internal export of @getpaseo/client, pinned exactly in package.json). It is the
-// only client surface that tells whether the daemon has background workspaces
-// (supportsBackgroundWorkspaces(), from the server info the daemon sends before connect() resolves);
-// the hook-supplied PaseoApi cannot, so sweeps no longer reuse it.
+// DaemonClient (an internal export of @getpaseo/client, pinned exactly in package.json).
 
 const CONNECT_TIMEOUT_MS = 10_000;
 
@@ -65,7 +62,6 @@ export async function openDaemonClient(env: NodeJS.ProcessEnv = process.env): Pr
         return { entries: result.terminals as ReadonlyArray<TerminalView> };
       },
     },
-    supportsBackgroundWorkspaces: () => client.supportsBackgroundWorkspaces(),
     sendAgentMessage: (agentId, text, options) => client.sendAgentMessage(agentId, text, options),
   };
   return { api, close: () => client.close() };

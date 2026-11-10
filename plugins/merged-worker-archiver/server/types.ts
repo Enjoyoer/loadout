@@ -1,4 +1,4 @@
-// Minimal structural views of the Paseo 0.9.1 workspace and agent snapshots
+// Minimal structural views of the Paseo workspace and agent snapshots
 // (WorkspaceDescriptorPayload / AgentSnapshotPayload). Only the fields the decision
 // logic reads are listed, so tests can build fixtures without the full payloads.
 
@@ -16,11 +16,9 @@ export interface WorkspaceView {
   archivingAt?: string | null;
   activityAt: string | null;
   statusEnteredAt?: string | null;
-  /** 0.12 and later. */
   createdAt?: string;
-  /** 0.12 and later. */
   lastUserMessageAt?: string | null;
-  /** 0.12 and later: a workspace setup script's state. */
+  /** A workspace setup script's state. */
   setupStatus?: string | null;
   pinnedAt?: string | null;
   labels?: ReadonlyArray<string>;

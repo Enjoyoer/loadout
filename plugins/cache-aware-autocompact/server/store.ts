@@ -10,7 +10,7 @@ export type StateEntry = {
   agentId: string;
   turnId: string | null;
   lastUserMessageAt: string | null;
-  /** The checkpoint's inputId: its turn's Paseo 0.13 agent-message input. */
+  /** The checkpoint's inputId: its turn's agent-message input. */
   inputId?: string;
   createdAt: string;
   /** Original request time, retained when a late result replaces the reservation. */

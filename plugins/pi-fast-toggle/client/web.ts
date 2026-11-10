@@ -1,7 +1,7 @@
 import { Platform } from "react-native";
 import type { ComposerActions } from "./pills";
 
-// Deliberately local: DOM markers are a checked 0.11.1 adapter, not a focus API.
+// Deliberately local: DOM markers are a checked host adapter, not a focus API.
 interface ElementRef {
   parentElement: ElementRef | null; isConnected: boolean; tagName: string;
   closest(selector: string): ElementRef | null;
@@ -132,7 +132,7 @@ function keyboard(event: KeyEvent) {
     if (!event.repeat) void instance.actions.toggleFast().catch(() => {}); // Shared action publishes its error at Fast.
     return;
   }
-  // 0.11.1 shares open state by registration, not by mounted pane. Refuse duplicate surfaces.
+  // The host shares open state by registration, not by mounted pane. Refuse duplicate surfaces.
   if (Array.from(instances).filter(other => same(other.target, instance.target) && associate(other)).length !== 1) return;
   consume(event);
   if (event.repeat || opening) return;

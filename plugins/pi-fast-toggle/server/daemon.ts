@@ -8,7 +8,7 @@ export async function withDaemon<T>(use: (client: DaemonClient) => Promise<T>): 
     url: resolveDaemonTarget().url,
     clientId: `cid_plugin_pi_fast_toggle_${Date.now()}_${Math.random().toString(36).slice(2)}`,
     clientType: "cli",
-    appVersion: "0.1.6",
+    appVersion: "0.2.0",
     connectTimeoutMs: 10_000,
     reconnect: { enabled: false },
     suppressSendErrors: true,
