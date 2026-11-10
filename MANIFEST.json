@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "9bf9199901e4159a43a9a2f04ceeb96d3daa1314",
-  "skill_count": 25,
-  "file_count": 141,
+  "source_commit": "406a31bd42395b4f9f04594674268cf0184e0265",
+  "skill_count": 24,
+  "file_count": 139,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -165,20 +165,6 @@
       "skill": "wizard",
       "bytes": 17972,
       "sha256": "cb252a59564c96c48ea033559b02378d9ece6a9080637bf33d576ee8170c571b"
-    },
-    {
-      "path": "skills/orchestration/dispatching-parallel-agents/SKILL.md",
-      "category": "orchestration",
-      "skill": "dispatching-parallel-agents",
-      "bytes": 1711,
-      "sha256": "624eddc9bed0d59e744ef42b8b7187d6f0474cf752b6edfc8a409e7cbd499f25"
-    },
-    {
-      "path": "skills/orchestration/dispatching-parallel-agents/agents/openai.yaml",
-      "category": "orchestration",
-      "skill": "dispatching-parallel-agents",
-      "bytes": 221,
-      "sha256": "b924b0eec3ea6b5e277fa0836b2aa59695b644a58440864a01884bc9be274ffc"
     },
     {
       "path": "skills/orchestration/handoff/SKILL.md",
