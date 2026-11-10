@@ -76,7 +76,7 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 - personal-skills: the `mds-bye` verify-only scope, the vendored `hosts/macos/mds-bye/` tree, `mds_bye.py`, `mds_bye_remote.js`, and the manifest's `host_files` section. A private fleet that lists `mds-bye` in a host's `sync` must drop it, or validation fails.
 - personal-skills: the legacy `fleet/local/` fallback beside the installed `SKILL.md`. The fleet resolves from `$LOADOUT_FLEET` or the config directory only.
 - `deprecated/` (the retired `claude-cloud` skill); git history keeps it.
-- OPC 7.58.3: `references/maintenance.md` drops two stale lines (a missing development folder and the OPC 5 cutover) and keeps the validate sentence.
+- OPC 7.59.1: `references/maintenance.md` drops two stale lines (a missing development folder and the OPC 5 cutover) and keeps the validate sentence.
 - Removed grilling, domain-modeling and pake (unused).
 - `pm-native-worker-guard` plugin, with its CI, Dependabot, vendoring and docs entries. PMs legitimately launch native Codex workers (OPC routes browser work to native Codex), and in dry-run the guard only logged false would-archive decisions. The fleet sync does not uninstall it from hosts; remove it there by hand.
 
