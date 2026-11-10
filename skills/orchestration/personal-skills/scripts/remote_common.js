@@ -137,4 +137,35 @@ function removeFile(fs, file, accepted) {
   throw new Error("changed since preflight, not removed: " + file + (back ? "" : "; kept at " + held));
 }
 
-if (typeof module === "object") module.exports = { isAbsent, probe, checkAncestors, baseFor, checkConfigPath, portable, foldPath, checkPaths, loadoutDir, checkUnchanged, replaceFile, removeFile };
+// Backup retention. A writer that leaves a timestamped backup beside a file it replaced calls this once the
+// replacement is done, with the backup it just wrote and the pattern of its own backup names: an anchored RegExp
+// for the rest of a sibling's name after the file's name, whose groups 1 to 6 capture the stamp's year, month, day,
+// hour, minute and second. Of the matching siblings it keeps the newest `keep`, counting the one just written, by
+// the stamp in the name (not mtime), and deletes the rest with remove. The one just written is never deleted. A
+// sibling counts only when its whole name matches with a real date and lstat finds a regular file, so a symlink is
+// never followed or removed, and a hand-made backup under another name (.before-*, .bak-pr*, ...) never matches.
+// It never throws: it returns its errors, so a failed prune never fails or undoes the write.
+function pruneBackups(fs, path, file, written, pattern, remove = f => fs.unlinkSync(f), keep = 5) {
+  const errors = [], dir = path.dirname(file), base = path.basename(file), mine = path.basename(written);
+  const valid = m => {
+    const [y, mo, d, h, mi, s] = m.slice(1, 7).map(Number), t = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+    return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d
+      && t.getUTCHours() === h && t.getUTCMinutes() === mi && t.getUTCSeconds() === s;
+  };
+  try {
+    const found = [];
+    for (const name of fs.readdirSync(dir)) {
+      if (name === mine || !name.startsWith(base)) continue;
+      const m = pattern.exec(name.slice(base.length));
+      if (!m || m[0] !== name.slice(base.length) || !valid(m)) continue;
+      try { if (fs.lstatSync(path.join(dir, name)).isFile()) found.push([m.slice(1, 7).join(""), name]); }
+      catch (e) { if (!isAbsent(e)) errors.push(name + ": " + e.message); }
+    }
+    found.sort((a, b) => a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : a[1] < b[1] ? 1 : a[1] > b[1] ? -1 : 0);
+    for (const [, name] of found.slice(Math.max(keep - 1, 0)))
+      try { remove(path.join(dir, name)); } catch (e) { errors.push(name + ": " + e.message); }
+  } catch (e) { errors.push(base + ": " + e.message); }
+  return errors.map(e => "backup prune failed, kept: " + e);
+}
+
+if (typeof module === "object") module.exports = { isAbsent, probe, checkAncestors, baseFor, checkConfigPath, portable, foldPath, checkPaths, loadoutDir, checkUnchanged, replaceFile, removeFile, pruneBackups };

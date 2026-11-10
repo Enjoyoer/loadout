@@ -286,6 +286,8 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
         record_overlay(state["fleet_dir"], overlay)
     note = f"; excluded {', '.join(sorted(exclude))}" if exclude else ""
     emit(f"{name}: skills {describe(result)}{note}")
+    for error in result.get("prune_errors") or []:
+        emit(f"{name}: {error}")
     if result.get("pi_excludes") and result["status"] in ("updated", "would update"):
         # Report only: the Pi launcher skips an unknown skillsExclude name with a warning, so these still start.
         emit(f"{name}: Pi agent overlays whose skillsExclude names a {'would-be ' if state['dry_run'] else ''}retired skill "

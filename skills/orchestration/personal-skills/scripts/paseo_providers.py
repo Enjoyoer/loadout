@@ -591,6 +591,8 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
             emit(f"{name}: MCP " + '; '.join(result['mcp']))
         if result and result.get('launch'):
             emit(f"{name}: launch " + '; '.join(result['launch']))
+        for error in (result or {}).get('prune_errors') or []:
+            emit(f"{name}: {error}")
         if result is None or result["error"] or not result["verified"]:
             settle()
             return "FAILED"

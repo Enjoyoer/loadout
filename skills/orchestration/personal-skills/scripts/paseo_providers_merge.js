@@ -7,7 +7,7 @@ const p = JSON.parse(zlib.gunzipSync(Buffer.from(process.argv[2], "base64")).toS
 // wrote: this run changed, or may have changed, the host (its config or its Pi runtime), so a reload is owed.
 const disabled = p.disabled || [];
 // result.disabled: only the listed ids this run turns off (enabled or missing before); a row already off is not news.
-const result = { host: p.host, changed: false, wrote: false, backup: null, preserved: [], disabled: [], verified: false, error: null };
+const result = { host: p.host, changed: false, wrote: false, backup: null, preserved: [], disabled: [], verified: false, prune_errors: [], error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
   process.exit(code);
@@ -194,9 +194,8 @@ try {
     fs.mkdirSync(path.dirname(file), {recursive:true,mode:0o700});
     check(file);
     const before = probe(fs, file, true) ? fs.readFileSync(file) : null;
-    const tag = p.stamp + '-' + crypto.randomBytes(8).toString('hex');
+    const tag = p.stamp + '-' + crypto.randomBytes(8).toString('hex'), backup = file + '.bak-loadout-' + tag;
     if (before) {
-      const backup = file + '.bak-loadout-' + tag;
       replaceFile(fs, backup, before, 0o600, undefined, () => {
         check(backup); if (probe(fs, backup, true)) throw Error('MCP backup already exists');
       });
@@ -211,6 +210,9 @@ try {
         throw Error('MCP launcher changed during merge, left as is');
     });
     if (fs.readFileSync(file, 'utf8') !== data) throw Error('MCP launcher write failed');
+    // Keep this file's newest 5 backups by this merge: <file>.bak-loadout-<%Y%m%d-%H%M%S>-<16 hex>.
+    if (before) result.prune_errors.push(...pruneBackups(fs, path, file, backup,
+      /^\.bak-loadout-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-[0-9a-f]{16}$/));
   }
   if (envChanged.length) result.mcp.push('env loader ' + envChanged.map(([file]) => path.basename(file)).join(', '));
   if (p.pi) {
@@ -249,6 +251,7 @@ try {
         throw Error('Pi runtime configuration failed'+(result.wrote?'; runtime files may have changed':''));
       }
       result.pi=report;
+      result.prune_errors.push(...(report.prune_errors||[]));
       if(!p.dry_run && report.changed.length) result.wrote=true;
     } finally {fs.rmSync(temp,{recursive:true,force:true});}
   }
@@ -276,6 +279,9 @@ try {
         fs.renameSync(next, cfgPath);
         result.backup = path.basename(bak);
         result.wrote = published = true;
+        // Keep config.json's newest 5 backups by this merge: config.json.bak-loadout-<%Y%m%d-%H%M%S>-<8 hex>.
+        result.prune_errors.push(...pruneBackups(fs, path, cfgPath, bak,
+          /^\.bak-loadout-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-[0-9a-f]{8}$/));
         break;
       }
       fs.rmSync(next, { force: true });

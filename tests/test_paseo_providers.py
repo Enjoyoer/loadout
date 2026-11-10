@@ -397,6 +397,21 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertEqual(out.count("write unchanged; labels verified"), 3, out)
         self.assertEqual(len(list(self.config_path("laptop").parent.glob("config.json.bak-loadout-*"))), 1)
 
+    def test_sync_keeps_the_newest_five_config_backups_by_stamp(self):
+        folder = self.config_path("desktop").parent
+        seeded = [f"config.json.bak-loadout-2026010{d}-000000-0000000{d}" for d in range(1, 8)]
+        for age, name in enumerate(seeded):
+            (folder / name).write_text(name)
+            os.utime(folder / name, (1e9 + 1000 * (7 - age),) * 2)
+        (folder / "config.json.before-edit").write_text("hand-made")
+        code, out = self.run_sync("--host", "desktop")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("backup prune failed", out)
+        backups = sorted(p.name for p in folder.glob("config.json.bak-loadout-*"))
+        self.assertEqual(len(backups), 5)
+        self.assertEqual([n for n in backups if n in seeded], seeded[3:])
+        self.assertEqual((folder / "config.json.before-edit").read_text(), "hand-made")
+
     def test_required_env_failure_writes_nothing(self):
         self.config_path("tablet").write_text(json.dumps({"agents": {"providers": {}}}))
         code, out = self.run_sync("--host", "tablet")

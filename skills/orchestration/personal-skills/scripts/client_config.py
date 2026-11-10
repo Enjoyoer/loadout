@@ -184,6 +184,7 @@ def describe(name: str, result: dict) -> list:
             lines.append(f"{name}: claude-code {cc['have']} ok")
         else:
             lines.append(f"{name}: claude-code {cc['have'] or 'not found'}, below min {cc['min']} (run with --update-claude)")
+    lines += [f"{name}: {error}" for error in result.get("prune_errors") or []]
     return lines
 
 
