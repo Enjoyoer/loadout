@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "9309dd190354b1add21c94cab0c8bed47c864787",
+  "source_commit": "9bf9199901e4159a43a9a2f04ceeb96d3daa1314",
   "skill_count": 25,
   "file_count": 141,
   "files": [
@@ -1647,8 +1647,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 48941,
-      "sha256": "5815e08f1df4dd2f61c6ceb8557f101b0bb0a6f8adba9220daeb238410a8af01"
+      "bytes": 48708,
+      "sha256": "e1a0fa8eb988a6457d2bd28e483c097e64d3bcca70673312d40d2024388dad9f"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
@@ -1660,13 +1660,13 @@
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 21229,
-      "sha256": "f22014e9c09c54ada6fd9128c75e320ac3c8aef5df1bdc2e59daed2105028e87"
+      "sha256": "07eecd2760a0496f8a0b32edb6f17a66ef288bc0107374ceccf2883e8066f146"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 890,
-      "sha256": "bad82e42b901e3c3c90de84ce978189b8601cd94c18a16cca2c640c0b88fd342"
+      "sha256": "9bf0b4314f4d1825d44c691cec28f30dcfdbf9af51f3cf5cdc10a5976df9550f"
     },
     {
       "path": "plugins/usage-limit-auto-resume/paseo-plugin.json",
@@ -1677,8 +1677,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/config.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 2738,
-      "sha256": "d3642c6a5a05c338464af181b463af7a049a14b0858b2f7dabce990cd0ee25d0"
+      "bytes": 2371,
+      "sha256": "862b17f26b087b006b3cd35ff4788790976b6ed21ae91ab8d3a4c77d20a613c4"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/daemon-run.ts",

@@ -3,9 +3,6 @@ import { DEFAULT_BACKOFF_SECONDS } from "./model.ts";
 
 const ConfigObjectSchema = z.object({
   armed: z.boolean().default(false),
-  // Ignored since 0.3.0: no attempt count ends a retry. Still accepted, because existing settings files set them.
-  maxAttempts: z.number().optional(),
-  transientMaxAttempts: z.number().optional(),
   // The retry delays in order; the last one repeats for as long as the record lives.
   transientBackoffSeconds: z.array(z.number().int().min(0).max(86400)).min(1).max(10).default([...DEFAULT_BACKOFF_SECONDS]),
   baseDelaySeconds: z.number().int().min(60).max(86400).default(18000),
@@ -27,8 +24,6 @@ const ConfigObjectSchema = z.object({
   pmFallbackModel: z.string().min(1).default("fleet/gpt-6.1-sol"),
   pmFallbackThinking: z.string().min(1).default("medium"),
   pmFallbackServiceTier: z.string().min(1).default("fast"),
-  // Ignored since 0.3.0 (the nofallback opt-out is gone). Still accepted, because existing settings files may set it.
-  pmFallbackOptOutLabel: z.string().optional(),
   // Owner surface: register the original profile of a PM that is already elsewhere, or cancel one return by its id.
   pmFallbackEnroll: z.array(z.object({
     agentId: z.string().min(1),
