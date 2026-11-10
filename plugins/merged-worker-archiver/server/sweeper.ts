@@ -204,10 +204,9 @@ function group<T>(map: Map<string, T[]>, key: string, value: T): void {
  * only cleanup is left out (`cleanup` null), never the worker sweep.
  */
 async function snapshot(api: ArchiverApi, withCleanup: DeliverySource | null, resumeState: ResumeStateReader | undefined): Promise<Snapshot> {
-  const backgroundFilter = { includeBackground: true };
   const page = (cursor?: string) => ({ page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) } });
-  const workspaces = await listAll((cursor) => api.workspaces.list({ filter: backgroundFilter, ...page(cursor) }), "workspaces");
-  const agentEntries = await listAll((cursor) => api.agents.list({ filter: backgroundFilter, ...page(cursor) }), "agents");
+  const workspaces = await listAll((cursor) => api.workspaces.list({ filter: { includeBackground: true }, ...page(cursor) }), "workspaces");
+  const agentEntries = await listAll((cursor) => api.agents.list({ filter: { includeBackground: true }, ...page(cursor) }), "agents");
   const agentsByWorkspace = new Map<string, AgentView[]>();
   const liveAgents: AgentView[] = [];
   for (const { agent } of agentEntries) {
@@ -220,7 +219,7 @@ async function snapshot(api: ArchiverApi, withCleanup: DeliverySource | null, re
   let cleanupError: string | null = null;
   if (withCleanup) {
     try {
-      cleanup = await cleanupData(api, backgroundFilter, page, withCleanup);
+      cleanup = await cleanupData(api, page, withCleanup);
     } catch (error) {
       cleanupError = error instanceof Error ? error.message : String(error);
     }
@@ -232,11 +231,10 @@ async function snapshot(api: ArchiverApi, withCleanup: DeliverySource | null, re
 
 async function cleanupData(
   api: ArchiverApi,
-  backgroundFilter: { includeBackground?: boolean },
   page: (cursor?: string) => PageRequest,
   source: DeliverySource,
 ): Promise<CleanupData> {
-  const history = await listAll((cursor) => api.agents.list({ filter: { ...backgroundFilter, includeArchived: true }, ...page(cursor) }), "agent history");
+  const history = await listAll((cursor) => api.agents.list({ filter: { includeBackground: true, includeArchived: true }, ...page(cursor) }), "agent history");
   const historyByWorkspace = new Map<string, AgentView[]>();
   for (const { agent } of history) if (agent.workspaceId) group(historyByWorkspace, agent.workspaceId, agent);
   if (typeof api.terminals?.list !== "function") throw new Error("terminal list unavailable");

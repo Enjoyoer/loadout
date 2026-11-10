@@ -173,7 +173,7 @@ The plugin never deletes branches, never forces anything itself, and never edits
 
 ### Relation to Paseo's built-in `autoArchiveAfterMerge`
 
-Paseo 0.9.1 has `daemon.autoArchiveAfterMerge`. It only fires when
+Paseo has `daemon.autoArchiveAfterMerge`. As checked on an older Paseo, it only fires when
 the daemon itself watched a pull request go from open to merged while running, and it
 ignores local merges, so locally merged worktrees stay. This plugin covers
 local merges (ancestry) and PRs merged while the daemon was not watching.
@@ -280,7 +280,7 @@ Archiving a project's last or main checkout record does **not** archive or remov
 project: Paseo only logs that the project has no active workspace left, and `project ls`
 still lists it. Only removing the project (`project.remove`) archives its workspaces, and
 `orphan-project-sweeper` removes a project only when its root folder is gone. Opening the
-folder again in Paseo makes a new workspace record in the same project.
+folder again in Paseo makes a new workspace record in the same project (checked on 0.13.0).
 
 ### Messages to the PM
 
@@ -665,26 +665,26 @@ same pins as `orphan-project-sweeper`. The plugin depends on Paseo's archive sem
 (directory removal, branch kept), the worktree metadata location
 (`<git-dir>/paseo/worktree.json`), and snapshot field names. Re-check before admitting 0.16.
 
-Workspace cleanup (0.4.0) was checked on disposable daemons, each with
+Workspace cleanup (0.4.0) was checked on disposable Paseo 0.13.0 and 0.11.1 daemons, each with
 its own home and port, a fake ACP provider, scratch git repositories, and
 `staleWorkspaceMinutes` 4. Dry-run, and then `armed` alone, changed nothing: the same
 workspaces, projects, files, branches and PM timeline, and no state file. With both
 switches on, the first sweep archived the stale project checkout and local workspace
-records (and a background one) with their files intact and every project still
+records (and on 0.13.0 a background one) with their files intact and every project still
 listed, archived the merged clean agentless worktree, and kept the unmerged and the dirty
-(untracked file) agentless worktrees (and a background unmerged one). Their PM
+(untracked file) agentless worktrees (and on 0.13.0 a background unmerged one). Their PM
 got one message, routed by the parent label for one and by `role=pm` plus `project` for
 the others. Workspaces with an agent, a running script, a terminal or recent activity were
 kept. A plugin reload and a daemon restart each ran another sweep that sent nothing more.
 A worktree whose project has no PM, and one whose project has two, logged
-`notify-unrouted` and nothing was recorded for them. A second round
+`notify-unrouted` and nothing was recorded for them. A second round on both versions
 checked the activity and send rules. An agent archived just before the sweep left its
 workspace stale, and the record was archived with its files intact. A commit made just
 before the sweep kept a worktree `recent`. A worktree whose HEAD commit was its newest
 activity was reported with that age. A report to a PM in a running turn logged
 `notify-deferred` (`PM running`) and was sent at the next sweep, once the PM was idle.
-A third round checked the receipts. Each `paseo send` added one
-`completed` receipt for the recipient, with the send time as its file time. A
+A third round checked the receipts on both versions. Each `paseo send` added one
+`completed` receipt for the recipient, with the send time as its file time. On 0.13.0 a
 send from another agent (`PASEO_AGENT_ID` set) left `lastUserMessageAt` unchanged and
 still wrote a receipt. A workspace whose agent was archived more than 4 minutes after its
 last input stayed `recent`, dated by the archive, and became `would-archive` 4 minutes
@@ -692,7 +692,7 @@ after it. With the receipt directory made
 unreadable, the sweep showed `receiptsUnreadable` and dated the same workspaces by their
 archive.
 
-Peer routing and agentless cleanliness (0.5.0) were checked on a pair of disposable
+Peer routing and agentless cleanliness (0.5.0) were checked on a pair of disposable Paseo 0.13.0
 daemons on macOS, each with its own home and port and a fake ACP provider. The plugin ran on
 one; the other held the peer agents. The plugin's tunnel and client were used unchanged. Only
 `ssh` on the plugin daemon's `PATH` was a stand-in that bridged two fixture aliases to the
@@ -715,7 +715,7 @@ archived a merged agentless worktree whose only ignored files were two `__pycach
 directories (its branch was kept), reported an unmerged one as `not-merged(...)` instead of
 `dirty(ignored=2)`, and reported a merged one with an ignored `.env` as `dirty(ignored=1)`.
 
-On Windows (Win32-OpenSSH 10.0p2, node 25) a disposable daemon with its own home and
+On Windows (Win32-OpenSSH 10.0p2, node 25) a disposable Paseo 0.13.0 daemon with its own home and
 port ran the plugin from the same source, started from an ssh session with no window. In
 dry-run with the real `ssh.exe` from `PATH`, one fixture worktree was routed to a real project
 PM on a Linux peer and another to its real parent on a second Windows peer, both read only; an

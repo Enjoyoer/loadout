@@ -23,12 +23,7 @@ Each link and removal writes one log line. The plugin has no settings and no UI,
 
 ## Why six seconds
 
-Paseo emits no hook or event after a provider is started for a history open, so the plugin cannot drop the link the moment Pi is up. The link must outlive Pi's whole start: Paseo spawns a short MCP probe in the directory, then the real process, and Pi then checks that its session's directory exists. These timings were measured on a Mac, from the link being made to the timeline response, which bounds that check from above:
-
-| Paseo | Idle (8 opens) | Heavy CPU load (5 opens) | Shortest link that sometimes failed |
-|---|---|---|---|
-| 0.11.1 | 0.86 to 1.71 s | 1.48 to 2.96 s | 1.5 s |
-| 0.13.0 | 0.92 to 1.20 s | 1.36 to 2.02 s | 1.0 s |
+Paseo emits no hook or event after a provider is started for a history open, so the plugin cannot drop the link the moment Pi is up. The link must outlive Pi's whole start: Paseo spawns a short MCP probe in the directory, then the real process, and Pi then checks that its session's directory exists. These timings were measured on a Mac on older Paseo releases, from the link being made to the timeline response, which bounds that check from above: 0.86 to 1.71 s idle (8 opens per release), 1.36 to 2.96 s under heavy CPU load (5 opens per release), and links held for 1.0 s or 1.5 s sometimes failed.
 
 The hold is 6 s, about twice the worst case. After that the link is not needed: the provider keeps its directory, and a loaded agent does not start again for later timeline reads.
 

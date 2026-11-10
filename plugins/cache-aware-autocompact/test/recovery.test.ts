@@ -32,7 +32,7 @@ function history(a: PaseoAgent, turnId: string | undefined = "t1"): FetchAgentTi
     entries: [{ provider: a.provider, item: { type: "assistant_message", text: "Work completed." },
       turnId, timestamp: endedAt, seqStart: 1, seqEnd: 1, sourceSeqRanges: [], collapsed: [] }] };
 }
-/** A Paseo 0.13 agent-message row: a prompt from another agent, which does not move lastUserMessageAt. */
+/** An agent-message row: a prompt from another agent, which does not move lastUserMessageAt. */
 function agentMessage(id: string, text: string) {
   return { type: "tool_call", callId: `paseo-agent-message:${id}`, name: "agent_message", status: "completed", error: null,
     detail: { type: "plain_text", text, icon: "bot" }, agentMessage: { event: "message", sender: { id: "pm", serverId: "s1", title: "pm" }, text } } as never;
@@ -215,7 +215,7 @@ describe("Pi scheduler", () => {
     assert.equal(f.sends.length, 2);
   }));
   it("re-arms and clears the backoff after an agent-message turn that follows its own /compact, but never for that /compact", async () => fixture(async (f) => {
-    // Paseo 0.13: the turn ends with an empty timeline, and its input is another agent's message, not a user row.
+    // The turn ends with an empty timeline, and its input is another agent's message, not a user row.
     const a = agent({ provider: "pi", model: "fleet/claude-opus-5-5" });
     f.setAgents([a]); f.start(f.store); await f.recovered();
     f.timers.fire(); await until(() => f.logs.some(l => l.action === "compacted"));

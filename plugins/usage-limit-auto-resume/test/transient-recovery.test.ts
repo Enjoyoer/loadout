@@ -19,7 +19,7 @@ const AUTH_UNAVAILABLE = "fleet API error (503): auth_unavailable: no auth avail
 // What the plugin logged in the current lane.
 let laneLogs: string[] = [];
 
-/** A Paseo 0.13 agent-message row: a prompt from another agent (create_agent, send_agent_prompt), or a notification. */
+/** An agent-message row: a prompt from another agent (create_agent, send_agent_prompt), or a notification. */
 const agentMessage = (id: string, text: string, event = "message") => ({
   type: "tool_call", callId: `paseo-agent-message:${id}`, name: "agent_message", status: "completed",
   detail: { type: "plain_text", text, icon: "bot" }, error: null,
@@ -63,13 +63,13 @@ async function setup(input: AgentTimelineItem = { type: "user_message", text: "F
   const snapshot: AgentSnapshot = {
     id: "retry-agent", provider: "pi", model: "fleet/gpt-6.1-sol", thinkingOptionId: "xhigh", cwd: "/repo",
     status: "error", lastError: OVERLOADED, requiresAttention: true, attentionReason: "error",
-    // Only a human prompt moves lastUserMessageAt (Paseo 0.13): a worker only another agent prompted has none.
+    // Only a human prompt moves lastUserMessageAt: a worker only another agent prompted has none.
     lastUserMessageAt: input.type === "user_message" ? new Date(START - 1000).toISOString() : null, updatedAt: new Date(START).toISOString(),
     persistence: { provider: "pi", sessionId: "retry-session", nativeHandle: "retry-session.jsonl" },
   };
   type Entry = { item: AgentTimelineItem; timestamp: string; turnId?: string; seqStart: number; seqEnd: number };
   let entries: Entry[] = [];
-  // A null turn ID appends a row without one, as Paseo 0.13 appends a failed outcome's error row.
+  // A null turn ID appends a row without one, as Paseo appends a failed outcome's error row.
   const append = (item: AgentTimelineItem, turnId: string | null = "source-turn") => {
     entries.push({ item, ...(turnId ? { turnId } : {}), timestamp: new Date().toISOString(), seqStart: entries.length + 1, seqEnd: entries.length + 1 });
   };
@@ -309,8 +309,8 @@ async function settles(check: () => boolean | Promise<boolean>, what: string) {
 /** The close handler logs once its store write has landed; waiting on the log reads no file. */
 const closeStored = (id: string) => () => laneLogs.some((line) => line.includes(`agent-closed agentId=${id} `));
 
-it("on Paseo 0.13 an agent message is the turn's input: a delegated worker retries its own task, a mixed conversation the agent's", async () => {
-  // Paseo 0.13 ends a turn with an empty timeline, so the plugin reads the tail. A worker whose only inputs are the PM's
+it("an agent message is the turn's input: a delegated worker retries its own task, a mixed conversation the agent's", async () => {
+  // Paseo ends a turn with an empty timeline, so the plugin reads the tail. A worker whose only inputs are the PM's
   // messages, and a human conversation whose newest turn came from another agent, both retry the failed turn's input.
   for (const kind of ["delegated", "mixed"] as const) {
     await recoveryLane(async (lane) => {
@@ -354,7 +354,7 @@ it("on Paseo 0.13 an agent message is the turn's input: a delegated worker retri
   }
 });
 
-it("on Paseo 0.13 a failed heartbeat turn, which has no row of its own, is retried or resumed as before", async () => {
+it("a failed heartbeat turn, which has no row of its own, is retried or resumed as before", async () => {
   // Paseo drops a heartbeat's prompt from the timeline and appends the failed outcome's error row with no turn ID, so the
   // tail's newest input is the previous turn's. No turn started since the end, so the failure is not stale.
   for (const kind of ["transient", "usage"] as const) {
@@ -375,7 +375,7 @@ it("on Paseo 0.13 a failed heartbeat turn, which has no row of its own, is retri
   }
 });
 
-it("on Paseo 0.13 a failed turn whose tail is read after a newer turn began is stale and sends nothing", async () => {
+it("a failed turn whose tail is read after a newer turn began is stale and sends nothing", async () => {
   // The turn ends with an empty timeline. Its read is held before the agent read or before the timeline read, while
   // the owner's next request runs and succeeds; the old failure must not bind that request and send a stale continue.
   for (const held of ["agent-read", "timeline-read"] as const) {
