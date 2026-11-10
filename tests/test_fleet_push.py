@@ -23,8 +23,7 @@ HOSTS = {
         {"name": "laptop", "os": "macos", "clients": ["claude"]},
         {"name": "desktop", "os": "linux", "clients": ["codex"]},
         {"name": "devbox", "os": "linux", "sync": ["providers"]},
-        {"name": "tablet", "os": "linux", "transport": "paseo-relay", "sync": ["providers"],
-         "paseo_offer": "tablet.offer"},
+        {"name": "tablet", "os": "linux", "sync": ["providers"], "paseo_offer": "tablet.offer"},
     ],
 }
 
@@ -65,23 +64,22 @@ class FleetPushTest(unittest.TestCase):
         return {p.relative_to(directory).as_posix(): p.read_bytes() for p in directory.rglob("*")
                 if p.is_file() and p.name != fleet.SYNC_RECORD}
 
-    def test_first_push_copies_to_ssh_hosts_only(self):
+    def test_first_push_copies_to_every_other_host(self):
         code, out = self.push()
         self.assertEqual(code, 0, out)
         self.assertIn(f"fleet: config {self.source}", out)
         self.assertIn("desktop: fleet updated (+2)", out)
         self.assertIn("devbox: fleet updated (+2)", out)
-        self.assertIn("tablet: fleet not needed (paseo-relay)", out)
+        self.assertIn("tablet: fleet updated (+2)", out)
         self.assertNotIn("laptop:", out)
-        for host in ("desktop", "devbox"):
+        for host in ("desktop", "devbox", "tablet"):
             self.assertEqual(self.snapshot(self.target(host)), self.snapshot(self.source))
             record = json.loads((self.target(host) / fleet.SYNC_RECORD).read_text())
             self.assertEqual(set(record["files"]), {"hosts.json", "global/AGENTS.md"})
-        self.assertFalse((self.root / "hosts/tablet/.config").exists())
 
         code, out = self.push()
         self.assertEqual(code, 0, out)
-        self.assertEqual(out.count("fleet same"), 2, out)
+        self.assertEqual(out.count("fleet same"), 3, out)
 
     def test_source_edits_and_removals_flow_to_unedited_copies(self):
         self.push()
@@ -215,7 +213,7 @@ class FleetPushTest(unittest.TestCase):
     def test_dry_run_writes_nothing(self):
         code, out = self.push("--dry-run")
         self.assertEqual(code, 0, out)
-        self.assertEqual(out.count("fleet would update (+2)"), 2, out)
+        self.assertEqual(out.count("fleet would update (+2)"), 3, out)
         self.assertFalse(self.target("desktop").exists())
 
     def test_symlinked_target_is_refused(self):

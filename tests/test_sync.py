@@ -31,8 +31,7 @@ HOSTS = {
          "sync": ["skills", "plugins", "providers", "client-config"],
          "paseo": {"plugin_root": "~/plugins", "stage": ["orphan-project-sweeper"], "install": []}},
         {"name": "devbox", "os": "linux", "clients": ["codex"], "sync": ["skills", "client-config"]},
-        {"name": "tablet", "os": "linux", "transport": "paseo-relay", "sync": ["providers"],
-         "paseo_offer": "offers/tablet.offer"},
+        {"name": "tablet", "os": "linux", "sync": ["providers"], "paseo_offer": "offers/tablet.offer"},
     ],
 }
 
@@ -69,8 +68,7 @@ class SyncTest(unittest.TestCase):
             (home / "claude-version").write_text("2.5.0\n")
         # The host programs run these fakes through their test-only hooks, as argv: never a command on PATH.
         self.env = {"PATH": os.environ["PATH"], "HOME": str(self.root / "hosts/laptop"),
-                    "FAKE_ROOT": str(self.root), "TMPDIR": str(self.root), "LOADOUT_RELAY_POLL_SECONDS": "0.05",
-                    "LOADOUT_RELAY_WAIT_SECONDS": "5", "LOADOUT_TEST_PASEO": json.dumps(self.paseo),
+                    "FAKE_ROOT": str(self.root), "TMPDIR": str(self.root), "LOADOUT_TEST_PASEO": json.dumps(self.paseo),
                     "LOADOUT_TEST_NPM": json.dumps(npm), "LOADOUT_TEST_CLAUDE": json.dumps(claude)}
         self.env.update({k: v for k, v in os.environ.items()
                          if k.upper() in ("SYSTEMROOT", "TEMP", "TMP")})
@@ -106,9 +104,9 @@ class SyncTest(unittest.TestCase):
         code, out = self.sync("--dry-run")
         self.assertEqual(code, 0, out)
         self.assertEqual(self.row(out, "laptop"), {"fleet": "source", "skills": "would update", "plugins": "skipped",
-                                                   "providers": "would update", "client-config": "would update", "mds-bye": "skipped"})
-        self.assertEqual(self.row(out, "tablet"), {"fleet": "not needed", "skills": "skipped", "plugins": "skipped",
-                                                   "providers": "would update", "client-config": "skipped", "mds-bye": "skipped"})
+                                                   "providers": "would update", "client-config": "would update"})
+        self.assertEqual(self.row(out, "tablet"), {"fleet": "would update", "skills": "skipped", "plugins": "skipped",
+                                                   "providers": "would update", "client-config": "skipped"})
         self.assertIn("fleet valid: schema_version 2, 4 hosts (dry run)", out)
         self.assertFalse((self.root / "hosts/desktop/.config/loadout/fleet").exists())
         self.assertFalse((self.root / "hosts/desktop/.claude/skills").exists())
@@ -116,9 +114,9 @@ class SyncTest(unittest.TestCase):
         code, out = self.sync()
         self.assertEqual(code, 0, out)
         self.assertEqual(self.row(out, "desktop"), {"fleet": "updated", "skills": "updated", "plugins": "updated",
-                                                    "providers": "updated", "client-config": "updated", "mds-bye": "skipped"})
-        self.assertEqual(self.row(out, "tablet"), {"fleet": "not needed", "skills": "skipped", "plugins": "skipped",
-                                                   "providers": "updated", "client-config": "skipped", "mds-bye": "skipped"})
+                                                    "providers": "updated", "client-config": "updated"})
+        self.assertEqual(self.row(out, "tablet"), {"fleet": "updated", "skills": "skipped", "plugins": "skipped",
+                                                   "providers": "updated", "client-config": "skipped"})
         self.assertTrue((self.root / "hosts/desktop/.config/loadout/fleet/hosts.json").exists())
         self.assertTrue((self.root / "hosts/desktop/plugins/orphan-project-sweeper/node_modules").exists())
         self.assertFalse((self.root / "hosts/laptop/.claude/skills/sample").exists())
@@ -134,7 +132,7 @@ class SyncTest(unittest.TestCase):
         code, out = self.sync()
         self.assertEqual(code, 1, out)
         self.assertEqual(self.row(out, "devbox"), {"fleet": "conflict", "skills": "stopped", "plugins": "skipped",
-                                                   "providers": "skipped", "client-config": "stopped", "mds-bye": "skipped"})
+                                                   "providers": "skipped", "client-config": "stopped"})
         self.assertEqual(self.row(out, "desktop")["client-config"], "updated")
         self.assertIn("stopped after a conflict, a fleet failure, or a failed shared preflight: devbox", out)
         self.assertFalse((self.root / "hosts/devbox/.codex/skills").exists())
@@ -190,23 +188,6 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(self.row(out.getvalue(), "laptop"), {"skills": "updated"})
         self.assertEqual(self.row(out.getvalue(), "desktop"), {"skills": "updated"})
         self.assertEqual(built.call_count, 1)
-
-
-class SyncFlagsTest(unittest.TestCase):
-    def test_migrate_path_reaches_the_plugins_step(self):
-        sys.path.insert(0, str(SCRIPTS))
-        import plugins_sync
-        import sync
-        seen = []
-        original = plugins_sync.preflight
-        plugins_sync.preflight = lambda *args: seen.append(args[-1]) or {}
-        try:
-            for flag in ([], ["--migrate-path"]):
-                args = sync.argparse.Namespace(dry_run=True, migrate_path=bool(flag), update_claude=False)
-                sync.preflight("plugins", {}, None, [], args, print)
-        finally:
-            plugins_sync.preflight = original
-        self.assertEqual(seen, [False, True])
 
 
 if __name__ == "__main__":

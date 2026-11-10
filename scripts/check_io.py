@@ -63,7 +63,6 @@ REMOTE_WRITE = re.compile(r"\b(writeFileSync|renameSync|rmSync|unlinkSync|copyFi
 BASELINE = {
     "client_config_merge.js": 6,
     "paseo_providers_merge.js": 8,
-    "plugins_sync_remote.js": 1,
     "skills_sync_remote.js": 7,
 }
 EXCEPTION = re.compile(r"raw-write-ok:\s*(?P<reason>[^;]*\S)\s*;\s*expires\s+(?P<date>\d{4}-\d{2}-\d{2})")

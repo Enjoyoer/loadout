@@ -7,7 +7,7 @@
     {
       "name": "laptop", "os": "macos", "checkout": "~/src/loadout", "clients": ["codex", "claude"],
       "exclude_skills": ["sample"], "paseo_home": "~/.paseo",
-      "sync": ["skills", "plugins", "providers", "client-config", "mds-bye"],
+      "sync": ["skills", "plugins", "providers", "client-config"],
       "paseo": { "plugin_root": "~/.local/share/loadout/plugins", "stage": ["merged-worker-archiver"], "install": ["merged-worker-archiver"] }
     },
     {
@@ -17,7 +17,7 @@
     },
     { "name": "devbox", "os": "linux", "checkout": null, "clients": ["codex"] },
     {
-      "name": "tablet", "os": "linux", "transport": "paseo-relay", "sync": ["providers"],
+      "name": "tablet", "os": "linux", "sync": ["providers"],
       "paseo_offer": "~/.paseo/hosts/tablet.offer"
     }
   ],

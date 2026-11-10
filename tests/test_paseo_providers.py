@@ -3,7 +3,6 @@ import gzip
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -28,8 +27,7 @@ HOSTS = {
     "hosts": [
         {"name": "laptop", "os": "macos", "clients": ["claude"], "sync": ["skills", "providers"]},
         {"name": "desktop", "os": "linux", "sync": ["providers"]},
-        {"name": "tablet", "os": "linux", "transport": "paseo-relay", "sync": ["providers"],
-         "paseo_offer": "offers/tablet.offer"},
+        {"name": "tablet", "os": "linux", "sync": ["providers"], "paseo_offer": "offers/tablet.offer"},
         {"name": "devbox", "os": "linux", "clients": ["codex"]},
     ],
 }
@@ -70,15 +68,10 @@ class ProviderSyncTest(unittest.TestCase):
             # A host's paseo, run over the fake ssh.
             "LOADOUT_TEST_PASEO": json.dumps(self.paseo),
             "TMPDIR": str(self.root),
-            # An agent session's variables must not reach the relay CLI.
+            # An agent session's variables must not reach a host's paseo.
             "PASEO_HOME": str(self.root / "agent-home"),
             "PASEO_AGENT_ID": "agent-1",
             "PASEO_AGENT_CWD": str(self.root),
-            "LOADOUT_RELAY_POLL_SECONDS": "0.05",
-            "LOADOUT_RELAY_WAIT_SECONDS": "3",
-            "LOADOUT_RELAY_READY_SECONDS": "2",
-            "LOADOUT_RELAY_SETTLE_SECONDS": "0",
-            "LOADOUT_RELAY_RESEND_SECONDS": "0.5",
         }
         self.env.update({k: v for k, v in os.environ.items()
                          if k.upper() in ("SYSTEMROOT", "TEMP", "TMP")})
@@ -360,39 +353,6 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertEqual(self.config("desktop"), EXISTING)
         self.assertNotIn("reload", self.calls())
 
-    def test_long_relay_payload_is_bounded_verified_and_idempotent(self):
-        (self.root / "input-limit").touch()
-        catalog = self.long_payload()
-        # The first send is lost, then resent safely before the chunks run.
-        (self.root / "drop-sends").write_text("1")
-        with patch.dict(os.environ, self.env):
-            runner = paseo_providers.Runner(HOSTS["hosts"][2], "laptop", self.fleet)
-            program = fleet.pack(paseo_providers.MERGE_JS.read_bytes())
-            data = fleet.pack(json.dumps(paseo_providers.payload(catalog, "tablet", "test", False)).encode())
-            # Module constants were loaded before the subprocess test overrides.
-            with patch.multiple(paseo_providers, RELAY_POLL_SECONDS=0.01, RELAY_WAIT_SECONDS=3,
-                                RELAY_SETTLE_SECONDS=0, RELAY_RESEND_SECONDS=0.05):
-                out = runner.write(program, data)
-                self.assertTrue(fleet.parse_result(out)["changed"], out)
-                out = runner.write(program, data)
-                self.assertFalse(fleet.parse_result(out)["changed"], out)
-        self.assertEqual(self.config("tablet")["agents"]["providers"]["codex"]["models"],
-                         catalog["providers"]["codex"]["models"])
-        self.assertEqual((self.root / "workspaces").read_text(), "")
-        self.assertIn("conv=notrunc", self.calls())
-        self.assertEqual(list(self.root.glob("loadout-provider-*")), [])
-
-    def test_corrupt_long_relay_payload_is_removed_without_merge(self):
-        (self.root / "input-limit").touch()
-        (self.root / "corrupt-relay").touch()
-        self.long_payload()
-        code, out = self.run_sync("--host", "tablet")
-        self.assertEqual(code, 1, out)
-        self.assertEqual(self.config("tablet"), EXISTING)
-        self.assertNotIn("reload", self.calls())
-        self.assertEqual(list(self.root.glob("loadout-provider-*")), [])
-        self.assertEqual((self.root / "workspaces").read_text(), "")
-
     def test_dry_run_writes_nothing(self):
         code, out = self.run_sync("--dry-run")
         self.assertEqual(code, 0, out)
@@ -423,12 +383,12 @@ class ProviderSyncTest(unittest.TestCase):
             self.assertEqual(json.loads(backups[0].read_text()), EXISTING)
         self.assertIn("laptop (local): write CHANGED; labels verified; preserved [opencode]", out)
         self.assertIn("desktop (ssh): write CHANGED", out)
-        self.assertIn("tablet (paseo-relay): write CHANGED", out)
+        self.assertIn("tablet (ssh): write CHANGED", out)
         self.assertEqual(out.count("reload ok"), 3, out)
         calls = self.calls()
         self.assertIn("paseo local reload", calls)
         self.assertIn("ssh desktop", calls)
-        self.assertIn("paseo tablet workspace archive ws-1", calls)
+        self.assertIn("ssh tablet", calls)
         self.assertIn("paseo tablet reload", calls)
         self.assertEqual(self.config("devbox"), EXISTING)
 
@@ -437,12 +397,11 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertEqual(out.count("write unchanged; labels verified"), 3, out)
         self.assertEqual(len(list(self.config_path("laptop").parent.glob("config.json.bak-loadout-*"))), 1)
 
-    def test_required_env_failure_still_cleans_up_relay(self):
+    def test_required_env_failure_writes_nothing(self):
         self.config_path("tablet").write_text(json.dumps({"agents": {"providers": {}}}))
         code, out = self.run_sync("--host", "tablet")
         self.assertEqual(code, 1, out)
-        self.assertIn("tablet (paseo-relay): write FAILED: required env missing: claude.ANTHROPIC_BASE_URL", out)
-        self.assertIn("workspace archive ws-1", self.calls())
+        self.assertIn("tablet (ssh): write FAILED: required env missing: claude.ANTHROPIC_BASE_URL", out)
         self.assertEqual(self.config("tablet"), {"agents": {"providers": {}}})
 
     def test_secret_looking_host_env_is_refused(self):
@@ -474,105 +433,6 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(self.config("laptop")["agents"]["providers"]["claude"]["env"]["ANTHROPIC_BASE_URL"],
                          self.env["LOCALAPPDATA"])
-
-    def test_relay_waits_for_the_prompt_before_one_send(self):
-        (self.root / "quiet-captures").write_text("4")
-        code, out = self.run_sync("--host", "tablet")
-        self.assertEqual(code, 0, out)
-        self.assertIn("tablet (paseo-relay): write CHANGED", out)
-        # Each command is sent once, whether the payload fits inline or needs bounded chunks.
-        calls = self.calls().splitlines()
-        sends = [line for line in calls if "terminal send-keys" in line]
-        self.assertEqual(len(sends), len(set(sends)))
-        send = next(i for i, line in enumerate(calls) if "send-keys" in line)
-        self.assertEqual(sum("terminal capture" in line for line in calls[:send]), 5)
-
-    def test_relay_resends_once_when_the_command_never_echoed(self):
-        (self.root / "drop-sends").write_text("1")
-        code, out = self.run_sync("--host", "tablet")
-        self.assertEqual(code, 0, out)
-        self.assertIn("tablet (paseo-relay): write CHANGED", out)
-        sends = [line for line in self.calls().splitlines() if "terminal send-keys" in line]
-        self.assertEqual(len(sends), len(set(sends)) + 1)
-
-    def test_relay_resend_is_bounded_to_one(self):
-        (self.root / "drop-sends").write_text("5")
-        code, out = self.run_sync("--host", "tablet")
-        self.assertEqual(code, 1, out)
-        self.assertEqual(self.calls().count("terminal send-keys"), 2)
-        self.assertEqual((self.root / "workspaces").read_text(), "")
-
-    def test_relay_never_resends_an_echoed_command(self):
-        (self.root / "echo-only").touch()
-        code, out = self.run_sync("--host", "tablet")
-        self.assertEqual(code, 1, out)
-        self.assertEqual(self.calls().count("terminal send-keys"), 1)
-        self.assertIn("did not finish within 3s; last output:", out)
-        self.assertIn("@@LOADOUT-EXIT-", out)
-
-    def test_relay_never_ready_times_out_and_cleans_up(self):
-        (self.root / "quiet-captures").write_text("999")
-        code, out = self.run_sync("--host", "tablet")
-        self.assertEqual(code, 1, out)
-        self.assertIn("tablet (paseo-relay): write FAILED: relay terminal showed no shell prompt within 2s (readiness "
-                      "timeout); nothing was sent", out)
-        self.assertNotIn("send-keys", self.calls())
-        self.assertEqual((self.root / "workspaces").read_text(), "")
-
-    def test_relay_timeout_explains_and_cleans_up(self):
-        (self.root / "drop-sends").write_text("99")
-        code, out = self.run_sync("--host", "tablet")
-        self.assertEqual(code, 1, out)
-        self.assertIn("relay terminal did not finish within 3s; last output: $", out)
-        self.assertIn("terminal kill term-1", self.calls())
-        self.assertEqual((self.root / "workspaces").read_text(), "")
-        self.assertEqual(self.config("tablet"), EXISTING)
-
-    def test_relay_cleans_up_when_create_fails_after_the_host_made_it(self):
-        (self.root / "fail-create").touch()
-        code, out = self.run_sync("--host", "tablet")
-        self.assertEqual(code, 1, out)
-        self.assertIn("write FAILED: paseo workspace create: request timed out", out)
-        self.assertIn("workspace archive ws-1", self.calls())
-        self.assertEqual((self.root / "workspaces").read_text(), "")
-
-    def test_relay_cleans_up_when_terminal_create_fails(self):
-        (self.root / "fail-terminal").touch()
-        code, out = self.run_sync("--host", "tablet")
-        self.assertEqual(code, 1, out)
-        self.assertIn("write FAILED: paseo terminal create: terminal failed", out)
-        self.assertEqual((self.root / "workspaces").read_text(), "")
-
-    def test_relay_cleanup_failure_after_timeout_names_the_workspace(self):
-        (self.root / "drop-sends").write_text("99")
-        (self.root / "fail-archive").touch()
-        code, out = self.run_sync("--host", "tablet")
-        self.assertEqual(code, 1, out)
-        self.assertIn("relay workspace cleanup failed: ws-1", out)
-
-    def test_relay_sweeps_workspaces_left_by_a_killed_run(self):
-        (self.root / "workspaces").write_text("ws-old loadout-provider-sync\nws-keep someone-else\n")
-        code, out = self.run_sync("--host", "tablet")
-        self.assertEqual(code, 0, out)
-        self.assertIn("workspace archive ws-old", self.calls())
-        self.assertEqual((self.root / "workspaces").read_text(), "ws-keep someone-else\n")
-
-    @unittest.skipIf(os.name == "nt", "Windows has no SIGTERM to catch: send_signal(SIGTERM) is TerminateProcess")
-    def test_sigterm_still_cleans_up_the_relay_workspace(self):
-        (self.root / "drop-sends").write_text("99")
-        self.env["LOADOUT_RELAY_WAIT_SECONDS"] = "30"
-        proc = subprocess.Popen(with_fakes(SCRIPTS / "paseo_providers.py", "--host", "tablet", ssh=self.ssh,
-                                           paseo=self.paseo),
-                                env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        for _ in range(200):
-            if "send-keys" in self.calls():
-                break
-            time.sleep(0.05)
-        proc.send_signal(signal.SIGTERM)
-        proc.communicate(timeout=30)
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("terminal kill term-1", self.calls())
-        self.assertEqual((self.root / "workspaces").read_text(), "")
 
     def test_an_inherited_paseo_host_never_redirects_the_source_hosts_reload(self):
         # The session that starts the sync targets another daemon; the source host's reload must stay on its own.
@@ -620,8 +480,8 @@ class ProviderSyncTest(unittest.TestCase):
         (self.root / "fail-reload-tablet").touch()
         code, out = self.run_sync("--host", "tablet")
         self.assertEqual(code, 1, out)
-        self.assertIn("tablet (paseo-relay): write CHANGED", out)
-        self.assertIn("tablet (paseo-relay): reload FAILED: request timed out; the write above still stands", out)
+        self.assertIn("tablet (ssh): write CHANGED", out)
+        self.assertIn("tablet (ssh): reload FAILED: request timed out; the write above still stands", out)
 
     def test_reload_failure_after_an_unchanged_write_is_a_warning(self):
         code, out = self.run_sync("--host", "tablet")
@@ -629,27 +489,27 @@ class ProviderSyncTest(unittest.TestCase):
         (self.root / "fail-reload-tablet").touch()
         code, out = self.run_sync("--host", "tablet")
         self.assertEqual(code, 0, out)
-        self.assertIn("tablet (paseo-relay): write unchanged", out)
-        self.assertIn("tablet (paseo-relay): reload warning (config unchanged, not a failure): request timed out", out)
+        self.assertIn("tablet (ssh): write unchanged", out)
+        self.assertIn("tablet (ssh): reload warning (config unchanged, not a failure): request timed out", out)
         self.assertNotIn("FAILED", out)
 
     def test_rerun_retries_an_owed_reload_and_fails_if_it_fails_again(self):
         (self.root / "fail-reload-tablet").touch()
         code, out = self.run_sync("--host", "tablet")
         self.assertEqual(code, 1, out)
-        self.assertIn("tablet (paseo-relay): write CHANGED", out)
+        self.assertIn("tablet (ssh): write CHANGED", out)
         code, out = self.run_sync("--host", "tablet", "--dry-run")
         self.assertEqual(code, 0, out)
-        self.assertRegex(out, r"tablet \(paseo-relay\): reload \(owed since \S+\) skipped \(dry run\); the real run retries it")
+        self.assertRegex(out, r"tablet \(ssh\): reload \(owed since \S+\) skipped \(dry run\); the real run retries it")
         code, out = self.run_sync("--host", "tablet")
         self.assertEqual(code, 1, out)
-        self.assertIn("tablet (paseo-relay): write unchanged", out)
-        self.assertRegex(out, r"tablet \(paseo-relay\): reload \(owed since \S+\) FAILED: request timed out")
+        self.assertIn("tablet (ssh): write unchanged", out)
+        self.assertRegex(out, r"tablet \(ssh\): reload \(owed since \S+\) FAILED: request timed out")
         self.assertEqual(self.calls().count("paseo tablet reload"), 2)
         (self.root / "fail-reload-tablet").unlink()
         code, out = self.run_sync("--host", "tablet")
         self.assertEqual(code, 0, out)
-        self.assertRegex(out, r"tablet \(paseo-relay\): reload \(owed since \S+\) ok")
+        self.assertRegex(out, r"tablet \(ssh\): reload \(owed since \S+\) ok")
         # Nothing is owed after a reload succeeds, so a later failure with an unchanged config is a warning.
         (self.root / "fail-reload-tablet").touch()
         code, out = self.run_sync("--host", "tablet")
@@ -828,16 +688,6 @@ class ProviderSyncTest(unittest.TestCase):
         self.assertIn("; the write changed the config and the reload succeeded, so a reload may still be owed", failure)
         self.assertIn("laptop (local): reload ok", lines)
 
-    def test_relay_cleanup_failure_is_reported(self):
-        (self.root / "fail-archive").touch()
-        code, out = self.run_sync("--host", "tablet")
-        # The merge ran, so its result stands, the leftover is a warning after it, and the reload still runs.
-        self.assertEqual(code, 0, out)
-        lines = out.splitlines()
-        write = next(i for i, line in enumerate(lines) if "tablet (paseo-relay): write CHANGED" in line)
-        self.assertIn("tablet (paseo-relay): cleanup warning: relay workspace cleanup failed: ws-1", lines[write + 1])
-        self.assertIn("tablet (paseo-relay): reload ok", lines[write + 2])
-
     def test_host_selection(self):
         code, out = self.run_sync("--host", "nowhere")
         self.assertEqual(code, 2)
@@ -886,10 +736,6 @@ class ConfigValidationTest(unittest.TestCase):
     def test_unknown_keys(self):
         self.check(lambda d: d.update(routers={}), "unknown keys ['routers']")
         self.check(lambda d: d["hosts"].update(tablet={"inherit": False}), "unknown keys ['inherit']")
-
-    def test_parse_wrapped_result(self):
-        wrapped = '@@LOADOUT-RESULT {"host":"t","err\nor":null} @@END'
-        self.assertEqual(paseo_providers.parse_result(wrapped), {"host": "t", "error": None})
 
 
 if __name__ == "__main__":

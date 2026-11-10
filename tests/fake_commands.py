@@ -95,130 +95,20 @@ elif arg == "update":
 '''.lstrip()
 
 
-# The provider sync's paseo: relay workspaces and one terminal, kept in FAKE_ROOT. PASEO_HOST holds
-# "offer:<host>"; without it the call targets the local daemon. Like the real CLI, it refuses PASEO_HOME
-# together with PASEO_HOST. The terminal is the relay host's POSIX shell, for exactly the command shapes
-# paseo_providers.py sends; anything else fails. Files in FAKE_ROOT shape relay faults: drop-sends (count of
-# send-keys to lose), quiet-captures (captures that return nothing), fail-create (the host makes the workspace
-# but the call fails), fail-terminal, fail-archive, fail-reload-<host>, echo-only (the shell echoes and never
-# runs), input-limit (send-keys over 3000 characters fails), corrupt-relay (staged payloads are damaged).
+# The provider sync's paseo: only `reload`, logged to FAKE_ROOT/calls.log. PASEO_HOST holds "offer:<host>";
+# without it the call targets the local daemon. Like the real CLI, it refuses PASEO_HOME together with
+# PASEO_HOST. FAKE_ROOT/fail-reload-<host> makes that host's reload fail.
 _FAKE_PROVIDER_PASEO = r'''
-import glob
 import os
-import re
-import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(os.environ["FAKE_ROOT"])
-WORKSPACES = ROOT / "workspaces"
-TERMINAL = ROOT / "term.out"
-STAGED = r'"\$\{TMPDIR:-/tmp\}/(loadout-provider-[0-9a-f]+)"'
-EXIT = re.compile(r"(.*); printf '\\n@@LOADOUT-EXIT-([0-9a-f]+):%s\\n' \"\$\?\"", re.S)
-INLINE = re.compile(r"node -e \"([^\"]*)\" -- '([^']*)' '([^']*)'")
-CHUNK = re.compile(r"umask 077; printf %s '([^']*)' \| dd of=" + STAGED + r" bs=1 seek=(\d+) conv=notrunc 2>/dev/null")
-RUN_STAGED = re.compile(r"\(exec 3<" + STAGED + "; rm -f " + STAGED + r"; node -e \"([^\"]*)\" <&3\)")
-REMOVE = re.compile("rm -f " + STAGED)
 
 
 def out(stream, data):
     stream.buffer.write(data if isinstance(data, bytes) else data.encode())
     stream.flush()
-
-
-def count(name):
-    path = ROOT / name
-    return int(path.read_text().strip() or 0) if path.exists() else 0
-
-
-def counter(name):
-    """Take one from the count in FAKE_ROOT/name; whether there was one to take."""
-    n = count(name)
-    if n > 0:
-        (ROOT / name).write_text(f"{n - 1}\n")
-    return n > 0
-
-
-def records():
-    """The workspace lines, as awk and grep read them."""
-    text = WORKSPACES.read_text(encoding="utf-8")
-    return text[:-1].split("\n") if text.endswith("\n") else text.split("\n") if text else []
-
-
-def fold(data, width=50):
-    """fold -w 50: a line longer than 50 columns continues on the next."""
-    folded, column = bytearray(), 0
-    for byte in data:
-        if byte == 10:
-            folded.append(byte)
-            column = 0
-            continue
-        advance = lambda c: c + 8 - c % 8 if byte == 9 else max(c - 1, 0) if byte == 8 else 0 if byte == 13 else c + 1
-        if advance(column) > width:
-            folded.append(10)
-            column = 0
-        folded.append(byte)
-        column = advance(column)
-    return bytes(folded)
-
-
-def terminal(data):
-    with open(TERMINAL, "ab") as screen:
-        screen.write(fold(data))
-
-
-def shell(command, env):
-    """Run one command line the provider sync sends; returns (output, exit status)."""
-    tmp = env.get("TMPDIR") or "/tmp"
-    if command == "unset HISTFILE":
-        return b"", 0
-    match = INLINE.fullmatch(command)
-    if match:
-        done = subprocess.run(["node", "-e", match[1], "--", match[2], match[3]], env=env, stdin=subprocess.DEVNULL,
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        return done.stdout, done.returncode
-    match = CHUNK.fullmatch(command)
-    if match:
-        fd = os.open(os.path.join(tmp, match[2]), os.O_WRONLY | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
-        try:
-            os.lseek(fd, int(match[3]), os.SEEK_SET)
-            os.write(fd, match[1].encode())
-        finally:
-            os.close(fd)
-        return b"", 0
-    match = RUN_STAGED.fullmatch(command)
-    if match and match[1] == match[2]:
-        path = os.path.join(tmp, match[1])
-        try:
-            with open(path, "rb") as staged:
-                data = staged.read()
-        except OSError as error:
-            return f"sh: cannot open {path}: {error.strerror}\n".encode(), 2
-        os.remove(path)
-        done = subprocess.run(["node", "-e", match[3]], input=data, env=env, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT)
-        return done.stdout, done.returncode
-    match = REMOVE.fullmatch(command)
-    if match:
-        try:
-            os.remove(os.path.join(tmp, match[1]))
-        except FileNotFoundError:
-            pass
-        return b"", 0
-    return f"fake relay shell: unsupported command: {command[:120]}\n".encode(), 127
-
-
-def send(line, host):
-    """The line echoed after the prompt, then its output with 2>&1, as `sh -c` runs it on the relay host."""
-    env = {**os.environ, "HOME": str(ROOT / "hosts" / host)}
-    env["USERPROFILE"] = env["HOME"]
-    match = EXIT.fullmatch(line)
-    if match:
-        output, status = shell(match[1], env)
-        output += f"\n@@LOADOUT-EXIT-{match[2]}:{status}\n".encode()
-    else:
-        output = f"fake relay shell: no exit marker: {line[:120]}\n".encode()
-    terminal(f"$ {line}\n".encode() + output)
 
 
 def main():
@@ -230,64 +120,14 @@ def main():
     if os.environ.get("PASEO_HOME") and target:
         out(sys.stderr, "TARGET_AMBIGUOUS\n")
         return 1
-    WORKSPACES.touch()
-    first, second = (args + ["", ""])[:2]
-    key = f"{first} {second}"
-    if key.startswith("--fake-ok "):
+    first = (args + [""])[0]
+    if first == "--fake-ok":
         out(sys.stdout, "fake\n")
-    elif key.startswith("reload "):
+    elif first == "reload":
         if (ROOT / f"fail-reload-{host}").exists():
             out(sys.stderr, "request timed out\n")
             return 1
         out(sys.stdout, "reloaded\n")
-    elif key == "workspace create":
-        workspace = "ws-%d" % (WORKSPACES.read_bytes().count(b"\n") + 1)
-        with open(WORKSPACES, "a", encoding="utf-8", newline="\n") as listing:
-            listing.write(f"{workspace} loadout-provider-sync\n")
-        if (ROOT / "fail-create").exists():
-            out(sys.stderr, "request timed out\n")
-            return 1
-        out(sys.stdout, '{"workspaceId":"%s"}\n' % workspace)
-    elif key == "workspace ls":
-        fields = [(line.split() + ["", ""])[:2] for line in records()]
-        out(sys.stdout, "[" + ",".join('{"workspaceId":"%s","name":"%s"}' % tuple(f) for f in fields) + "]\n")
-    elif key == "workspace archive":
-        if (ROOT / "fail-archive").exists():
-            return 1
-        workspace = args[2] if len(args) > 2 else ""
-        kept = [line for line in records() if not line.startswith(workspace + " ")]
-        WORKSPACES.write_bytes("".join(line + "\n" for line in kept).encode())
-        out(sys.stdout, "archived\n")
-    elif key == "terminal create":
-        if (ROOT / "fail-terminal").exists():
-            out(sys.stderr, "terminal failed\n")
-            return 1
-        TERMINAL.write_bytes(b"")
-        out(sys.stdout, '{"id":"term-1"}\n')
-    elif key == "terminal send-keys":
-        line = args[3] if len(args) > 3 else ""
-        if (ROOT / "input-limit").exists() and len(line) > 3000:
-            out(sys.stderr, "relay input timeout\n")
-            return 1
-        if counter("drop-sends"):
-            return 0
-        if (ROOT / "echo-only").exists():
-            terminal(f"$ {line}\n".encode())
-            return 0
-        # Input sent while the shell is still starting is lost, as on a slow relay host.
-        if count("quiet-captures") > 0:
-            return 0
-        if "exec 3<" in line and (ROOT / "corrupt-relay").exists():
-            for staged in glob.glob(os.path.join(os.environ.get("TMPDIR", ""), "loadout-provider-*")):
-                Path(staged).write_bytes(b"corrupt")
-        send(line, host)
-    elif key == "terminal capture":
-        if counter("quiet-captures"):
-            return 0
-        screen = TERMINAL.read_bytes() if TERMINAL.exists() else b""
-        out(sys.stdout, screen or b"$ \n")
-    elif key == "terminal kill":
-        pass
     else:
         out(sys.stderr, f"unexpected: {' '.join(args)}\n")
         return 9

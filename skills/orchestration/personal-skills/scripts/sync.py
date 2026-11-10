@@ -2,7 +2,7 @@
 """Sync the fleet with one command.
 
 Runs, in order: fleet validate, fleet push, skills, plugins, providers,
-client-config, then the read-only mds-bye check, honoring each host's `sync` list, then prints one table of
+client-config, honoring each host's `sync` list, then prints one table of
 host by scope. Each step's preflight (publication, overlay, catalog, token)
 runs once, and an error there fails that step for every host and stops their
 later scopes. The step then runs one host at a time, so an error on one host
@@ -20,13 +20,12 @@ from typing import Callable, Optional
 
 import client_config
 import fleet
-import mds_bye
 import paseo_providers
 import plugins_sync
 import skills_sync
 
-STEPS = ("fleet", "skills", "plugins", "providers", "client-config", "mds-bye")
-OK = {"same", "updated", "would update", "not needed", "source", "drift", "skipped", "-"}
+STEPS = ("fleet", "skills", "plugins", "providers", "client-config")
+OK = {"same", "updated", "would update", "source", "skipped", "-"}
 STOPS = {"conflict"}
 
 
@@ -38,11 +37,9 @@ def preflight(step: str, doc: dict, fleet_dir, targets: list, args, emit: Callab
     if step == "skills":
         module, state = skills_sync, skills_sync.preflight(doc, fleet_dir, args.dry_run, emit)
     elif step == "plugins":
-        module, state = plugins_sync, plugins_sync.preflight(doc, fleet_dir, args.dry_run, emit, args.migrate_path)
+        module, state = plugins_sync, plugins_sync.preflight(doc, fleet_dir, args.dry_run, emit)
     elif step == "providers":
         module, state = paseo_providers, paseo_providers.preflight(doc, fleet_dir, args.dry_run)
-    elif step == "mds-bye":
-        module, state = mds_bye, mds_bye.preflight(doc, fleet_dir, args.dry_run, emit)
     else:
         module, state = client_config, client_config.preflight(doc, fleet_dir, targets, args.dry_run,
                                                                args.update_claude)
@@ -90,8 +87,6 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="preflight and report everything without writing")
     parser.add_argument("--host", help="sync only this fleet host")
     parser.add_argument("--only", help=f"comma-separated steps from {','.join(STEPS)} (default: all)")
-    parser.add_argument("--migrate-path", action="store_true",
-                        help="plugins: move plugins installed from another directory to plugin_root, keeping settings")
     parser.add_argument("--update-claude", action="store_true", help="client-config: run `claude update` below minVersion")
     args = parser.parse_args(argv)
     steps = list(STEPS)
@@ -119,7 +114,7 @@ def main(argv: Optional[list] = None) -> int:
         return 2
     hosts = [args.host] if args.host else names
     print(f"fleet valid: schema_version {doc['schema_version']}, {len(names)} hosts" + (" (dry run)" if args.dry_run else ""))
-    # Relay cleanup in the provider step runs from finally blocks; make SIGTERM reach them.
+    # Turn SIGTERM and SIGHUP into exits so an interrupted provider step still records the reload it may owe.
     for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
         if sig is not None:
             signal.signal(sig, lambda number, _frame: sys.exit(128 + number))
