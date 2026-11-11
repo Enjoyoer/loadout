@@ -381,6 +381,45 @@ for(const order of ['payload-first','headers-first']){
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_credential_lend_covers_compaction_outside_and_across_runs(self):
+        script=r"""
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync,chmodSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join,dirname} from 'node:path';import {fileURLToPath} from 'node:url';
+const root=dirname(fileURLToPath(process.argv[1]));const dir=mkdtempSync(join(tmpdir(),'lend-'));
+const helper=join(dir,'helper');const fail=join(dir,'fail');const calls=join(dir,'calls');
+writeFileSync(helper,`#!/bin/sh\necho x >> "${calls}"\n[ -f "${fail}" ] && exit 1\necho synthetic-value\n`);chmodSync(helper,0o755);
+const command=`!"${helper}" "${join(root,'credential.py')}" "${join(root,'runtime.json')}"`;
+writeFileSync(join(dir,'models.json'),JSON.stringify({providers:{fleet:{apiKey:command,models:[]}}}));
+process.env.PI_CODING_AGENT_DIR=dir;
+const m=await import(process.argv[1]);m.CREDENTIAL.retryDelaysMs=[1,1];
+const ctx={model:{provider:'fleet'}};
+function boot(){const h={};const s={lent:false,registers:0};
+ const pi={on:(e,f)=>h[e]=f,registerProvider:(name,cfg)=>{assert.equal(name,'fleet');assert.equal(cfg.apiKey,'synthetic-value');s.lent=true;s.registers++;},unregisterProvider:()=>{s.lent=false;}};
+ m.default(pi);return {h,s};}
+const compaction=reason=>({reason,signal:new AbortController().signal});
+// Manual compaction outside a run: lent before it starts, withdrawn after it ends, on success and on failure.
+for(const end of ['session_compact','session_compact_failed']){const {h,s}=boot();
+ assert.equal(await h.session_before_compact(compaction('manual'),ctx),undefined);assert.equal(s.lent,true,end);
+ await h[end]({reason:'manual'});assert.equal(s.lent,false,end);}
+// A compaction during a run: its end leaves the run's lend in place.
+{const {h,s}=boot();await h.turn_start({},ctx);assert.equal(s.lent,true);
+ await h.session_before_compact(compaction('threshold'),ctx);await h.session_compact({reason:'threshold'});assert.equal(s.lent,true);
+ await h.agent_end({});assert.equal(s.lent,false);}
+// A run that ends during a compaction: the compaction keeps the lend until it ends.
+{const {h,s}=boot();await h.turn_start({},ctx);await h.session_before_compact(compaction('overflow'),ctx);
+ await h.agent_end({});assert.equal(s.lent,true);await h.session_compact_failed({reason:'overflow'});assert.equal(s.lent,false);}
+// The helper failing every try: nothing is lent and the compaction goes ahead, so Pi runs its own command as today.
+{writeFileSync(fail,'');rmSync(calls,{force:true});rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h,s}=boot();
+ assert.equal(await h.session_before_compact(compaction('manual'),ctx),undefined);
+ assert.equal(s.registers,0);assert.equal(s.lent,false);assert.equal(readFileSync(calls,'utf8').trim().split('\n').length,3);
+ const rows=readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+ assert.deepEqual(rows.at(-1),{event:'credential',provider:'fleet',status:'unavailable',tries:3});
+ await h.session_compact_failed({reason:'manual'});assert.equal(s.lent,false);}
+rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_service_tier_fails_closed_on_lookup_and_diagnostic_errors(self):
         script=r"""
 import assert from 'node:assert/strict';
