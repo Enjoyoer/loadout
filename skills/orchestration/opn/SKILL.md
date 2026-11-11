@@ -2,7 +2,7 @@
 name: opn
 description: Run durable non-code work as its PM, with one outcome-scoped worker per outcome and fresh-readback proof. Use for explicit OPN workflows or when a PM owns a non-code workstream or folder.
 metadata:
-  version: "2.2.6"
+  version: "2.2.7"
 ---
 
 # OPN Non-Code PM
@@ -52,6 +52,8 @@ An outbound action for the owner (email, call, order, payment, post or quote to 
 ## Other PMs
 
 Address another PM by its role labels (`role=pm`, `project=<name>`), resolved at send time; with no single match, ask the owner. Confirm the message arrived. A PM never blocks waiting on a reply. For a Codex app thread, use `codex-send --notify HOST THREAD -`: it returns at once, and the outcome (reply, busy, duplicate, failure or timeout) arrives later as one Paseo message. Correct a wrong broadcast at once, and verify with a fresh scan that anything it started has stopped.
+
+Under its title, every PM's `STATUS.html` carries one line, `Reports to: <PM>`: the role PM the global routing rules name, or the owner for a top-level role PM. A PM thread in another harness carries the same line. Send questions and decisions only to that recipient, never straight to the owner unless the line names the owner; add the line at the next STATUS update.
 
 ## Validation
 
