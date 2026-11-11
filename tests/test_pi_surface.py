@@ -1449,6 +1449,56 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             self.assertFalse((home/'models.json').is_symlink())
             self.assertIn('providers', json.loads((home/'models.json').read_text()))
 
+    @unittest.skipIf(os.name == "nt", "symbolic links need privileges on Windows")
+    def test_a_symlinked_overlay_refuses_without_echoing_its_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            home = root/'agents/agent-0001'; home.mkdir(parents=True)
+            token = base/'token.txt'; token.write_text('fake-token-0123456789\n')
+            for name in ['models.overlay.json', 'settings.overlay.json']:
+                (home/name).symlink_to(token)
+                for args in [self.ISO, ()]:
+                    done = run(*args, '--mode', 'rpc', '--model', 'fleet/current')
+                    self.assertNotEqual(done.returncode, 0, name)
+                    self.assertIn('is a symlink', done.stderr)
+                    self.assertNotIn('fake-token', done.stderr + done.stdout)
+                    self.assertFalse(record.exists())
+                (home/name).unlink()
+                # A regular overlay holding that text refuses as invalid JSON, without quoting it.
+                (home/name).write_text(token.read_text())
+                done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current')
+                self.assertNotEqual(done.returncode, 0, name)
+                self.assertIn('invalid JSON', done.stderr)
+                self.assertNotIn('fake-token', done.stderr + done.stdout)
+                (home/name).unlink()
+
+    @unittest.skipIf(os.name == "nt" or sys.platform == "darwin",
+                     "the fake sandbox-exec is a POSIX shell script, and the test markers refuse a real macOS launch")
+    def test_probe_profile_refuses_a_node_prefix_that_contains_the_pi_root(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            fake, log = self.sandbox_fixture(base)
+            # A node at <prefix>/bin/node whose prefix holds the Pi root, as with ~/.local/bin/node and a Pi root
+            # under ~/.local/share.
+            node = shutil.which('node'); local = base/'bin/node'; local.parent.mkdir()
+            try: os.link(os.path.realpath(node), local)
+            except OSError: shutil.copy2(os.path.realpath(node), local)
+            runs = base/'runs'; runs.mkdir()
+            markers = ('--loadout-isolated', '--loadout-sandbox-root', str(runs), '--loadout-test-platform', 'darwin',
+                       '--loadout-test-sandbox-exec', str(fake))
+            done = run(*markers, '--mode', 'rpc', command=(str(local),))
+            self.assertNotEqual(done.returncode, 0)
+            self.assertEqual(done.stderr.count('\n'), 1, done.stderr)
+            self.assertIn('contains the Pi root', done.stderr)
+            self.assertFalse(log.exists())
+            # The same probe with a node outside it runs under the probe profile.
+            done = run(*markers, '--mode', 'rpc')
+            self.assertEqual(done.returncode, 7, done.stderr)
+            self.assertEqual(log.read_text().splitlines()[0], '-p')
+
     @unittest.skipUnless(sys.platform == "darwin" and os.path.exists('/usr/bin/sandbox-exec'), "macOS sandbox-exec")
     def test_probe_profile_denies_reading_an_unlisted_file_under_the_home(self):
         launcher = (PI/'launch.mjs').read_text()

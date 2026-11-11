@@ -12,6 +12,20 @@ function refuse(message) {
   process.exit(1);
 }
 
+// Read an overlay from an agent home, which the agent itself may write: opened without following a link (a symbolic
+// link refuses, so the launcher never reads another file through it), and only a regular file. Null when missing.
+function readOverlay(path) {
+  let fd;
+  try { fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); } catch (error) {
+    if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null;
+    if (error.code === 'ELOOP') refuse(`${path} is a symlink`);
+    throw error;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) refuse(`${path} is not a regular file`);
+    return readFileSync(fd, 'utf8');
+  } finally { closeSync(fd); }
+}
 // Write a file in an agent home that the agent itself can write: remove what is there first (a symbolic link the agent
 // planted included) and create the file exclusively ('wx'), so the launcher never writes through a link.
 function writeFresh(path, data) {
@@ -265,6 +279,19 @@ if (sandboxRoot !== null) {
     sandboxProfile = real;
   }
 }
+// The probe profile's HOME is the account's home from the user database, as stored on disk, and its NODE_PREFIX (the
+// Node install it may read, which wins over the home deny) must not reopen what that deny closes.
+let probeHome = null, nodePrefix = null;
+if (probeProfile) {
+  probeHome = realPath(userInfo().homedir);
+  nodePrefix = realPath(dirname(dirname(process.execPath)));
+  if (probeHome === null || nodePrefix === null) refuse('the probe profile needs an existing home and Node install');
+  const reopened = [['the home folder', probeHome], ['the Pi root', realPath(root)],
+    ...['.config', '.ssh', '.codex'].map(name => [`~/${name}`, join(probeHome, name)])]
+    .find(([, path]) => inside(path, nodePrefix));
+  if (reopened) refuse(`the Node install prefix ${nodePrefix} contains ${reopened[0]}, which the probe profile must not `
+    + 'read: install Node outside the home folder or in its own folder (for example ~/.local/node)');
+}
 const sandboxed = sandboxProfile !== null || probeProfile;
 const sandboxExec = testSandboxExec ?? '/usr/bin/sandbox-exec';
 if (sandboxed) {
@@ -333,11 +360,15 @@ if (caller && !probe) {
   const files = { ...shared };
   for (const [file, apply] of [['models.json', overlayModels], ['settings.json', overlaySettings]]) {
     const path = join(home, file.replace(/json$/, 'overlay.json'));
-    let text;
     // Only a missing overlay is absent; an unreadable one refuses the launch.
-    try { text = readFileSync(path, 'utf8'); } catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue; throw error; }
+    const text = readOverlay(path);
+    if (text === null) continue;
+    let overlay;
+    // The parser's message quotes the input, so it never reaches the error.
+    try { overlay = JSON.parse(text); } catch { refuse(`${path}: invalid JSON`); }
+    const sharedFile = JSON.parse(shared[file]), sharedModels = JSON.parse(shared['models.json']);
     try {
-      const merged = apply(JSON.parse(shared[file]), JSON.parse(text), JSON.parse(shared['models.json']), home);
+      const merged = apply(sharedFile, overlay, sharedModels, home);
       if (file === 'settings.json') requireCodemode(merged);
       files[file] = JSON.stringify(merged, null, 2) + '\n';
     } catch (error) { throw Error(`invalid ${path}: ${error.message}`); }
@@ -434,7 +465,7 @@ if (sandboxed) {
   } finally { closeSync(fd); }
   env.TMPDIR = env.TMP = env.TEMP = tmp;
   const params = probeProfile
-    ? ['-D', `HOME=${userInfo().homedir}`, '-D', `NODE_PREFIX=${realpathSync(dirname(dirname(process.execPath)))}`] : [];
+    ? ['-D', `HOME=${probeHome}`, '-D', `NODE_PREFIX=${nodePrefix}`] : [];
   argv = [...(probeProfile ? ['-p', PROBE_PROFILE] : ['-f', sandboxProfile]), '-D', `CWD=${resolve(process.cwd())}`,
     '-D', `PI_HOME=${env.PI_CODING_AGENT_DIR}`, '-D', `PI_ROOT=${root}`, ...params, process.execPath, ...argv];
   command = sandboxExec;
