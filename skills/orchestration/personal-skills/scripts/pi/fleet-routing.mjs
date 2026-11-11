@@ -350,7 +350,7 @@ export function compactionSettings(root = dirname(fileURLToPath(import.meta.url)
   return {
     thinking: THINKING_LEVELS.includes(own.thinking) ? own.thinking : COMPACTION.thinking,
     lengthBound: typeof own.lengthBound === 'string' && own.lengthBound.trim() ? own.lengthBound.trim() : COMPACTION.lengthBound,
-    maxFiles: Number.isSafeInteger(own.maxFiles) && own.maxFiles >= 0 ? own.maxFiles : COMPACTION.maxFiles,
+    maxFiles: Number.isSafeInteger(own.maxFiles) && own.maxFiles >= 0 && own.maxFiles <= 100_000 ? own.maxFiles : COMPACTION.maxFiles,
   };
 }
 // Pi's clampThinkingLevel (pi-ai models.js): the model's own level, else the next one up it supports, else down.
@@ -400,38 +400,63 @@ function fileCalls(message) {
   if (message?.role !== 'assistant' || !Array.isArray(message.content)) return [];
   return message.content.filter(block => block && typeof block === 'object' && block.type === 'toolCall');
 }
+// The paths the messages read and modified, each in call order.
+function fileTouches(messages) {
+  const read = [], modified = [];
+  for (const message of messages) for (const call of fileCalls(message)) {
+    const path = call?.arguments?.path;
+    if (typeof path !== 'string' || !path) continue;
+    if (call.name === 'read') read.push(path);
+    else if (call.name === 'write' || call.name === 'edit') modified.push(path);
+  }
+  return { read, modified };
+}
 const strings = list => Array.isArray(list) ? list.filter(item => typeof item === 'string') : [];
 // Oldest first, each path once, at its latest position.
 const byRecency = (...lists) => { const seen = new Set(); for (const list of lists) for (const item of list) { seen.delete(item); seen.add(item); } return seen; };
+// The fleet details mark their lists as oldest first; Pi's own details (computeFileLists) are sorted, so their order
+// says nothing about recency.
+export const FILES_ORDER = 'oldest-first';
+const NOTE = /\n\n\(\d+ older file paths? (?:was|were) dropped; each list keeps the \d+ most recent\.\)$/;
 /**
- * The file lists the next summary carries, set in Pi's own preparation, in place, for every provider: Pi carries lists
- * only from its own (fromHook false) summaries, so the previous fleet summary's lists are added, and nothing ever drops
- * a path, so each list keeps at most maxFiles paths (0 keeps all), most recent first: the paths the summarized span
- * touched, by their latest call, then the previous summary's lists from their newest end. Returns both lists oldest
- * first, as the fleet summary stores them, and how many paths were dropped.
+ * The file lists the next summary carries, set in Pi's own preparation, in place, for every provider. Pi carries lists
+ * only from its own (fromHook false) summaries, so the previous fleet summary's lists are added; Pi never drops a path,
+ * so each list keeps at most maxFiles paths (0 keeps all), most recent first. Recency comes from the last call that
+ * touched a path in the whole branch (Pi keeps every entry) and then the summarized span, so the span's paths always
+ * win; a path no call in the branch touched is older than all of those, in its stored order only when the previous
+ * details say they are oldest first. A path lands in exactly one list, as Pi's computeFileLists decides it, after the
+ * cap: modified when it is among the kept modified paths, else read. The previous summary's trailing list block and
+ * dropped-count line are removed from preparation.previousSummary, so a split turn that copies it verbatim carries them
+ * once, at the end. Returns both lists oldest first and how many paths were dropped.
  */
 export function mergeFileLists(preparation, entries, maxFiles = COMPACTION.maxFiles) {
   const ops = preparation?.fileOps;
   if (!ops?.read || !ops?.edited || !ops?.written) return undefined;
-  const previous = Array.isArray(entries) ? entries.findLast(entry => entry?.type === 'compaction') : undefined;
-  const prevRead = strings(previous?.details?.readFiles), prevModified = strings(previous?.details?.modifiedFiles);
-  const spanRead = [], spanModified = [];
-  const messages = [...(preparation.messagesToSummarize ?? []), ...(preparation.turnPrefixMessages ?? [])];
-  for (const message of messages) for (const call of fileCalls(message)) {
-    const path = call?.arguments?.path;
-    if (typeof path !== 'string' || !path) continue;
-    if (call.name === 'read') spanRead.push(path);
-    else if (call.name === 'write' || call.name === 'edit') spanModified.push(path);
-  }
-  // Whatever else Pi put in the preparation counts as older than the span and newer than the previous lists.
-  const modified = byRecency(prevModified, [...ops.edited, ...ops.written], spanModified);
-  const read = [...byRecency(prevRead, ops.read, spanRead)].filter(path => !modified.has(path));
+  const branch = Array.isArray(entries) ? entries : [];
+  const previous = branch.findLast(entry => entry?.type === 'compaction');
+  const ordered = previous?.fromHook === true && previous?.details?.filesOrder === FILES_ORDER;
+  const stored = list => { const paths = strings(list); return ordered ? paths : [...paths].sort(); };
+  const prevRead = stored(previous?.details?.readFiles), prevModified = stored(previous?.details?.modifiedFiles);
+  const span = fileTouches([...(preparation.messagesToSummarize ?? []), ...(preparation.turnPrefixMessages ?? [])]);
+  const all = fileTouches(branch.filter(entry => entry?.type === 'message').map(entry => entry.message));
+  const modifiedAll = byRecency(prevModified, [...ops.edited, ...ops.written], span.modified);
+  const readAll = byRecency(prevRead, ops.read, span.read);
+  const reorder = (set, branchOrder, spanOrder) => [...byRecency([...set], branchOrder.filter(path => set.has(path)), spanOrder)];
   const keep = list => maxFiles > 0 ? list.slice(-maxFiles) : list;
-  const readFiles = keep(read), modifiedFiles = keep([...modified]);
+  const modifiedFiles = keep(reorder(modifiedAll, all.modified, span.modified));
+  const keptModified = new Set(modifiedFiles);
+  const readFiles = keep(reorder(readAll, all.read, span.read).filter(path => !keptModified.has(path)));
+  const dropped = new Set([...modifiedAll, ...readAll]).size - readFiles.length - modifiedFiles.length;
   ops.read.clear(); ops.edited.clear(); ops.written.clear();
   for (const path of readFiles) ops.read.add(path);
   for (const path of modifiedFiles) ops.edited.add(path);
-  return { readFiles, modifiedFiles, dropped: read.length + modified.size - readFiles.length - modifiedFiles.length, maxFiles };
+  if (typeof preparation.previousSummary === 'string') {
+    let text = preparation.previousSummary.replace(NOTE, '');
+    const block = fileBlock(strings(previous?.details?.readFiles).sort(), strings(previous?.details?.modifiedFiles).sort());
+    if (block && text.endsWith(block)) text = text.slice(0, -block.length);
+    preparation.previousSummary = text;
+  }
+  return { readFiles, modifiedFiles, dropped, maxFiles };
 }
 // Pi's list block (core/compaction/utils.js formatFileOperations), from its sorted lists.
 function fileBlock(readFiles, modifiedFiles) {
@@ -440,17 +465,19 @@ function fileBlock(readFiles, modifiedFiles) {
   if (modifiedFiles.length) sections.push(`<modified-files>\n${modifiedFiles.join('\n')}\n</modified-files>`);
   return sections.length ? `\n\n${sections.join('\n\n')}` : '';
 }
-/** The fleet summary with the capped lists: Pi's own block, plus one line with the dropped count when any was dropped. */
+/**
+ * The fleet summary with the capped lists: Pi's own block, plus one line with the dropped count when any was dropped,
+ * and details holding the lists oldest first, marked so.
+ */
 export function withFileLists(compaction, lists) {
   if (!lists || typeof compaction?.summary !== 'string') return compaction;
   const block = fileBlock([...lists.readFiles].sort(), [...lists.modifiedFiles].sort());
   // No paths, or a block that is not Pi's own: Pi's summary as it is (its lists are already capped).
   if (!block || !compaction.summary.endsWith(block)) return compaction;
-  const summary = compaction.summary.slice(0, -block.length);
   const note = lists.dropped > 0
     ? `\n\n(${lists.dropped} older file path${lists.dropped === 1 ? ' was' : 's were'} dropped; each list keeps the ${lists.maxFiles} most recent.)` : '';
-  return { ...compaction, summary: summary + block + note,
-    details: { ...compaction.details, readFiles: lists.readFiles, modifiedFiles: lists.modifiedFiles } };
+  return { ...compaction, summary: compaction.summary + note,
+    details: { ...compaction.details, readFiles: lists.readFiles, modifiedFiles: lists.modifiedFiles, filesOrder: FILES_ORDER } };
 }
 const unavailable = () => Object.assign(Error('compact() unavailable'), { kind: 'unavailable' });
 async function fleetCompaction(pi, event, ctx, record, summaryHeaders, lists) {

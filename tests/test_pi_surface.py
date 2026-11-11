@@ -557,8 +557,10 @@ const block=ops=>{const read=[...ops.read].sort(),mod=[...new Set([...ops.edited
  if(read.length)parts.push(`<read-files>\n${read.join('\n')}\n</read-files>`);if(mod.length)parts.push(`<modified-files>\n${mod.join('\n')}\n</modified-files>`);
  return parts.length?'\n\n'+parts.join('\n\n'):'';};
 let fail=false;
+// A split turn with nothing before it takes the previous summary verbatim as its history, as Pi's does.
 m.COMPACTION.load=async()=>({VERSION:'1.0.0',compact:async(p,b,c,d,e,f,g,h,i,j,k,l)=>{if(fail)throw Error('Summarization failed: 500: x');
- return {summary:'S'+block(p.fileOps),firstKeptEntryId:'k',tokensBefore:9,details:{readFiles:[],modifiedFiles:[]}};}});
+ const history=p.isSplitTurn&&!p.messagesToSummarize.length?p.previousSummary+'\n\n---\n\nTURN':'S';
+ return {summary:history+block(p.fileOps),firstKeptEntryId:'k',tokensBefore:9,details:{readFiles:[],modifiedFiles:[]}};}});
 const registry={getApiKeyAndHeaders:async()=>({ok:true,apiKey:'synthetic-value',headers:{}}),streamSimple:()=>{}};
 const ctx=provider=>({model:{provider,id:'example',reasoning:true},thinkingLevel:'high',modelRegistry:registry,sessionManager:{getSessionId:()=> 'sess'}});
 const h={};m.default({on:(e,f)=>h[e]=f,registerProvider:()=>{},unregisterProvider:()=>{}});
@@ -568,7 +570,7 @@ const note=/\n\n\(220 older file paths were dropped; each list keeps the 100 mos
 {const p=prep();const {compaction}=await run(p,entries(true));
  assert.match(compaction.summary,note);assert.equal(compaction.summary.split('were dropped').length,2);
  assert.ok(compaction.summary.startsWith('S\n\n<read-files>\n'+[...kept].sort().join('\n')+'\n</read-files>'));
- assert.deepEqual(compaction.details,{readFiles:kept,modifiedFiles:[]});}
+ assert.deepEqual(compaction.details,{readFiles:kept,modifiedFiles:[],filesOrder:'oldest-first'});}
 // Nothing dropped: no line, and the summary is Pi's own.
 {const p=prep();const {compaction}=await run(p,[]);assert.equal(compaction.summary,'S'+block({read:new Set(fresh),edited:new Set(),written:new Set()}));
  assert.ok(!compaction.summary.includes('dropped'));}
@@ -576,6 +578,37 @@ const note=/\n\n\(220 older file paths were dropped; each list keeps the 100 mos
 {const p=prep();p.messagesToSummarize.push({role:'assistant',content:[{type:'toolCall',name:'edit',arguments:{path:'old/299.txt'}}]});p.fileOps.edited.add('old/299.txt');
  const lists=m.mergeFileLists(p,entries(true),100);assert.deepEqual(lists.modifiedFiles,['old/299.txt']);assert.ok(!lists.readFiles.includes('old/299.txt'));
  assert.equal(lists.readFiles.length,100);assert.deepEqual(lists.readFiles.slice(-20),fresh);}
+// A path modified long ago and read in this span stays, in exactly one list, the read list.
+{const mods=['x/target.txt',...Array.from({length:99},(_,i)=>`m/${pad(i)}.txt`)],reads=Array.from({length:50},(_,i)=>`r-old/${pad(i)}.txt`);
+ const p={...prep(),messagesToSummarize:[{role:'assistant',content:[{type:'toolCall',name:'read',arguments:{path:'x/target.txt'}},
+  ...Array.from({length:5},(_,i)=>({type:'toolCall',name:'edit',arguments:{path:`n/${pad(i)}.txt`}}))]}],
+  fileOps:{read:new Set(['x/target.txt']),written:new Set(),edited:new Set(Array.from({length:5},(_,i)=>`n/${pad(i)}.txt`))}};
+ const lists=m.mergeFileLists(p,[{type:'compaction',fromHook:true,details:{readFiles:reads,modifiedFiles:mods,filesOrder:'oldest-first'}}],100);
+ const both=[...lists.readFiles,...lists.modifiedFiles];assert.equal(both.filter(x=>x==='x/target.txt').length,1);
+ assert.equal(lists.readFiles.at(-1),'x/target.txt');assert.equal(lists.modifiedFiles.length,100);assert.equal(lists.readFiles.length,51);
+ assert.equal(new Set(both).size,both.length);assert.equal(lists.dropped,4);}
+// Previous lists from a Pi default summary are sorted, so their order is not recency: the branch's calls decide. The
+// 20 paths its span read (alphabetically first) and the 20 this span reads all stay.
+{const zold=Array.from({length:300},(_,i)=>`z-old/${pad(i)}.txt`),anew=Array.from({length:20},(_,i)=>`a-new/${pad(i)}.txt`),
+  mnew=Array.from({length:20},(_,i)=>`m-newer/${pad(i)}.txt`);
+ const msg=paths=>({type:'message',message:{role:'assistant',content:paths.map(path=>({type:'toolCall',name:'read',arguments:{path}}))}});
+ const saved=[...anew,...zold.slice(-80)].sort();
+ const reads=paths=>({...prep(),messagesToSummarize:[msg(paths).message],fileOps:{read:new Set(paths),written:new Set(),edited:new Set()}});
+ const branch=[msg(zold),msg(anew),{type:'compaction',fromHook:false,details:{readFiles:saved,modifiedFiles:[]}},msg(mnew)];
+ const lists=m.mergeFileLists(reads(mnew),branch,100);
+ const count=prefix=>lists.readFiles.filter(x=>x.startsWith(prefix)).length;
+ assert.deepEqual([count('a-new/'),count('z-old/'),count('m-newer/')],[20,60,20]);assert.deepEqual(lists.readFiles.slice(-20),mnew);
+ // Without the earlier calls in the branch, the 20 new paths still all stay.
+ const bare=m.mergeFileLists(reads(fresh),[{type:'compaction',fromHook:false,details:{readFiles:old,modifiedFiles:[]}}],100);
+ assert.deepEqual(bare.readFiles.slice(-20),fresh);}
+// A split turn with nothing before it: one file block and one count line, at the end, with this compaction's count.
+{const prevNote='\n\n(37 older file paths were dropped; each list keeps the 300 most recent.)';
+ const prevSummary='PREV'+block({read:new Set(old),edited:new Set(),written:new Set()})+prevNote;
+ const split=()=>({...prep(),isSplitTurn:true,messagesToSummarize:[],turnPrefixMessages:span(),previousSummary:prevSummary});
+ const p=split();const {compaction}=await run(p,[{type:'compaction',fromHook:true,summary:prevSummary,details:{readFiles:old,modifiedFiles:[],filesOrder:'oldest-first'}}]);
+ assert.equal(compaction.summary.split('older file path').length,2);assert.equal(compaction.summary.split('<read-files>').length,2);
+ assert.match(compaction.summary,note);assert.ok(compaction.summary.startsWith('PREV\n\n---\n\nTURN\n\n<read-files>\n'));
+ assert.equal(p.previousSummary,'PREV');}
 // Pi's default compaction, after a failed fleet attempt or on a direct provider, gets the same bounded preparation.
 fail=true;
 for(const provider of ['fleet','direct']){const p=prep();assert.equal(await run(p,entries(true),provider),undefined,provider);
