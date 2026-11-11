@@ -153,6 +153,11 @@ try {
       merged[k] = Object.assign({}, merged[k] || {});
       merged[k].env = Object.assign({}, (prev[k] || {}).env || {}, p.env[k]);
     }
+    // An isolated Pi provider (derived from pi, launched with LOADOUT_PI_ISOLATED=1) that this sync no longer
+    // declares is removed, so dropping pi.isolated drops its row.
+    const removed = Object.keys(prev).filter(k => !(k in p.providers) && !(k in p.env) && !disabled.includes(k)
+      && prev[k] && prev[k].extends === 'pi' && (prev[k].env || {}).LOADOUT_PI_ISOLATED === '1');
+    for (const k of removed) delete merged[k];
     // Turned off: keep every other existing field, drop the models.
     for (const k of disabled) {
       const { models, ...rest } = merged[k] || {};
@@ -184,7 +189,7 @@ try {
     for (const k of Object.keys(p.required_env))
       for (const key of p.required_env[k]) if (!((merged[k] || {}).env || {})[key]) missing.push(k + "." + key);
     if (missing.length) throw new Error("required env missing: " + missing.join(", "));
-    return { raw, prev, merged, rows: JSON.stringify(prev) !== JSON.stringify(merged),
+    return { raw, prev, merged, removed, rows: JSON.stringify(prev) !== JSON.stringify(merged),
              text: JSON.stringify({ ...cfg, agents: { ...agents, providers: merged } }, null, 2) };
   };
   let m = merge(read());
@@ -292,7 +297,10 @@ try {
     (servers.length ? result.mcp : result.launch).push('provider fields: ' + (fields.join(', ') || 'unchanged'));
     if (result.pi) result.mcp.push('Pi runtime files: ' + (result.pi.changed.join(', ') || 'unchanged'));
   }
-  result.preserved = Object.keys(m.prev).filter(k => !(k in p.providers) && !(k in p.env) && !disabled.includes(k));
+  result.preserved = Object.keys(m.prev).filter(k => !(k in p.providers) && !(k in p.env) && !disabled.includes(k)
+    && !m.removed.includes(k));
+  // Reported only when set, so a result without one keeps its earlier shape.
+  if (m.removed.length) result.removed = m.removed;
   result.disabled = disabled.filter(k => m.prev[k]?.enabled !== false);
   result.changed = Boolean(result.pi?.changed?.length) || m.rows || envChanged.length > 0;
   const now = published ? JSON.parse(read()).agents.providers : m.merged;

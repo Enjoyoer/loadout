@@ -46,6 +46,11 @@ HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi", "disabledP
 LAUNCH_PROVIDERS = {"claude", "codex", "pi"}
 # Providers the fleet itself runs on; disabledProviders never turns these off.
 PROTECTED_PROVIDERS = {"pi", "claude", "codex"}
+# Paseo's built-in provider ids and its provider id alphabet; a derived provider takes neither a built-in id nor
+# another character.
+PASEO_BUILTIN_PROVIDERS = {"claude", "codex", "copilot", "opencode", "pi", "omp"}
+PROVIDER_ID = re.compile(r"[a-z][a-z0-9-]{0,63}")
+ISOLATED_DEFAULT_ID = "pi-isolated"
 # argv prefix for every paseo call made here; tests replace it with their fake (production always runs bare "paseo").
 # An ssh host reloads through RELOAD_JS instead, which runs that host's own paseo.
 PASEO_COMMAND = ("paseo",)
@@ -346,9 +351,36 @@ def effective(config: dict, host: str) -> tuple[dict, list]:
             list(settings.get("disabledProviders", config.get("disabledProviders", []))))
 
 
+def _isolated(value, where):
+    """pi.isolated: an opt-in second Pi provider with no MCP, optionally under a macOS sandbox profile."""
+    if not isinstance(value, dict):
+        raise fleet.FleetError(f"{where} must be an object")
+    fleet._keys(value, {"providerId", "sandboxProfile"}, where)
+    provider_id = value.get("providerId", ISOLATED_DEFAULT_ID)
+    if not isinstance(provider_id, str) or not PROVIDER_ID.fullmatch(provider_id) \
+            or provider_id in PASEO_BUILTIN_PROVIDERS:
+        raise fleet.FleetError(f"{where}.providerId must be a lowercase provider id other than the main Pi "
+                               f"provider and every Paseo built-in ({', '.join(sorted(PASEO_BUILTIN_PROVIDERS))})")
+    if "sandboxProfile" in value:
+        path = value["sandboxProfile"]
+        if not isinstance(path, str) or not re.match(r"/|~/", path) or re.search(r"[\x00-\x1f%]", path):
+            raise fleet.FleetError(f"{where}.sandboxProfile must be an absolute path or start with ~/")
+
+
+def isolated_id(pi: Optional[dict]) -> Optional[str]:
+    """The isolated Pi provider id a host's effective pi block asks for, or None."""
+    if not pi or "isolated" not in pi:
+        return None
+    return pi["isolated"].get("providerId", ISOLATED_DEFAULT_ID)
+
+
 def _pi(value, where):
     if not isinstance(value, dict): raise fleet.FleetError(f"{where} must be an object")
-    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly", "claudeApiKeyRoute", "labelOrder", "contextWindows", "maxTokens", "options"}, where)
+    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly", "claudeApiKeyRoute", "labelOrder", "contextWindows", "maxTokens", "options", "isolated"}, where)
+    if "isolated" in value:
+        if value.get("catalogOnly") is True:
+            raise fleet.FleetError(f"{where}.isolated needs a Pi runtime, not catalogOnly")
+        _isolated(value["isolated"], f"{where}.isolated")
     # Paseo's provider options for the generated Pi row (agents.providers.pi.options); Paseo validates the fields.
     if "options" in value and not isinstance(value["options"], dict): raise fleet.FleetError(f"{where}.options must be an object")
     if value.get('catalogOnly') is True:
@@ -394,11 +426,19 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
             isinstance(keys, list) and all(isinstance(k, str) for k in keys) for keys in required.values()
         ):
             raise fleet.FleetError(f"hosts.{name}.required_env must map providers to lists of env names")
+    os_by_host = {host["name"]: host.get("os") for host in fleet_doc["hosts"]}
     for name in sorted(scoped):
         providers, disabled = effective(data, name)
         both = sorted(set(providers) & set(disabled))
         if both:
             raise fleet.FleetError(f"{name}: {both} both pinned in providers and listed in disabledProviders")
+        pi = data.get("hosts", {}).get(name, {}).get("pi", data.get("pi"))
+        iso = isolated_id(pi)
+        if iso and (iso in providers or iso in disabled):
+            raise fleet.FleetError(f"{name}: pi.isolated.providerId {iso!r} is already a provider in providers "
+                                   "or disabledProviders")
+        if iso and "sandboxProfile" in pi["isolated"] and os_by_host.get(name) != "macos":
+            raise fleet.FleetError(f"{name}: pi.isolated.sandboxProfile needs a macos host (sandbox-exec)")
     return data
 
 
@@ -427,6 +467,15 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
             providers['pi'] = generated['provider']
             env.setdefault('pi', {})['LOADOUT_PI_ROOT'] = pi['root']
         if 'options' in pi: providers['pi']['options'] = pi['options']
+        iso = isolated_id(pi)
+        if iso:
+            # A second provider derived from Pi: the same command, picker rows and options, launched isolated. The
+            # merge never wraps it in the MCP env launcher, so no MCP bearer env or launch.pi setting reaches it.
+            providers[iso] = {'extends': 'pi', 'label': 'Pi isolated',
+                              'description': 'Pi with no MCP servers', **providers['pi']}
+            env[iso] = {**env.get('pi', {}), 'LOADOUT_PI_ISOLATED': '1'}
+            if 'sandboxProfile' in pi['isolated']:
+                env[iso]['LOADOUT_PI_SANDBOX_PROFILE'] = pi['isolated']['sandboxProfile']
     return {
         "pi": generated,
         "mcpServers": mcp_servers,
@@ -585,6 +634,8 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
             # Only the ids this run turns off; none, and no line part, when every listed row is already off.
             disabled = result.get("disabled") or []
             off = (f"; {'would disable' if dry_run else 'disabled'} [{', '.join(disabled)}]" if disabled else "")
+            if result.get("removed"):
+                off += f"; {'would remove' if dry_run else 'removed'} [{', '.join(result['removed'])}]"
             emit(f"{name}: write {state}; labels {'verified' if result['verified'] else 'MISMATCH'}; "
                  f"preserved [{', '.join(result['preserved'])}]{off}{backup}")
         if result and result.get('mcp'):

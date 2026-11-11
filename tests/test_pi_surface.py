@@ -931,4 +931,137 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             self.assertEqual(list(elsewhere.iterdir()),[])
             self.assertFalse((root/'runtime.json').exists())
 
+    def launcher_fixture(self, base):
+        """A configured Pi root whose fake cli.js records its argv and agent dir; returns (root, run, record)."""
+        sys.path.insert(0, str(PI))
+        from configure import build
+        spec = {'baseUrl': 'https://router.example.test/v1', 'credential': {'kind': 'env', 'name': 'EXISTING_KEY'},
+                'models': [{'id': 'current', 'name': 'Sol'}], 'paseoMcp': {'url': 'http://127.0.0.1:1/mcp/agents'},
+                'settings': {'defaultProvider': 'fleet', 'defaultModel': 'current', 'defaultThinkingLevel': 'high'}}
+        root = base/'pi'
+        for name, data in build(spec, root).items():
+            (root/name).parent.mkdir(parents=True, exist_ok=True); (root/name).write_text(json.dumps(data))
+        (root/'launch.mjs').write_bytes((PI/'launch.mjs').read_bytes())
+        app = root/'app/node_modules/@earendil-works/pi-coding-agent'
+        (app/'dist/bundle').mkdir(parents=True)
+        (app/'package.json').write_text('{"version": "1.0.0"}')
+        record = base/'pi-ran.json'
+        (app/'dist/bundle/cli.js').write_text(
+            "require('fs').writeFileSync(process.env.RECORD, JSON.stringify({argv: process.argv.slice(2), "
+            "dir: process.env.PI_CODING_AGENT_DIR, mcpUrl: process.env.LOADOUT_PI_MCP_URL ?? null}))")
+        def run(*args, **extra):
+            env = {**os.environ, 'PASEO_AGENT_ID': 'agent-0001', 'RECORD': str(record), **extra}
+            for key in [k for k, v in extra.items() if v is None]: env.pop(key)
+            return subprocess.run(['node', str(root/'launch.mjs'), *args], capture_output=True, text=True, env=env, cwd=base)
+        return root, run, record
+
+    def test_isolated_launch_writes_no_mcp_config_and_removes_a_stale_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            home = root/'agents/agent-0001'
+            # The main Pi provider writes the agent's mcp.json, as before.
+            done = run('--mode', 'rpc', '--model', 'fleet/current', LOADOUT_PI_ISOLATED=None)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn('paseo', json.loads((home/'mcp.json').read_text())['mcpServers'])
+            # The isolated provider removes that stale file before Pi starts and writes none.
+            record.unlink()
+            done = run('--mode', 'rpc', '--model', 'fleet/current', LOADOUT_PI_ISOLATED='1')
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertFalse((home/'mcp.json').exists())
+            ran = json.loads(record.read_text())
+            self.assertEqual(ran['dir'], str(home))
+            self.assertEqual(ran['argv'][-1], '--no-approve')
+            self.assertIsNone(ran['mcpUrl'])
+            self.assertEqual(json.loads((home/'settings.json').read_text())['extensions'][-1], '-builtin:mcp')
+            # Without a caller there is no agent home, so an isolated launch refuses; the probe still runs.
+            record.unlink()
+            done = run('--mode', 'rpc', '--model', 'fleet/current', LOADOUT_PI_ISOLATED='1', PASEO_AGENT_ID=None)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn('needs a Paseo caller', done.stderr)
+            self.assertFalse(record.exists())
+            done = run('--mode', 'rpc', LOADOUT_PI_ISOLATED='1', PASEO_AGENT_ID=None)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(json.loads(record.read_text())['dir'], str(root/'agent'))
+
+    def test_sandbox_refusals_never_start_pi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            profile = base/'pi.sb'; profile.write_text('(version 1)\n')
+            fake = base/'sandbox-exec'; fake.write_text('#!/bin/sh\nexit 0\n'); fake.chmod(0o755)
+            cases = [
+                ({'LOADOUT_PI_TEST_PLATFORM': 'linux', 'LOADOUT_PI_TEST_SANDBOX_EXEC': str(fake),
+                  'LOADOUT_PI_SANDBOX_PROFILE': str(profile)}, 'needs macOS'),
+                ({'LOADOUT_PI_TEST_PLATFORM': 'darwin', 'LOADOUT_PI_TEST_SANDBOX_EXEC': str(base/'missing-sandbox-exec'),
+                  'LOADOUT_PI_SANDBOX_PROFILE': str(profile)}, 'missing or not executable'),
+                ({'LOADOUT_PI_TEST_PLATFORM': 'darwin', 'LOADOUT_PI_TEST_SANDBOX_EXEC': str(fake),
+                  'LOADOUT_PI_SANDBOX_PROFILE': str(base/'missing.sb')}, 'missing or unreadable'),
+                ({'LOADOUT_PI_TEST_PLATFORM': 'darwin', 'LOADOUT_PI_TEST_SANDBOX_EXEC': str(fake),
+                  'LOADOUT_PI_SANDBOX_PROFILE': str(base)}, 'not a regular file'),
+            ]
+            for extra, message in cases:
+                for args in [('--mode', 'rpc', '--model', 'fleet/current'), ('--mode', 'rpc')]:
+                    done = run(*args, LOADOUT_PI_ISOLATED='1', **extra)
+                    self.assertNotEqual(done.returncode, 0, message)
+                    self.assertEqual(done.stderr.count('\n'), 1, done.stderr)
+                    self.assertIn(message, done.stderr)
+                    self.assertFalse(record.exists(), message)
+
+    def test_sandbox_spawn_argv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            profile = base/'pi.sb'; profile.write_text('(version 1)\n')
+            argv_log = base/'sandbox-argv'
+            fake = base/'sandbox-exec'; fake.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{argv_log}"\nexit 7\n'); fake.chmod(0o755)
+            done = run('--mode', 'rpc', '--model', 'fleet/current', LOADOUT_PI_ISOLATED='1',
+                       LOADOUT_PI_TEST_PLATFORM='darwin', LOADOUT_PI_TEST_SANDBOX_EXEC=str(fake),
+                       LOADOUT_PI_SANDBOX_PROFILE=str(profile))
+            self.assertEqual(done.returncode, 7, done.stderr)
+            node = subprocess.run(['node', '-p', 'process.execPath'], capture_output=True, text=True).stdout.strip()
+            cli = root/'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'
+            self.assertEqual(argv_log.read_text().splitlines(), [
+                '-f', str(profile), '-D', f'CWD={base}', '-D', f'PI_HOME={root/"agents/agent-0001"}',
+                '-D', f'PI_ROOT={root}', node, str(cli), '--mode', 'rpc', '--model', 'fleet/current', '--no-approve'])
+            self.assertFalse(record.exists())
+
+    def test_isolated_provider_row_mirrors_pi_and_goes_when_dropped(self):
+        sys.path.insert(0, str(PI.parent))
+        import paseo_providers as pp
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);config=base/'config.json';config.write_text('{"agents":{"providers":{}}}')
+            catalog,run=self.pi_merge_fixture(base)
+            plain=pp.payload(catalog,'example','stamp',False)
+            self.assertEqual((set(plain['providers']),set(plain['env'])),({'codex','pi'},{'pi'}))
+            self.assertEqual(run(catalog)['error'],None)
+            before=config.read_text()
+            catalog['pi']['isolated']={'sandboxProfile':'~/.config/example/pi.sb'}
+            pp._pi(catalog['pi'],'pi')
+            got=run(catalog)
+            self.assertEqual(got['error'],None)
+            rows=json.loads(config.read_text())['agents']['providers']
+            self.assertEqual(rows['pi-isolated']['extends'],'pi')
+            for key in ['command','models','enabled']:
+                self.assertEqual(rows['pi-isolated'][key],rows['pi'][key])
+            self.assertEqual(rows['pi-isolated']['env'],{**rows['pi']['env'],'LOADOUT_PI_ISOLATED':'1',
+                             'LOADOUT_PI_SANDBOX_PROFILE':str(Path.home()/'.config/example/pi.sb')})
+            # Dropping the key removes the row, leaving the config byte-identical to a run that never had it.
+            del catalog['pi']['isolated']
+            got=run(catalog)
+            self.assertEqual((got['error'],got['removed']),(None,['pi-isolated']))
+            self.assertEqual(config.read_text(),before)
+            for bad in [{'providerId':'pi'},{'providerId':'codex'},{'other':1},{'sandboxProfile':'relative.sb'}]:
+                with self.assertRaises(Exception):
+                    pp._pi({**catalog['pi'],'isolated':bad},'pi')
+            # A providerId that is already a pinned provider refuses at load.
+            import fleet as fleet_module
+            doc={'schema_version':2,'source_host':'example','transport':'ssh',
+                 'hosts':[{'name':'example','os':'macos','sync':['providers']}]}
+            path=base/'paseo-providers.json'
+            path.write_text(json.dumps({**catalog,'pi':{**catalog['pi'],'isolated':{'providerId':'codex-two'}},
+                                        'providers':{**catalog['providers'],'codex-two':catalog['providers']['codex']}}))
+            with self.assertRaisesRegex(fleet_module.FleetError,'already a provider'):
+                pp.load_config(path,doc)
+
 if __name__=='__main__':unittest.main()
