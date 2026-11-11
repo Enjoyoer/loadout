@@ -1,9 +1,9 @@
 // Stock Paseo 0.10.3 interim: each real agent gets a private, scoped mcp.json.
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, statSync, rmSync, lstatSync, accessSync, constants, realpathSync,
   openSync, closeSync, fstatSync, fchmodSync } from 'node:fs';
-import { homedir, userInfo } from 'node:os';
-import { dirname, join, resolve, isAbsolute, sep } from 'node:path';
+import { homedir, userInfo, tmpdir } from 'node:os';
+import { basename, dirname, join, resolve, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // One clear stderr line and a non-zero exit, before any Pi process starts.
@@ -27,8 +27,10 @@ function readOverlay(path) {
   } finally { closeSync(fd); }
 }
 // Write a file in an agent home that the agent itself can write: remove what is there first (a symbolic link the agent
-// planted included) and create the file exclusively ('wx'), so the launcher never writes through a link.
+// planted included) and create the file exclusively ('wx'), so the launcher never writes through a link. A directory
+// there refuses the launch.
 function writeFresh(path, data) {
+  if (lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) refuse(`${path} is a directory`);
   rmSync(path, { force: true });
   writeFileSync(path, data, { mode: 0o600, flag: 'wx' });
 }
@@ -315,19 +317,94 @@ if (sandboxed) {
 }
 // A profile lets Pi read only PI_ROOT/app and fleet-routing.mjs of the Pi root, so every extension the sandboxed Pi
 // loads must be a built-in or resolve to one of those; Pi packages are refused.
+const READABLE = () => `${join(root, 'app')}/ and ${join(root, 'fleet-routing.mjs')}`;
+// Whether Pi under a profile can load this extension path: a built-in, or a path resolving into app/ or to
+// fleet-routing.mjs.
+function readableExtension(path) {
+  if (/^builtin:[a-z0-9.-]+$/.test(path)) return true;  // built into the Pi package under app/
+  const app = realPath(join(root, 'app')), routing = realPath(join(root, 'fleet-routing.mjs'));
+  const target = isAbsolute(path) && !/[*?]/.test(path) ? realPath(path) : null;
+  return target !== null && (target === routing || (app !== null && target !== app && inside(target, app)));
+}
 function readableExtensions(settings) {
   if (settings.packages !== undefined && !(Array.isArray(settings.packages) && !settings.packages.length))
     refuse('a sandboxed isolated Pi loads no Pi packages: remove packages from the Pi settings');
-  const app = realPath(join(root, 'app')), routing = realPath(join(root, 'fleet-routing.mjs'));
   for (const entry of settings.extensions ?? []) {
     if (typeof entry === 'string' && /^[-!]/.test(entry)) continue;  // an exclusion loads nothing
-    const path = typeof entry === 'string' ? entry.replace(/^\+/, '') : '';
-    if (/^builtin:[a-z0-9.-]+$/.test(path)) continue;  // built into the Pi package under app/
-    const target = isAbsolute(path) && !/[*?]/.test(path) ? realPath(path) : null;
-    if (target === null || !(target === routing || (app !== null && target !== app && inside(target, app))))
-      refuse(`extension ${JSON.stringify(entry)} is outside what a sandbox profile lets Pi read: `
-        + `${join(root, 'app')}/ and ${join(root, 'fleet-routing.mjs')}`);
+    if (!readableExtension(typeof entry === 'string' ? entry.replace(/^\+/, '') : ''))
+      refuse(`extension ${JSON.stringify(entry)} is outside what a sandbox profile lets Pi read: ${READABLE()}`);
   }
+}
+// Paseo writes its own integration extension to <its temp folder>/paseo-pi-extension-XXXXXX/paseo-integration.mjs
+// and passes that path with --extension. A profile denies Pi the temp folders, so a sandboxed launch copies that one
+// file into the agent home and passes the copy instead. The temp folder trusted here is the macOS per-user temp folder
+// (confstr DARWIN_USER_TEMP_DIR, which ignores the env), the folder a launchd-started daemon gets as TMPDIR and so the
+// one Paseo writes to. The launcher's own os.tmpdir() is not used: a per-agent env reaches this process and could
+// set TMPDIR. Test fixtures (the test-platform marker, refused on a real macOS launch) use os.tmpdir() instead.
+const PASEO_EXTENSION = 'paseo-integration.mjs';
+let trustedTemp;
+function paseoTemp() {
+  if (trustedTemp !== undefined) return trustedTemp;
+  let dir = null;
+  if (testPlatform !== null) dir = tmpdir();
+  else try {
+    dir = execFileSync('/usr/bin/getconf', ['DARWIN_USER_TEMP_DIR'], { env: {}, encoding: 'utf8', timeout: 5000 }).trim();
+  } catch { dir = null; }
+  return (trustedTemp = dir && isAbsolute(dir) ? realPath(dir) : null);
+}
+// The bytes of Paseo's integration extension when path names it, else null. Accepted only when the path, as given,
+// ends in a real folder paseo-pi-extension-* directly under the trusted temp folder and a real file named
+// paseo-integration.mjs (no symbolic link at either level), that file is a regular file owned by this user, and it is
+// read through a descriptor opened without following a link and without blocking (a FIFO never hangs the launch).
+function paseoExtensionBytes(path) {
+  if (!isAbsolute(path) || basename(path) !== PASEO_EXTENSION) return null;
+  const temp = paseoTemp();
+  if (temp === null) return null;
+  const folder = dirname(path), realFolder = realPath(folder);
+  if (realFolder === null || dirname(realFolder) !== temp || !/^paseo-pi-extension-[A-Za-z0-9]+$/.test(basename(realFolder)))
+    return null;
+  const where = `Paseo's extension ${JSON.stringify(path)}`;
+  if (lstatSync(folder).isSymbolicLink()) refuse(`${where} is in a symbolic link to a folder`);
+  let fd;
+  try { fd = openSync(join(realFolder, PASEO_EXTENSION), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) {
+    if (error.code === 'ELOOP') refuse(`${where} is a symbolic link`);
+    refuse(`${where} cannot be read (${error.code})`);
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) refuse(`${where} is not a regular file`);
+    if (stat.uid !== process.getuid()) refuse(`${where} is not owned by this user`);
+    // The folder could have been swapped for a link between the checks and the open: the real folder must still be a
+    // real directory, and the name in it must still be the file the descriptor reads.
+    const nowFolder = lstatSync(realFolder, { throwIfNoEntry: false });
+    const nowFile = lstatSync(join(realFolder, PASEO_EXTENSION), { throwIfNoEntry: false });
+    if (!nowFolder?.isDirectory() || nowFile?.dev !== stat.dev || nowFile?.ino !== stat.ino)
+      refuse(`${where} changed while it was opened`);
+    // Paseo writes a fresh file, so it has one link; a hard link to another file refuses. (A file unlinked after the
+    // open has none; the check above already refused it.)
+    if (stat.nlink !== 1) refuse(`${where} has more than one link`);
+    return readFileSync(fd);
+  } finally { closeSync(fd); }
+}
+// Rewrite the extension arguments of a sandboxed agent launch: Paseo's integration extension becomes a copy in the
+// agent home (returned, for the caller to write), a built-in or a path the profile lets Pi read stays, and anything
+// else refuses. Every value after --extension or -e is checked, wherever it sits.
+function sandboxExtensionArgs(home) {
+  let copy = null;
+  for (let i = 0; i + 1 < args.length; i++) {
+    if (args[i] !== '--extension' && args[i] !== '-e') continue;
+    const value = args[i + 1];
+    const bytes = paseoExtensionBytes(value);
+    if (bytes !== null) {
+      if (copy !== null) refuse('Paseo passed its integration extension twice');
+      copy = bytes;
+      args[i + 1] = join(home, PASEO_EXTENSION);
+    } else if (!readableExtension(value))
+      refuse(`extension ${JSON.stringify(value)} is outside what a sandbox profile lets Pi read: ${READABLE()}, `
+        + `and Paseo's own ${PASEO_EXTENSION} under ${paseoTemp() ?? 'the per-user temp folder'}`);
+  }
+  return copy;
 }
 // The router key of a sandboxed agent: the launcher reads it and Pi takes it from this variable.
 const ROUTER_KEY_ENV = 'LOADOUT_PI_ROUTER_KEY';
@@ -380,6 +457,8 @@ if (caller && !probe) {
   }
   if (sandboxed) {
     readableExtensions(JSON.parse(files['settings.json']));
+    const paseoExtension = sandboxExtensionArgs(home);
+    if (paseoExtension !== null) files[PASEO_EXTENSION] = paseoExtension;
     // A profile denies Pi the credential files and its own !command, so the launcher runs the router's credential
     // helper here, outside the sandbox: the argv fleet-routing.mjs derives, with its timeout and retries, without a
     // shell. Pi gets the value only in its env, and the agent's models.json names that variable instead of the command.
