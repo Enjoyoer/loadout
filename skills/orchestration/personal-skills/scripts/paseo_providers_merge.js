@@ -59,10 +59,16 @@ try {
     : Array.isArray(value) ? value.map(visit) : value && typeof value === 'object'
       ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, visit(v)])) : value;
   p.providers = visit(p.providers);
-  // The isolated Pi row's sandbox profile, ~ expanded here, on the host.
+  // The isolated Pi row, on the host: this host's absolute node after the env scrub (so a per-agent PATH cannot pick
+  // another node) and its sandbox profile with ~ expanded. Windows has no /usr/bin/env, so it takes no isolated row.
   for (const row of Object.values(p.providers)) {
-    const at = Array.isArray(row.command) ? row.command.indexOf('--loadout-sandbox-profile') : -1;
-    if (at >= 0) row.command[at + 1] = expand(row.command[at + 1]);
+    const command = Array.isArray(row.command) ? row.command : [], at = command.indexOf('--loadout-isolated');
+    if (at < 0) continue;
+    if (process.platform === 'win32') throw Error('the isolated Pi provider needs a macos or linux host');
+    if (command[0] !== '/usr/bin/env' || command[at - 2] !== 'node') throw Error('unexpected isolated Pi command');
+    command[at - 2] = process.execPath;
+    const profile = command.indexOf('--loadout-sandbox-profile');
+    if (profile >= 0) command[profile + 1] = expand(command[profile + 1]);
   }
   const servers = p.mcpServers || [];
   const envRoot = process.platform === 'win32'

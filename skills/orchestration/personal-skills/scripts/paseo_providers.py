@@ -51,6 +51,10 @@ PROTECTED_PROVIDERS = {"pi", "claude", "codex"}
 PASEO_BUILTIN_PROVIDERS = {"claude", "codex", "copilot", "opencode", "pi", "omp"}
 PROVIDER_ID = re.compile(r"[a-z][a-z0-9-]{0,63}")
 ISOLATED_DEFAULT_ID = "pi-isolated"
+# The isolated row starts its command with this env scrub, so a per-agent env cannot preload code into the launcher
+# (on macOS, running through /usr/bin/env also drops every DYLD_* variable). The merge puts the host's absolute
+# node path after it, so a per-agent PATH cannot pick another node.
+ISOLATED_ENV_SCRUB = ("/usr/bin/env", "-u", "NODE_OPTIONS", "-u", "LD_PRELOAD", "-u", "LD_LIBRARY_PATH", "-u", "LD_AUDIT")
 # argv prefix for every paseo call made here; tests replace it with their fake (production always runs bare "paseo").
 # An ssh host reloads through RELOAD_JS instead, which runs that host's own paseo.
 PASEO_COMMAND = ("paseo",)
@@ -437,6 +441,9 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
         if iso and (iso in providers or iso in disabled):
             raise fleet.FleetError(f"{name}: pi.isolated.providerId {iso!r} is already a provider in providers "
                                    "or disabledProviders")
+        if iso and os_by_host.get(name) == "windows":
+            raise fleet.FleetError(f"{name}: pi.isolated needs a macos or linux host (/usr/bin/env; the sandbox is "
+                                   "macOS only)")
         if iso and "sandboxProfile" in pi["isolated"] and os_by_host.get(name) != "macos":
             raise fleet.FleetError(f"{name}: pi.isolated.sandboxProfile needs a macos host (sandbox-exec)")
     return data
@@ -476,7 +483,7 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
             profile = pi['isolated'].get('sandboxProfile')
             providers[iso] = {'extends': 'pi', 'label': 'Pi isolated', 'description': 'Pi with no MCP servers',
                               **providers['pi'], 'paseoTools': {'enabled': False},
-                              'command': [*providers['pi']['command'], '--loadout-isolated',
+                              'command': [*ISOLATED_ENV_SCRUB, *providers['pi']['command'], '--loadout-isolated',
                                           *(['--loadout-sandbox-profile', profile] if profile else [])]}
     return {
         "pi": generated,

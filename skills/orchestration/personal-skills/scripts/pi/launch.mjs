@@ -146,6 +146,12 @@ if (isolated && ['LOADOUT_PI_ISOLATED', 'LOADOUT_PI_SANDBOX_PROFILE'].some(key =
   refuse('remove LOADOUT_PI_ISOLATED and LOADOUT_PI_SANDBOX_PROFILE from the env: isolation comes from the provider command');
 if ((testPlatform !== null || testSandboxExec !== null) && process.platform === 'darwin')
   refuse('the --loadout-test-* markers are for test fixtures, never a macOS launch');
+// A per-agent env still reaches this process. The isolated row's command clears the known preload variables through
+// /usr/bin/env before Node starts; any that remain (or a JITI_* var, which Pi's extension loader reads) refuse.
+if (isolated) {
+  const preload = Object.keys(process.env).find(key => key === 'NODE_OPTIONS' || /^(JITI_|LD_|DYLD_)/.test(key));
+  if (preload) refuse(`remove ${preload} from the env: the isolated Pi provider takes no preload or loader variables`);
+}
 const cli = join(root, 'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');
 const piPackage = JSON.parse(readFileSync(join(dirname(dirname(cli)), '../package.json'), 'utf8'));
 if (piPackage.version !== '1.0.0') throw Error('official Pi 1.0.0 required');
