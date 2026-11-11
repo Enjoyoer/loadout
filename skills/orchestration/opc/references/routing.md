@@ -39,6 +39,10 @@ Local code lanes default to Opus medium, and `ui-design` and `ui-check` stay Fab
 
 The `reviewer` fixed role is separate: it is the one ChatGPT web lane (Web Pro) only for browser review explicitly enabled by the owner, not a Worker class, and the class table does not change it.
 
+## Fable
+
+Fable fits only the PM's planning and orchestration, deep-audit reviews, and the `ui-design` and `ui-check` lanes below. Implementers and routine reviewers use Opus or Sol, and no lane inherits Fable from its PM. At most 2 Fable agents run at once across the fleet; before starting one, count the running Fable agents on every host.
+
 ## UI work
 
 Fable designs and checks; Opus builds. Fable is only for real visual design: a new screen, a layout change, or a new component. Copy, labels, states, error text, renames, and guards with no layout change are `code` only, with no Fable lane.
