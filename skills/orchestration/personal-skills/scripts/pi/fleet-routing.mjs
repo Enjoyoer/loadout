@@ -146,14 +146,18 @@ async function catalogTiers(ctx) {
 // extension runs that same helper itself, without a shell, with up to two retries (CREDENTIAL), and lends the value to
 // Pi as an in-memory provider override (registerProvider with the value as an escaped literal), so Pi spawns nothing
 // for it. If every try fails, it lends the value of the last successful read, but only up to CREDENTIAL.maxAgeMs after
-// that read. Each of those operations holds the lend until it ends (agent_end; session_compact or
-// session_compact_failed; session_tree or the summary's abort); the end of one never withdraws a lend another still
-// holds. Without such a value, once no operation holds the lend, and once a lent value reaches that age, the override
+// that read. A run holds the lend until agent_end and a compaction until session_compact or session_compact_failed. Pi
+// reads a branch summary's credential once, right after the session_before_tree handlers return, and a failed or
+// cancelled summary emits no end event, so a summary holds the lend only for a short lease after its refresh
+// (CREDENTIAL.summaryLeaseMs), ended early by session_tree or the summary's abort. The end of one holder never
+// withdraws a lend another still holds. Without such a value, once no operation holds the lend, and once a lent value
+// reaches that age, the override
 // is withdrawn and Pi runs its own command again, so a failed refresh leaves the operation exactly as before: a
 // process that never read a value fails closed. A successful read always replaces the held value, so
 // a rotation applies to the next request. The value stays in this process's memory: it is never written to a file, a
-// log, argv or the environment, and evidence rows carry only the outcome.
-export const CREDENTIAL = { timeoutMs: 15_000, retryDelaysMs: [1_000, 2_000], maxAgeMs: 15 * 60_000 };
+// log, argv or the environment, and evidence rows carry only the outcome; the one row that quotes upstream error text
+// (compact_failed) has the held and lent values and any Bearer token replaced before it is cut and written.
+export const CREDENTIAL = { timeoutMs: 15_000, retryDelaysMs: [1_000, 2_000], maxAgeMs: 15 * 60_000, summaryLeaseMs: 30_000 };
 const QUOTED = String.raw`"((?:[^"\\]|\\.)*)"`;
 const HELPER_COMMAND = new RegExp(`^!${QUOTED} ${QUOTED} ${QUOTED}$`);
 /**
@@ -202,8 +206,9 @@ const pause = (ms, signal) => new Promise(done => {
 function fleetCredential(pi, record) {
   let found, held = null, lent = null, expiry = null;
   // Holders of the lend: the run (turn_start..agent_end), open compactions counted by reason (Pi names manual,
-  // threshold and overflow apart), and one branch summary (Pi runs at most one, never during a run).
-  let running = false, summarizing = false;
+  // threshold and overflow apart), and one branch summary lease (Pi runs one summary at a time); summary numbers the
+  // latest summary so a stale abort or lease of an earlier one never ends it.
+  let running = false, summarizing = false, summary = 0, lease = null;
   const compactions = new Map();
   const holding = () => running || summarizing || compactions.size > 0;
   // The models.json this Pi process loaded: the agent home's copy, which the launcher rebuilt at this launch.
@@ -269,7 +274,7 @@ function fleetCredential(pi, record) {
   const release = () => { if (!holding()) withdraw(); };
   return {
     // Pi refuses a prompt during a branch summary, so a turn means any summary already ended (a failed one emits nothing).
-    turnStart: ctx => { running = true; summarizing = false; return refresh(ctx); },
+    turnStart: ctx => { running = true; return refresh(ctx); },
     runEnd: () => { running = false; release(); },
     compactionStart: (event, ctx) => {
       compactions.set(event?.reason, (compactions.get(event?.reason) ?? 0) + 1);
@@ -281,15 +286,27 @@ function fleetCredential(pi, record) {
       if (open > 1) compactions.set(event.reason, open - 1); else compactions.delete(event?.reason);
       release();
     },
-    summaryStart: (event, ctx) => {
+    summaryStart: async (event, ctx) => {
       const prep = event?.preparation;
       if (!prep?.userWantsSummary || !prep.entriesToSummarize?.length) return;
-      summarizing = true;
-      event.signal?.addEventListener('abort', () => { summarizing = false; release(); }, { once: true });
-      return refresh(ctx, event.signal);
+      const id = ++summary;
+      const end = () => { if (id !== summary) return; clearTimeout(lease); lease = null; summarizing = false; release(); };
+      clearTimeout(lease); lease = null; summarizing = true;
+      event.signal?.addEventListener('abort', end, { once: true });
+      await refresh(ctx, event.signal);
+      if (id !== summary || !summarizing) return;
+      lease = setTimeout(end, CREDENTIAL.summaryLeaseMs);
+      lease.unref?.();
     },
-    summaryEnd: () => { summarizing = false; release(); },
-    shutdown: () => { running = summarizing = false; compactions.clear(); withdraw(); },
+    summaryEnd: () => { clearTimeout(lease); lease = null; summarizing = false; release(); },
+    shutdown: () => { clearTimeout(lease); lease = null; running = summarizing = false; compactions.clear(); withdraw(); },
+    // Error text from upstream can echo the presented credential: replace the values this process holds, and any
+    // Bearer token, on the whole text before a caller cuts it, so no prefix survives at the cut.
+    redact: text => {
+      let out = text;
+      for (const value of [held?.value, lent]) if (value) out = out.split(value).join('<redacted>');
+      return out.replace(/Bearer\s+\S+/gi, '<redacted>');
+    },
   };
 }
 export default function(pi) {
@@ -309,13 +326,15 @@ export default function(pi) {
   pi.on('session_before_compact', (event, ctx) => credential.compactionStart(event, ctx));
   pi.on('session_compact', event => credential.compactionEnd(event));
   pi.on('session_compact_failed', (event, ctx) => {
-    credential.compactionEnd(event);
     // A failed compaction saves nothing, so make it visible: outcome fields only, never the credential or messages.
+    // The row is built first, while the lent value is still known to redact.
     let sessionId = null;
     try { sessionId = ctx?.sessionManager?.getSessionId() ?? null; } catch {}
-    record({ event: 'compact_failed', reason: event?.reason ?? null,
-      errorMessage: typeof event?.errorMessage === 'string' ? event.errorMessage.slice(0, 300) : null,
-      aborted: event?.aborted === true, sessionId, model: ctx?.model?.id ?? null, thinking: ctx?.thinkingLevel ?? null });
+    const row = { event: 'compact_failed', reason: event?.reason ?? null,
+      errorMessage: typeof event?.errorMessage === 'string' ? credential.redact(event.errorMessage).slice(0, 300) : null,
+      aborted: event?.aborted === true, sessionId, model: ctx?.model?.id ?? null, thinking: ctx?.thinkingLevel ?? null };
+    credential.compactionEnd(event);
+    record(row);
   });
   pi.on('session_before_tree', (event, ctx) => credential.summaryStart(event, ctx));
   pi.on('session_tree', () => credential.summaryEnd());

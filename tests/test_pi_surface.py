@@ -381,6 +381,7 @@ for(const order of ['payload-first','headers-first']){
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    @unittest.skipIf(os.name == "nt", "fake credential helper is a POSIX shell script")
     def test_credential_lend_covers_compaction_outside_and_across_runs(self):
         script=r"""
 import assert from 'node:assert/strict';
@@ -415,6 +416,47 @@ for(const end of ['session_compact','session_compact_failed']){const {h,s}=boot(
  const rows=readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
  assert.deepEqual(rows.at(-1),{event:'credential',provider:'fleet',status:'unavailable',tries:3});
  await h.session_compact_failed({reason:'manual'});assert.equal(s.lent,false);}
+rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    @unittest.skipIf(os.name == "nt", "fake credential helper is a POSIX shell script")
+    def test_credential_summary_lease_and_error_redaction(self):
+        script=r"""
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync,chmodSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join,dirname} from 'node:path';import {fileURLToPath} from 'node:url';
+const root=dirname(fileURLToPath(process.argv[1]));const dir=mkdtempSync(join(tmpdir(),'lease-'));
+const helper=join(dir,'helper');const slow=join(dir,'slow');
+writeFileSync(helper,`#!/bin/sh\n[ -f "${slow}" ] && sleep 0.3\necho synthetic-value\n`);chmodSync(helper,0o755);
+const command=`!"${helper}" "${join(root,'credential.py')}" "${join(root,'runtime.json')}"`;
+writeFileSync(join(dir,'models.json'),JSON.stringify({providers:{fleet:{apiKey:command,models:[]}}}));
+process.env.PI_CODING_AGENT_DIR=dir;
+const m=await import(process.argv[1]);m.CREDENTIAL.retryDelaysMs=[1,1];m.CREDENTIAL.summaryLeaseMs=50;
+const ctx={model:{provider:'fleet',id:'example'},thinkingLevel:'high',sessionManager:{getSessionId:()=> 'sess'}};
+function boot(){const h={};const s={lent:false};
+ const pi={on:(e,f)=>h[e]=f,registerProvider:()=>{s.lent=true;},unregisterProvider:()=>{s.lent=false;}};m.default(pi);return {h,s};}
+const tree=controller=>({preparation:{userWantsSummary:true,entriesToSummarize:[{}]},signal:controller.signal});
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+// A branch summary that fails (no end event) does not leave the credential lent past its lease.
+{const {h,s}=boot();await h.session_before_tree(tree(new AbortController()),ctx);assert.equal(s.lent,true);
+ await wait(150);assert.equal(s.lent,false);}
+// A cancelled branch summary withdraws at once.
+{const {h,s}=boot();const c=new AbortController();await h.session_before_tree(tree(c),ctx);assert.equal(s.lent,true);
+ c.abort();assert.equal(s.lent,false);}
+// A prompt that starts and ends while the summary's refresh runs does not leave the summary unlent.
+{writeFileSync(slow,'');const {h,s}=boot();const pending=h.session_before_tree(tree(new AbortController()),ctx);
+ await h.turn_start({},ctx);await h.agent_end({});await pending;assert.equal(s.lent,true);
+ await wait(150);assert.equal(s.lent,false);rmSync(slow);}
+// A 500 body echoing the presented credential leaves no credential in route-evidence.jsonl.
+{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h,s}=boot();
+ await h.session_before_compact({reason:'manual',signal:new AbortController().signal},ctx);assert.equal(s.lent,true);
+ // One raw echo inside the cut, one Bearer echo that the 300-character cut would split, then a long tail.
+ const head='Compaction failed: Summarization failed: 500: {"message":"router echo: raw=synthetic-value ';const auth='auth=Bearer ';
+ const echo=head+'x'.repeat(295-head.length-auth.length)+auth+'synthetic-value"}'+'y'.repeat(400);assert.equal(echo.slice(0,300).endsWith('synth'),true);
+ await h.session_compact_failed({reason:'manual',errorMessage:echo,aborted:false},ctx);assert.equal(s.lent,false);
+ const text=readFileSync(join(dir,'route-evidence.jsonl'),'utf8');assert.ok(!text.includes('synth'),text);
+ const row=text.trim().split('\n').map(JSON.parse).find(r=>r.event==='compact_failed');assert.ok(row.errorMessage.includes('<redacted>'));assert.equal(row.errorMessage.length,300);}
 rmSync(dir,{recursive:true,force:true});
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
