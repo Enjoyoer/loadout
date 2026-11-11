@@ -67,7 +67,7 @@ Each rule has a check that fails on the mistake it names. An exception goes on t
 
 ## Releases
 
-Loadout uses [semantic versioning](https://semver.org). Changes are listed under "Unreleased" in [CHANGELOG.md](../CHANGELOG.md) and move to a version heading at release, which also bumps the marketplace plugin versions and tags `vX.Y.Z`.
+Loadout uses [semantic versioning](https://semver.org). Pull requests do not add CHANGELOG entries. At release, the release notes in [CHANGELOG.md](../CHANGELOG.md) are written from the pull requests merged since the last tag, together with the entries already under "Unreleased", and move to a version heading, which also bumps the marketplace plugin versions and tags `vX.Y.Z`.
 
 ## Conduct
 
