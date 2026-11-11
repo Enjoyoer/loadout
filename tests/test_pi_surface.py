@@ -131,6 +131,23 @@ class PiSurfaceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'claude catalog source'):
             derive(source, {**pi, 'catalogSources': ['codex'], 'claudeApiKeyRoute': {'prefix': 'api', 'labelSuffix': 'API'}})
 
+    def test_max_tokens_sets_the_output_cap_per_label_including_api_entries(self):
+        sys.path.insert(0, str(PI))
+        from catalog import derive
+        claude = [{'id': n, 'label': l, 'thinkingOptions': [{'id': 'high', 'label': 'High', 'isDefault': True}]} for n, l in [('o', 'Opus'), ('s', 'Sonnet')]]
+        source = {'claude': {'models': claude}, 'codex': {'models': [{'id': 'c', 'label': 'Sol', 'isDefault': True, 'thinkingOptions': []}]}}
+        runtime = {'baseUrl': 'https://router.example.test/v1', 'credential': {'kind': 'env', 'name': 'EXISTING_KEY'}}
+        pi = {'root': '/tmp/example-pi', 'runtime': runtime, 'claudeApiKeyRoute': {'prefix': 'api', 'labelSuffix': 'API'}}
+        plain = derive(source, pi)
+        self.assertEqual({m['maxTokens'] for m in plain['runtime']['models']}, {32768})
+        self.assertEqual(derive(source, {**pi, 'maxTokens': {}}), plain)
+        out = derive(source, {**pi, 'maxTokens': {'Opus': 65536}})
+        self.assertEqual({m['name']: m['maxTokens'] for m in out['runtime']['models']}, {'Opus': 65536, 'Opus API': 65536, 'Sonnet': 32768, 'Sonnet API': 32768, 'Sol': 32768})
+        self.assertEqual([{**m, 'maxTokens': 32768} for m in out['runtime']['models']], plain['runtime']['models'])
+        for bad in [{'Local': 65536}, {'Opus API': 65536}, {'Opus': 0}, {'Opus': -1}, {'Opus': 65536.0}, {'Opus': '65536'}, {'Opus': True}, [65536]]:
+            with self.assertRaisesRegex(ValueError, 'maxTokens'):
+                derive(source, {**pi, 'maxTokens': bad})
+
     def test_label_order_is_pi_only_and_keeps_api_pairs_and_direct_rows_last(self):
         sys.path.insert(0, str(PI))
         from catalog import derive

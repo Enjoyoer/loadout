@@ -46,12 +46,15 @@ def derive(providers, pi):
     if not rows:raise ValueError('empty Pi source catalog')
     # Optional Pi-only context windows by canonical label, for a backend whose effective cap is below the
     # catalog default. Pi's context meter and compaction trigger read contextWindow; the API entries below copy it.
-    windows=pi.get('contextWindows',{})
-    if not isinstance(windows,dict) or not set(windows)<=labels or \
-            not all(type(n) is int and n>0 for n in windows.values()):
-        raise ValueError('contextWindows must map Pi catalog labels to positive integers')
-    for model in models:
-        if model['name'] in windows:model['contextWindow']=windows[model['name']]
+    # Optional Pi-only output caps by canonical label, same shape. Pi caps a compaction summary at
+    # min(0.8 x reserveTokens, maxTokens), thinking included, so a long session's summary can need more than 32768.
+    for key,field in [('contextWindows','contextWindow'),('maxTokens','maxTokens')]:
+        values=pi.get(key,{})
+        if not isinstance(values,dict) or not set(values)<=labels or \
+                not all(type(n) is int and n>0 for n in values.values()):
+            raise ValueError(key+' must map Pi catalog labels to positive integers')
+        for model in models:
+            if model['name'] in values:model[field]=values[model['name']]
     # Direct providers add picker rows from their single model list, after the fleet rows.
     for name,provider in direct_providers(runtime).items():
         for model in provider['models']:
