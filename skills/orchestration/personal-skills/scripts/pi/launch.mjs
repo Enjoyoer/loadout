@@ -27,8 +27,10 @@ function readOverlay(path) {
   } finally { closeSync(fd); }
 }
 // Write a file in an agent home that the agent itself can write: remove what is there first (a symbolic link the agent
-// planted included) and create the file exclusively ('wx'), so the launcher never writes through a link.
+// planted included) and create the file exclusively ('wx'), so the launcher never writes through a link. A directory
+// there refuses the launch.
 function writeFresh(path, data) {
+  if (lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) refuse(`${path} is a directory`);
   rmSync(path, { force: true });
   writeFileSync(path, data, { mode: 0o600, flag: 'wx' });
 }
@@ -373,6 +375,15 @@ function paseoExtensionBytes(path) {
     const stat = fstatSync(fd);
     if (!stat.isFile()) refuse(`${where} is not a regular file`);
     if (stat.uid !== process.getuid()) refuse(`${where} is not owned by this user`);
+    // The folder could have been swapped for a link between the checks and the open: the real folder must still be a
+    // real directory, and the name in it must still be the file the descriptor reads.
+    const nowFolder = lstatSync(realFolder, { throwIfNoEntry: false });
+    const nowFile = lstatSync(join(realFolder, PASEO_EXTENSION), { throwIfNoEntry: false });
+    if (!nowFolder?.isDirectory() || nowFile?.dev !== stat.dev || nowFile?.ino !== stat.ino)
+      refuse(`${where} changed while it was opened`);
+    // Paseo writes a fresh file, so it has one link; a hard link to another file refuses. (A file unlinked after the
+    // open has none; the check above already refused it.)
+    if (stat.nlink !== 1) refuse(`${where} has more than one link`);
     return readFileSync(fd);
   } finally { closeSync(fd); }
 }

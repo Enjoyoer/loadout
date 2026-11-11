@@ -1450,6 +1450,37 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
                 self.assertIn(message, done.stderr)
                 self.assertFalse(log.exists(), path)
                 self.assertFalse(copy.exists(), path)
+            # A hard-linked source refuses: Paseo's own file always has one link.
+            (temp/'paseo-pi-extension-Hard01').mkdir()
+            os.link(secret, temp/'paseo-pi-extension-Hard01/paseo-integration.mjs')
+            # The file swapped after the open (a preload renames another file over it right after the launcher opens
+            # it): the name no longer matches the descriptor, so the launch refuses.
+            swap = base/'swap.cjs'
+            swap.write_text("const fs = require('fs'), m = require('module'), open = fs.openSync;\n"
+                            "fs.openSync = (p, f, ...rest) => { const fd = open(p, f, ...rest);\n"
+                            "  if (String(p).endsWith('/paseo-integration.mjs') && (f & fs.constants.O_NONBLOCK)) {\n"
+                            "    fs.writeFileSync(p + '.new', 'other\\n'); fs.renameSync(p + '.new', p); }\n"
+                            "  return fd; };\nm.syncBuiltinESMExports();\n")
+            (temp/'paseo-pi-extension-Swap01').mkdir()
+            swapped = temp/'paseo-pi-extension-Swap01/paseo-integration.mjs'; swapped.write_text('export default () => {}\n')
+            for path, message, command in [
+                    (temp/'paseo-pi-extension-Hard01/paseo-integration.mjs', 'more than one link', ('node',)),
+                    (swapped, 'changed while it was opened', ('node', '--require', str(swap)))]:
+                done = run(*markers, '--mode', 'rpc', '--model', 'fleet/current', '--extension', str(path),
+                           TMPDIR=str(temp), command=command)
+                self.assertNotEqual(done.returncode, 0, path)
+                self.assertEqual(done.stderr.count('\n'), 1, done.stderr)
+                self.assertIn(message, done.stderr)
+                self.assertFalse(log.exists(), path)
+                self.assertFalse(copy.exists(), path)
+            # A directory where the copy goes refuses with one line.
+            copy.mkdir()
+            done = launch(source)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertEqual(done.stderr.count('\n'), 1, done.stderr)
+            self.assertIn(f'{copy} is a directory', done.stderr)
+            self.assertFalse(log.exists())
+            copy.rmdir()
             self.assertFalse(record.exists())
             # A non-isolated row, and an isolated row without a profile, pass the argument unchanged.
             for markers in [(), self.ISO]:
