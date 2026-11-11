@@ -128,20 +128,22 @@ export const guardExcerpt = command => String(command)
  * built from runtime.json (tests).
  */
 export function serviceGuardHandler(record, { guard, runtime = join(dirname(fileURLToPath(import.meta.url)), 'runtime.json') } = {}) {
-  if (!guard) {
+  // Built at the first shell call, so a session that never runs one writes no config row.
+  const load = () => {
     const config = loadGuardConfig(runtime);
     if (config.warning) {
       try { process.stderr.write('fleet-routing: ' + config.warning + '\n'); } catch {}
       record({ event: 'service-guard-config', warning: config.warning });
     }
-    guard = serviceGuard({ protectedServices: config.protectedServices });
-  }
+    return serviceGuard({ protectedServices: config.protectedServices });
+  };
   return async (event, ctx) => {
     const command = event?.input?.command;
     if (typeof command !== 'string') return undefined;
     const shell = GUARD_SHELLS[event.toolName] ?? 'posix';
     let reason;
     try {
+      guard ??= load();
       const found = await guard.check(command, { cwd: ctx?.cwd ?? process.cwd(), shell });
       if (!found) return undefined;
       reason = refusalReason(found);
