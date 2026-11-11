@@ -427,8 +427,8 @@ rmSync(dir,{recursive:true,force:true});
 import assert from 'node:assert/strict';
 import {mkdtempSync,writeFileSync,chmodSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join,dirname} from 'node:path';import {fileURLToPath} from 'node:url';
 const root=dirname(fileURLToPath(process.argv[1]));const dir=mkdtempSync(join(tmpdir(),'lease-'));
-const helper=join(dir,'helper');const slow=join(dir,'slow');
-writeFileSync(helper,`#!/bin/sh\n[ -f "${slow}" ] && sleep 1.5\necho synthetic-value\n`);chmodSync(helper,0o755);
+const helper=join(dir,'helper');const slow=join(dir,'slow');const fail=join(dir,'fail');
+writeFileSync(helper,`#!/bin/sh\n[ -f "${slow}" ] && sleep 1.5\n[ -f "${fail}" ] && exit 1\necho synthetic-value\n`);chmodSync(helper,0o755);
 const command=`!"${helper}" "${join(root,'credential.py')}" "${join(root,'runtime.json')}"`;
 writeFileSync(join(dir,'models.json'),JSON.stringify({providers:{fleet:{apiKey:command,models:[]}}}));
 process.env.PI_CODING_AGENT_DIR=dir;
@@ -459,6 +459,20 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
  await h.session_compact_failed({reason:'manual',errorMessage:echo,aborted:false},ctx);assert.equal(s.lent,false);
  const text=readFileSync(join(dir,'route-evidence.jsonl'),'utf8');assert.ok(!text.includes('synth'),text);
  const row=text.trim().split('\n').map(JSON.parse).find(r=>r.event==='compact_failed');assert.ok(row.errorMessage.includes('<redacted>'));assert.equal(row.errorMessage.length,300);}
+const failedRow=()=>readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse).filter(r=>r.event==='compact_failed').at(-1);
+const keyEcho='Compaction failed: Summarization failed: 500: {"message":"router echo: key=synthetic-value"}';
+// No held value (every read failed, so Pi's own command supplied the key): an X-Api-Key echo is not written.
+{writeFileSync(fail,'');rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h,s}=boot();
+ await h.session_before_compact({reason:'manual',signal:new AbortController().signal},ctx);assert.equal(s.lent,false);
+ await h.session_compact_failed({reason:'manual',errorMessage:keyEcho,aborted:false},ctx);rmSync(fail);
+ assert.deepEqual(failedRow(),{event:'compact_failed',reason:'manual',errorMessage:null,aborted:false,sessionId:'sess',model:'example',thinking:'high'});
+ assert.ok(!readFileSync(join(dir,'route-evidence.jsonl'),'utf8').includes('synth'));}
+// A model of another provider: the extension never knows that key, so the text is not written either.
+{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h}=boot();await h.turn_start({},ctx);await h.agent_end({});
+ const direct={...ctx,model:{provider:'direct',id:'other'}};
+ await h.session_compact_failed({reason:'threshold',errorMessage:'500: raw=direct-key',aborted:false},direct);
+ assert.deepEqual(failedRow(),{event:'compact_failed',reason:'threshold',errorMessage:null,aborted:false,sessionId:'sess',model:'other',thinking:'high'});
+ assert.ok(!readFileSync(join(dir,'route-evidence.jsonl'),'utf8').includes('direct-key'));}
 rmSync(dir,{recursive:true,force:true});
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
@@ -473,7 +487,8 @@ const m=await import(process.argv[1]);const h={};m.default({on:(e,f)=>h[e]=f});
 const ctx={model:{provider:'fleet',id:'example'},thinkingLevel:'high',sessionManager:{getSessionId:()=> 'sess'}};
 await h.session_compact_failed({reason:'manual',errorMessage:'Compaction failed: '+'x'.repeat(400),aborted:false,willRetry:false,fromExtension:false},ctx);
 const rows=readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
-assert.deepEqual(rows,[{event:'compact_failed',reason:'manual',errorMessage:('Compaction failed: '+'x'.repeat(400)).slice(0,300),aborted:false,sessionId:'sess',model:'example',thinking:'high'}]);
+// No router helper here, so the extension holds no value and the row carries no upstream text.
+assert.deepEqual(rows,[{event:'compact_failed',reason:'manual',errorMessage:null,aborted:false,sessionId:'sess',model:'example',thinking:'high'}]);
 rmSync(dir,{recursive:true,force:true});
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)

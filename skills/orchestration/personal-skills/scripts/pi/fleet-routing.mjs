@@ -273,7 +273,6 @@ function fleetCredential(pi, record) {
   };
   const release = () => { if (!holding()) withdraw(); };
   return {
-    // Pi refuses a prompt during a branch summary, so a turn means any summary already ended (a failed one emits nothing).
     turnStart: ctx => { running = true; return refresh(ctx); },
     runEnd: () => { running = false; release(); },
     compactionStart: (event, ctx) => {
@@ -300,9 +299,13 @@ function fleetCredential(pi, record) {
     },
     summaryEnd: () => { clearTimeout(lease); lease = null; summarizing = false; release(); },
     shutdown: () => { clearTimeout(lease); lease = null; running = summarizing = false; compactions.clear(); withdraw(); },
-    // Error text from upstream can echo the presented credential: replace the values this process holds, and any
-    // Bearer token, on the whole text before a caller cuts it, so no prefix survives at the cut.
-    redact: text => {
+    // Error text from upstream can echo the presented credential, so it is kept only when this process knows the value
+    // Pi presented: the router's model with a held value (a successful read or a last-good lend set it; expiry clears
+    // only the lend). Otherwise, a fresh process or a helper outage past max age (Pi's own command then supplied the
+    // value) or another provider's key, it returns null. The known values, and any Bearer token as a second guard, are
+    // replaced on the whole text before a caller cuts it, so no prefix survives at the cut.
+    errorText: (text, ctx) => {
+      if (typeof text !== 'string' || !held || !target() || ctx?.model?.provider !== found.provider) return null;
       let out = text;
       for (const value of [held?.value, lent]) if (value) out = out.split(value).join('<redacted>');
       // A token ends at whitespace, a quote, a backslash, a comma or a semicolon, so JSON around it survives.
@@ -328,11 +331,11 @@ export default function(pi) {
   pi.on('session_compact', event => credential.compactionEnd(event));
   pi.on('session_compact_failed', (event, ctx) => {
     // A failed compaction saves nothing, so make it visible: outcome fields only, never the credential or messages.
-    // The row is built first, while the lent value is still known to redact.
+    // The row is built first, while the lent value is still known to redact; unvouched upstream text is left out.
     let sessionId = null;
     try { sessionId = ctx?.sessionManager?.getSessionId() ?? null; } catch {}
     const row = { event: 'compact_failed', reason: event?.reason ?? null,
-      errorMessage: typeof event?.errorMessage === 'string' ? credential.redact(event.errorMessage).slice(0, 300) : null,
+      errorMessage: credential.errorText(event?.errorMessage, ctx)?.slice(0, 300) ?? null,
       aborted: event?.aborted === true, sessionId, model: ctx?.model?.id ?? null, thinking: ctx?.thinkingLevel ?? null };
     credential.compactionEnd(event);
     record(row);
