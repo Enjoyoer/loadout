@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b4aa71bbdfe440e751dfeeffdbbd328fd0a87d7a",
+  "source_commit": "8269f0ac801fd55865175d265e236c60c48f2e51",
   "skill_count": 24,
   "file_count": 134,
   "files": [
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 59185,
-      "sha256": "02bafe66a81eb6ae66d69f50bab9e27976a7337585c9bcf9668adefc270129dc"
+      "bytes": 59922,
+      "sha256": "fd300176f50e10301ed526fbd1eef88f9625f099a3afe89eada5ae3cecefccec"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -464,8 +464,8 @@
       "path": "skills/orchestration/personal-skills/fleet/example/pi-provider-overlay.json",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 1985,
-      "sha256": "57758fb55f20ca7ac972a9deddd01a44bc3f5731bc765206176cc3d6793e277a"
+      "bytes": 2031,
+      "sha256": "9061212e036369768fe7f87896827baf84bd3bae6a8af10a281a55de664aefb6"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/routed-launch-overlay.json",
@@ -527,8 +527,8 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 35376,
-      "sha256": "29762f170969920b7ee64fa847ac31ebd30ec12107e8b71e6075965e3b1ea396"
+      "bytes": 35389,
+      "sha256": "d5d909ddc048fd632dad56bf0d95cd14a700815a2977678b06bf5e29b491f5a2"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",
@@ -569,8 +569,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/catalog.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 7763,
-      "sha256": "3d09eed05383d5cc657a2b0c00eba05b2eb2d59b217e2c15698cc4368f1c9b66"
+      "bytes": 8048,
+      "sha256": "ad698246cc4a66b69b0e7376e7d410bedb3b0f339cf4be4a7d601baf33ffb9c6"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/configure.py",
