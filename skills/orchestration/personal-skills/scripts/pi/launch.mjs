@@ -123,11 +123,29 @@ function overlaySettings(settings, overlay, models, home) {
 }
 if (process.argv.slice(2).some(arg => /^(--(?:no-)?codemode|--no-extensions)(=|$)/.test(arg)))
   throw Error('Pi Codemode cannot be overridden per agent');
-// The isolated provider (LOADOUT_PI_ISOLATED=1) gives its agents no MCP servers; any other value refuses.
-const isolatedFlag = process.env.LOADOUT_PI_ISOLATED;
-if (isolatedFlag !== undefined && isolatedFlag !== '' && isolatedFlag !== '1') refuse('LOADOUT_PI_ISOLATED must be 1');
-const isolated = isolatedFlag === '1';
-const sandboxProfile = process.env.LOADOUT_PI_SANDBOX_PROFILE || '';
+// The isolated provider row's command carries its markers right after launch.mjs:
+//   launch.mjs --loadout-isolated [--loadout-sandbox-profile <absolute path>] <Paseo's args>
+// Paseo lets a per-agent request change a provider's env but never its command, so isolation and the sandbox come
+// only from these markers, never from env. The two --loadout-test-* markers are fixture-only seams for the platform
+// and the sandbox-exec path; a real macOS launch refuses them.
+const rawArgs = process.argv.slice(2);
+let isolated = false, sandboxProfile = null, testPlatform = null, testSandboxExec = null, lead = 0;
+for (; lead < rawArgs.length; lead++) {
+  const arg = rawArgs[lead], value = rawArgs[lead + 1];
+  if (arg === '--loadout-isolated') isolated = true;
+  else if (arg === '--loadout-sandbox-profile' && value !== undefined) { sandboxProfile = value; lead++; }
+  else if (arg === '--loadout-test-platform' && value !== undefined) { testPlatform = value; lead++; }
+  else if (arg === '--loadout-test-sandbox-exec' && value !== undefined) { testSandboxExec = value; lead++; }
+  else break;
+}
+const args = rawArgs.slice(lead);
+if (args.some(arg => arg.startsWith('--loadout-'))) refuse('loadout markers go only at the start of the provider command');
+if (!isolated && (sandboxProfile !== null || testPlatform !== null || testSandboxExec !== null))
+  refuse('--loadout-sandbox-profile and the test markers need --loadout-isolated');
+if (isolated && ['LOADOUT_PI_ISOLATED', 'LOADOUT_PI_SANDBOX_PROFILE'].some(key => Object.hasOwn(process.env, key)))
+  refuse('remove LOADOUT_PI_ISOLATED and LOADOUT_PI_SANDBOX_PROFILE from the env: isolation comes from the provider command');
+if ((testPlatform !== null || testSandboxExec !== null) && process.platform === 'darwin')
+  refuse('the --loadout-test-* markers are for test fixtures, never a macOS launch');
 const cli = join(root, 'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');
 const piPackage = JSON.parse(readFileSync(join(dirname(dirname(cli)), '../package.json'), 'utf8'));
 if (piPackage.version !== '1.0.0') throw Error('official Pi 1.0.0 required');
@@ -136,7 +154,6 @@ env.LOADOUT_PI_MCP_URL = spec.paseoMcp.url;
 env.LOADOUT_PI_PARENT_MODEL = '';
 env.LOADOUT_PI_PARENT_THINKING = spec.settings?.defaultThinkingLevel || '';
 const caller = env.PASEO_AGENT_ID;
-const args = process.argv.slice(2);
 // Paseo 0.11 probes Pi (model catalog, MCP support) with only --mode rpc. A catalog probe's PASEO_AGENT_ID is
 // inherited from whoever started the daemon, so a probe runs like an uncalled launch and writes no agent home.
 const probe = args.length === 2 && args[0] === '--mode' && args[1] === 'rpc';
@@ -199,7 +216,8 @@ if (caller && !probe) {
     // the routing extension reads no agent labels, so Fast labels are ignored.
     rmSync(join(home, 'mcp.json'), { force: true });
     delete env.LOADOUT_PI_MCP_URL;
-    args.push('--no-approve');
+    // First, so no flag still waiting for its value can take it.
+    args.unshift('--no-approve');
   } else {
     const url = new URL(spec.paseoMcp.url);
     if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw Error('Paseo MCP must use loopback');
@@ -214,14 +232,20 @@ if (caller && !probe) {
   }
   env.PI_CODING_AGENT_DIR = home;
 }
+if (isolated && probe) {
+  // The isolated row's probe (model catalog, and Paseo's MCP-support check) loads every extension but built-in MCP,
+  // so Paseo sees no MCP support and refuses MCP servers requested for an isolated agent; no project files either.
+  const own = settings => settings.extensions.filter(entry => !/^[-+!]/.test(entry)).flatMap(entry => ['-e', entry]);
+  args.unshift('--no-approve', '--no-extensions', '-e', 'builtin:codemode', '-e', 'builtin:tool-search',
+    '-e', 'builtin:llama.cpp', ...own(JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8'))));
+}
 let command = process.execPath, argv = [cli, ...args];
-if (sandboxProfile) {
-  // Every launch with a profile runs inside sandbox-exec, the probe included; never unsandboxed. The test-only
-  // overrides stand in for the platform and the sandbox-exec path.
-  const platform = process.env.LOADOUT_PI_TEST_PLATFORM || process.platform;
-  const sandboxExec = process.env.LOADOUT_PI_TEST_SANDBOX_EXEC || '/usr/bin/sandbox-exec';
+if (sandboxProfile !== null) {
+  // Every launch with a profile runs inside sandbox-exec, the probe included; never unsandboxed.
+  const platform = testPlatform ?? process.platform;
+  const sandboxExec = testSandboxExec ?? '/usr/bin/sandbox-exec';
   if (platform !== 'darwin') refuse('the Pi sandbox profile needs macOS sandbox-exec');
-  if (!isAbsolute(sandboxProfile)) refuse('LOADOUT_PI_SANDBOX_PROFILE must be an absolute path');
+  if (!isAbsolute(sandboxProfile)) refuse('--loadout-sandbox-profile must be an absolute path');
   try {
     accessSync(sandboxExec, constants.X_OK);
   } catch {

@@ -469,13 +469,15 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
         if 'options' in pi: providers['pi']['options'] = pi['options']
         iso = isolated_id(pi)
         if iso:
-            # A second provider derived from Pi: the same command, picker rows and options, launched isolated. The
-            # merge never wraps it in the MCP env launcher, so no MCP bearer env or launch.pi setting reaches it.
-            providers[iso] = {'extends': 'pi', 'label': 'Pi isolated',
-                              'description': 'Pi with no MCP servers', **providers['pi']}
-            env[iso] = {**env.get('pi', {}), 'LOADOUT_PI_ISOLATED': '1'}
-            if 'sandboxProfile' in pi['isolated']:
-                env[iso]['LOADOUT_PI_SANDBOX_PROFILE'] = pi['isolated']['sandboxProfile']
+            # A second provider derived from Pi: the same picker rows and options, and the same command plus the
+            # isolation markers. They live in the command, not the env, because Paseo lets a per-agent request override
+            # a provider's env but never its command. The merge never wraps this row in the MCP env launcher, so no
+            # MCP bearer env or launch.pi setting reaches it, and Paseo's own tools are off for it.
+            profile = pi['isolated'].get('sandboxProfile')
+            providers[iso] = {'extends': 'pi', 'label': 'Pi isolated', 'description': 'Pi with no MCP servers',
+                              **providers['pi'], 'paseoTools': {'enabled': False},
+                              'command': [*providers['pi']['command'], '--loadout-isolated',
+                                          *(['--loadout-sandbox-profile', profile] if profile else [])]}
     return {
         "pi": generated,
         "mcpServers": mcp_servers,

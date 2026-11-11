@@ -59,6 +59,11 @@ try {
     : Array.isArray(value) ? value.map(visit) : value && typeof value === 'object'
       ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, visit(v)])) : value;
   p.providers = visit(p.providers);
+  // The isolated Pi row's sandbox profile, ~ expanded here, on the host.
+  for (const row of Object.values(p.providers)) {
+    const at = Array.isArray(row.command) ? row.command.indexOf('--loadout-sandbox-profile') : -1;
+    if (at >= 0) row.command[at + 1] = expand(row.command[at + 1]);
+  }
   const servers = p.mcpServers || [];
   const envRoot = process.platform === 'win32'
     ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData/Roaming'), 'loadout')
@@ -153,10 +158,10 @@ try {
       merged[k] = Object.assign({}, merged[k] || {});
       merged[k].env = Object.assign({}, (prev[k] || {}).env || {}, p.env[k]);
     }
-    // An isolated Pi provider (derived from pi, launched with LOADOUT_PI_ISOLATED=1) that this sync no longer
+    // An isolated Pi provider (derived from pi, its command carrying --loadout-isolated) that this sync no longer
     // declares is removed, so dropping pi.isolated drops its row.
     const removed = Object.keys(prev).filter(k => !(k in p.providers) && !(k in p.env) && !disabled.includes(k)
-      && prev[k] && prev[k].extends === 'pi' && (prev[k].env || {}).LOADOUT_PI_ISOLATED === '1');
+      && prev[k] && prev[k].extends === 'pi' && [].concat(prev[k].command || []).includes('--loadout-isolated'));
     for (const k of removed) delete merged[k];
     // Turned off: keep every other existing field, drop the models.
     for (const k of disabled) {
