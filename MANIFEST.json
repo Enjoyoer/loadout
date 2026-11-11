@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "2ee6eb2282f81b77b4126d0353ed46fc4eae14f9",
+  "source_commit": "a94c09e58429381b81cd5251b094cd26da5e5d2c",
   "skill_count": 24,
   "file_count": 134,
   "files": [
@@ -597,8 +597,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 22759,
-      "sha256": "79db670b6f1252fbe45667f575f76f1bd9116ec8be16443cb751caf921cfad9e"
+      "bytes": 23293,
+      "sha256": "d0cd8e961281bfd19fc107343cb74024ca8c209f5bca145411173afe4890bbc7"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
