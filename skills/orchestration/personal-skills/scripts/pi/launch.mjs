@@ -216,11 +216,14 @@ if (isolated && !caller && !probe) refuse('the isolated Pi provider needs a Pase
 const PROBE_PROFILE = '(version 1)\n(allow default)\n(deny network*)\n(deny file-write*)\n(allow file-write* '
   + '(subpath (param "PI_HOME")) (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") '
   + '(regex #"^/dev/fd/[0-9]+$"))\n';
+// A path's real path, or null when it does not exist; any other error propagates.
+const realPath = path => {
+  try { return realpathSync(path); } catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null; throw error; }
+};
 let probeProfile = false;
 if (sandboxRoot !== null) {
   if (!isAbsolute(sandboxRoot)) refuse('--loadout-sandbox-root must be an absolute path');
-  let realRoot = null;
-  try { realRoot = realpathSync(sandboxRoot); } catch {}
+  const realRoot = realPath(sandboxRoot);
   if (realRoot === null || !statSync(realRoot).isDirectory())
     refuse(`sandbox profile root ${sandboxRoot} is not an existing directory`);
   const named = process.env.LOADOUT_PI_SANDBOX_PROFILE;
@@ -230,9 +233,8 @@ if (sandboxRoot !== null) {
     if (!named) refuse('the isolated Pi provider needs LOADOUT_PI_SANDBOX_PROFILE, the agent\'s profile under its sandbox root');
     const where = `sandbox profile ${JSON.stringify(named)}`;
     if (!isAbsolute(named) || resolve(named) !== named) refuse(`${where} must be an absolute path without . or .. parts`);
-    let real = null;
-    try { real = realpathSync(named); } catch {}
-    if (real === null) refuse(`${where} is missing or unreadable`);
+    const real = realPath(named);
+    if (real === null) refuse(`${where} is missing`);
     if (real !== named) refuse(`${where} has a symbolic link in its path`);
     if (!real.startsWith(realRoot + sep)) refuse(`${where} is not under the sandbox profile root ${realRoot}`);
     const cwd = realpathSync(process.cwd()), piRoot = realpathSync(root);
@@ -267,13 +269,12 @@ if (sandboxed) {
 function readableExtensions(settings) {
   if (settings.packages !== undefined && !(Array.isArray(settings.packages) && !settings.packages.length))
     refuse('a sandboxed isolated Pi loads no Pi packages: remove packages from the Pi settings');
-  const real = path => { try { return realpathSync(path); } catch { return null; } };
-  const app = real(join(root, 'app')), routing = real(join(root, 'fleet-routing.mjs'));
+  const app = realPath(join(root, 'app')), routing = realPath(join(root, 'fleet-routing.mjs'));
   for (const entry of settings.extensions ?? []) {
     if (typeof entry === 'string' && /^[-!]/.test(entry)) continue;  // an exclusion loads nothing
     const path = typeof entry === 'string' ? entry.replace(/^\+/, '') : '';
     if (/^builtin:[a-z0-9.-]+$/.test(path)) continue;  // built into the Pi package under app/
-    const target = isAbsolute(path) && !/[*?]/.test(path) ? real(path) : null;
+    const target = isAbsolute(path) && !/[*?]/.test(path) ? realPath(path) : null;
     if (target === null || !(target === routing || (app !== null && target.startsWith(app + sep))))
       refuse(`extension ${JSON.stringify(entry)} is outside what a sandbox profile lets Pi read: `
         + `${join(root, 'app')}/ and ${join(root, 'fleet-routing.mjs')}`);
