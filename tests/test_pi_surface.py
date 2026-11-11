@@ -381,6 +381,120 @@ for(const order of ['payload-first','headers-first']){
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    @unittest.skipIf(os.name == "nt", "fake credential helper is a POSIX shell script")
+    def test_credential_lend_covers_compaction_outside_and_across_runs(self):
+        script=r"""
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync,chmodSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join,dirname} from 'node:path';import {fileURLToPath} from 'node:url';
+const root=dirname(fileURLToPath(process.argv[1]));const dir=mkdtempSync(join(tmpdir(),'lend-'));
+const helper=join(dir,'helper');const fail=join(dir,'fail');const calls=join(dir,'calls');
+writeFileSync(helper,`#!/bin/sh\necho x >> "${calls}"\n[ -f "${fail}" ] && exit 1\necho synthetic-value\n`);chmodSync(helper,0o755);
+const command=`!"${helper}" "${join(root,'credential.py')}" "${join(root,'runtime.json')}"`;
+writeFileSync(join(dir,'models.json'),JSON.stringify({providers:{fleet:{apiKey:command,models:[]}}}));
+process.env.PI_CODING_AGENT_DIR=dir;
+const m=await import(process.argv[1]);m.CREDENTIAL.retryDelaysMs=[1,1];
+const ctx={model:{provider:'fleet'}};
+function boot(){const h={};const s={lent:false,registers:0};
+ const pi={on:(e,f)=>h[e]=f,registerProvider:(name,cfg)=>{assert.equal(name,'fleet');assert.equal(cfg.apiKey,'synthetic-value');s.lent=true;s.registers++;},unregisterProvider:()=>{s.lent=false;}};
+ m.default(pi);return {h,s};}
+const compaction=reason=>({reason,signal:new AbortController().signal});
+// Manual compaction outside a run: lent before it starts, withdrawn after it ends, on success and on failure.
+for(const end of ['session_compact','session_compact_failed']){const {h,s}=boot();
+ assert.equal(await h.session_before_compact(compaction('manual'),ctx),undefined);assert.equal(s.lent,true,end);
+ await h[end]({reason:'manual'});assert.equal(s.lent,false,end);}
+// A compaction during a run: its end leaves the run's lend in place.
+{const {h,s}=boot();await h.turn_start({},ctx);assert.equal(s.lent,true);
+ await h.session_before_compact(compaction('threshold'),ctx);await h.session_compact({reason:'threshold'});assert.equal(s.lent,true);
+ await h.agent_end({});assert.equal(s.lent,false);}
+// A run that ends during a compaction: the compaction keeps the lend until it ends.
+{const {h,s}=boot();await h.turn_start({},ctx);await h.session_before_compact(compaction('overflow'),ctx);
+ await h.agent_end({});assert.equal(s.lent,true);await h.session_compact_failed({reason:'overflow'});assert.equal(s.lent,false);}
+// The helper failing every try: nothing is lent and the compaction goes ahead, so Pi runs its own command as today.
+{writeFileSync(fail,'');rmSync(calls,{force:true});rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h,s}=boot();
+ assert.equal(await h.session_before_compact(compaction('manual'),ctx),undefined);
+ assert.equal(s.registers,0);assert.equal(s.lent,false);assert.equal(readFileSync(calls,'utf8').trim().split('\n').length,3);
+ const rows=readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+ assert.deepEqual(rows.at(-1),{event:'credential',provider:'fleet',status:'unavailable',tries:3});
+ await h.session_compact_failed({reason:'manual'});assert.equal(s.lent,false);}
+rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    @unittest.skipIf(os.name == "nt", "fake credential helper is a POSIX shell script")
+    def test_credential_summary_lease_and_compact_failed_rows(self):
+        script=r"""
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync,chmodSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join,dirname} from 'node:path';import {fileURLToPath} from 'node:url';
+const root=dirname(fileURLToPath(process.argv[1]));const dir=mkdtempSync(join(tmpdir(),'lease-'));
+const helper=join(dir,'helper');const slow=join(dir,'slow');const fail=join(dir,'fail');
+writeFileSync(helper,`#!/bin/sh\n[ -f "${slow}" ] && sleep 1.5\n[ -f "${fail}" ] && exit 1\necho synthetic-value\n`);chmodSync(helper,0o755);
+const command=`!"${helper}" "${join(root,'credential.py')}" "${join(root,'runtime.json')}"`;
+writeFileSync(join(dir,'models.json'),JSON.stringify({providers:{fleet:{apiKey:command,models:[]}}}));
+process.env.PI_CODING_AGENT_DIR=dir;
+const m=await import(process.argv[1]);m.CREDENTIAL.retryDelaysMs=[1,1];m.CREDENTIAL.summaryLeaseMs=50;
+const ctx={model:{provider:'fleet',id:'example'},thinkingLevel:'high',sessionManager:{getSessionId:()=> 'sess'}};
+function boot(){const h={};const s={lent:false};
+ const pi={on:(e,f)=>h[e]=f,registerProvider:()=>{s.lent=true;},unregisterProvider:()=>{s.lent=false;}};m.default(pi);return {h,s};}
+const tree=controller=>({preparation:{userWantsSummary:true,entriesToSummarize:[{}]},signal:controller.signal});
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+// A branch summary that fails (no end event) does not leave the credential lent past its lease.
+{const {h,s}=boot();await h.session_before_tree(tree(new AbortController()),ctx);assert.equal(s.lent,true);
+ await wait(150);assert.equal(s.lent,false);}
+// A cancelled branch summary withdraws at once.
+{const {h,s}=boot();const c=new AbortController();await h.session_before_tree(tree(c),ctx);assert.equal(s.lent,true);
+ c.abort();assert.equal(s.lent,false);}
+// A prompt that starts and ends while the summary's refresh runs does not leave the summary unlent.
+// Only the summary's read is slow: the run starts once that read is under way and ends before it returns.
+{writeFileSync(slow,'');const {h,s}=boot();let read=false;const pending=h.session_before_tree(tree(new AbortController()),ctx).then(()=>{read=true;});
+ await wait(300);rmSync(slow);await h.turn_start({},ctx);await h.agent_end({});assert.equal(read,false);
+ await pending;assert.equal(s.lent,true);
+ await wait(150);assert.equal(s.lent,false);}
+const failedRows=()=>readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse).filter(r=>r.event==='compact_failed');
+const row=(reason,extra)=>({event:'compact_failed',reason,aborted:false,errorKind:'upstream',httpStatus:null,sessionId:'sess',model:'example',thinking:'high',...extra});
+const start=(h,reason,c=ctx)=>h.session_before_compact({reason,signal:new AbortController().signal},c);
+// A summary that hit its token cap: errorKind token-cap and no text.
+{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h}=boot();await start(h,'manual');
+ await h.session_compact_failed({reason:'manual',errorMessage:'Compaction failed: Summarization failed: generation hit the token cap and the summary is incomplete',aborted:false},ctx);
+ assert.deepEqual(failedRows(),[row('manual',{errorKind:'token-cap'})]);}
+// A 500 body echoing the key (as Bearer, raw and X-Api-Key style): upstream with its status, and no key in the file.
+{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h,s}=boot();await start(h,'manual');assert.equal(s.lent,true);
+ const echo='Compaction failed: Summarization failed: 500: {"message":"router echo: auth=Bearer synthetic-value raw=synthetic-value key=synthetic-value"}';
+ await h.session_compact_failed({reason:'manual',errorMessage:echo,aborted:false},ctx);assert.equal(s.lent,false);
+ assert.deepEqual(failedRows(),[row('manual',{httpStatus:500})]);
+ const text=readFileSync(join(dir,'route-evidence.jsonl'),'utf8');assert.ok(!text.includes('synth')&&!text.includes('echo'),text);}
+// An aborted compaction: errorKind aborted.
+{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h}=boot();await start(h,'manual');
+ await h.session_compact_failed({reason:'manual',errorMessage:undefined,aborted:true},ctx);
+ assert.deepEqual(failedRows(),[row('manual',{aborted:true,errorKind:'aborted'})]);}
+// Overlapping compactions on two providers, ending in either order: neither row carries any upstream text.
+{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h}=boot();await h.turn_start({},ctx);await h.agent_end({});
+ const direct={...ctx,model:{provider:'direct',id:'other'}};
+ await start(h,'threshold',direct);await start(h,'threshold',ctx);
+ await h.session_compact_failed({reason:'threshold',errorMessage:'Auto-compaction failed: Summarization failed: 502: token=direct-key',aborted:false},ctx);
+ await h.session_compact_failed({reason:'threshold',errorMessage:'Auto-compaction failed: Summarization failed: 500: key=synthetic-value',aborted:false},direct);
+ assert.deepEqual(failedRows(),[row('threshold',{httpStatus:502}),row('threshold',{httpStatus:500,model:'other'})]);
+ const text=readFileSync(join(dir,'route-evidence.jsonl'),'utf8');assert.ok(!text.includes('direct-key')&&!text.includes('synth'),text);}
+rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_failed_compaction_writes_one_evidence_row(self):
+        script=r"""
+import assert from 'node:assert/strict';
+import {mkdtempSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const dir=mkdtempSync(join(tmpdir(),'compact-'));process.env.PI_CODING_AGENT_DIR=dir;
+const m=await import(process.argv[1]);const h={};m.default({on:(e,f)=>h[e]=f});
+const ctx={model:{provider:'fleet',id:'example'},thinkingLevel:'high',sessionManager:{getSessionId:()=> 'sess'}};
+await h.session_compact_failed({reason:'manual',errorMessage:'Compaction failed: '+'x'.repeat(400),aborted:false,willRetry:false,fromExtension:false},ctx);
+const rows=readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+assert.deepEqual(rows,[{event:'compact_failed',reason:'manual',aborted:false,errorKind:'upstream',httpStatus:null,sessionId:'sess',model:'example',thinking:'high'}]);
+rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_service_tier_fails_closed_on_lookup_and_diagnostic_errors(self):
         script=r"""
 import assert from 'node:assert/strict';

@@ -141,15 +141,22 @@ async function catalogTiers(ctx) {
 // Fleet credential. configure.py sets the router provider's apiKey, and each credentialHeaders value, to one command,
 // !"<python>" "<root>/credential.py" "<root>/runtime.json". Pi runs it synchronously for the key and again for each
 // such header on every request, with a 10 s timeout and no retry, so a host under load can fail a turn although the
-// credential is fine. Instead, before each model request of a run (turn_start), this extension runs that same helper
-// itself, without a shell, with up to two retries (CREDENTIAL), and lends the value to Pi as an in-memory provider
-// override (registerProvider with the value as an escaped literal), so Pi spawns nothing for it. If every try fails, it
-// lends the value of the last successful read, but only up to CREDENTIAL.maxAgeMs after that read. Without such a
-// value, after agent_end, and once a lent value reaches that age, the override is withdrawn and Pi runs its own command
-// again: a process that never read a value fails closed as before. A successful read always replaces the held value, so
+// credential is fine. Instead, before each model request of a run (turn_start), before each compaction
+// (session_before_compact, manual or automatic) and before a branch summary (session_before_tree with a summary), this
+// extension runs that same helper itself, without a shell, with up to two retries (CREDENTIAL), and lends the value to
+// Pi as an in-memory provider override (registerProvider with the value as an escaped literal), so Pi spawns nothing
+// for it. If every try fails, it lends the value of the last successful read, but only up to CREDENTIAL.maxAgeMs after
+// that read. A run holds the lend until agent_end and a compaction until session_compact or session_compact_failed. Pi
+// reads a branch summary's credential once, right after the session_before_tree handlers return, and a failed or
+// cancelled summary emits no end event, so a summary holds the lend only for a short lease after its refresh
+// (CREDENTIAL.summaryLeaseMs), ended early by session_tree or the summary's abort. The end of one holder never
+// withdraws a lend another still holds. Without such a value, once no operation holds the lend, and once a lent value
+// reaches that age, the override
+// is withdrawn and Pi runs its own command again, so a failed refresh leaves the operation exactly as before: a
+// process that never read a value fails closed. A successful read always replaces the held value, so
 // a rotation applies to the next request. The value stays in this process's memory: it is never written to a file, a
-// log, argv or the environment, and evidence rows carry only the outcome.
-export const CREDENTIAL = { timeoutMs: 15_000, retryDelaysMs: [1_000, 2_000], maxAgeMs: 15 * 60_000 };
+// log, argv or the environment, and evidence rows carry only the outcome (compact_failed carries no upstream text).
+export const CREDENTIAL = { timeoutMs: 15_000, retryDelaysMs: [1_000, 2_000], maxAgeMs: 15 * 60_000, summaryLeaseMs: 30_000 };
 const QUOTED = String.raw`"((?:[^"\\]|\\.)*)"`;
 const HELPER_COMMAND = new RegExp(`^!${QUOTED} ${QUOTED} ${QUOTED}$`);
 /**
@@ -197,6 +204,12 @@ const pause = (ms, signal) => new Promise(done => {
 });
 function fleetCredential(pi, record) {
   let found, held = null, lent = null, expiry = null;
+  // Holders of the lend: the run (turn_start..agent_end), open compactions counted by reason (Pi names manual,
+  // threshold and overflow apart), and one branch summary lease (Pi runs one summary at a time); summary numbers the
+  // latest summary so a stale abort or lease of an earlier one never ends it.
+  let running = false, summarizing = false, summary = 0, lease = null;
+  const compactions = new Map();
+  const holding = () => running || summarizing || compactions.size > 0;
   // The models.json this Pi process loaded: the agent home's copy, which the launcher rebuilt at this launch.
   const target = () => {
     if (found === undefined) {
@@ -224,9 +237,8 @@ function fleetCredential(pi, record) {
     expiry = setTimeout(() => withdraw('expired'), Math.max(0, at + CREDENTIAL.maxAgeMs - Date.now()));
     expiry.unref?.();
   };
-  const refresh = async ctx => {
+  const refresh = async (ctx, signal = ctx?.signal) => {
     if (!target() || ctx?.model?.provider !== found.provider) return;
-    const signal = ctx?.signal;
     let value = null, tries = 0;
     for (const delay of [0, ...CREDENTIAL.retryDelaysMs]) {
       if (delay) await pause(delay, signal);
@@ -234,7 +246,8 @@ function fleetCredential(pi, record) {
       tries++;
       if ((value = await readCredential(found.argv, { timeoutMs: CREDENTIAL.timeoutMs, signal }))) break;
     }
-    if (signal?.aborted) return;
+    // The operation that asked ended while the helper ran: lend nothing it would leave behind.
+    if (signal?.aborted || !holding()) return;
     try {
       if (value) {
         held = { value, at: Date.now() };
@@ -257,7 +270,45 @@ function fleetCredential(pi, record) {
       record({ event: 'credential', provider: found.provider, status: 'override-failed' });
     }
   };
-  return { refresh, withdraw };
+  const release = () => { if (!holding()) withdraw(); };
+  return {
+    turnStart: ctx => { running = true; return refresh(ctx); },
+    runEnd: () => { running = false; release(); },
+    compactionStart: (event, ctx) => {
+      compactions.set(event?.reason, (compactions.get(event?.reason) ?? 0) + 1);
+      return refresh(ctx, event?.signal);
+    },
+    // Pi also reports some compactions that failed before session_before_compact; those find no count to take.
+    compactionEnd: event => {
+      const open = compactions.get(event?.reason) ?? 0;
+      if (open > 1) compactions.set(event.reason, open - 1); else compactions.delete(event?.reason);
+      release();
+    },
+    summaryStart: async (event, ctx) => {
+      const prep = event?.preparation;
+      if (!prep?.userWantsSummary || !prep.entriesToSummarize?.length) return;
+      const id = ++summary;
+      const end = () => { if (id !== summary) return; clearTimeout(lease); lease = null; summarizing = false; release(); };
+      clearTimeout(lease); lease = null; summarizing = true;
+      event.signal?.addEventListener('abort', end, { once: true });
+      await refresh(ctx, event.signal);
+      if (id !== summary || !summarizing) return;
+      lease = setTimeout(end, CREDENTIAL.summaryLeaseMs);
+      lease.unref?.();
+    },
+    summaryEnd: () => { clearTimeout(lease); lease = null; summarizing = false; release(); },
+    shutdown: () => { clearTimeout(lease); lease = null; running = summarizing = false; compactions.clear(); withdraw(); },
+  };
+}
+// The kind of a failed compaction, from Pi's own wording only (core/compaction/compaction.js getSummarizationFailure):
+// 'token-cap' when the summary hit its output cap, 'aborted', or 'upstream' for anything else, with the provider's
+// HTTP status when the text has Pi's "<label> failed: <NNN>:" shape. Nothing of the text itself is returned.
+export function compactFailure(event) {
+  const text = typeof event?.errorMessage === 'string' ? event.errorMessage : '';
+  const errorKind = event?.aborted === true ? 'aborted'
+    : text.endsWith('generation hit the token cap and the summary is incomplete') ? 'token-cap' : 'upstream';
+  const status = /\bfailed: (\d{3}):/.exec(text);
+  return { errorKind, httpStatus: status ? Number(status[1]) : null };
 }
 export default function(pi) {
   let turnId=randomUUID();let intent={tier:'inherit',source:'fleet-default'};let tiers=null;
@@ -271,9 +322,21 @@ export default function(pi) {
     try { if(process.env.PI_CODING_AGENT_DIR) appendFileSync(join(process.env.PI_CODING_AGENT_DIR,'route-evidence.jsonl'),JSON.stringify(row)+'\n',{mode:0o600}); } catch {}
   };
   const credential = fleetCredential(pi, record);
-  pi.on('turn_start', (_event, ctx) => credential.refresh(ctx));
-  pi.on('agent_end', () => credential.withdraw());
-  pi.on('session_shutdown', () => credential.withdraw());
+  pi.on('turn_start', (_event, ctx) => credential.turnStart(ctx));
+  pi.on('agent_end', () => credential.runEnd());
+  pi.on('session_before_compact', (event, ctx) => credential.compactionStart(event, ctx));
+  pi.on('session_compact', event => credential.compactionEnd(event));
+  pi.on('session_compact_failed', (event, ctx) => {
+    credential.compactionEnd(event);
+    // A failed compaction saves nothing, so make it visible. Upstream error text can echo a credential or quote request
+    // content, so none of it is written: only its kind, and the HTTP status Pi puts in its "<label> failed: <NNN>:" text.
+    let sessionId = null, model = null, thinking = null;
+    try { sessionId = ctx?.sessionManager?.getSessionId() ?? null; model = ctx?.model?.id ?? null; thinking = ctx?.thinkingLevel ?? null; } catch {}
+    record({ event: 'compact_failed', reason: event?.reason ?? null, aborted: event?.aborted === true, ...compactFailure(event), sessionId, model, thinking });
+  });
+  pi.on('session_before_tree', (event, ctx) => credential.summaryStart(event, ctx));
+  pi.on('session_tree', () => credential.summaryEnd());
+  pi.on('session_shutdown', () => credential.shutdown());
   pi.on('session_start',(_event,ctx)=>{
     const check = enforceCodemode(pi);
     const evidence = { event: 'codemode-check', ...check, sessionId: ctx.sessionManager.getSessionId(), extensionSha256: EXTENSION_SHA256 };
