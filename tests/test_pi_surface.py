@@ -1332,7 +1332,11 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             self.assertEqual(done.returncode, 7, done.stderr)
             self.assertEqual(log.read_text().splitlines()[:2], ['-f', str(profile)])
             log.unlink()
+            # A case variant of a path inside the cwd: on a case-insensitive volume it is the same file, and its real
+            # path differs; on a case-sensitive one it does not exist. Either way it refuses.
+            (work/'inwork.sb').write_text('(version 1)\n')
             cases = [(str(unit/'link.sb'), 'symbolic link'), (str(runs/'linkdir/agent.sb'), 'symbolic link'),
+                     (str(unit/'WORK/inwork.sb'), 'sandbox profile'),
                      (f'{runs}/../outside.sb', 'without . or .. parts'), (str(base/'outside.sb'), 'not under the sandbox'),
                      (str(work/'agent.sb'), "agent's working directory"), (None, 'needs LOADOUT_PI_SANDBOX_PROFILE'),
                      ('', 'needs LOADOUT_PI_SANDBOX_PROFILE')]
@@ -1392,6 +1396,72 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
                 self.assertIn('outside what a sandbox profile lets Pi read', done.stderr)
                 self.assertFalse(log.exists(), args)
             self.assertFalse(record.exists())
+
+    @unittest.skipIf(os.name == "nt" or sys.platform == "darwin",
+                     "the fake sandbox-exec is a POSIX shell script, and the test markers refuse a real macOS launch")
+    def test_credential_helper_never_sees_the_per_agent_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            fake, log = self.sandbox_fixture(base)
+            profile = base/'pi.sb'; profile.write_text('(version 1)\n')
+            # A stand-in helper at the pinned path records what it ran with.
+            seen = base/'helper-seen.json'
+            (root/'credential.py').write_text(
+                f"import json, os, sys\njson.dump({{'env': dict(os.environ), 'isolated': sys.flags.isolated}}, "
+                f"open({str(seen)!r}, 'w'))\nprint('fixture-key')\n")
+            # A per-agent HOME whose user site dir holds a .pth with an import line.
+            evil = base/'evil-home'; marker = base/'pth-ran'
+            site_dir = subprocess.run([sys.executable, '-c', 'import site; print(site.getusersitepackages())'],
+                                      capture_output=True, text=True, env={**os.environ, 'HOME': str(evil)}).stdout.strip()
+            Path(site_dir).mkdir(parents=True)
+            (Path(site_dir)/'zz.pth').write_text(f"import os; open({str(marker)!r}, 'a').write('ran')\n")
+            # Control: Python run with that HOME does execute the line.
+            subprocess.run([sys.executable, '-c', 'pass'], env={**os.environ, 'HOME': str(evil)})
+            import site
+            if site.ENABLE_USER_SITE: self.assertTrue(marker.exists())
+            marker.unlink(missing_ok=True)
+            done = run('--loadout-isolated', '--loadout-sandbox-profile', str(profile), '--loadout-test-platform', 'darwin',
+                       '--loadout-test-sandbox-exec', str(fake), '--mode', 'rpc', '--model', 'fleet/current',
+                       HOME=str(evil), DEVELOPER_DIR=str(base/'devdir'), PYTHONPATH=str(base))
+            self.assertEqual(done.returncode, 7, done.stderr)
+            self.assertFalse(marker.exists())
+            helper = json.loads(seen.read_text())
+            self.assertEqual(helper['isolated'], 1)
+            self.assertNotIn('DEVELOPER_DIR', helper['env'])
+            self.assertNotIn('PYTHONPATH', helper['env'])
+            self.assertNotEqual(helper['env']['HOME'], str(evil))
+            # Only the fixed PATH and HOME, and the env credential source's own variable.
+            self.assertLessEqual(set(helper['env']) - {'LC_CTYPE'}, {'PATH', 'HOME', 'EXISTING_KEY'})
+            self.assertEqual(helper['env']['PATH'], '/usr/bin:/bin:/usr/sbin:/sbin')
+
+    @unittest.skipIf(os.name == "nt", "symbolic links need privileges on Windows")
+    def test_a_symlink_in_the_agent_home_is_replaced_not_followed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            home = root/'agents/agent-0001'; home.mkdir(parents=True)
+            victim = base/'victim.txt'; victim.write_text('original')
+            (home/'models.json').symlink_to(victim)
+            done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current')
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(victim.read_text(), 'original')
+            self.assertFalse((home/'models.json').is_symlink())
+            self.assertIn('providers', json.loads((home/'models.json').read_text()))
+
+    @unittest.skipUnless(sys.platform == "darwin" and os.path.exists('/usr/bin/sandbox-exec'), "macOS sandbox-exec")
+    def test_probe_profile_denies_reading_an_unlisted_file_under_the_home(self):
+        launcher = (PI/'launch.mjs').read_text()
+        profile = re.search(r"const PROBE_PROFILE = `(.*?)`;", launcher, re.S).group(1)
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
+            base = Path(tmp).resolve()
+            pi_home = base/'pi/agent'; pi_home.mkdir(parents=True)
+            (pi_home/'settings.json').write_text('{}')
+            secret = base/'token.txt'; secret.write_text('fake-token')
+            sandbox = ['/usr/bin/sandbox-exec', '-p', profile, '-D', f'HOME={Path.home().resolve()}', '-D', f'PI_HOME={pi_home}',
+                       '-D', f'PI_ROOT={base/"pi"}', '-D', f'CWD={base}', '-D', 'NODE_PREFIX=/nonexistent', '/bin/cat']
+            self.assertEqual(subprocess.run([*sandbox, str(pi_home/'settings.json')], capture_output=True).returncode, 0)
+            self.assertNotEqual(subprocess.run([*sandbox, str(secret)], capture_output=True).returncode, 0)
 
     @unittest.skipIf(os.name == "nt", "the merge payload exceeds the Windows command line")
     def test_isolated_provider_row_mirrors_pi_and_goes_when_dropped(self):

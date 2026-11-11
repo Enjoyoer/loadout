@@ -1,8 +1,8 @@
 // Stock Paseo 0.10.3 interim: each real agent gets a private, scoped mcp.json.
 import { spawn } from 'node:child_process';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, statSync, rmSync, lstatSync, accessSync, constants, realpathSync,
-  chmodSync } from 'node:fs';
-import { homedir } from 'node:os';
+  openSync, closeSync, fstatSync, fchmodSync } from 'node:fs';
+import { homedir, userInfo } from 'node:os';
 import { dirname, join, resolve, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,6 +12,12 @@ function refuse(message) {
   process.exit(1);
 }
 
+// Write a file in an agent home that the agent itself can write: remove what is there first (a symbolic link the agent
+// planted included) and create the file exclusively ('wx'), so the launcher never writes through a link.
+function writeFresh(path, data) {
+  rmSync(path, { force: true });
+  writeFileSync(path, data, { mode: 0o600, flag: 'wx' });
+}
 const root = dirname(fileURLToPath(import.meta.url));
 const spec = JSON.parse(readFileSync(join(root, 'runtime.json'), 'utf8'));
 const requireCodemode = settings => {
@@ -212,14 +218,30 @@ if (isolated && !caller && !probe) refuse('the isolated Pi provider needs a Pase
 // included) needs its own profile in LOADOUT_PI_SANDBOX_PROFILE: an absolute path with no symbolic link at any level,
 // naming a regular file under the root, outside the agent's working directory and outside the Pi root (which holds
 // every agent home). Missing, empty or anything else refuses. Paseo's catalog probe carries no per-agent env, so a
-// probe without one runs under PROBE_PROFILE: no network, and writes only to the agent dir it reads (sessions).
-const PROBE_PROFILE = '(version 1)\n(allow default)\n(deny network*)\n(deny file-write*)\n(allow file-write* '
-  + '(subpath (param "PI_HOME")) (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") '
-  + '(regex #"^/dev/fd/[0-9]+$"))\n';
-// A path's real path, or null when it does not exist; any other error propagates.
+// probe without one runs under PROBE_PROFILE: no network, no AppleEvents or keychain service, writes only to the agent
+// dir it reads (sessions), and no reads under the user's home, the temp folders or /Volumes except the cwd itself, the
+// Node install (NODE_PREFIX), PI_ROOT/app, fleet-routing.mjs and that agent dir without its mcp.json. HOME is the
+// account's home from the user database, never the env, which a per-agent env sets on Paseo's MCP probe.
+const PROBE_PROFILE = `(version 1)
+(allow default)
+(deny network*)
+(deny appleevent-send)
+(deny mach-lookup (global-name "com.apple.SecurityServer"))
+(deny file-write*)
+(allow file-write* (subpath (param "PI_HOME")) (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (regex #"^/dev/fd/[0-9]+$"))
+(deny file-read* (subpath (param "HOME")) (subpath "/private/var/folders") (subpath "/private/tmp") (subpath "/Volumes"))
+(allow file-read-metadata)
+(allow file-read* (literal (param "CWD")) (subpath (param "NODE_PREFIX")) (subpath (string-append (param "PI_ROOT") "/app")) (literal (string-append (param "PI_ROOT") "/fleet-routing.mjs")) (subpath (param "PI_HOME")))
+(deny file-read* (literal (string-append (param "PI_HOME") "/mcp.json")))
+`;
+// A path's real path as stored on disk (realpathSync.native: the on-disk letter case and Unicode form, so a case or
+// normalization variant never compares as a different path on a case-insensitive volume), or null when it does not
+// exist; any other error propagates.
 const realPath = path => {
-  try { return realpathSync(path); } catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null; throw error; }
+  try { return realpathSync.native(path); } catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null; throw error; }
 };
+// Whether child is dir or inside it (a dir of / included).
+const inside = (child, dir) => child === dir || child.startsWith(dir.endsWith(sep) ? dir : dir + sep);
 let probeProfile = false;
 if (sandboxRoot !== null) {
   if (!isAbsolute(sandboxRoot)) refuse('--loadout-sandbox-root must be an absolute path');
@@ -235,11 +257,11 @@ if (sandboxRoot !== null) {
     if (!isAbsolute(named) || resolve(named) !== named) refuse(`${where} must be an absolute path without . or .. parts`);
     const real = realPath(named);
     if (real === null) refuse(`${where} is missing`);
-    if (real !== named) refuse(`${where} has a symbolic link in its path`);
-    if (!real.startsWith(realRoot + sep)) refuse(`${where} is not under the sandbox profile root ${realRoot}`);
-    const cwd = realpathSync(process.cwd()), piRoot = realpathSync(root);
-    if (real === cwd || real.startsWith(cwd + sep)) refuse(`${where} is under the agent's working directory`);
-    if (real.startsWith(piRoot + sep)) refuse(`${where} is under the Pi root`);
+    if (real !== named) refuse(`${where} is not its own real path: a symbolic link, or another letter case or Unicode form`);
+    if (real === realRoot || !inside(real, realRoot)) refuse(`${where} is not under the sandbox profile root ${realRoot}`);
+    const cwd = realPath(process.cwd()), piRoot = realPath(root);
+    if (inside(real, cwd)) refuse(`${where} is under the agent's working directory`);
+    if (inside(real, piRoot)) refuse(`${where} is under the Pi root`);
     sandboxProfile = real;
   }
 }
@@ -275,7 +297,7 @@ function readableExtensions(settings) {
     const path = typeof entry === 'string' ? entry.replace(/^\+/, '') : '';
     if (/^builtin:[a-z0-9.-]+$/.test(path)) continue;  // built into the Pi package under app/
     const target = isAbsolute(path) && !/[*?]/.test(path) ? realPath(path) : null;
-    if (target === null || !(target === routing || (app !== null && target.startsWith(app + sep))))
+    if (target === null || !(target === routing || (app !== null && target !== app && inside(target, app))))
       refuse(`extension ${JSON.stringify(entry)} is outside what a sandbox profile lets Pi read: `
         + `${join(root, 'app')}/ and ${join(root, 'fleet-routing.mjs')}`);
   }
@@ -329,19 +351,27 @@ if (caller && !probe) {
     readableExtensions(JSON.parse(files['settings.json']));
     // A profile denies Pi the credential files and its own !command, so the launcher runs the router's credential
     // helper here, outside the sandbox: the argv fleet-routing.mjs derives, with its timeout and retries, without a
-    // shell, and with no PYTHON* variable. Pi gets the value only in its env, and the agent's models.json names that
-    // variable instead of the command. No value, no launch.
+    // shell. Pi gets the value only in its env, and the agent's models.json names that variable instead of the command.
+    // No value, no launch.
     const models = JSON.parse(files['models.json']);
     const { credentialHelper, readCredential, CREDENTIAL } = await import(new URL('./fleet-routing.mjs', import.meta.url));
     const found = credentialHelper(models, root);
     if (!found) refuse('a sandboxed isolated Pi needs the router credential helper in models.json');
     if (!isAbsolute(found.argv[0]))
       refuse(`the credential helper program ${JSON.stringify(found.argv[0])} must be an absolute path: set the Pi runtime's python`);
-    const helperEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PYTHON')));
+    // The helper runs unsandboxed, so it never sees the per-agent env (HOME would pick a user-site .pth, DEVELOPER_DIR
+    // the program behind the xcrun shim): a fixed PATH, the account's home from the user database, and, for an env
+    // credential source only, that one named variable (credential.py reads it from its environment). Python runs in
+    // isolated mode (-I): no user site, no PYTHON* variables, no script or cwd directory on sys.path.
+    const helperEnv = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: userInfo().homedir };
+    const source = spec.credential;
+    if (source?.kind === 'env' && typeof source.name === 'string' && Object.hasOwn(process.env, source.name))
+      helperEnv[source.name] = process.env[source.name];
+    const helperArgv = [found.argv[0], '-I', ...found.argv.slice(1)];
     let value = null;
     for (const delay of [0, ...CREDENTIAL.retryDelaysMs]) {
       if (delay) await new Promise(done => setTimeout(done, delay));
-      if ((value = await readCredential(found.argv, { timeoutMs: CREDENTIAL.timeoutMs, env: helperEnv }))) break;
+      if ((value = await readCredential(helperArgv, { timeoutMs: CREDENTIAL.timeoutMs, env: helperEnv }))) break;
     }
     if (!value) refuse('the router credential helper failed, and a sandboxed Pi cannot read the key itself');
     const row = models.providers[found.provider];
@@ -350,9 +380,8 @@ if (caller && !probe) {
     files['models.json'] = JSON.stringify(models, null, 2) + '\n';
     env[ROUTER_KEY_ENV] = value;
   }
-  for (const [file, data] of Object.entries(files)) writeFileSync(join(home, file), data, { mode: 0o600 });
-  if (existsSync(join(root, 'agent/AGENTS.md')))
-    writeFileSync(join(home, 'AGENTS.md'), readFileSync(join(root, 'agent/AGENTS.md')), { mode: 0o600 });
+  for (const [file, data] of Object.entries(files)) writeFresh(join(home, file), data);
+  if (existsSync(join(root, 'agent/AGENTS.md'))) writeFresh(join(home, 'AGENTS.md'), readFileSync(join(root, 'agent/AGENTS.md')));
   const modelIndex = args.lastIndexOf('--model');
   // Paseo 0.11 resumes with --session and applies the model over RPC; mcp_bridge reads the live model.
   if (modelIndex >= 0 && args[modelIndex + 1]) env.LOADOUT_PI_PARENT_MODEL = args[modelIndex + 1];
@@ -376,7 +405,7 @@ if (caller && !probe) {
     const bridgeEnv = mcp.mcpServers?.paseo?.env;
     if (bridgeEnv) for (const key of ['LOADOUT_PI_PARENT_MODEL', 'LOADOUT_PI_PARENT_THINKING'])
       if (!env[key]) delete bridgeEnv[key];
-    writeFileSync(join(home, 'mcp.json'), JSON.stringify(mcp, null, 2) + '\n', { mode: 0o600 });
+    writeFresh(join(home, 'mcp.json'), JSON.stringify(mcp, null, 2) + '\n');
   }
   env.PI_CODING_AGENT_DIR = home;
 }
@@ -393,13 +422,21 @@ let command = process.execPath, argv = [cli, ...args];
 if (sandboxed) {
   // A profile lets Pi write only under PI_HOME and CWD, so its temp files go to PI_HOME/tmp, owner-only. An existing
   // tmp that is not a plain directory (a link the agent left) refuses.
+  // The mode is set through a descriptor opened without following a link, so a link swapped in meanwhile is refused.
   const tmp = join(env.PI_CODING_AGENT_DIR, 'tmp');
   try { mkdirSync(tmp, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
-  if (!lstatSync(tmp).isDirectory()) refuse(`${tmp} must be a directory`);
-  chmodSync(tmp, 0o700);
+  let fd;
+  try { fd = openSync(tmp, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); }
+  catch (error) { if (['ELOOP', 'ENOTDIR'].includes(error.code)) refuse(`${tmp} must be a directory`); throw error; }
+  try {
+    if (!fstatSync(fd).isDirectory()) refuse(`${tmp} must be a directory`);
+    fchmodSync(fd, 0o700);
+  } finally { closeSync(fd); }
   env.TMPDIR = env.TMP = env.TEMP = tmp;
+  const params = probeProfile
+    ? ['-D', `HOME=${userInfo().homedir}`, '-D', `NODE_PREFIX=${realpathSync(dirname(dirname(process.execPath)))}`] : [];
   argv = [...(probeProfile ? ['-p', PROBE_PROFILE] : ['-f', sandboxProfile]), '-D', `CWD=${resolve(process.cwd())}`,
-    '-D', `PI_HOME=${env.PI_CODING_AGENT_DIR}`, '-D', `PI_ROOT=${root}`, process.execPath, ...argv];
+    '-D', `PI_HOME=${env.PI_CODING_AGENT_DIR}`, '-D', `PI_ROOT=${root}`, ...params, process.execPath, ...argv];
   command = sandboxExec;
 }
 const child = spawn(command, argv, { env, stdio: 'inherit' });
