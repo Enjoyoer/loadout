@@ -6,7 +6,14 @@ from urllib.parse import urlsplit
 from backups import prune_backups
 from credential import check_source, expand
 
-FILES = ("credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs")
+# service-guard.mjs first: fleet-routing.mjs imports it, so it must exist before the extension that loads it.
+FILES = ("service-guard.mjs", "credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs")
+
+def validate_guard(guard):
+    """guard: {"protectedServices": [names]} for the shared fleet service guard; the extension adds its defaults."""
+    names = guard.get("protectedServices") if isinstance(guard, dict) and set(guard) == {"protectedServices"} else None
+    if not isinstance(names, list) or not all(isinstance(n, str) and len(n.strip()) >= 3 and not re.search(r"[\x00-\x1f]", n) for n in names):
+        raise ValueError("guard needs exactly protectedServices, a list of names of 3 or more characters")
 
 # Optional read-only Gmail (workspace-mcp). Read-only is enforced three times: the
 # server's --read-only mode (gmail.readonly scope, write tools removed), an explicit
@@ -155,6 +162,7 @@ def build(spec, root):
            "command": spec.get("python", sys.executable), "args": [str(root / "mcp_bridge.py")], "exposure": "codemode",
            "env": {"LOADOUT_PI_MCP_URL": "${LOADOUT_PI_MCP_URL}", "LOADOUT_PI_PARENT_MODEL": "${LOADOUT_PI_PARENT_MODEL}", "LOADOUT_PI_PARENT_THINKING": "${LOADOUT_PI_PARENT_THINKING}"}}}}
     if "gmail" in spec: mcp["mcpServers"]["gmail"] = gmail_server(spec["gmail"])
+    if "guard" in spec: validate_guard(spec["guard"])
     for name, server in spec.get('mcpServers', {}).items():
         if name.replace('-', '_').lower() in mcp['mcpServers'].keys() | {'paseo'}:
             raise ValueError('fleet MCP server collides with built-in server')

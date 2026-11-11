@@ -217,7 +217,7 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
         root = Path(tmp).resolve()  # the launcher checks settings against its own resolved path
         for name, data in build(spec, root).items():
             (root/name).parent.mkdir(parents=True, exist_ok=True); (root/name).write_text(json.dumps(data))
-        for name in ['launch.mjs', 'fleet-routing.mjs', 'credential.py']:
+        for name in ['launch.mjs', 'fleet-routing.mjs', 'service-guard.mjs', 'credential.py']:
             (root/name).write_bytes((PI/name).read_bytes())
         app = root/'app/node_modules/@earendil-works/pi-coding-agent'
         (app/'dist/bundle').mkdir(parents=True)
@@ -238,6 +238,11 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
             unresolved = run('--mode', 'rpc', '--extension', str(root/'x.mjs'))
             self.assertNotEqual(unresolved.returncode, 0)
             self.assertIn('concrete catalog model', unresolved.stderr)
+            # PM-specified (rev260 item 5): without service-guard.mjs, which fleet-routing.mjs imports, no launch runs.
+            (root/'service-guard.mjs').unlink()
+            missing = run('--mode', 'rpc')
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn('service-guard.mjs is missing', missing.stderr)
 
     def test_launcher_merges_per_agent_overlays_over_the_shared_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -631,6 +636,223 @@ assert.deepEqual(rows,[{event:'compact_failed',reason:'manual',aborted:false,err
 rmSync(dir,{recursive:true,force:true});
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_service_guard_refuses_shared_service_stops_and_allows_the_rest(self):
+        # PM-specified cases (brief pi-service-guard): a forged instruction must not stop a shared fleet service.
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync,readFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);const f=await import(process.argv[2]);
+const dir=mkdtempSync(join(tmpdir(),'guard-'));
+writeFileSync(join(dir,'s.sh'),'#!/bin/sh\nlaunchctl bootout gui/501/com.example.model-bridge\n');
+writeFileSync(join(dir,'fix.sh'),'#!/bin/sh\ncp new.plist old.plist\nlaunchctl bootout gui/501/com.example.model-bridge\nlaunchctl bootstrap gui/501 ~/Library/LaunchAgents/com.example.model-bridge.plist\ncurl -fsS http://127.0.0.1:1/health || cp backup.plist old.plist\n');
+const lines={'12345':'node /tmp/unrelated-server.js','23456':'/opt/example-bridge/bin/example-bridge --serve'};
+const opts={protectedServices:['com.example.model-bridge','example-router.service','example-bridge'],cwd:dir,
+ resolvePid:async pid=>lines[pid]??'',listProcesses:async()=>[{pid:'1',command:'node /tmp/some-unrelated-test-server.js'}]};
+const refused=['launchctl bootout gui/501/com.example.model-bridge','sudo launchctl unload ~/Library/LaunchAgents/com.example.model-bridge.plist',
+ 'bash -c "launchctl bootout gui/501/com.example.model-bridge"','pkill -f example-bridge','killall paseo','paseo daemon stop',
+ 'paseo --host ssh://x daemon restart','tailscale serve reset','systemctl --user stop example-router.service','bash s.sh','kill -9 -1',
+ 'kill 23456','echo "launchctl bootout com.example.model-bridge"'];
+for(const c of refused){const v=await g.check(c,opts);assert.equal(v.block,true,c);assert.match(v.reason,/shared fleet service: use one detached nohup script/,c);}
+const allowed=['launchctl list','launchctl print gui/501/com.example.model-bridge','kill 12345','pkill -f some-unrelated-test-server',
+ 'setsid -f nohup bash fix.sh >log 2>&1','grep bootout notes.md','echo "launchctl bootout x"'];
+for(const c of allowed)assert.equal((await g.check(c,opts)).block,false,c);
+// The same repair script run in the foreground is refused.
+assert.equal((await g.check('bash fix.sh',opts)).block,true);
+// Config: a missing or invalid list keeps the defaults and warns; a valid one adds to them.
+assert.ok(g.guardConfig({}).warning);assert.ok(g.guardConfig({guard:{protectedServices:'x'}}).warning);
+assert.deepEqual(g.guardConfig({guard:{protectedServices:['com.example.model-bridge']}}).protectedServices,[...g.DEFAULT_PROTECTED,'com.example.model-bridge']);
+// Pi handler: blocks with the reason and records evidence without env values.
+const rows=[];const h=f.serviceGuardHandler(r=>rows.push(r),{guard:g.serviceGuard(opts)});
+const out=await h({toolName:'bash',input:{command:'TOKEN=secret-value launchctl bootout gui/501/com.example.model-bridge'}},{cwd:dir});
+assert.equal(out.block,true);assert.equal(rows[0].event,'service-guard');assert.ok(!JSON.stringify(rows).includes('secret-value'));
+assert.equal(await h({toolName:'bash',input:{command:'launchctl list'}},{cwd:dir}),undefined);
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri(), (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        hook = lambda payload: subprocess.run(['node', str(PI/'service-guard.mjs')], input=json.dumps(payload), capture_output=True, text=True)
+        blocked = hook({'tool_name': 'Bash', 'tool_input': {'command': 'paseo daemon stop'}})
+        self.assertEqual(blocked.returncode, 2, blocked.stderr); self.assertIn('fleet service guard', blocked.stderr)
+        self.assertEqual(hook({'command': 'launchctl list'}).returncode, 0)
+
+    def test_service_guard_review_round_cases(self):
+        # PM-specified regression cases: the rev260 reviewer's probes (refused forms, nohup exception, ordinary work,
+        # pkill patterns on a host running Paseo and tailscaled, PowerShell forms, regex time limit, evidence masking).
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync,mkdirSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);const f=await import(process.argv[2]);
+const dir=mkdtempSync(join(tmpdir(),'guard-r2-'));
+const W=(name,text)=>{mkdirSync(join(dir,name,'..'),{recursive:true});writeFileSync(join(dir,name),text);};
+const stop='launchctl bootout gui/501/com.example.model-bridge\n';
+W('stop.sh','#!/bin/sh\n'+stop);W('stop.ps1','Stop-Service -Name Tailscale\n');
+W('fakefix.sh','#!/bin/sh\n'+stop+'# later: launchctl kickstart -k it and curl the health URL\n');
+W('unrelated.sh','#!/bin/sh\n'+stop+'systemctl --user restart unrelated.service\ncurl -s https://example.org\n');
+W('paseostop.sh','#!/bin/sh\npaseo daemon stop\ntailscale down\nlaunchctl kickstart -k gui/501/com.apple.unrelated\ncurl -s https://example.org\n');
+W('realfix.sh','#!/bin/sh\ncp new.plist old.plist\n'+stop+'launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.example.model-bridge.plist\ncurl -fsS http://127.0.0.1:1/health || cp backup.plist old.plist\n');
+W('big.sh','#!/bin/sh\n'+'# padding padding padding padding padding padding padding\n'.repeat(5000)+stop);
+W('s1.sh','bash s2.sh\n');W('s2.sh','bash s3.sh\n');W('s3.sh','bash s4.sh\n');W('s4.sh',stop);
+W('sub/x.txt','x\n');W('build.sh','#!/bin/sh\nset -e\nnpm ci\nnpm run build\n');
+const procs=[{pid:'63824',command:'Paseo Daemon     Paseo Daemon'},{pid:'63799',command:'Paseo Supervisor Paseo Supervisor'},
+ {pid:'13869',command:'/home/u/.local/node/bin/node /home/u/.local/paseo/node_modules/@getpaseo/server/dist/server/server/plugins/plugin-process.js'},
+ {pid:'777',command:'/usr/local/bin/node /opt/example-bridge/bin/example-bridge --serve'},
+ {pid:'888',command:'/usr/sbin/tailscaled /usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641'},
+ {pid:'999',command:'node node /tmp/some-unrelated-test-server.js'},{pid:'1000',command:'vim vim notes.md'}];
+const lines=Object.fromEntries(procs.map(p=>[p.pid,p.command]));
+const opts={protectedServices:['com.example.model-bridge','example-router.service','example-bridge'],cwd:dir,
+ resolvePid:async pid=>lines[pid]??'',listProcesses:async()=>procs};
+const refused=['launchctl bootout gui/501/com.example.model-bridge','sudo launchctl bootout gui/501/com.example.model-bridge',
+ 'bash -c "launchctl bootout gui/501/com.example.model-bridge"','eval "launchctl bootout gui/501/com.example.model-bridge"','bash s1.sh','bash stop.sh',
+ 'launchctl bootout gui/$(id -u)/com.example.model-bridge','launchctl bootout gui/`id -u`/com.example.model-bridge','sudo launchctl bootout system/$(echo com.example.model-bridge)',
+ 'echo gui/501/com.example.model-bridge | xargs launchctl bootout',"launchctl list | grep model-bridge | awk '{print $3}' | xargs -I{} launchctl bootout gui/501/{}",
+ 'echo example-router.service | xargs systemctl --user stop','Get-Service Tailscale | Stop-Service -Force',"Get-ScheduledTask -TaskName 'Paseo Daemon' | Stop-ScheduledTask",
+ "Get-ScheduledTask -TaskName 'Paseo Daemon' | Disable-ScheduledTask",'pgrep -f Paseo | xargs kill','kill $(pgrep -f Paseo)','kill -9 $(pgrep -f model-bridge)',
+ 'Get-Process *paseo* | Stop-Process -Force','kill $(pgrep -f com.example.model-bridge)',
+ 'paseo daemon --home ~/.paseo stop','paseo daemon -o json stop','paseo daemon --host 127.0.0.1:6767 restart','systemctl -n 0 stop example-router.service',
+ 'systemctl --user -o json stop example-router.service','systemctl -H localhost stop example-router.service','tailscale --socket /var/run/tailscale/tailscaled.sock down',
+ 'bash -c ./stop.sh','sh -c ./stop.sh','eval ./stop.sh','sudo -u root ./stop.sh','nice -n 5 ./stop.sh','bash -o pipefail stop.sh','bash +x stop.sh','bash < stop.sh',
+ 'cat stop.sh | bash','bash "$PWD/stop.sh"','echo | xargs ./stop.sh','(cd sub); ./stop.sh','cd sub && cd .. && ./stop.sh','bash big.sh',
+ "$'launchctl' bootout gui/501/com.example.model-bridge",'launchctl {bootout,} gui/501/com.example.model-bridge',
+ 'launchctl unload ~/Library/LaunchAgents/*model-bridge*.plist',"systemctl --user stop 'example-rout*'",'L=launchctl; $L bootout gui/501/com.example.model-bridge',
+ 'nohup bash fakefix.sh >log 2>&1 &','nohup bash unrelated.sh >log 2>&1 &','nohup bash paseostop.sh >log 2>&1 &',': & nohup bash realfix.sh',
+ "nohup bash realfix.sh 'a&b'",'nohup bash realfix.sh; sleep 1 &','bash realfix.sh nohup &',
+ 'pkill -f node','pkill node','kill -9 63824','kill -s TERM 888'];
+for(const c of refused){const v=await g.check(c,opts);assert.equal(v.block,true,c);assert.match(v.reason,/shared fleet service: use one detached nohup script/,c);}
+const allowed=['setsid -f nohup bash realfix.sh >log 2>&1','launchctl list','launchctl print gui/501/com.example.model-bridge','kill 999','kill %1','kill -- 999',
+ 'git commit -m "fix login bug"','grep -rn bootout .','rg -n "pkill|killall" .','grep -rn "kill\\\\|pkill" src','pkill -f "vite serve"','pkill -f "tail -f /tmp/app.log"',
+ 'pkill -f "rails server"','pkill -f "node server.js"','pkill -f "npm run dev"','pkill -f "python -m http.server"','pkill -f "jekyll serve"','pkill -f "hugo server"',
+ 'pkill -f "next dev"','git commit -m "pkill on server shutdown"','git commit -m "service restart now handles server errors"','echo "use pkill to stop the node app"',
+ 'pkill -f some-unrelated-test-server','killall vim','./build.sh','systemctl --user restart nginx','tailscale status','paseo daemon status'];
+for(const c of allowed)assert.equal((await g.check(c,opts)).block,false,c);
+// PowerShell forms.
+for(const c of ['powershell -ExecutionPolicy Bypass -File stop.ps1','Stop-Service Tailscale','spsv Tailscale','Set-Service -Name Tailscale -Status Stopped',
+ 'Stop-Service -InputObject (Get-Service Tailscale)','Restart-Service Tailscale','Stop-Process -Name tailscaled','Get-Process tailscaled | Stop-Process'])
+ assert.equal((await g.check(c,{...opts,shell:'powershell'})).block,true,c);
+// A pkill regex that backtracks for ever is cut off by the time limit and refused, without blocking the event loop for long.
+for(const pattern of ['.*.*.*.*.*.*.*.*.*.*.*.*Q','(a|aa)+$']){
+ const started=performance.now();
+ const v=await g.check(`pkill -f '${pattern}'`,{listProcesses:async()=>[{pid:'1',command:'node '+'a'.repeat(40)+'! /home/u/app/server.js --port 3000'}],resolvePid:async()=>''});
+ assert.ok(performance.now()-started<3000,pattern);assert.equal(typeof v.block,'boolean');}
+// A PID that exists but cannot be read is refused.
+assert.equal((await g.check('kill 4242',{...opts,resolvePid:async()=>{throw Error('unreadable');}})).block,true);
+// Evidence: credential-shaped values are masked in the excerpt.
+const rows=[];const h=f.serviceGuardHandler(r=>rows.push(r),{guard:g.serviceGuard(opts)});
+// Built from pieces so a repository secret scan does not read the fixtures as credentials.
+const auth=['Author','ization: ','Bear','er '].join(''),userinfo=['us','er:'].join('');
+for(const command of ['curl -H "'+auth+'SECRET1" https://x; paseo daemon stop','curl https://'+userinfo+'SECRET2@example.org/x; paseo daemon stop',
+ 'tool --token SECRET3 --password=SECRET4; paseo daemon stop','TOKEN=SECRET5 paseo daemon stop'])
+ assert.equal((await h({toolName:'bash',input:{command}},{cwd:dir})).block,true,command);
+assert.equal(rows.length,4);assert.ok(!/SECRET/.test(JSON.stringify(rows)),JSON.stringify(rows));
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri(), (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_service_guard_review_round_3_cases(self):
+        # PM-specified (rev260 round 3): one refused case per (a) item, repair-check reachability, new-session
+        # detachment, and killing the command's own background job.
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync,mkdirSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);
+const dir=mkdtempSync(join(tmpdir(),'guard-r3-'));process.env.HOME=dir;
+const W=(name,text)=>{mkdirSync(join(dir,name,'..'),{recursive:true});writeFileSync(join(dir,name),text);};
+const L='com.example.model-bridge',stop=`launchctl bootout gui/501/${L}\n`,health='curl -fsS http://127.0.0.1:1/health\n';
+W('.paseo/paseo.pid','{"pid":63824,"listen":"127.0.0.1:6767"}\n');
+// A real repair undoes bootout with bootstrap of the service's plist (a kickstart finds no booted-out service).
+const boot=`launchctl bootstrap gui/501 ~/Library/LaunchAgents/${L}.plist\n`;
+W('real.sh',stop+boot+health);
+W('colon.sh',stop+': '+boot+health);
+W('exit.sh',stop+'exit 0\n'+boot+health);
+W('false.sh',stop+'false && '+boot+health);
+W('enable.sh',stop+`launchctl enable gui/501/${L}\n`+health);
+W('frag.sh',stop+'launchctl bootstrap gui/501 bridge.plist\n'+health);
+const procs=[{pid:'63824',command:'Paseo Daemon     Paseo Daemon'},{pid:'999',command:'node node /tmp/app/server.js'}];
+const win=[{pid:'4100',command:'node.exe "C:\\Program Files\\nodejs\\node.exe" C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@getpaseo\\server\\dist\\server\\index.js'}];
+const mk=list=>{const lines=Object.fromEntries(list.map(p=>[p.pid,p.command]));return {resolvePid:async pid=>lines[pid]??'',listProcesses:async()=>list};};
+const opts={protectedServices:[L],cwd:dir,...mk(procs)};
+const refused=[
+ ["echo 'pkill -f Paseo' | sh"],["printf 'kill 63824\\n' | bash"],["cat <<'EOF' | zsh\npkill -f Paseo\nEOF"],
+ ["cat > s.sh <<'EOF'\npkill -f Paseo\nEOF\nbash s.sh"],
+ ["sudo -s <<'EOF'\npkill -f Paseo\nEOF"],["sudo -i <<'EOF'\nkill 63824\nEOF"],["su -c 'pkill -f Paseo'"],
+ ['pkill -u $USER'],['killall -u u'],
+ ['kill $(jq -r .pid ~/.paseo/paseo.pid)'],['kill $(cat ~/.paseo/paseo.pid)'],
+ ["Invoke-Expression 'Get-Process *paseo* | Stop-Process'",'powershell'],["iex 'spsv Tailsc*'",'powershell'],
+ ['Stop-Process -Id 4100 -Force','powershell',win],['taskkill /F /IM node.exe','powershell',win],
+ // The repair check: a restart under ':', after exit, on a false && branch, launchctl enable, or naming a fragment.
+ ['setsid -f bash colon.sh >log 2>&1'],['setsid -f bash exit.sh >log 2>&1'],['setsid -f bash false.sh >log 2>&1'],['setsid -f bash enable.sh >log 2>&1'],['setsid -f bash frag.sh >log 2>&1'],
+ // nohup with a command after it keeps the call open.
+ ['nohup bash real.sh >log 2>&1 & wait']];
+for(const [c,shell,list] of refused){const v=await g.check(c,{...opts,...(list?mk(list):{}),shell:shell??'posix'});assert.equal(v.block,true,c);}
+const allowed=['setsid -f nohup bash real.sh >log 2>&1','setsid nohup bash real.sh >log 2>&1 &','mkdocs serve & sleep 2; kill $!',
+ 'hugo server & PID=$!; sleep 1; kill $PID','pkill -P $$',"echo 'hello' | sh"];
+for(const c of allowed)assert.equal((await g.check(c,opts)).block,false,c);
+// PM-specified (round 3, PM decision): nohup as the last segment with both outputs redirected is detached; anything
+// after it, or a missing redirect, is not. Host reboot and shutdown, ssh remote commands, and data commands.
+W('fix.sh',stop+boot+health);
+assert.equal((await g.check('nohup bash fix.sh >/tmp/f.log 2>&1 &',opts)).block,false);
+for(const c of ['nohup bash fix.sh >/tmp/f.log 2>&1 &; sleep 1','nohup bash fix.sh >/tmp/f.log 2>&1 & sleep 1','nohup bash fix.sh >/tmp/f.log 2>&1 & wait',
+ 'nohup bash fix.sh >/tmp/f.log 2>&1 && echo ok','nohup bash fix.sh &','sudo reboot','systemctl reboot','shutdown -r now',"ssh host 'paseo daemon stop'"])
+ assert.equal((await g.check(c,opts)).block,true,c);
+assert.equal((await g.check('Restart-Computer',{...opts,shell:'powershell'})).block,true);
+for(const c of ["ssh host 'ls -la'",'journalctl -u tailscaled --since today | grep -i kill','grep -rn kill . | grep -i paseo',
+ 'grep "paseo daemon stop" README.md','git commit -m "docs: tailscale down"'])
+ assert.equal((await g.check(c,opts)).block,false,c);
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_service_guard_review_round_5_cases(self):
+        # PM-specified (rev260 round 5 checklist), one case each.
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);
+const dir=mkdtempSync(join(tmpdir(),'guard-r5-'));process.env.HOME=dir;
+const W=(name,text)=>writeFileSync(join(dir,name),text);
+const L='com.example.model-bridge';
+const stop=`launchctl bootout gui/501/${L}\n`,boot=`launchctl bootstrap gui/501 ${dir}/${L}.plist\n`,health='curl -fsS http://127.0.0.1:1/health\n';
+W('stop.sh','pkill -f Paseo\n');W('fix.sh',stop+boot+health);W('nginx.pid','999\n');
+W('bashe.sh',stop+'false\n'+boot+health);
+W('group.sh',stop+'false && {\n'+boot+'}\n'+health);
+W('lib.sh','exit 0\n');W('sourced.sh',stop+'. ./lib.sh\n'+boot+health);
+W('noplist.sh',stop+`launchctl bootstrap gui/501/${L}\n`+health);
+const procs=[{pid:'63824',command:'Paseo Daemon     Paseo Daemon'},{pid:'999',command:'nginx: master process'}];
+const opts={protectedServices:[L],cwd:dir,resolvePid:async pid=>procs.find(p=>p.pid===pid)?.command??'',listProcesses:async()=>procs};
+for(const c of ["ssh host 'sudo bash -s' < stop.sh",'cat stop.sh | tee s.sh >/dev/null; bash s.sh','nohup bash fix.sh >/./dev/stderr 2>&1 &',
+ 'nohup bash -e bashe.sh >log 2>&1 &','nohup bash group.sh >log 2>&1 &','nohup bash sourced.sh >log 2>&1 &','nohup bash noplist.sh >log 2>&1 &',
+ 'yes & nohup bash fix.sh >log 2>&1 &'])assert.equal((await g.check(c,opts)).block,true,c);
+for(const c of ['pkill -USR1 -F nginx.pid','nohup bash fix.sh >log 2>&1 &'])assert.equal((await g.check(c,opts)).block,false,c);
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_service_guard_review_round_4_cases(self):
+        # PM-specified (rev260 round 4), one case each; X is a protected kill.
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync,mkdirSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);
+const dir=mkdtempSync(join(tmpdir(),'guard-r4-'));process.env.HOME=dir;
+const W=(name,text)=>{mkdirSync(join(dir,name,'..'),{recursive:true});writeFileSync(join(dir,name),text);};
+const L='com.example.model-bridge',U='example-router.service',X='pkill -f Paseo';
+const stop=`launchctl bootout gui/501/${L}\n`,boot=`launchctl bootstrap gui/501 ~/Library/LaunchAgents/${L}.plist\n`,health='curl -fsS http://127.0.0.1:1/health\n';
+W('x.sh',stop+boot+health);
+W('kick.sh',stop+`launchctl kickstart -k gui/501/${L}\n`+health);
+W('iffalse.sh',`systemctl --user stop ${U}\nif false; then systemctl --user start ${U}; fi\n`+health);
+W('trueexit.sh',stop+boot+'true && exit 0\n'+health);
+W('stop.sh',X+'\n');
+const procs=[{pid:'63824',command:'Paseo Daemon     Paseo Daemon'}];
+const opts={protectedServices:[L,U],cwd:dir,resolvePid:async pid=>procs.find(p=>p.pid===pid)?.command??'',listProcesses:async()=>procs};
+const refused=[
+ // The detached repair.
+ ['setsid -f bash x.sh'],["trap 'sleep 3' EXIT; nohup bash x.sh >log 2>&1 &"],['nohup bash x.sh &'],['nohup bash x.sh > >(tee log) 2>&1 &'],
+ ['nohup bash x.sh >/dev/stderr 2>&1 &'],['nohup bash x.sh >log 2>&1 &','powershell'],['nohup bash kick.sh >log 2>&1 &'],
+ ['nohup bash iffalse.sh >log 2>&1 &'],['nohup bash trueexit.sh >log 2>&1 &'],
+ // Text and scripts that reach a shell.
+ [`echo '${X}' | bash -`],[`(echo '${X}') | sh`],[`bash <(echo '${X}')`],[`cat <<'EOF' | tee s.sh\n${X}\nEOF\nbash s.sh`],
+ ['ssh host bash < stop.sh'],[`echo '${X}' | ssh host`],
+ // A function named like a data command, the host-wide stop family, an attached pkill user.
+ [`grep() { ${X}; }; grep x f`],['launchctl reboot userspace'],['pkill -u501']];
+for(const [c,shell] of refused)assert.equal((await g.check(c,{...opts,shell:shell??'posix'})).block,true,c);
+assert.equal((await g.check('nohup bash x.sh >log 2>&1 &',opts)).block,false);
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_service_tier_fails_closed_on_lookup_and_diagnostic_errors(self):
@@ -1197,7 +1419,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         root = base/'pi'
         for name, data in build(spec, root).items():
             (root/name).parent.mkdir(parents=True, exist_ok=True); (root/name).write_text(json.dumps(data))
-        for name in ['launch.mjs', 'fleet-routing.mjs', 'credential.py']:
+        for name in ['launch.mjs', 'fleet-routing.mjs', 'service-guard.mjs', 'credential.py']:
             (root/name).write_bytes((PI/name).read_bytes())
         app = root/'app/node_modules/@earendil-works/pi-coding-agent'
         (app/'dist/bundle').mkdir(parents=True)

@@ -43,6 +43,9 @@ const requireCodemode = settings => {
     throw Error('Pi requires fixed Codemode on');
 };
 requireCodemode(JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8')));
+// fleet-routing.mjs imports the service guard; without it Pi would start with the extension (and the guard) off.
+if (!statSync(join(root, 'service-guard.mjs'), { throwIfNoEntry: false })?.isFile())
+  refuse(`${join(root, 'service-guard.mjs')} is missing: re-run the Pi runtime sync`);
 // Per-agent overlays: the owner or a PM may write models.overlay.json or settings.overlay.json into agents/<id>/.
 // Every launch rebuilds that agent's models.json and settings.json from the shared agent/ copies and applies the
 // overlay on top, so deleting an overlay restores the shared values. Only this allowlist is accepted; any other key
@@ -237,7 +240,7 @@ if (isolated && !caller && !probe) refuse('the isolated Pi provider needs a Pase
 // every agent home). Missing, empty or anything else refuses. Paseo's catalog probe carries no per-agent env, so a
 // probe without one runs under PROBE_PROFILE: no network, no AppleEvents or keychain service, writes only to the agent
 // dir it reads (sessions), and no reads under the user's home, the temp folders or /Volumes except the cwd itself, the
-// Node install (NODE_PREFIX), PI_ROOT/app, fleet-routing.mjs and that agent dir without its mcp.json. HOME is the
+// Node install (NODE_PREFIX), PI_ROOT/app, fleet-routing.mjs, service-guard.mjs and that agent dir without its mcp.json. HOME is the
 // account's home from the user database, never the env, which a per-agent env sets on Paseo's MCP probe.
 const PROBE_PROFILE = `(version 1)
 (allow default)
@@ -248,7 +251,7 @@ const PROBE_PROFILE = `(version 1)
 (allow file-write* (subpath (param "PI_HOME")) (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (regex #"^/dev/fd/[0-9]+$"))
 (deny file-read* (subpath (param "HOME")) (subpath "/private/var/folders") (subpath "/private/tmp") (subpath "/Volumes"))
 (allow file-read-metadata)
-(allow file-read* (literal (param "CWD")) (subpath (param "NODE_PREFIX")) (subpath (string-append (param "PI_ROOT") "/app")) (literal (string-append (param "PI_ROOT") "/fleet-routing.mjs")) (subpath (param "PI_HOME")))
+(allow file-read* (literal (param "CWD")) (subpath (param "NODE_PREFIX")) (subpath (string-append (param "PI_ROOT") "/app")) (literal (string-append (param "PI_ROOT") "/fleet-routing.mjs")) (literal (string-append (param "PI_ROOT") "/service-guard.mjs")) (subpath (param "PI_HOME")))
 (deny file-read* (literal (string-append (param "PI_HOME") "/mcp.json")))
 `;
 // A path's real path as stored on disk (realpathSync.native: the on-disk letter case and Unicode form, so a case or
@@ -316,7 +319,7 @@ if (sandboxed) {
     if (!regular) refuse(`sandbox profile ${sandboxProfile} is not a regular file`);
   }
 }
-// A profile lets Pi read only PI_ROOT/app and fleet-routing.mjs of the Pi root, so every extension the sandboxed Pi
+// A profile lets Pi read only PI_ROOT/app, fleet-routing.mjs and the service-guard.mjs it imports of the Pi root, so every extension the sandboxed Pi
 // loads must be a built-in or resolve to one of those; Pi packages are refused.
 const READABLE = () => `${join(root, 'app')}/ and ${join(root, 'fleet-routing.mjs')}`;
 // Whether Pi under a profile can load this extension path: a built-in, or a path resolving into app/ or to

@@ -5,6 +5,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { basename, dirname, join, resolve } from 'node:path';
+import { loadGuardConfig, refusalReason, serviceGuard } from './service-guard.mjs';
 export function validateCodemode(pi) {
   const tools = pi.getActiveTools();
   if (pi.getSettings().codemode?.mode !== 'on' || !tools.includes('codemode'))
@@ -108,6 +109,51 @@ async function agentLabels() {
 }
 // Hash of the file this process actually loaded, so deployment and loaded version can be told apart.
 export const EXTENSION_SHA256 = (() => { try { return createHash('sha256').update(readFileSync(fileURLToPath(import.meta.url))).digest('hex'); } catch { return null; } })();
+// The guard module was imported above, so it is readable; a read failure here should surface.
+export const GUARD_SHA256 = createHash('sha256').update(readFileSync(fileURLToPath(new URL('./service-guard.mjs', import.meta.url)))).digest('hex');
+// Shell tools the service guard checks. Any other tool whose input carries a string `command` is checked as POSIX.
+const GUARD_SHELLS = { bash: 'posix', powershell: 'powershell' };
+// Evidence keeps the start of a refused command with credential-shaped values masked: NAME=value, Bearer/Basic/Token
+// values, API key and cookie headers, --token/--password-style options and URL userinfo.
+export const guardExcerpt = command => String(command)
+  .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s\/@"']+@/gi, '$1<redacted>@')
+  .replace(/\b(bearer|basic|token|digest)\s+[^\s"']+/gi, '$1 <redacted>')
+  .replace(/\b((?:x-)?api-?key|cookie|private-token|x-auth-token)\s*:\s*[^\s"']+/gi, '$1: <redacted>')
+  .replace(/(--?(?:[a-z0-9]+-)*(?:token|password|passwd|pass|secret|api-?key|auth|credentials?)(?:=|\s+))("[^"]*"|'[^']*'|[^\s"']+)/gi, '$1<redacted>')
+  .replace(/\b([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s"']+)/g, '$1=<redacted>')
+  .slice(0, 120);
+/**
+ * tool_call handler for the shared fleet service guard (service-guard.mjs). It refuses a shell command that stops,
+ * unloads, disables or kills a protected service; an error inside it refuses too. options.guard replaces the guard
+ * built from runtime.json (tests).
+ */
+export function serviceGuardHandler(record, { guard, runtime = join(dirname(fileURLToPath(import.meta.url)), 'runtime.json') } = {}) {
+  // Built at the first shell call, so a session that never runs one writes no config row.
+  const load = () => {
+    const config = loadGuardConfig(runtime);
+    if (config.warning) {
+      try { process.stderr.write('fleet-routing: ' + config.warning + '\n'); } catch {}
+      record({ event: 'service-guard-config', warning: config.warning });
+    }
+    return serviceGuard({ protectedServices: config.protectedServices });
+  };
+  return async (event, ctx) => {
+    const command = event?.input?.command;
+    if (typeof command !== 'string') return undefined;
+    const shell = GUARD_SHELLS[event.toolName] ?? 'posix';
+    let reason;
+    try {
+      guard ??= load();
+      const found = await guard.check(command, { cwd: ctx?.cwd ?? process.cwd(), shell });
+      if (!found) return undefined;
+      reason = refusalReason(found);
+    } catch (error) {
+      reason = `Refused by the fleet service guard: it failed (${String(error?.message ?? error).slice(0, 80)}).`;
+    }
+    record({ event: 'service-guard', tool: event.toolName, reason, command: guardExcerpt(command) });
+    return { block: true, reason };
+  };
+}
 export const BLOCKED_MODEL_PREFIX = 'fleet-service-tier-refused';
 export function blockedPayload(payload, error) {
   const reason = String(error).toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/^-|-$/g, '').slice(0, 120);
@@ -533,6 +579,7 @@ export default function(pi) {
     try { if(process.env.PI_CODING_AGENT_DIR) appendFileSync(join(process.env.PI_CODING_AGENT_DIR,'route-evidence.jsonl'),JSON.stringify(row)+'\n',{mode:0o600}); } catch {}
   };
   const credential = fleetCredential(pi, record);
+  pi.on('tool_call', serviceGuardHandler(record));
   pi.on('turn_start', (_event, ctx) => credential.turnStart(ctx));
   pi.on('agent_end', () => credential.runEnd());
   // The thinking level each running fleet compaction used, by reason, for its evidence row.
@@ -581,7 +628,7 @@ export default function(pi) {
   pi.on('session_shutdown', () => credential.shutdown());
   pi.on('session_start',(_event,ctx)=>{
     const check = enforceCodemode(pi);
-    const evidence = { event: 'codemode-check', ...check, sessionId: ctx.sessionManager.getSessionId(), extensionSha256: EXTENSION_SHA256 };
+    const evidence = { event: 'codemode-check', ...check, sessionId: ctx.sessionManager.getSessionId(), extensionSha256: EXTENSION_SHA256, guardSha256: GUARD_SHA256 };
     record(evidence);
     pi.appendEntry('loadout-codemode-check', evidence);
   });
