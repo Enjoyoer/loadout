@@ -422,7 +422,7 @@ rmSync(dir,{recursive:true,force:true});
         self.assertEqual(done.returncode, 0, done.stderr)
 
     @unittest.skipIf(os.name == "nt", "fake credential helper is a POSIX shell script")
-    def test_credential_summary_lease_and_error_redaction(self):
+    def test_credential_summary_lease_and_compact_failed_rows(self):
         script=r"""
 import assert from 'node:assert/strict';
 import {mkdtempSync,writeFileSync,chmodSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join,dirname} from 'node:path';import {fileURLToPath} from 'node:url';
@@ -450,35 +450,31 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
  await wait(300);rmSync(slow);await h.turn_start({},ctx);await h.agent_end({});assert.equal(read,false);
  await pending;assert.equal(s.lent,true);
  await wait(150);assert.equal(s.lent,false);}
-// A 500 body echoing the presented credential leaves no credential in route-evidence.jsonl.
-{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h,s}=boot();
- await h.session_before_compact({reason:'manual',signal:new AbortController().signal},ctx);assert.equal(s.lent,true);
- // One raw echo inside the cut, one Bearer echo that the 300-character cut would split, then a long tail.
- const head='Compaction failed: Summarization failed: 500: {"message":"router echo: raw=synthetic-value ';const auth='auth=Bearer ';
- const echo=head+'x'.repeat(295-head.length-auth.length)+auth+'synthetic-value"}'+'y'.repeat(400);assert.equal(echo.slice(0,300).endsWith('synth'),true);
+const failedRows=()=>readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse).filter(r=>r.event==='compact_failed');
+const row=(reason,extra)=>({event:'compact_failed',reason,aborted:false,errorKind:'upstream',httpStatus:null,sessionId:'sess',model:'example',thinking:'high',...extra});
+const start=(h,reason,c=ctx)=>h.session_before_compact({reason,signal:new AbortController().signal},c);
+// A summary that hit its token cap: errorKind token-cap and no text.
+{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h}=boot();await start(h,'manual');
+ await h.session_compact_failed({reason:'manual',errorMessage:'Compaction failed: Summarization failed: generation hit the token cap and the summary is incomplete',aborted:false},ctx);
+ assert.deepEqual(failedRows(),[row('manual',{errorKind:'token-cap'})]);}
+// A 500 body echoing the key (as Bearer, raw and X-Api-Key style): upstream with its status, and no key in the file.
+{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h,s}=boot();await start(h,'manual');assert.equal(s.lent,true);
+ const echo='Compaction failed: Summarization failed: 500: {"message":"router echo: auth=Bearer synthetic-value raw=synthetic-value key=synthetic-value"}';
  await h.session_compact_failed({reason:'manual',errorMessage:echo,aborted:false},ctx);assert.equal(s.lent,false);
- const text=readFileSync(join(dir,'route-evidence.jsonl'),'utf8');assert.ok(!text.includes('synth'),text);
- const row=text.trim().split('\n').map(JSON.parse).find(r=>r.event==='compact_failed');assert.ok(row.errorMessage.includes('<redacted>'));assert.equal(row.errorMessage.length,300);}
-const failedRow=()=>readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse).filter(r=>r.event==='compact_failed').at(-1);
-const keyEcho='Compaction failed: Summarization failed: 500: {"message":"router echo: key=synthetic-value"}';
-// No held value (every read failed, so Pi's own command supplied the key): an X-Api-Key echo is not written.
-{writeFileSync(fail,'');rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h,s}=boot();
- await h.session_before_compact({reason:'manual',signal:new AbortController().signal},ctx);assert.equal(s.lent,false);
- await h.session_compact_failed({reason:'manual',errorMessage:keyEcho,aborted:false},ctx);rmSync(fail);
- assert.deepEqual(failedRow(),{event:'compact_failed',reason:'manual',errorMessage:null,aborted:false,sessionId:'sess',model:'example',thinking:'high'});
- assert.ok(!readFileSync(join(dir,'route-evidence.jsonl'),'utf8').includes('synth'));}
-// A compaction that started on another provider's model, with a switch to the router while it runs: the text is not
-// written, although the extension holds a router value and the session's model is the router's at the failure.
+ assert.deepEqual(failedRows(),[row('manual',{httpStatus:500})]);
+ const text=readFileSync(join(dir,'route-evidence.jsonl'),'utf8');assert.ok(!text.includes('synth')&&!text.includes('echo'),text);}
+// An aborted compaction: errorKind aborted.
+{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h}=boot();await start(h,'manual');
+ await h.session_compact_failed({reason:'manual',errorMessage:undefined,aborted:true},ctx);
+ assert.deepEqual(failedRows(),[row('manual',{aborted:true,errorKind:'aborted'})]);}
+// Overlapping compactions on two providers, ending in either order: neither row carries any upstream text.
 {rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h}=boot();await h.turn_start({},ctx);await h.agent_end({});
  const direct={...ctx,model:{provider:'direct',id:'other'}};
- await h.session_before_compact({reason:'threshold',signal:new AbortController().signal},direct);
- await h.session_compact_failed({reason:'threshold',errorMessage:'500: raw=direct-key',aborted:false},ctx);
- assert.deepEqual(failedRow(),{event:'compact_failed',reason:'threshold',errorMessage:null,aborted:false,sessionId:'sess',model:'example',thinking:'high'});
- assert.ok(!readFileSync(join(dir,'route-evidence.jsonl'),'utf8').includes('direct-key'));}
-// A failure with no recorded start (Pi's overflow retry or an early manual error) writes no text, even on the router.
-{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h}=boot();await h.turn_start({},ctx);await h.agent_end({});
- await h.session_compact_failed({reason:'overflow',errorMessage:keyEcho,aborted:false},ctx);
- assert.deepEqual(failedRow(),{event:'compact_failed',reason:'overflow',errorMessage:null,aborted:false,sessionId:'sess',model:'example',thinking:'high'});}
+ await start(h,'threshold',direct);await start(h,'threshold',ctx);
+ await h.session_compact_failed({reason:'threshold',errorMessage:'Auto-compaction failed: Summarization failed: 502: token=direct-key',aborted:false},ctx);
+ await h.session_compact_failed({reason:'threshold',errorMessage:'Auto-compaction failed: Summarization failed: 500: key=synthetic-value',aborted:false},direct);
+ assert.deepEqual(failedRows(),[row('threshold',{httpStatus:502}),row('threshold',{httpStatus:500,model:'other'})]);
+ const text=readFileSync(join(dir,'route-evidence.jsonl'),'utf8');assert.ok(!text.includes('direct-key')&&!text.includes('synth'),text);}
 rmSync(dir,{recursive:true,force:true});
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
@@ -493,8 +489,7 @@ const m=await import(process.argv[1]);const h={};m.default({on:(e,f)=>h[e]=f});
 const ctx={model:{provider:'fleet',id:'example'},thinkingLevel:'high',sessionManager:{getSessionId:()=> 'sess'}};
 await h.session_compact_failed({reason:'manual',errorMessage:'Compaction failed: '+'x'.repeat(400),aborted:false,willRetry:false,fromExtension:false},ctx);
 const rows=readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
-// No router helper here, so the extension holds no value and the row carries no upstream text.
-assert.deepEqual(rows,[{event:'compact_failed',reason:'manual',errorMessage:null,aborted:false,sessionId:'sess',model:'example',thinking:'high'}]);
+assert.deepEqual(rows,[{event:'compact_failed',reason:'manual',aborted:false,errorKind:'upstream',httpStatus:null,sessionId:'sess',model:'example',thinking:'high'}]);
 rmSync(dir,{recursive:true,force:true});
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)

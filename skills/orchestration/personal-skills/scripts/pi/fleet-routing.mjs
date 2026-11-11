@@ -155,8 +155,7 @@ async function catalogTiers(ctx) {
 // is withdrawn and Pi runs its own command again, so a failed refresh leaves the operation exactly as before: a
 // process that never read a value fails closed. A successful read always replaces the held value, so
 // a rotation applies to the next request. The value stays in this process's memory: it is never written to a file, a
-// log, argv or the environment, and evidence rows carry only the outcome; the one row that quotes upstream error text
-// (compact_failed) has the held and lent values and any Bearer token replaced before it is cut and written.
+// log, argv or the environment, and evidence rows carry only the outcome (compact_failed carries no upstream text).
 export const CREDENTIAL = { timeoutMs: 15_000, retryDelaysMs: [1_000, 2_000], maxAgeMs: 15 * 60_000, summaryLeaseMs: 30_000 };
 const QUOTED = String.raw`"((?:[^"\\]|\\.)*)"`;
 const HELPER_COMMAND = new RegExp(`^!${QUOTED} ${QUOTED} ${QUOTED}$`);
@@ -205,7 +204,7 @@ const pause = (ms, signal) => new Promise(done => {
 });
 function fleetCredential(pi, record) {
   let found, held = null, lent = null, expiry = null;
-  // Holders of the lend: the run (turn_start..agent_end), open compactions recorded by reason (Pi names manual,
+  // Holders of the lend: the run (turn_start..agent_end), open compactions counted by reason (Pi names manual,
   // threshold and overflow apart), and one branch summary lease (Pi runs one summary at a time); summary numbers the
   // latest summary so a stale abort or lease of an earlier one never ends it.
   let running = false, summarizing = false, summary = 0, lease = null;
@@ -272,38 +271,18 @@ function fleetCredential(pi, record) {
     }
   };
   const release = () => { if (!holding()) withdraw(); };
-  // Error text from upstream can echo the presented credential, so it is kept only when this process knows the value
-  // Pi presented: a compaction that started on the router's model, with a held value (a successful read or a last-good
-  // lend set it; expiry clears only the lend). Otherwise, a compaction with no recorded start, one on another
-  // provider's model, or a fresh process or a helper outage past max age (Pi's own command then supplied the value),
-  // it returns null. The known values, and any Bearer token as a second guard, are replaced on the whole text before
-  // a caller cuts it, so no prefix survives at the cut.
-  const errorText = (text, started) => {
-    if (typeof text !== 'string' || !started?.router || !held) return null;
-    let out = text;
-    for (const value of [held.value, lent]) if (value) out = out.split(value).join('<redacted>');
-    // A token ends at whitespace, a quote, a backslash, a comma or a semicolon, so JSON around it survives.
-    return out.replace(/Bearer\s+[^\s"'\\,;]+/gi, '<redacted>');
-  };
   return {
     turnStart: ctx => { running = true; return refresh(ctx); },
     runEnd: () => { running = false; release(); },
-    // Pi fixes a compaction's model when it starts, and the session's model can change before it ends, so whether it
-    // runs on the router is recorded at the start, one record per open compaction of that reason.
     compactionStart: (event, ctx) => {
-      const router = !!target() && ctx?.model?.provider === found.provider;
-      compactions.set(event?.reason, [...(compactions.get(event?.reason) ?? []), { router }]);
+      compactions.set(event?.reason, (compactions.get(event?.reason) ?? 0) + 1);
       return refresh(ctx, event?.signal);
     },
-    // Pi also reports some compactions that failed before session_before_compact; those find no record to take. The
-    // returned error text (see errorText) is computed before the release can withdraw the lent value.
-    compactionEnd: (event, text) => {
-      const open = compactions.get(event?.reason) ?? [];
-      const started = open.length ? open[0] : null;
-      if (open.length > 1) compactions.set(event.reason, open.slice(1)); else compactions.delete(event?.reason);
-      const kept = errorText(text, started);
+    // Pi also reports some compactions that failed before session_before_compact; those find no count to take.
+    compactionEnd: event => {
+      const open = compactions.get(event?.reason) ?? 0;
+      if (open > 1) compactions.set(event.reason, open - 1); else compactions.delete(event?.reason);
       release();
-      return kept;
     },
     summaryStart: async (event, ctx) => {
       const prep = event?.preparation;
@@ -321,6 +300,16 @@ function fleetCredential(pi, record) {
     shutdown: () => { clearTimeout(lease); lease = null; running = summarizing = false; compactions.clear(); withdraw(); },
   };
 }
+// The kind of a failed compaction, from Pi's own wording only (core/compaction/compaction.js getSummarizationFailure):
+// 'token-cap' when the summary hit its output cap, 'aborted', or 'upstream' for anything else, with the provider's
+// HTTP status when the text has Pi's "<label> failed: <NNN>:" shape. Nothing of the text itself is returned.
+export function compactFailure(event) {
+  const text = typeof event?.errorMessage === 'string' ? event.errorMessage : '';
+  const errorKind = event?.aborted === true ? 'aborted'
+    : text.endsWith('generation hit the token cap and the summary is incomplete') ? 'token-cap' : 'upstream';
+  const status = /\bfailed: (\d{3}):/.exec(text);
+  return { errorKind, httpStatus: status ? Number(status[1]) : null };
+}
 export default function(pi) {
   let turnId=randomUUID();let intent={tier:'inherit',source:'fleet-default'};let tiers=null;
   // One request id shared by the payload and header hooks, whichever runs first.
@@ -336,14 +325,14 @@ export default function(pi) {
   pi.on('turn_start', (_event, ctx) => credential.turnStart(ctx));
   pi.on('agent_end', () => credential.runEnd());
   pi.on('session_before_compact', (event, ctx) => credential.compactionStart(event, ctx));
-  pi.on('session_compact', event => { credential.compactionEnd(event); });
+  pi.on('session_compact', event => credential.compactionEnd(event));
   pi.on('session_compact_failed', (event, ctx) => {
-    // A failed compaction saves nothing, so make it visible: outcome fields only, never the credential or messages.
-    // Upstream text is kept only when the compaction's start vouches for it (errorText).
-    const errorMessage = credential.compactionEnd(event, event?.errorMessage)?.slice(0, 300) ?? null;
+    credential.compactionEnd(event);
+    // A failed compaction saves nothing, so make it visible. Upstream error text can echo a credential or quote request
+    // content, so none of it is written: only its kind, and the HTTP status Pi puts in its "<label> failed: <NNN>:" text.
     let sessionId = null, model = null, thinking = null;
     try { sessionId = ctx?.sessionManager?.getSessionId() ?? null; model = ctx?.model?.id ?? null; thinking = ctx?.thinkingLevel ?? null; } catch {}
-    record({ event: 'compact_failed', reason: event?.reason ?? null, errorMessage, aborted: event?.aborted === true, sessionId, model, thinking });
+    record({ event: 'compact_failed', reason: event?.reason ?? null, aborted: event?.aborted === true, ...compactFailure(event), sessionId, model, thinking });
   });
   pi.on('session_before_tree', (event, ctx) => credential.summaryStart(event, ctx));
   pi.on('session_tree', () => credential.summaryEnd());
