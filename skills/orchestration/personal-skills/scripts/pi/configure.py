@@ -88,14 +88,18 @@ def direct_providers(spec, helper=""):
     return out
 
 def validate_compaction(value):
-    """pi.runtime compaction: the thinking cap and the length bound fleet-routing.mjs uses for a router model's summary."""
-    if not isinstance(value, dict) or value.keys() - {"thinking", "lengthBound"}:
-        raise ValueError("compaction allows only thinking and lengthBound")
+    """pi.runtime compaction: the thinking cap and the length bound fleet-routing.mjs uses for a router model's summary,
+    and the most paths each summary file list keeps (0 keeps all)."""
+    if not isinstance(value, dict) or value.keys() - {"thinking", "lengthBound", "maxFiles"}:
+        raise ValueError("compaction allows only thinking, lengthBound and maxFiles")
     if "thinking" in value and value["thinking"] not in LEVELS:
         raise ValueError("compaction thinking must be one of " + ", ".join(LEVELS))
     bound = value.get("lengthBound", "x")
     if not isinstance(bound, str) or not bound.strip() or len(bound) > 1000 or re.search(r"[\x00-\x1f\x7f]", bound):
         raise ValueError("compaction lengthBound must be one line of 1 to 1000 characters")
+    cap = value.get("maxFiles", 0)
+    if type(cap) is not int or not 0 <= cap <= 100000:
+        raise ValueError("compaction maxFiles must be an integer from 0 to 100000")
 
 def validate_settings(settings):
     if settings.get('codemode') != {'mode': 'on'} or settings.get('defaultTools') != ['+codemode']:

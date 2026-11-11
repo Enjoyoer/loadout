@@ -529,6 +529,62 @@ rmSync(dir,{recursive:true,force:true});
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    @unittest.skipIf(os.name == "nt", "fake credential helper is a POSIX shell script")
+    def test_compaction_file_lists_keep_the_most_recent_paths(self):
+        script=r"""
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync,chmodSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join,dirname} from 'node:path';import {fileURLToPath} from 'node:url';
+const root=dirname(fileURLToPath(process.argv[1]));const dir=mkdtempSync(join(tmpdir(),'fleet-files-'));
+const helper=join(dir,'helper');writeFileSync(helper,'#!/bin/sh\necho synthetic-value\n');chmodSync(helper,0o755);
+writeFileSync(join(dir,'models.json'),JSON.stringify({providers:{fleet:{apiKey:`!"${helper}" "${join(root,'credential.py')}" "${join(root,'runtime.json')}"`,models:[]}}}));
+process.env.PI_CODING_AGENT_DIR=dir;
+const m=await import(process.argv[1]);m.CREDENTIAL.retryDelaysMs=[1,1];
+const pad=n=>String(n).padStart(3,'0');
+const old=Array.from({length:300},(_,i)=>`old/${pad(i)}.txt`), fresh=Array.from({length:20},(_,i)=>`new/${pad(i)}.txt`);
+// The span reads the new paths, half by a direct tool call and half from a Codemode script; Pi's preparation holds them.
+const span=()=>[{role:'assistant',content:fresh.slice(0,10).map(path=>({type:'toolCall',name:'read',arguments:{path}}))},
+  {role:'toolResult',nestedCalls:{calls:fresh.slice(10).map(path=>({name:'read',arguments:{path}}))}}];
+const prep=()=>({firstKeptEntryId:'k',tokensBefore:9,messagesToSummarize:span(),turnPrefixMessages:[],isSplitTurn:false,
+  fileOps:{read:new Set(fresh),written:new Set(),edited:new Set()},settings:{reserveTokens:16384}});
+const entries=fromHook=>[{type:'compaction',fromHook,details:{readFiles:old,modifiedFiles:[]}}];
+const kept=[...old.slice(-80),...fresh];
+// 300 previous and 20 new paths keep the 20 new and the newest 80 previous; maxFiles 0 keeps all.
+for(const fromHook of [true,false]){const p=prep();const lists=m.mergeFileLists(p,entries(fromHook),100);
+ assert.deepEqual(lists.readFiles,kept);assert.equal(lists.dropped,220);assert.deepEqual([...p.fileOps.read].sort(),[...kept].sort());}
+{const p=prep();const lists=m.mergeFileLists(p,entries(true),0);assert.equal(lists.readFiles.length,320);assert.equal(lists.dropped,0);assert.equal(p.fileOps.read.size,320);}
+// A fake compact() that appends Pi's own list block from the preparation, as Pi's does.
+const block=ops=>{const read=[...ops.read].sort(),mod=[...new Set([...ops.edited,...ops.written])].sort(),parts=[];
+ if(read.length)parts.push(`<read-files>\n${read.join('\n')}\n</read-files>`);if(mod.length)parts.push(`<modified-files>\n${mod.join('\n')}\n</modified-files>`);
+ return parts.length?'\n\n'+parts.join('\n\n'):'';};
+let fail=false;
+m.COMPACTION.load=async()=>({VERSION:'1.0.0',compact:async(p,b,c,d,e,f,g,h,i,j,k,l)=>{if(fail)throw Error('Summarization failed: 500: x');
+ return {summary:'S'+block(p.fileOps),firstKeptEntryId:'k',tokensBefore:9,details:{readFiles:[],modifiedFiles:[]}};}});
+const registry={getApiKeyAndHeaders:async()=>({ok:true,apiKey:'synthetic-value',headers:{}}),streamSimple:()=>{}};
+const ctx=provider=>({model:{provider,id:'example',reasoning:true},thinkingLevel:'high',modelRegistry:registry,sessionManager:{getSessionId:()=> 'sess'}});
+const h={};m.default({on:(e,f)=>h[e]=f,registerProvider:()=>{},unregisterProvider:()=>{}});
+const run=(preparation,branchEntries,provider='fleet')=>h.session_before_compact({reason:'manual',preparation,branchEntries,signal:new AbortController().signal},ctx(provider));
+const note=/\n\n\(220 older file paths were dropped; each list keeps the 100 most recent\.\)$/;
+// The fleet summary keeps Pi's sorted block, says once how many were dropped, and stores the lists newest last.
+{const p=prep();const {compaction}=await run(p,entries(true));
+ assert.match(compaction.summary,note);assert.equal(compaction.summary.split('were dropped').length,2);
+ assert.ok(compaction.summary.startsWith('S\n\n<read-files>\n'+[...kept].sort().join('\n')+'\n</read-files>'));
+ assert.deepEqual(compaction.details,{readFiles:kept,modifiedFiles:[]});}
+// Nothing dropped: no line, and the summary is Pi's own.
+{const p=prep();const {compaction}=await run(p,[]);assert.equal(compaction.summary,'S'+block({read:new Set(fresh),edited:new Set(),written:new Set()}));
+ assert.ok(!compaction.summary.includes('dropped'));}
+// A modified path counts once, in the modified list; a read of a modified path never fills the read list.
+{const p=prep();p.messagesToSummarize.push({role:'assistant',content:[{type:'toolCall',name:'edit',arguments:{path:'old/299.txt'}}]});p.fileOps.edited.add('old/299.txt');
+ const lists=m.mergeFileLists(p,entries(true),100);assert.deepEqual(lists.modifiedFiles,['old/299.txt']);assert.ok(!lists.readFiles.includes('old/299.txt'));
+ assert.equal(lists.readFiles.length,100);assert.deepEqual(lists.readFiles.slice(-20),fresh);}
+// Pi's default compaction, after a failed fleet attempt or on a direct provider, gets the same bounded preparation.
+fail=true;
+for(const provider of ['fleet','direct']){const p=prep();assert.equal(await run(p,entries(true),provider),undefined,provider);
+ assert.deepEqual([...p.fileOps.read].sort(),[...kept].sort(),provider);}
+rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_failed_compaction_writes_one_evidence_row(self):
         script=r"""
 import assert from 'node:assert/strict';
@@ -1117,7 +1173,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         (app/'dist/bundle/cli.js').write_text(
             "require('fs').writeFileSync(process.env.RECORD, JSON.stringify({argv: process.argv.slice(2), "
             "dir: process.env.PI_CODING_AGENT_DIR, mcpUrl: process.env.LOADOUT_PI_MCP_URL ?? null}))")
-        def run(*args, command=('node',), cwd=None, **extra):
+        def run(*args, command=('node',), cwd=None, timeout=None, **extra):
             sys.path.insert(0, str(PI.parent))
             import paseo_providers as pp
             ambient = {k: v for k, v in os.environ.items()
@@ -1125,7 +1181,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             env = {**ambient, 'PASEO_AGENT_ID': 'agent-0001', 'RECORD': str(record), 'EXISTING_KEY': 'fixture-key', **extra}
             for key in [k for k, v in extra.items() if v is None]: env.pop(key)
             return subprocess.run([*command, str(root/'launch.mjs'), *args], capture_output=True, text=True, env=env,
-                                  cwd=cwd or base)
+                                  cwd=cwd or base, timeout=timeout)
         return root, run, record
 
     # The isolated marker, plus the test-platform marker off macOS (isolation is macOS only; a real macOS launch
@@ -1542,6 +1598,24 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             self.assertEqual(victim.read_text(), 'original')
             self.assertFalse((home/'models.json').is_symlink())
             self.assertIn('providers', json.loads((home/'models.json').read_text()))
+
+    @unittest.skipIf(os.name == "nt", "FIFOs are POSIX only")
+    def test_a_fifo_overlay_refuses_promptly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            home = root/'agents/agent-0001'; home.mkdir(parents=True)
+            for name in ['models.overlay.json', 'settings.overlay.json']:
+                os.mkfifo(home/name)
+                for args in [self.ISO, ()]:
+                    try:
+                        done = run(*args, '--mode', 'rpc', '--model', 'fleet/current', timeout=20)
+                    except subprocess.TimeoutExpired:
+                        self.fail(f'{name}: a FIFO overlay hung the launch')
+                    self.assertNotEqual(done.returncode, 0, name)
+                    self.assertIn('is not a regular file', done.stderr)
+                    self.assertFalse(record.exists())
+                (home/name).unlink()
 
     @unittest.skipIf(os.name == "nt", "symbolic links need privileges on Windows")
     def test_a_symlinked_overlay_refuses_without_echoing_its_target(self):

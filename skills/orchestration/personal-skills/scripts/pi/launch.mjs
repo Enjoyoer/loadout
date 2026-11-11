@@ -14,9 +14,10 @@ function refuse(message) {
 
 // Read an overlay from an agent home, which the agent itself may write: opened without following a link (a symbolic
 // link refuses, so the launcher never reads another file through it), and only a regular file. Null when missing.
+// Opened nonblocking too, so a FIFO or a device returns at once and refuses instead of hanging the launch.
 function readOverlay(path) {
   let fd;
-  try { fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); } catch (error) {
+  try { fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)); } catch (error) {
     if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null;
     if (error.code === 'ELOOP') refuse(`${path} is a symlink`);
     throw error;
