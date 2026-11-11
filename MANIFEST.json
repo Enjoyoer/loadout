@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "555a18fd05c5afa4689222cdefb820ba9bf5dd7e",
+  "source_commit": "b4aa71bbdfe440e751dfeeffdbbd328fd0a87d7a",
   "skill_count": 24,
   "file_count": 134,
   "files": [
@@ -199,7 +199,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5325,
-      "sha256": "3d3edd51efbfdee189c681e32d22f99cddf7a7c4ac9c6ed38af92af0eb405ed5"
+      "sha256": "cd9e0e5fa16a4fd0a077c535adfca161dc44c6216f25149142e50c04e1b4da97"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -254,8 +254,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 13426,
-      "sha256": "cfe9830104fa81d47ef6b307ba68803d6970a1c3a16e30b47b1b597c2c8b4e50"
+      "bytes": 13770,
+      "sha256": "38743424e66f78e49f109f282204888adf6ba325634e2b357b41c4d3f7501b7b"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -359,8 +359,8 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 6347,
-      "sha256": "2adb06f15944ad213b848699965a3007707c7a881f2221aadabd320714f88c0a"
+      "bytes": 6675,
+      "sha256": "be3634b50c2afcb5d54ac5097440b1a546a4be359889905094538e03e75433b2"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
