@@ -951,8 +951,10 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             "require('fs').writeFileSync(process.env.RECORD, JSON.stringify({argv: process.argv.slice(2), "
             "dir: process.env.PI_CODING_AGENT_DIR, mcpUrl: process.env.LOADOUT_PI_MCP_URL ?? null}))")
         def run(*args, command=('node',), **extra):
+            sys.path.insert(0, str(PI.parent))
+            import paseo_providers as pp
             ambient = {k: v for k, v in os.environ.items()
-                       if not re.match(r'(LOADOUT_PI_|JITI_|LD_|DYLD_)', k) and k != 'NODE_OPTIONS'}
+                       if not re.match(r'(LOADOUT_PI_|JITI_|LD_|DYLD_|OPENSSL_)', k) and k not in pp.ISOLATED_SCRUBBED_ENV}
             env = {**ambient, 'PASEO_AGENT_ID': 'agent-0001', 'RECORD': str(record), **extra}
             for key in [k for k, v in extra.items() if v is None]: env.pop(key)
             return subprocess.run([*command, str(root/'launch.mjs'), *args], capture_output=True, text=True, env=env, cwd=base)
@@ -1089,10 +1091,22 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             self.assertFalse(preloaded.exists())
             self.assertEqual(argv_log.read_text().splitlines()[:2], ['-f', str(profile)])
             self.assertFalse(record.exists())
+            # R8: an OPENSSL_CONF whose provider module node would load before any JavaScript (this one names a
+            # missing module, so node aborts if it reads the file) is cleared by the row's scrub; the launch stays isolated.
+            bad_conf = base/'openssl.cnf'
+            bad_conf.write_text(f'nodejs_conf = nc\n[nc]\nproviders = prov\n[prov]\nevil = evil_sect\n[evil_sect]\n'
+                                f'module = {base}/missing-provider.so\nactivate = 1\n')
+            done = run('--loadout-isolated', '--mode', 'rpc', '--model', 'fleet/current', command=row,
+                       OPENSSL_CONF=str(bad_conf))
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertFalse((home/'mcp.json').exists())
+            self.assertEqual(json.loads(record.read_text())['argv'][0], '--no-approve')
+            record.unlink()
             # Without the scrub, the launcher itself refuses a preload or loader variable; Pi never starts.
             benign = base/'benign.js'; benign.write_text('')
+            empty_conf = base/'empty.cnf'; empty_conf.write_text('')
             for key, value in [('NODE_OPTIONS', f'--require={benign}'), ('JITI_ALIAS', '{}'), ('LD_PRELOAD', ''),
-                               ('DYLD_LIBRARY_PATH', str(base))]:
+                               ('DYLD_LIBRARY_PATH', str(base)), ('OPENSSL_CONF', str(empty_conf))]:
                 done = run('--loadout-isolated', '--mode', 'rpc', '--model', 'fleet/current', **{key: value})
                 self.assertNotEqual(done.returncode, 0, key)
                 self.assertEqual(done.stderr.count('\n'), 1, done.stderr)
@@ -1133,6 +1147,10 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             self.assertEqual(rows['pi-isolated']['command'],[*pp.ISOLATED_ENV_SCRUB,node,*rows['pi']['command'][1:],
                              '--loadout-isolated','--loadout-sandbox-profile',str(Path.home()/'.config/example/pi.sb')])
             self.assertEqual(rows['pi-isolated']['paseoTools'],{'enabled':False})
+            # The row's scrub and the launcher's refusal are the same set.
+            launcher=(PI/'launch.mjs').read_text()
+            block=launcher[launcher.index('const ISOLATED_SCRUBBED_ENV = ['):]
+            self.assertEqual(re.findall(r"'([A-Z0-9_]+)'",block[:block.index('];')]),list(pp.ISOLATED_SCRUBBED_ENV))
             self.assertNotIn('env',rows['pi-isolated'])
             # Dropping the profile drops it from the row.
             catalog['pi']['isolated']={}

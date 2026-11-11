@@ -146,10 +146,37 @@ if (isolated && ['LOADOUT_PI_ISOLATED', 'LOADOUT_PI_SANDBOX_PROFILE'].some(key =
   refuse('remove LOADOUT_PI_ISOLATED and LOADOUT_PI_SANDBOX_PROFILE from the env: isolation comes from the provider command');
 if ((testPlatform !== null || testSandboxExec !== null) && process.platform === 'darwin')
   refuse('the --loadout-test-* markers are for test fixtures, never a macOS launch');
-// A per-agent env still reaches this process. The isolated row's command clears the known preload variables through
-// /usr/bin/env before Node starts; any that remain (or a JITI_* var, which Pi's extension loader reads) refuse.
+// Variables the isolated row's command clears through /usr/bin/env before Node starts (ISOLATED_SCRUBBED_ENV in
+// paseo_providers.py, the same set), so a per-agent env cannot load code, modules, config or data files, or change
+// module resolution. Any still set, or any other LD_*, DYLD_*, OPENSSL_* or JITI_* variable, refuses an isolated launch.
+const ISOLATED_SCRUBBED_ENV = [
+  // Node.js 24 and 26 (doc/api/cli.md, Environment variables): code, module resolution, ICU data, compile cache, CA files.
+  'NODE_OPTIONS', 'NODE_PATH', 'NODE_REPL_EXTERNAL_MODULE', 'NODE_ICU_DATA', 'NODE_COMPILE_CACHE',
+  'NODE_COMPILE_CACHE_PORTABLE', 'NODE_COMPILE_CACHE_READONLY', 'NODE_EXTRA_CA_CERTS', 'NODE_PRESERVE_SYMLINKS',
+  // OpenSSL 3.5 (openssl-env(7)), which Node reads at startup: config, providers, engines, data files.
+  'OPENSSL_CONF', 'OPENSSL_CONF_INCLUDE', 'OPENSSL_CONFIG', 'OPENSSL_ENGINES', 'OPENSSL_MODULES', 'CTLOG_FILE',
+  'RANDFILE', 'SSL_CERT_DIR', 'SSL_CERT_FILE',
+  // glibc ld.so(8), every LD_* it reads, and glibc's module, tunable, locale and resolver files.
+  'LD_ASSUME_KERNEL', 'LD_AUDIT', 'LD_BIND_NOT', 'LD_BIND_NOW', 'LD_DEBUG', 'LD_DEBUG_OUTPUT', 'LD_DYNAMIC_WEAK',
+  'LD_HWCAP_MASK', 'LD_LIBRARY_PATH', 'LD_ORIGIN_PATH', 'LD_POINTER_GUARD', 'LD_PREFER_MAP_32BIT_EXEC',
+  'LD_PRELOAD', 'LD_PROFILE', 'LD_PROFILE_OUTPUT', 'LD_SHOW_AUXV', 'LD_TRACE_LOADED_OBJECTS', 'LD_TRACE_PRELINKING',
+  'LD_USE_LOAD_BIAS', 'LD_VERBOSE', 'LD_WARN', 'GCONV_PATH', 'GLIBC_TUNABLES', 'LOCPATH', 'NLSPATH', 'HOSTALIASES',
+  // macOS dyld(1) library and framework loading (running through /usr/bin/env also purges every DYLD_*).
+  'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'DYLD_FRAMEWORK_PATH', 'DYLD_FALLBACK_LIBRARY_PATH',
+  'DYLD_FALLBACK_FRAMEWORK_PATH', 'DYLD_VERSIONED_LIBRARY_PATH', 'DYLD_VERSIONED_FRAMEWORK_PATH',
+  'DYLD_IMAGE_SUFFIX', 'DYLD_SHARED_CACHE_DIR', 'DYLD_SHARED_REGION', 'DYLD_ROOT_PATH',
+  // jiti, Pi's extension loader: every JITI_* in Pi 1.0.0's installed packages.
+  'JITI_ALIAS', 'JITI_CACHE', 'JITI_DEBUG', 'JITI_ESM_EVAL_TEMP_FILE', 'JITI_EXTENSIONS', 'JITI_FS_CACHE',
+  'JITI_INTEROP_DEFAULT', 'JITI_JSX', 'JITI_MODULE_CACHE', 'JITI_NATIVE_MODULES', 'JITI_REBUILD_FS_CACHE',
+  'JITI_REQUIRE_CACHE', 'JITI_RESPECT_TMPDIR_ENV', 'JITI_SOURCE_MAPS', 'JITI_TRANSFORM_MODULES', 'JITI_TRY_NATIVE',
+  'JITI_TSCONFIG_PATHS',
+  // Pi 1.0.0 (docs/environment-variables.md): its package and session directories.
+  'PI_PACKAGE_DIR', 'PI_CODING_AGENT_SESSION_DIR',
+];
+// A per-agent env still reaches this process; the isolated row's scrub is the fix, this refusal its backstop.
 if (isolated) {
-  const preload = Object.keys(process.env).find(key => key === 'NODE_OPTIONS' || /^(JITI_|LD_|DYLD_)/.test(key));
+  const preload = Object.keys(process.env)
+    .find(key => ISOLATED_SCRUBBED_ENV.includes(key) || /^(LD_|DYLD_|OPENSSL_|JITI_)/.test(key));
   if (preload) refuse(`remove ${preload} from the env: the isolated Pi provider takes no preload or loader variables`);
 }
 const cli = join(root, 'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');

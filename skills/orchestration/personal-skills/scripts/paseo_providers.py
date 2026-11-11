@@ -51,10 +51,36 @@ PROTECTED_PROVIDERS = {"pi", "claude", "codex"}
 PASEO_BUILTIN_PROVIDERS = {"claude", "codex", "copilot", "opencode", "pi", "omp"}
 PROVIDER_ID = re.compile(r"[a-z][a-z0-9-]{0,63}")
 ISOLATED_DEFAULT_ID = "pi-isolated"
-# The isolated row starts its command with this env scrub, so a per-agent env cannot preload code into the launcher
-# (on macOS, running through /usr/bin/env also drops every DYLD_* variable). The merge puts the host's absolute
-# node path after it, so a per-agent PATH cannot pick another node.
-ISOLATED_ENV_SCRUB = ("/usr/bin/env", "-u", "NODE_OPTIONS", "-u", "LD_PRELOAD", "-u", "LD_LIBRARY_PATH", "-u", "LD_AUDIT")
+# Variables the isolated row clears before Node starts, so a per-agent env cannot load code, modules, config or data
+# files, or change module resolution, in the launcher or Pi. launch.mjs refuses the same set (ISOLATED_SCRUBBED_ENV).
+ISOLATED_SCRUBBED_ENV = (
+    # Node.js 24 and 26 (doc/api/cli.md, Environment variables): code, module resolution, ICU data, compile cache, CA files.
+    "NODE_OPTIONS", "NODE_PATH", "NODE_REPL_EXTERNAL_MODULE", "NODE_ICU_DATA", "NODE_COMPILE_CACHE",
+    "NODE_COMPILE_CACHE_PORTABLE", "NODE_COMPILE_CACHE_READONLY", "NODE_EXTRA_CA_CERTS", "NODE_PRESERVE_SYMLINKS",
+    # OpenSSL 3.5 (openssl-env(7)), which Node reads at startup: config, providers, engines, data files.
+    "OPENSSL_CONF", "OPENSSL_CONF_INCLUDE", "OPENSSL_CONFIG", "OPENSSL_ENGINES", "OPENSSL_MODULES", "CTLOG_FILE",
+    "RANDFILE", "SSL_CERT_DIR", "SSL_CERT_FILE",
+    # glibc ld.so(8), every LD_* it reads, and glibc's module, tunable, locale and resolver files.
+    "LD_ASSUME_KERNEL", "LD_AUDIT", "LD_BIND_NOT", "LD_BIND_NOW", "LD_DEBUG", "LD_DEBUG_OUTPUT", "LD_DYNAMIC_WEAK",
+    "LD_HWCAP_MASK", "LD_LIBRARY_PATH", "LD_ORIGIN_PATH", "LD_POINTER_GUARD", "LD_PREFER_MAP_32BIT_EXEC",
+    "LD_PRELOAD", "LD_PROFILE", "LD_PROFILE_OUTPUT", "LD_SHOW_AUXV", "LD_TRACE_LOADED_OBJECTS",
+    "LD_TRACE_PRELINKING", "LD_USE_LOAD_BIAS", "LD_VERBOSE", "LD_WARN", "GCONV_PATH", "GLIBC_TUNABLES", "LOCPATH",
+    "NLSPATH", "HOSTALIASES",
+    # macOS dyld(1) library and framework loading (running through /usr/bin/env also purges every DYLD_*).
+    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_LIBRARY_PATH",
+    "DYLD_FALLBACK_FRAMEWORK_PATH", "DYLD_VERSIONED_LIBRARY_PATH", "DYLD_VERSIONED_FRAMEWORK_PATH",
+    "DYLD_IMAGE_SUFFIX", "DYLD_SHARED_CACHE_DIR", "DYLD_SHARED_REGION", "DYLD_ROOT_PATH",
+    # jiti, Pi's extension loader: every JITI_* in Pi 1.0.0's installed packages.
+    "JITI_ALIAS", "JITI_CACHE", "JITI_DEBUG", "JITI_ESM_EVAL_TEMP_FILE", "JITI_EXTENSIONS", "JITI_FS_CACHE",
+    "JITI_INTEROP_DEFAULT", "JITI_JSX", "JITI_MODULE_CACHE", "JITI_NATIVE_MODULES", "JITI_REBUILD_FS_CACHE",
+    "JITI_REQUIRE_CACHE", "JITI_RESPECT_TMPDIR_ENV", "JITI_SOURCE_MAPS", "JITI_TRANSFORM_MODULES",
+    "JITI_TRY_NATIVE", "JITI_TSCONFIG_PATHS",
+    # Pi 1.0.0 (docs/environment-variables.md): its package and session directories.
+    "PI_PACKAGE_DIR", "PI_CODING_AGENT_SESSION_DIR",
+)
+# The isolated row starts its command with this env scrub (on macOS, running through /usr/bin/env also drops every
+# DYLD_* variable). The merge puts the host's absolute node path after it, so a per-agent PATH cannot pick another node.
+ISOLATED_ENV_SCRUB = ("/usr/bin/env", *(arg for name in ISOLATED_SCRUBBED_ENV for arg in ("-u", name)))
 # argv prefix for every paseo call made here; tests replace it with their fake (production always runs bare "paseo").
 # An ssh host reloads through RELOAD_JS instead, which runs that host's own paseo.
 PASEO_COMMAND = ("paseo",)
