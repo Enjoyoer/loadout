@@ -824,7 +824,8 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     return null;
   }
   // The repair exception. Each stop in the script must be undone by its pair, in order, each naming the whole entry,
-  // then followed by a health check, with no exit, return, exec, set -e or kill $$ between the stop and that check:
+  // then followed by a health check, with no exit, return, exec or kill $$ between the stop and that check and no set -e
+  // before it:
   // bootout, unload or remove -> bootstrap or load; disable -> enable, then bootstrap, kickstart or start; mask ->
   // unmask, then start; stop or kill -> start, restart or kickstart; a restart is its own pair. Restarts and health
   // checks count only as the command (the restart verb as its subcommand) of an unconditional top-level segment: not
@@ -858,7 +859,8 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       from = restart.index; strict = true;
     }
     const health = run.healths.find(at => at > from);
-    return health !== undefined && !run.exits.some(at => at > found.index && at < health);
+    // set -e anywhere before the health check makes any failing command between the stop and it an exit.
+    return health !== undefined && !run.exits.some(at => at > found.index && at < health) && !run.errexit.some(at => at < health);
   });
   // The restart verb of a segment (its subcommand) and what it names, or null.
   function restartOf(words) {
@@ -898,13 +900,17 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       || (cmd === 'paseo' && (rl.includes('status') || rl.includes('ls'))) || (cmd === 'tailscale' && (rl.includes('status') || rl.includes('ping')))
       || (cmd === 'sc' && rl.includes('query'));
   };
-  // exit, return, logout, exec <cmd>, set -e (or -o errexit) and kill $$ end the script early.
+  // exit, return, logout, exec <cmd> and kill $$ end the script early; set -e (or -o errexit) makes any failure do so.
   const exitOf = words => {
     const { at } = commandAt(words);
     if (words[0]?.v === 'exec' && at < words.length) return true;
     const cmd = base(words[at]?.v ?? ''), args = words.slice(at + 1).map(word => word.v);
-    return ['exit', 'return', 'logout'].includes(cmd) || (cmd === 'set' && args.some((arg, j) => /^-[a-zA-Z]*e/.test(arg) || (arg === '-o' && args[j + 1] === 'errexit')))
-      || (cmd === 'kill' && args.includes('$$'));
+    return ['exit', 'return', 'logout'].includes(cmd) || (cmd === 'kill' && args.includes('$$'));
+  };
+  const errexitOf = words => {
+    const { at } = commandAt(words);
+    const args = words.slice(at + 1).map(word => word.v);
+    return base(words[at]?.v ?? '') === 'set' && args.some((arg, j) => /^-[a-zA-Z]*e/.test(arg) || (arg === '-o' && args[j + 1] === 'errexit'));
   };
 
   // Known variables ($HOME, $PWD and earlier NAME=value assignments) are expanded; an unquoted expansion with spaces
@@ -962,6 +968,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       if (found) { run.findings.push({ ...found, index }); if (stopped(run)) return; }
       if (run.collect && !mention) {
         if (exitOf(words)) run.exits.push(index);
+        if (errexitOf(words)) run.errexit.push(index);
         if (unconditional) {
           const restart = restartOf(words);
           if (restart) run.restarts.push({ index, ...restart });
@@ -1008,7 +1015,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
   /** Findings, restarts and health checks of one text (a command line or a script), in segment order. */
   async function analyze(text, shell, cwd, depth, job, collect) {
     const root = parse(text, shell);
-    const run = { job, depth, collect, shell, root, findings: [], restarts: [], healths: [], exits: [], order: 0, wholes: new Map() };
+    const run = { job, depth, collect, shell, root, findings: [], restarts: [], healths: [], exits: [], errexit: [], order: 0, wholes: new Map() };
     await walk(root, run, { dir: cwd, uncertain: false, vars: {}, blocks: 0, stack: [] }, false);
     return run;
   }
@@ -1023,7 +1030,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
 
 /** Refusal text for a finding: what ran, which protected name it touches, and the rule. */
 export const refusalReason = found => `Refused by the fleet service guard: ${found.what} touches protected service "${found.entry}". Rule: ${GUARD_RULE}. `
-  + 'Write that script with the write tool: undo each stop with its pair, naming the full service (bootout -> bootstrap <plist>; stop or kill -> start, restart or kickstart; disable -> enable, then bootstrap; mask -> unmask, then start), then health-check it (curl, launchctl print, systemctl is-active), with no exit or set -e between. Run it as the last command, with both outputs redirected: nohup bash <script> >log 2>&1 &. This guard is a backstop, not a sandbox.';
+  + 'Write that script with the write tool: undo each stop with its pair, naming the full service (bootout -> bootstrap <plist>; stop or kill -> start, restart or kickstart; disable -> enable, then bootstrap; mask -> unmask, then start), then health-check it (curl, launchctl print, systemctl is-active), with no exit between and no set -e. Run it as the last command, with both outputs redirected: nohup bash <script> >log 2>&1 &. This guard is a backstop, not a sandbox.';
 
 /**
  * Pure entry point for any harness: {block: false} or {block: true, reason, what, entry}. Options: protectedServices

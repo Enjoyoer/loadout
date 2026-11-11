@@ -645,7 +645,7 @@ import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync,readFi
 const g=await import(process.argv[1]);const f=await import(process.argv[2]);
 const dir=mkdtempSync(join(tmpdir(),'guard-'));
 writeFileSync(join(dir,'s.sh'),'#!/bin/sh\nlaunchctl bootout gui/501/com.example.model-bridge\n');
-writeFileSync(join(dir,'fix.sh'),'#!/bin/sh\ncp new.plist old.plist\nlaunchctl bootout gui/501/com.example.model-bridge\nlaunchctl bootstrap gui/501 old.plist\nlaunchctl kickstart -k gui/501/com.example.model-bridge\ncurl -fsS http://127.0.0.1:1/health || cp backup.plist old.plist\n');
+writeFileSync(join(dir,'fix.sh'),'#!/bin/sh\ncp new.plist old.plist\nlaunchctl bootout gui/501/com.example.model-bridge\nlaunchctl bootstrap gui/501 ~/Library/LaunchAgents/com.example.model-bridge.plist\ncurl -fsS http://127.0.0.1:1/health || cp backup.plist old.plist\n');
 const lines={'12345':'node /tmp/unrelated-server.js','23456':'/opt/example-bridge/bin/example-bridge --serve'};
 const opts={protectedServices:['com.example.model-bridge','example-router.service','example-bridge'],cwd:dir,
  resolvePid:async pid=>lines[pid]??'',listProcesses:async()=>[{pid:'1',command:'node /tmp/some-unrelated-test-server.js'}]};
@@ -688,7 +688,7 @@ W('stop.sh','#!/bin/sh\n'+stop);W('stop.ps1','Stop-Service -Name Tailscale\n');
 W('fakefix.sh','#!/bin/sh\n'+stop+'# later: launchctl kickstart -k it and curl the health URL\n');
 W('unrelated.sh','#!/bin/sh\n'+stop+'systemctl --user restart unrelated.service\ncurl -s https://example.org\n');
 W('paseostop.sh','#!/bin/sh\npaseo daemon stop\ntailscale down\nlaunchctl kickstart -k gui/501/com.apple.unrelated\ncurl -s https://example.org\n');
-W('realfix.sh','#!/bin/sh\ncp new.plist old.plist\n'+stop+'launchctl bootstrap gui/501 old.plist\nlaunchctl kickstart -k gui/501/com.example.model-bridge\ncurl -fsS http://127.0.0.1:1/health || cp backup.plist old.plist\n');
+W('realfix.sh','#!/bin/sh\ncp new.plist old.plist\n'+stop+'launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.example.model-bridge.plist\ncurl -fsS http://127.0.0.1:1/health || cp backup.plist old.plist\n');
 W('big.sh','#!/bin/sh\n'+'# padding padding padding padding padding padding padding\n'.repeat(5000)+stop);
 W('s1.sh','bash s2.sh\n');W('s2.sh','bash s3.sh\n');W('s3.sh','bash s4.sh\n');W('s4.sh',stop);
 W('sub/x.txt','x\n');W('build.sh','#!/bin/sh\nset -e\nnpm ci\nnpm run build\n');
@@ -756,12 +756,14 @@ const dir=mkdtempSync(join(tmpdir(),'guard-r3-'));process.env.HOME=dir;
 const W=(name,text)=>{mkdirSync(join(dir,name,'..'),{recursive:true});writeFileSync(join(dir,name),text);};
 const L='com.example.model-bridge',stop=`launchctl bootout gui/501/${L}\n`,health='curl -fsS http://127.0.0.1:1/health\n';
 W('.paseo/paseo.pid','{"pid":63824,"listen":"127.0.0.1:6767"}\n');
-W('real.sh',stop+`launchctl kickstart -k gui/501/${L}\n`+health);
-W('colon.sh',stop+`: launchctl kickstart -k gui/501/${L}\n`+health);
-W('exit.sh',stop+`exit 0\nlaunchctl kickstart -k gui/501/${L}\n`+health);
-W('false.sh',stop+`false && launchctl kickstart -k gui/501/${L}\n`+health);
+// A real repair undoes bootout with bootstrap of the service's plist (a kickstart finds no booted-out service).
+const boot=`launchctl bootstrap gui/501 ~/Library/LaunchAgents/${L}.plist\n`;
+W('real.sh',stop+boot+health);
+W('colon.sh',stop+': '+boot+health);
+W('exit.sh',stop+'exit 0\n'+boot+health);
+W('false.sh',stop+'false && '+boot+health);
 W('enable.sh',stop+`launchctl enable gui/501/${L}\n`+health);
-W('frag.sh',stop+'launchctl kickstart -k gui/501/bridge\n'+health);
+W('frag.sh',stop+'launchctl bootstrap gui/501 bridge.plist\n'+health);
 const procs=[{pid:'63824',command:'Paseo Daemon     Paseo Daemon'},{pid:'999',command:'node node /tmp/app/server.js'}];
 const win=[{pid:'4100',command:'node.exe "C:\\Program Files\\nodejs\\node.exe" C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@getpaseo\\server\\dist\\server\\index.js'}];
 const mk=list=>{const lines=Object.fromEntries(list.map(p=>[p.pid,p.command]));return {resolvePid:async pid=>lines[pid]??'',listProcesses:async()=>list};};
@@ -775,7 +777,7 @@ const refused=[
  ["Invoke-Expression 'Get-Process *paseo* | Stop-Process'",'powershell'],["iex 'spsv Tailsc*'",'powershell'],
  ['Stop-Process -Id 4100 -Force','powershell',win],['taskkill /F /IM node.exe','powershell',win],
  // The repair check: a restart under ':', after exit, on a false && branch, launchctl enable, or naming a fragment.
- ['setsid -f bash colon.sh'],['setsid -f bash exit.sh'],['setsid -f bash false.sh'],['setsid -f bash enable.sh'],['setsid -f bash frag.sh'],
+ ['setsid -f bash colon.sh >log 2>&1'],['setsid -f bash exit.sh >log 2>&1'],['setsid -f bash false.sh >log 2>&1'],['setsid -f bash enable.sh >log 2>&1'],['setsid -f bash frag.sh >log 2>&1'],
  // nohup with a command after it keeps the call open.
  ['nohup bash real.sh >log 2>&1 & wait']];
 for(const [c,shell,list] of refused){const v=await g.check(c,{...opts,...(list?mk(list):{}),shell:shell??'posix'});assert.equal(v.block,true,c);}
@@ -784,7 +786,7 @@ const allowed=['setsid -f nohup bash real.sh >log 2>&1','setsid nohup bash real.
 for(const c of allowed)assert.equal((await g.check(c,opts)).block,false,c);
 // PM-specified (round 3, PM decision): nohup as the last segment with both outputs redirected is detached; anything
 // after it, or a missing redirect, is not. Host reboot and shutdown, ssh remote commands, and data commands.
-W('fix.sh',stop+`launchctl kickstart -k gui/501/${L}\n`+health);
+W('fix.sh',stop+boot+health);
 assert.equal((await g.check('nohup bash fix.sh >/tmp/f.log 2>&1 &',opts)).block,false);
 for(const c of ['nohup bash fix.sh >/tmp/f.log 2>&1 &; sleep 1','nohup bash fix.sh >/tmp/f.log 2>&1 & sleep 1','nohup bash fix.sh >/tmp/f.log 2>&1 & wait',
  'nohup bash fix.sh >/tmp/f.log 2>&1 && echo ok','nohup bash fix.sh &','sudo reboot','systemctl reboot','shutdown -r now',"ssh host 'paseo daemon stop'"])
@@ -793,6 +795,38 @@ assert.equal((await g.check('Restart-Computer',{...opts,shell:'powershell'})).bl
 for(const c of ["ssh host 'ls -la'",'journalctl -u tailscaled --since today | grep -i kill','grep -rn kill . | grep -i paseo',
  'grep "paseo daemon stop" README.md','git commit -m "docs: tailscale down"'])
  assert.equal((await g.check(c,opts)).block,false,c);
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_service_guard_review_round_4_cases(self):
+        # PM-specified (rev260 round 4), one case each; X is a protected kill.
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync,mkdirSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);
+const dir=mkdtempSync(join(tmpdir(),'guard-r4-'));process.env.HOME=dir;
+const W=(name,text)=>{mkdirSync(join(dir,name,'..'),{recursive:true});writeFileSync(join(dir,name),text);};
+const L='com.example.model-bridge',U='example-router.service',X='pkill -f Paseo';
+const stop=`launchctl bootout gui/501/${L}\n`,boot=`launchctl bootstrap gui/501 ~/Library/LaunchAgents/${L}.plist\n`,health='curl -fsS http://127.0.0.1:1/health\n';
+W('x.sh',stop+boot+health);
+W('kick.sh',stop+`launchctl kickstart -k gui/501/${L}\n`+health);
+W('iffalse.sh',`systemctl --user stop ${U}\nif false; then systemctl --user start ${U}; fi\n`+health);
+W('trueexit.sh',stop+boot+'true && exit 0\n'+health);
+W('stop.sh',X+'\n');
+const procs=[{pid:'63824',command:'Paseo Daemon     Paseo Daemon'}];
+const opts={protectedServices:[L,U],cwd:dir,resolvePid:async pid=>procs.find(p=>p.pid===pid)?.command??'',listProcesses:async()=>procs};
+const refused=[
+ // The detached repair.
+ ['setsid -f bash x.sh'],["trap 'sleep 3' EXIT; nohup bash x.sh >log 2>&1 &"],['nohup bash x.sh &'],['nohup bash x.sh > >(tee log) 2>&1 &'],
+ ['nohup bash x.sh >/dev/stderr 2>&1 &'],['nohup bash x.sh >log 2>&1 &','powershell'],['nohup bash kick.sh >log 2>&1 &'],
+ ['nohup bash iffalse.sh >log 2>&1 &'],['nohup bash trueexit.sh >log 2>&1 &'],
+ // Text and scripts that reach a shell.
+ [`echo '${X}' | bash -`],[`(echo '${X}') | sh`],[`bash <(echo '${X}')`],[`cat <<'EOF' | tee s.sh\n${X}\nEOF\nbash s.sh`],
+ ['ssh host bash < stop.sh'],[`echo '${X}' | ssh host`],
+ // A function named like a data command, the host-wide stop family, an attached pkill user.
+ [`grep() { ${X}; }; grep x f`],['launchctl reboot userspace'],['pkill -u501']];
+for(const [c,shell] of refused)assert.equal((await g.check(c,{...opts,shell:shell??'posix'})).block,true,c);
+assert.equal((await g.check('nohup bash x.sh >log 2>&1 &',opts)).block,false);
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
