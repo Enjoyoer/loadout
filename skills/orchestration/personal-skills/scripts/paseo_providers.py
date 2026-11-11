@@ -57,6 +57,8 @@ ISOLATED_SCRUBBED_ENV = (
     # Node.js 24 and 26 (doc/api/cli.md, Environment variables): code, module resolution, ICU data, compile cache, CA files.
     "NODE_OPTIONS", "NODE_PATH", "NODE_REPL_EXTERNAL_MODULE", "NODE_ICU_DATA", "NODE_COMPILE_CACHE",
     "NODE_COMPILE_CACHE_PORTABLE", "NODE_COMPILE_CACHE_READONLY", "NODE_EXTRA_CA_CERTS", "NODE_PRESERVE_SYMLINKS",
+    # ICU, which Node embeds: its time-zone data override.
+    "ICU_TIMEZONE_FILES_DIR",
     # OpenSSL 3.5 (openssl-env(7)), which Node reads at startup: config, providers, engines, data files.
     "OPENSSL_CONF", "OPENSSL_CONF_INCLUDE", "OPENSSL_CONFIG", "OPENSSL_ENGINES", "OPENSSL_MODULES", "CTLOG_FILE",
     "RANDFILE", "SSL_CERT_DIR", "SSL_CERT_FILE",
@@ -467,11 +469,9 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
         if iso and (iso in providers or iso in disabled):
             raise fleet.FleetError(f"{name}: pi.isolated.providerId {iso!r} is already a provider in providers "
                                    "or disabledProviders")
-        if iso and os_by_host.get(name) == "windows":
-            raise fleet.FleetError(f"{name}: pi.isolated needs a macos or linux host (/usr/bin/env; the sandbox is "
-                                   "macOS only)")
-        if iso and "sandboxProfile" in pi["isolated"] and os_by_host.get(name) != "macos":
-            raise fleet.FleetError(f"{name}: pi.isolated.sandboxProfile needs a macos host (sandbox-exec)")
+        if iso and os_by_host.get(name) != "macos":
+            raise fleet.FleetError(f"{name}: pi.isolated needs a macos host: elsewhere /usr/bin/env is dynamically linked, so "
+                                   "a per-agent LD_PRELOAD runs before its env scrub, and the sandbox is macOS only")
     return data
 
 

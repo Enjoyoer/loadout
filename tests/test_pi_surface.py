@@ -599,10 +599,13 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         env={**os.environ,'PATH':str(bin_dir)+os.pathsep+os.environ['PATH']}
         # As shipped: remote_common.js ahead of the merge program.
         program=base/'merge.js';program.write_text((PI.parent/'remote_common.js').read_text()+'\n'+(PI.parent/'paseo_providers_merge.js').read_text())
-        def run(catalog):
+        def run(catalog,platform=None):
             data=paseo_providers.payload(catalog,'example','test',False);data['config_path']=str(base/'config.json')
             packed=base64.b64encode(gzip.compress(json.dumps(data).encode())).decode()
-            done=subprocess.run(['node',str(program),packed],env=env,capture_output=True,text=True)
+            # A platform stand-in, for a merge step that runs only on one OS.
+            fake=['--require',str(base/'platform.js')] if platform else []
+            if platform: (base/'platform.js').write_text(f"Object.defineProperty(process,'platform',{{value:{json.dumps(platform)}}});")
+            done=subprocess.run(['node',*fake,str(program),packed],env=env,capture_output=True,text=True)
             return paseo_providers.parse_result(done.stdout) or {'error':done.stdout+done.stderr}
         return {'providers':source,'pi':pi}, run
 
@@ -960,6 +963,10 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             return subprocess.run([*command, str(root/'launch.mjs'), *args], capture_output=True, text=True, env=env, cwd=base)
         return root, run, record
 
+    # The isolated marker, plus the test-platform marker off macOS (isolation is macOS only; a real macOS launch
+    # refuses the test markers).
+    ISO = ('--loadout-isolated',) + (() if sys.platform == 'darwin' else ('--loadout-test-platform', 'darwin'))
+
     def isolated_row_command(self):
         """The isolated row's command up to launch.mjs: the env scrub, then this host's absolute node."""
         sys.path.insert(0, str(PI.parent))
@@ -978,7 +985,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             self.assertIn('paseo', json.loads((home/'mcp.json').read_text())['mcpServers'])
             # The isolated row removes that stale file before Pi starts and writes none.
             record.unlink()
-            done = run('--loadout-isolated', '--mode', 'rpc', '--model', 'fleet/current')
+            done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current')
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertFalse((home/'mcp.json').exists())
             ran = json.loads(record.read_text())
@@ -989,17 +996,17 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             # A per-agent env on the isolated row refuses, whatever its value (empty included).
             record.unlink()
             for key in ['LOADOUT_PI_ISOLATED', 'LOADOUT_PI_SANDBOX_PROFILE']:
-                done = run('--loadout-isolated', '--mode', 'rpc', '--model', 'fleet/current', **{key: ''})
+                done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current', **{key: ''})
                 self.assertNotEqual(done.returncode, 0, key)
                 self.assertIn('isolation comes from the provider command', done.stderr)
                 self.assertFalse(record.exists(), key)
             # Without a caller there is no agent home, so an isolated launch refuses.
-            done = run('--loadout-isolated', '--mode', 'rpc', '--model', 'fleet/current', PASEO_AGENT_ID=None)
+            done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current', PASEO_AGENT_ID=None)
             self.assertNotEqual(done.returncode, 0)
             self.assertIn('needs a Paseo caller', done.stderr)
             self.assertFalse(record.exists())
             # The isolated probe loads every extension but built-in MCP, so Paseo sees no MCP support.
-            done = run('--loadout-isolated', '--mode', 'rpc', PASEO_AGENT_ID=None)
+            done = run(*self.ISO, '--mode', 'rpc', PASEO_AGENT_ID=None)
             self.assertEqual(done.returncode, 0, done.stderr)
             ran = json.loads(record.read_text())
             self.assertEqual(ran['dir'], str(root/'agent'))
@@ -1012,6 +1019,13 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
                 done = run(*args)
                 self.assertNotEqual(done.returncode, 0, args)
                 self.assertFalse(record.exists(), args)
+            # Isolation is macOS only: off macOS an isolated launch, agent or probe, refuses.
+            if sys.platform != 'darwin':
+                for args in [('--mode', 'rpc', '--model', 'fleet/current'), ('--mode', 'rpc')]:
+                    done = run('--loadout-isolated', *args)
+                    self.assertNotEqual(done.returncode, 0, args)
+                    self.assertIn('needs macOS', done.stderr)
+                    self.assertFalse(record.exists(), args)
 
     @unittest.skipIf(sys.platform == "darwin", "the test markers refuse a real macOS launch")
     def test_sandbox_refusals_never_start_pi(self):
@@ -1074,7 +1088,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             preload = base/'preload.js'
             preload.write_text(f"require('fs').writeFileSync({json.dumps(str(preloaded))}, 'ran');"
                                "process.argv = process.argv.filter(a => !a.startsWith('--loadout-'));")
-            done = run('--loadout-isolated', '--mode', 'rpc', '--model', 'fleet/current', command=row,
+            done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current', command=row,
                        NODE_OPTIONS=f'--require={preload}')
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertFalse(preloaded.exists())
@@ -1096,7 +1110,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             bad_conf = base/'openssl.cnf'
             bad_conf.write_text(f'nodejs_conf = nc\n[nc]\nproviders = prov\n[prov]\nevil = evil_sect\n[evil_sect]\n'
                                 f'module = {base}/missing-provider.so\nactivate = 1\n')
-            done = run('--loadout-isolated', '--mode', 'rpc', '--model', 'fleet/current', command=row,
+            done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current', command=row,
                        OPENSSL_CONF=str(bad_conf))
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertFalse((home/'mcp.json').exists())
@@ -1107,7 +1121,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             empty_conf = base/'empty.cnf'; empty_conf.write_text('')
             for key, value in [('NODE_OPTIONS', f'--require={benign}'), ('JITI_ALIAS', '{}'), ('LD_PRELOAD', ''),
                                ('DYLD_LIBRARY_PATH', str(base)), ('OPENSSL_CONF', str(empty_conf))]:
-                done = run('--loadout-isolated', '--mode', 'rpc', '--model', 'fleet/current', **{key: value})
+                done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current', **{key: value})
                 self.assertNotEqual(done.returncode, 0, key)
                 self.assertEqual(done.stderr.count('\n'), 1, done.stderr)
                 self.assertIn(f'remove {key}', done.stderr)
@@ -1116,7 +1130,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             fakebin = base/'fakebin'; fakebin.mkdir()
             faked = base/'fake-node-ran'
             (fakebin/'node').write_text(f'#!/bin/sh\ntouch "{faked}"\nexit 0\n'); (fakebin/'node').chmod(0o755)
-            done = run('--loadout-isolated', '--mode', 'rpc', '--model', 'fleet/current', command=row,
+            done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current', command=row,
                        PATH=f'{fakebin}{os.pathsep}{os.environ["PATH"]}')
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertFalse(faked.exists())
@@ -1135,7 +1149,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             before=config.read_text()
             catalog['pi']['isolated']={'sandboxProfile':'~/.config/example/pi.sb'}
             pp._pi(catalog['pi'],'pi')
-            got=run(catalog)
+            got=run(catalog,'darwin')
             self.assertEqual(got['error'],None)
             rows=json.loads(config.read_text())['agents']['providers']
             self.assertEqual(rows['pi-isolated']['extends'],'pi')
@@ -1154,13 +1168,13 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             self.assertNotIn('env',rows['pi-isolated'])
             # Dropping the profile drops it from the row.
             catalog['pi']['isolated']={}
-            self.assertEqual(run(catalog)['error'],None)
+            self.assertEqual(run(catalog,'darwin')['error'],None)
             rows=json.loads(config.read_text())['agents']['providers']
             self.assertEqual(rows['pi-isolated']['command'],[*pp.ISOLATED_ENV_SCRUB,node,*rows['pi']['command'][1:],
                              '--loadout-isolated'])
             # Dropping the key removes the row, leaving the config byte-identical to a run that never had it.
             del catalog['pi']['isolated']
-            got=run(catalog)
+            got=run(catalog,'darwin')
             self.assertEqual((got['error'],got['removed']),(None,['pi-isolated']))
             self.assertEqual(config.read_text(),before)
             for bad in [{'providerId':'pi'},{'providerId':'codex'},{'other':1},{'sandboxProfile':'relative.sb'}]:
@@ -1175,10 +1189,14 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
                                         'providers':{**catalog['providers'],'codex-two':catalog['providers']['codex']}}))
             with self.assertRaisesRegex(fleet_module.FleetError,'already a provider'):
                 pp.load_config(path,doc)
-            # Windows has no /usr/bin/env (and no sandbox-exec), so an isolated row refuses at sync.
-            doc['hosts'][0]['os']='windows'
+            # Isolation is macOS only: a linux or windows host refuses pi.isolated at load, and the merge refuses
+            # off macOS.
             path.write_text(json.dumps({**catalog,'pi':{**catalog['pi'],'isolated':{}}}))
-            with self.assertRaisesRegex(fleet_module.FleetError,'macos or linux host'):
-                pp.load_config(path,doc)
+            for os_name in ['linux','windows']:
+                doc['hosts'][0]['os']=os_name
+                with self.assertRaisesRegex(fleet_module.FleetError,'needs a macos host'):
+                    pp.load_config(path,doc)
+            self.assertEqual(run({**catalog,'pi':{**catalog['pi'],'isolated':{}}},'linux')['error'],
+                             'the isolated Pi provider needs a macos host')
 
 if __name__=='__main__':unittest.main()

@@ -140,13 +140,13 @@ An optional `pi.isolated` object (top level or in a host's `pi`) adds a second P
 - `providerId`: the new provider's id, default `pi-isolated`. It must match Paseo's `[a-z][a-z0-9-]*`, differ from `pi` and every Paseo built-in provider, and not be in the host's `providers` or `disabledProviders`.
 - `sandboxProfile`: optional path to a macOS `sandbox-exec` profile, absolute or starting with `~/`, expanded on the host. Only `macos` hosts accept it.
 
-Only `macos` and `linux` hosts take `pi.isolated`; a `windows` host refuses it at sync, since the row runs through `/usr/bin/env` and the sandbox is macOS only.
+Only `macos` hosts take `pi.isolated`. A `linux` or `windows` host refuses it at sync, the merge refuses it off macOS, and the launcher refuses an isolated launch off macOS. On Linux `/usr/bin/env` is dynamically linked, so a per-agent `LD_PRELOAD` would run inside it before its scrub; Windows has no `/usr/bin/env`; and the sandbox is macOS only.
 
 The providers step then writes `agents.providers.<providerId>` with `extends: "pi"`, the label "Pi isolated", `paseoTools: {"enabled": false}`, the same picker rows and `options` as the generated Pi row, and the command `/usr/bin/env -u <var> ... <this host's absolute node> <pi root>/launch.mjs --loadout-isolated`, plus `--loadout-sandbox-profile <expanded path>` with a profile. Isolation lives in the command because Paseo lets a per-agent request (`paseo run --env`, `create_agent_request.env`, a plugin hook) override a provider's env, and keeps it on resume, but not its command. That env still reaches the process that runs the command, so it could pick which `node` runs, or name files that Node, OpenSSL or the dynamic loader read before any JavaScript runs. The absolute node path and the env scrub close that. The scrub (`ISOLATED_SCRUBBED_ENV` in `scripts/paseo_providers.py`) clears every variable that loads code, modules, config or data files, or changes module resolution, from these sources:
 
-- Node.js 24 and 26 `doc/api/cli.md`, Environment variables: `NODE_OPTIONS`, `NODE_PATH`, `NODE_REPL_EXTERNAL_MODULE`, `NODE_ICU_DATA`, `NODE_COMPILE_CACHE` and its `_PORTABLE` and `_READONLY` variants, `NODE_EXTRA_CA_CERTS`, `NODE_PRESERVE_SYMLINKS`;
+- Node.js 24 and 26 `doc/api/cli.md`, Environment variables: `NODE_OPTIONS`, `NODE_PATH`, `NODE_REPL_EXTERNAL_MODULE`, `NODE_ICU_DATA`, `NODE_COMPILE_CACHE` and its `_PORTABLE` and `_READONLY` variants, `NODE_EXTRA_CA_CERTS`, `NODE_PRESERVE_SYMLINKS`, and ICU's `ICU_TIMEZONE_FILES_DIR` (Node embeds ICU);
 - OpenSSL 3.5 `openssl-env(7)` (Node reads `OPENSSL_CONF` at startup and can load a provider module from it): `OPENSSL_CONF`, `OPENSSL_CONF_INCLUDE`, `OPENSSL_CONFIG`, `OPENSSL_ENGINES`, `OPENSSL_MODULES`, `CTLOG_FILE`, `RANDFILE`, `SSL_CERT_DIR`, `SSL_CERT_FILE`;
-- glibc `ld.so(8)`: every `LD_*` variable it lists, plus `GCONV_PATH`, `GLIBC_TUNABLES`, `LOCPATH`, `NLSPATH` and `HOSTALIASES`;
+- glibc `ld.so(8)` (kept for a launcher run without the macOS row): every `LD_*` variable it lists, plus `GCONV_PATH`, `GLIBC_TUNABLES`, `LOCPATH`, `NLSPATH` and `HOSTALIASES`;
 - macOS `dyld(1)`: the library and framework path variables and `DYLD_INSERT_LIBRARIES` (running through `/usr/bin/env` also purges every `DYLD_*`);
 - jiti, Pi's extension loader: every `JITI_*` variable in Pi 1.0.0's installed packages;
 - Pi 1.0.0: `PI_PACKAGE_DIR` and `PI_CODING_AGENT_SESSION_DIR`.
@@ -166,7 +166,7 @@ With a profile, every launch, probe included, runs as `/usr/bin/sandbox-exec -f 
 - reading and executing the Node binary and its libraries;
 - reading, under `PI_ROOT`, only `app/` (the Pi package), `agent/skills`, `fleet-routing.mjs`, `runtime.json` and `credential.py`, not the rest of `PI_ROOT`, which holds every other agent's home and the shared `agent/mcp.json`;
 - reading and writing `PI_HOME` (sessions, settings, route evidence) and `CWD`;
-- reading Paseo's per-session integration extension, `$TMPDIR/paseo-pi-extension-*/paseo-integration.mjs`, or Paseo's integration does not load;
+- reading Paseo's per-session integration extension, `$TMPDIR/paseo-pi-extension-*/paseo-integration.mjs`, or Paseo's integration does not load. Grant reads there, never writes to `$TMPDIR`: Pi keeps Node's compile cache in the temp directory, shared with the unsandboxed main Pi rows;
 - running the runtime's `python` and reading the credential file its `credential` names. Whatever Pi can read for its key, the agent's `bash` can read too: a file source grants the whole file, not one key, and a `command` source such as a keychain lookup lets `bash` read other keychain items as well. On isolated hosts prefer a dedicated file source that holds only the route key, and no `directProviders` whose key comes from a command;
 - network to the model route's port only. Deny the daemon's listen port; allow only the model route port.
 

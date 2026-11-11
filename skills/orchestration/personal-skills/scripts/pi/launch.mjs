@@ -153,6 +153,8 @@ const ISOLATED_SCRUBBED_ENV = [
   // Node.js 24 and 26 (doc/api/cli.md, Environment variables): code, module resolution, ICU data, compile cache, CA files.
   'NODE_OPTIONS', 'NODE_PATH', 'NODE_REPL_EXTERNAL_MODULE', 'NODE_ICU_DATA', 'NODE_COMPILE_CACHE',
   'NODE_COMPILE_CACHE_PORTABLE', 'NODE_COMPILE_CACHE_READONLY', 'NODE_EXTRA_CA_CERTS', 'NODE_PRESERVE_SYMLINKS',
+  // ICU, which Node embeds: its time-zone data override.
+  'ICU_TIMEZONE_FILES_DIR',
   // OpenSSL 3.5 (openssl-env(7)), which Node reads at startup: config, providers, engines, data files.
   'OPENSSL_CONF', 'OPENSSL_CONF_INCLUDE', 'OPENSSL_CONFIG', 'OPENSSL_ENGINES', 'OPENSSL_MODULES', 'CTLOG_FILE',
   'RANDFILE', 'SSL_CERT_DIR', 'SSL_CERT_FILE',
@@ -173,6 +175,9 @@ const ISOLATED_SCRUBBED_ENV = [
   // Pi 1.0.0 (docs/environment-variables.md): its package and session directories.
   'PI_PACKAGE_DIR', 'PI_CODING_AGENT_SESSION_DIR',
 ];
+// Isolation is macOS only: elsewhere /usr/bin/env is dynamically linked, so a per-agent LD_PRELOAD runs inside it before
+// the scrub. The test-platform marker stands in for macOS in fixtures; a real macOS launch refuses it above.
+if (isolated && (testPlatform ?? process.platform) !== 'darwin') refuse('the isolated Pi provider needs macOS');
 // A per-agent env still reaches this process; the isolated row's scrub is the fix, this refusal its backstop.
 if (isolated) {
   const preload = Object.keys(process.env)
@@ -275,9 +280,7 @@ if (isolated && probe) {
 let command = process.execPath, argv = [cli, ...args];
 if (sandboxProfile !== null) {
   // Every launch with a profile runs inside sandbox-exec, the probe included; never unsandboxed.
-  const platform = testPlatform ?? process.platform;
   const sandboxExec = testSandboxExec ?? '/usr/bin/sandbox-exec';
-  if (platform !== 'darwin') refuse('the Pi sandbox profile needs macOS sandbox-exec');
   if (!isAbsolute(sandboxProfile)) refuse('--loadout-sandbox-profile must be an absolute path');
   try {
     accessSync(sandboxExec, constants.X_OK);
