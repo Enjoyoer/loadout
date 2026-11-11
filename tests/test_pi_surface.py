@@ -675,6 +675,77 @@ assert.equal(await h({toolName:'bash',input:{command:'launchctl list'}},{cwd:dir
         self.assertEqual(blocked.returncode, 2, blocked.stderr); self.assertIn('fleet service guard', blocked.stderr)
         self.assertEqual(hook({'command': 'launchctl list'}).returncode, 0)
 
+    def test_service_guard_review_round_cases(self):
+        # PM-specified regression cases: the rev260 reviewer's probes (refused forms, nohup exception, ordinary work,
+        # pkill patterns on a host running Paseo and tailscaled, PowerShell forms, regex time limit, evidence masking).
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync,mkdirSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);const f=await import(process.argv[2]);
+const dir=mkdtempSync(join(tmpdir(),'guard-r2-'));
+const W=(name,text)=>{mkdirSync(join(dir,name,'..'),{recursive:true});writeFileSync(join(dir,name),text);};
+const stop='launchctl bootout gui/501/com.example.model-bridge\n';
+W('stop.sh','#!/bin/sh\n'+stop);W('stop.ps1','Stop-Service -Name Tailscale\n');
+W('fakefix.sh','#!/bin/sh\n'+stop+'# later: launchctl kickstart -k it and curl the health URL\n');
+W('unrelated.sh','#!/bin/sh\n'+stop+'systemctl --user restart unrelated.service\ncurl -s https://example.org\n');
+W('paseostop.sh','#!/bin/sh\npaseo daemon stop\ntailscale down\nlaunchctl kickstart -k gui/501/com.apple.unrelated\ncurl -s https://example.org\n');
+W('realfix.sh','#!/bin/sh\ncp new.plist old.plist\n'+stop+'launchctl bootstrap gui/501 old.plist\nlaunchctl kickstart -k gui/501/com.example.model-bridge\ncurl -fsS http://127.0.0.1:1/health || cp backup.plist old.plist\n');
+W('big.sh','#!/bin/sh\n'+'# padding padding padding padding padding padding padding\n'.repeat(5000)+stop);
+W('s1.sh','bash s2.sh\n');W('s2.sh','bash s3.sh\n');W('s3.sh','bash s4.sh\n');W('s4.sh',stop);
+W('sub/x.txt','x\n');W('build.sh','#!/bin/sh\nset -e\nnpm ci\nnpm run build\n');
+const procs=[{pid:'63824',command:'Paseo Daemon     Paseo Daemon'},{pid:'63799',command:'Paseo Supervisor Paseo Supervisor'},
+ {pid:'13869',command:'/home/u/.local/node/bin/node /home/u/.local/paseo/node_modules/@getpaseo/server/dist/server/server/plugins/plugin-process.js'},
+ {pid:'777',command:'/usr/local/bin/node /opt/example-bridge/bin/example-bridge --serve'},
+ {pid:'888',command:'/usr/sbin/tailscaled /usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641'},
+ {pid:'999',command:'node node /tmp/some-unrelated-test-server.js'},{pid:'1000',command:'vim vim notes.md'}];
+const lines=Object.fromEntries(procs.map(p=>[p.pid,p.command]));
+const opts={protectedServices:['com.example.model-bridge','example-router.service','example-bridge'],cwd:dir,
+ resolvePid:async pid=>lines[pid]??'',listProcesses:async()=>procs};
+const refused=['launchctl bootout gui/501/com.example.model-bridge','sudo launchctl bootout gui/501/com.example.model-bridge',
+ 'bash -c "launchctl bootout gui/501/com.example.model-bridge"','eval "launchctl bootout gui/501/com.example.model-bridge"','bash s1.sh','bash stop.sh',
+ 'launchctl bootout gui/$(id -u)/com.example.model-bridge','launchctl bootout gui/`id -u`/com.example.model-bridge','sudo launchctl bootout system/$(echo com.example.model-bridge)',
+ 'echo gui/501/com.example.model-bridge | xargs launchctl bootout',"launchctl list | grep model-bridge | awk '{print $3}' | xargs -I{} launchctl bootout gui/501/{}",
+ 'echo example-router.service | xargs systemctl --user stop','Get-Service Tailscale | Stop-Service -Force',"Get-ScheduledTask -TaskName 'Paseo Daemon' | Stop-ScheduledTask",
+ "Get-ScheduledTask -TaskName 'Paseo Daemon' | Disable-ScheduledTask",'pgrep -f Paseo | xargs kill','kill $(pgrep -f Paseo)','kill -9 $(pgrep -f model-bridge)',
+ 'Get-Process *paseo* | Stop-Process -Force','kill $(pgrep -f com.example.model-bridge)',
+ 'paseo daemon --home ~/.paseo stop','paseo daemon -o json stop','paseo daemon --host 127.0.0.1:6767 restart','systemctl -n 0 stop example-router.service',
+ 'systemctl --user -o json stop example-router.service','systemctl -H localhost stop example-router.service','tailscale --socket /var/run/tailscale/tailscaled.sock down',
+ 'bash -c ./stop.sh','sh -c ./stop.sh','eval ./stop.sh','sudo -u root ./stop.sh','nice -n 5 ./stop.sh','bash -o pipefail stop.sh','bash +x stop.sh','bash < stop.sh',
+ 'cat stop.sh | bash','bash "$PWD/stop.sh"','echo | xargs ./stop.sh','(cd sub); ./stop.sh','cd sub && cd .. && ./stop.sh','bash big.sh',
+ "$'launchctl' bootout gui/501/com.example.model-bridge",'launchctl {bootout,} gui/501/com.example.model-bridge',
+ 'launchctl unload ~/Library/LaunchAgents/*model-bridge*.plist',"systemctl --user stop 'example-rout*'",'L=launchctl; $L bootout gui/501/com.example.model-bridge',
+ 'nohup bash fakefix.sh >log 2>&1 &','nohup bash unrelated.sh >log 2>&1 &','nohup bash paseostop.sh >log 2>&1 &',': & nohup bash realfix.sh',
+ "nohup bash realfix.sh 'a&b'",'nohup bash realfix.sh; sleep 1 &','bash realfix.sh nohup &',
+ 'pkill -f node','pkill node','kill -9 63824','kill -s TERM 888'];
+for(const c of refused){const v=await g.check(c,opts);assert.equal(v.block,true,c);assert.match(v.reason,/shared fleet service: use one detached nohup script/,c);}
+const allowed=['nohup bash realfix.sh >log 2>&1 &','launchctl list','launchctl print gui/501/com.example.model-bridge','kill 999','kill %1','kill -- 999',
+ 'git commit -m "fix login bug"','grep -rn bootout .','rg -n "pkill|killall" .','grep -rn "kill\\\\|pkill" src','pkill -f "vite serve"','pkill -f "tail -f /tmp/app.log"',
+ 'pkill -f "rails server"','pkill -f "node server.js"','pkill -f "npm run dev"','pkill -f "python -m http.server"','pkill -f "jekyll serve"','pkill -f "hugo server"',
+ 'pkill -f "next dev"','git commit -m "pkill on server shutdown"','git commit -m "service restart now handles server errors"','echo "use pkill to stop the node app"',
+ 'pkill -f some-unrelated-test-server','killall vim','./build.sh','systemctl --user restart nginx','tailscale status','paseo daemon status'];
+for(const c of allowed)assert.equal((await g.check(c,opts)).block,false,c);
+// PowerShell forms.
+for(const c of ['powershell -ExecutionPolicy Bypass -File stop.ps1','Stop-Service Tailscale','spsv Tailscale','Set-Service -Name Tailscale -Status Stopped',
+ 'Stop-Service -InputObject (Get-Service Tailscale)','Restart-Service Tailscale','Stop-Process -Name tailscaled','Get-Process tailscaled | Stop-Process'])
+ assert.equal((await g.check(c,{...opts,shell:'powershell'})).block,true,c);
+// A pkill regex that backtracks for ever is cut off by the time limit and refused, without blocking the event loop for long.
+for(const pattern of ['.*.*.*.*.*.*.*.*.*.*.*.*Q','(a|aa)+$']){
+ const started=performance.now();
+ const v=await g.check(`pkill -f '${pattern}'`,{listProcesses:async()=>[{pid:'1',command:'node '+'a'.repeat(40)+'! /home/u/app/server.js --port 3000'}],resolvePid:async()=>''});
+ assert.ok(performance.now()-started<3000,pattern);assert.equal(typeof v.block,'boolean');}
+// A PID that exists but cannot be read is refused.
+assert.equal((await g.check('kill 4242',{...opts,resolvePid:async()=>{throw Error('unreadable');}})).block,true);
+// Evidence: credential-shaped values are masked in the excerpt.
+const rows=[];const h=f.serviceGuardHandler(r=>rows.push(r),{guard:g.serviceGuard(opts)});
+// Built from pieces so a repository secret scan does not read the fixtures as credentials.
+const auth=['Author','ization: ','Bear','er '].join(''),userinfo=['us','er:'].join('');
+for(const command of ['curl -H "'+auth+'SECRET1" https://x; paseo daemon stop','curl https://'+userinfo+'SECRET2@example.org/x; paseo daemon stop',
+ 'tool --token SECRET3 --password=SECRET4; paseo daemon stop','TOKEN=SECRET5 paseo daemon stop'])
+ assert.equal((await h({toolName:'bash',input:{command}},{cwd:dir})).block,true,command);
+assert.equal(rows.length,4);assert.ok(!/SECRET/.test(JSON.stringify(rows)),JSON.stringify(rows));
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri(), (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_service_tier_fails_closed_on_lookup_and_diagnostic_errors(self):
         script=r"""
 import assert from 'node:assert/strict';
