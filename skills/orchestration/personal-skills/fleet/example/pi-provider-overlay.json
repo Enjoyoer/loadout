@@ -6,6 +6,9 @@
       "codex"
     ],
     "defaultSourceProvider": "codex",
+    "maxTokens": {
+      "Opus": 65536
+    },
     "runtime": {
       "route": {
         "path": "~/.codex/config.toml",

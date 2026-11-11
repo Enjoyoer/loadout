@@ -348,7 +348,7 @@ def effective(config: dict, host: str) -> tuple[dict, list]:
 
 def _pi(value, where):
     if not isinstance(value, dict): raise fleet.FleetError(f"{where} must be an object")
-    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly", "claudeApiKeyRoute", "labelOrder", "contextWindows", "options"}, where)
+    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly", "claudeApiKeyRoute", "labelOrder", "contextWindows", "maxTokens", "options"}, where)
     # Paseo's provider options for the generated Pi row (agents.providers.pi.options); Paseo validates the fields.
     if "options" in value and not isinstance(value["options"], dict): raise fleet.FleetError(f"{where}.options must be an object")
     if value.get('catalogOnly') is True:
