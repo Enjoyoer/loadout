@@ -714,7 +714,7 @@ const refused=['launchctl bootout gui/501/com.example.model-bridge','sudo launch
  "$'launchctl' bootout gui/501/com.example.model-bridge",'launchctl {bootout,} gui/501/com.example.model-bridge',
  'launchctl unload ~/Library/LaunchAgents/*model-bridge*.plist',"systemctl --user stop 'example-rout*'",'L=launchctl; $L bootout gui/501/com.example.model-bridge',
  'nohup bash fakefix.sh >log 2>&1 &','nohup bash unrelated.sh >log 2>&1 &','nohup bash paseostop.sh >log 2>&1 &',': & nohup bash realfix.sh',
- "nohup bash realfix.sh 'a&b'",'nohup bash realfix.sh; sleep 1 &','bash realfix.sh nohup &','nohup bash realfix.sh >log 2>&1 &',
+ "nohup bash realfix.sh 'a&b'",'nohup bash realfix.sh; sleep 1 &','bash realfix.sh nohup &',
  'pkill -f node','pkill node','kill -9 63824','kill -s TERM 888'];
 for(const c of refused){const v=await g.check(c,opts);assert.equal(v.block,true,c);assert.match(v.reason,/shared fleet service: use one detached nohup script/,c);}
 const allowed=['setsid -f nohup bash realfix.sh >log 2>&1','launchctl list','launchctl print gui/501/com.example.model-bridge','kill 999','kill %1','kill -- 999',
@@ -776,12 +776,23 @@ const refused=[
  ['Stop-Process -Id 4100 -Force','powershell',win],['taskkill /F /IM node.exe','powershell',win],
  // The repair check: a restart under ':', after exit, on a false && branch, launchctl enable, or naming a fragment.
  ['setsid -f bash colon.sh'],['setsid -f bash exit.sh'],['setsid -f bash false.sh'],['setsid -f bash enable.sh'],['setsid -f bash frag.sh'],
- // Plain nohup stays in the process group Pi kills.
- ['nohup bash real.sh >log 2>&1 &'],['nohup bash real.sh >log 2>&1 & wait']];
+ // nohup with a command after it keeps the call open.
+ ['nohup bash real.sh >log 2>&1 & wait']];
 for(const [c,shell,list] of refused){const v=await g.check(c,{...opts,...(list?mk(list):{}),shell:shell??'posix'});assert.equal(v.block,true,c);}
 const allowed=['setsid -f nohup bash real.sh >log 2>&1','setsid nohup bash real.sh >log 2>&1 &','mkdocs serve & sleep 2; kill $!',
  'hugo server & PID=$!; sleep 1; kill $PID','pkill -P $$',"echo 'hello' | sh"];
 for(const c of allowed)assert.equal((await g.check(c,opts)).block,false,c);
+// PM-specified (round 3, PM decision): nohup as the last segment with both outputs redirected is detached; anything
+// after it, or a missing redirect, is not. Host reboot and shutdown, ssh remote commands, and data commands.
+W('fix.sh',stop+`launchctl kickstart -k gui/501/${L}\n`+health);
+assert.equal((await g.check('nohup bash fix.sh >/tmp/f.log 2>&1 &',opts)).block,false);
+for(const c of ['nohup bash fix.sh >/tmp/f.log 2>&1 &; sleep 1','nohup bash fix.sh >/tmp/f.log 2>&1 & sleep 1','nohup bash fix.sh >/tmp/f.log 2>&1 & wait',
+ 'nohup bash fix.sh >/tmp/f.log 2>&1 && echo ok','nohup bash fix.sh &','sudo reboot','systemctl reboot','shutdown -r now',"ssh host 'paseo daemon stop'"])
+ assert.equal((await g.check(c,opts)).block,true,c);
+assert.equal((await g.check('Restart-Computer',{...opts,shell:'powershell'})).block,true);
+for(const c of ["ssh host 'ls -la'",'journalctl -u tailscaled --since today | grep -i kill','grep -rn kill . | grep -i paseo',
+ 'grep "paseo daemon stop" README.md','git commit -m "docs: tailscale down"'])
+ assert.equal((await g.check(c,opts)).block,false,c);
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
