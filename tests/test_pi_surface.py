@@ -655,7 +655,7 @@ const refused=['launchctl bootout gui/501/com.example.model-bridge','sudo launch
  'kill 23456','echo "launchctl bootout com.example.model-bridge"'];
 for(const c of refused){const v=await g.check(c,opts);assert.equal(v.block,true,c);assert.match(v.reason,/shared fleet service: use one detached nohup script/,c);}
 const allowed=['launchctl list','launchctl print gui/501/com.example.model-bridge','kill 12345','pkill -f some-unrelated-test-server',
- 'nohup bash fix.sh >log 2>&1 &','grep bootout notes.md','echo "launchctl bootout x"'];
+ 'setsid -f nohup bash fix.sh >log 2>&1','grep bootout notes.md','echo "launchctl bootout x"'];
 for(const c of allowed)assert.equal((await g.check(c,opts)).block,false,c);
 // The same repair script run in the foreground is refused.
 assert.equal((await g.check('bash fix.sh',opts)).block,true);
@@ -714,10 +714,10 @@ const refused=['launchctl bootout gui/501/com.example.model-bridge','sudo launch
  "$'launchctl' bootout gui/501/com.example.model-bridge",'launchctl {bootout,} gui/501/com.example.model-bridge',
  'launchctl unload ~/Library/LaunchAgents/*model-bridge*.plist',"systemctl --user stop 'example-rout*'",'L=launchctl; $L bootout gui/501/com.example.model-bridge',
  'nohup bash fakefix.sh >log 2>&1 &','nohup bash unrelated.sh >log 2>&1 &','nohup bash paseostop.sh >log 2>&1 &',': & nohup bash realfix.sh',
- "nohup bash realfix.sh 'a&b'",'nohup bash realfix.sh; sleep 1 &','bash realfix.sh nohup &',
+ "nohup bash realfix.sh 'a&b'",'nohup bash realfix.sh; sleep 1 &','bash realfix.sh nohup &','nohup bash realfix.sh >log 2>&1 &',
  'pkill -f node','pkill node','kill -9 63824','kill -s TERM 888'];
 for(const c of refused){const v=await g.check(c,opts);assert.equal(v.block,true,c);assert.match(v.reason,/shared fleet service: use one detached nohup script/,c);}
-const allowed=['nohup bash realfix.sh >log 2>&1 &','launchctl list','launchctl print gui/501/com.example.model-bridge','kill 999','kill %1','kill -- 999',
+const allowed=['setsid -f nohup bash realfix.sh >log 2>&1','launchctl list','launchctl print gui/501/com.example.model-bridge','kill 999','kill %1','kill -- 999',
  'git commit -m "fix login bug"','grep -rn bootout .','rg -n "pkill|killall" .','grep -rn "kill\\\\|pkill" src','pkill -f "vite serve"','pkill -f "tail -f /tmp/app.log"',
  'pkill -f "rails server"','pkill -f "node server.js"','pkill -f "npm run dev"','pkill -f "python -m http.server"','pkill -f "jekyll serve"','pkill -f "hugo server"',
  'pkill -f "next dev"','git commit -m "pkill on server shutdown"','git commit -m "service restart now handles server errors"','echo "use pkill to stop the node app"',
@@ -744,6 +744,46 @@ for(const command of ['curl -H "'+auth+'SECRET1" https://x; paseo daemon stop','
 assert.equal(rows.length,4);assert.ok(!/SECRET/.test(JSON.stringify(rows)),JSON.stringify(rows));
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri(), (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_service_guard_review_round_3_cases(self):
+        # PM-specified (rev260 round 3): one refused case per (a) item, repair-check reachability, new-session
+        # detachment, and killing the command's own background job.
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync,mkdirSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);
+const dir=mkdtempSync(join(tmpdir(),'guard-r3-'));process.env.HOME=dir;
+const W=(name,text)=>{mkdirSync(join(dir,name,'..'),{recursive:true});writeFileSync(join(dir,name),text);};
+const L='com.example.model-bridge',stop=`launchctl bootout gui/501/${L}\n`,health='curl -fsS http://127.0.0.1:1/health\n';
+W('.paseo/paseo.pid','{"pid":63824,"listen":"127.0.0.1:6767"}\n');
+W('real.sh',stop+`launchctl kickstart -k gui/501/${L}\n`+health);
+W('colon.sh',stop+`: launchctl kickstart -k gui/501/${L}\n`+health);
+W('exit.sh',stop+`exit 0\nlaunchctl kickstart -k gui/501/${L}\n`+health);
+W('false.sh',stop+`false && launchctl kickstart -k gui/501/${L}\n`+health);
+W('enable.sh',stop+`launchctl enable gui/501/${L}\n`+health);
+W('frag.sh',stop+'launchctl kickstart -k gui/501/bridge\n'+health);
+const procs=[{pid:'63824',command:'Paseo Daemon     Paseo Daemon'},{pid:'999',command:'node node /tmp/app/server.js'}];
+const win=[{pid:'4100',command:'node.exe "C:\\Program Files\\nodejs\\node.exe" C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@getpaseo\\server\\dist\\server\\index.js'}];
+const mk=list=>{const lines=Object.fromEntries(list.map(p=>[p.pid,p.command]));return {resolvePid:async pid=>lines[pid]??'',listProcesses:async()=>list};};
+const opts={protectedServices:[L],cwd:dir,...mk(procs)};
+const refused=[
+ ["echo 'pkill -f Paseo' | sh"],["printf 'kill 63824\\n' | bash"],["cat <<'EOF' | zsh\npkill -f Paseo\nEOF"],
+ ["cat > s.sh <<'EOF'\npkill -f Paseo\nEOF\nbash s.sh"],
+ ["sudo -s <<'EOF'\npkill -f Paseo\nEOF"],["sudo -i <<'EOF'\nkill 63824\nEOF"],["su -c 'pkill -f Paseo'"],
+ ['pkill -u $USER'],['killall -u u'],
+ ['kill $(jq -r .pid ~/.paseo/paseo.pid)'],['kill $(cat ~/.paseo/paseo.pid)'],
+ ["Invoke-Expression 'Get-Process *paseo* | Stop-Process'",'powershell'],["iex 'spsv Tailsc*'",'powershell'],
+ ['Stop-Process -Id 4100 -Force','powershell',win],['taskkill /F /IM node.exe','powershell',win],
+ // The repair check: a restart under ':', after exit, on a false && branch, launchctl enable, or naming a fragment.
+ ['setsid -f bash colon.sh'],['setsid -f bash exit.sh'],['setsid -f bash false.sh'],['setsid -f bash enable.sh'],['setsid -f bash frag.sh'],
+ // Plain nohup stays in the process group Pi kills.
+ ['nohup bash real.sh >log 2>&1 &'],['nohup bash real.sh >log 2>&1 & wait']];
+for(const [c,shell,list] of refused){const v=await g.check(c,{...opts,...(list?mk(list):{}),shell:shell??'posix'});assert.equal(v.block,true,c);}
+const allowed=['setsid -f nohup bash real.sh >log 2>&1','setsid nohup bash real.sh >log 2>&1 &','mkdocs serve & sleep 2; kill $!',
+ 'hugo server & PID=$!; sleep 1; kill $PID','pkill -P $$',"echo 'hello' | sh"];
+for(const c of allowed)assert.equal((await g.check(c,opts)).block,false,c);
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_service_tier_fails_closed_on_lookup_and_diagnostic_errors(self):
