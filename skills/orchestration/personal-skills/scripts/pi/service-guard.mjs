@@ -35,8 +35,23 @@ const home = () => process.env.HOME ?? process.env.USERPROFILE ?? '';
 // A target written out in full: no substitution, variable, glob, brace or xargs placeholder.
 const isPlain = word => !/[\u0001$*?[\]{}`]/.test(word.v);
 const options = list => list.filter(word => !/^-./.test(word.v));
+// Commands whose arguments are data: search patterns and log filters.
+const DATA = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'journalctl', 'git-commit']);
 // Commands whose file arguments may hold a PID for kill $(...) or ... | xargs kill.
 const READERS = new Set(['cat', 'jq', 'sed', 'awk', 'head', 'tail', 'grep', 'cut', 'tr', 'xargs', 'get-content', 'gc', 'type']);
+// Whether a segment's redirects, applied in order, send both stdout and stderr to a file (or /dev/null).
+function quiet(redirects) {
+  let out = false, err = false;
+  for (const { op, fd, target } of redirects) {
+    if (op === '&>' || op === '&>>') { out = err = true; continue; }
+    if (['>', '>>', '>|'].includes(op)) { if (fd === '1') out = true; if (fd === '2') err = true; continue; }
+    if (op === '>&') {
+      if (fd === '1') out = target.v === '2' ? err : /^\d+$/.test(target.v) ? false : true;
+      if (fd === '2') err = target.v === '1' ? out : /^\d+$/.test(target.v) ? false : true;
+    }
+  }
+  return out && err;
+}
 // The text echo or printf prints (escapes such as \n decoded), for a pipe into a shell or a file it writes.
 function printed(words, at) {
   const args = words.slice(at + 1).map(word => word.v);
@@ -89,23 +104,23 @@ class Parser {
   // A list of segments up to `close` (')' for a substitution or subshell) or the end of the text.
   list(close) {
     const s = this.s, nodes = [];
-    let seg = segment(null), word = null, redirect = null;
+    let seg = segment(null), word = null, redirect = null, fd = null;
     const W = () => (word ??= { v: '', quoted: false });
     const take = () => {
       if (!word) return;
       const done = word; word = null;
       if (redirect) {
-        const op = redirect, v = expandBraces(done.v)[0];
-        redirect = null;
+        const op = redirect, v = expandBraces(done.v)[0], from = fd ?? (op.startsWith('<') ? '0' : '1');
+        redirect = null; fd = null;
         if (op === '<<' || op === '<<-') this.heredocs.push({ seg, delim: v, strip: op === '<<-' });
         else if (op === '<<<') seg.input.push(v);
-        else seg.redirects.push({ op, target: { v, quoted: done.quoted } });
+        else seg.redirects.push({ op, fd: from, target: { v, quoted: done.quoted } });
         return;
       }
       for (const v of expandBraces(done.v)) seg.words.push({ v, quoted: done.quoted });
     };
     const end = op => {
-      take(); redirect = null;
+      take(); redirect = null; fd = null;
       if (seg.words.length || seg.subs.length || seg.redirects.length || seg.input.length || seg.nested.length) { seg.end = op; nodes.push(seg); }
       seg = segment(op);
     };
@@ -149,7 +164,7 @@ class Parser {
         end('&'); this.i++; continue;
       }
       if (c === '<' || c === '>') {
-        if (word && !word.quoted && (/^\d+$/.test(word.v) || word.v === '*')) word = null; else take();
+        if (word && !word.quoted && (/^\d+$/.test(word.v) || word.v === '*')) { fd = word.v; word = null; } else take();
         let op = c, j = this.i + 1;
         if (c === '>' && '>|&'.includes(s[j] ?? '-')) op += s[j++];
         else if (c === '<' && s[j] === '<') { op += s[j++]; if (s[j] === '<' || s[j] === '-') op += s[j++]; }
@@ -327,6 +342,10 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     return matches ? names[matches.indexOf(true)]?.entry : undefined;
   };
   const refuse = (what, entry) => ({ what, entry });
+  // A remote command (ssh) is checked against the fleet-wide defaults only: per-host lists, PIDs, processes and
+  // files are local.
+  let remote;
+  const remoteGuard = () => remote ??= serviceGuard({ protectedServices: DEFAULT_PROTECTED, resolvePid: async () => '', listProcesses: async () => [], readScript: async () => null });
   const running = job => job.processes ??= Promise.resolve().then(listProcesses);
 
   async function pidHit(pid) {
@@ -438,6 +457,14 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       return hit ? refuse(`${what} of a computed target`, hit) : null;
     };
     const without = (list, k) => options(list.filter((_, j) => j !== k));
+    // Rebooting or shutting the host down stops every protected service (command position only).
+    if (!mention) {
+      const { at } = commandAt(words), head = base(lc[at] ?? ''), args = lc.slice(at + 1);
+      if (['reboot', 'halt', 'poweroff'].includes(head)) return refuse(head, 'every service on this host');
+      if (head === 'shutdown' && !args.some(word => ['-c', '/a', '-a'].includes(word))) return refuse('shutdown', 'every service on this host');
+      if (['restart-computer', 'stop-computer'].includes(head)) return refuse(head, 'every service on this host');
+      if (head === 'systemctl') { const verb = args.find(word => ['reboot', 'poweroff', 'halt', 'kexec', 'soft-reboot'].includes(word)); if (verb) return refuse(`systemctl ${verb}`, 'every service on this host'); }
+    }
     for (let i = 0; i < words.length; i++) {
       const cmd = base(lc[i]), rest = words.slice(i + 1), rl = lc.slice(i + 1);
       let found = null;
@@ -579,12 +606,14 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
   // What one segment runs besides itself: command strings (bash -c, eval, pwsh -Command, env -S) and script files.
   function runsOf(seg) {
     const words = seg.words, lc = words.map(word => word.v.toLowerCase());
-    const { at, setsid, fork, shell, strings } = commandAt(words);
+    const { at, nohup, setsid, fork, shell, strings } = commandAt(words);
     const items = strings.map(command => ({ command, shell: 'posix' }));
-    // Detached: the segment's own command runs under setsid, in a new session and process group, and the segment ends
-    // in a bare & (or uses setsid -f). Pi kills a cancelled or timed-out call's whole process group, so nohup alone
-    // (which stays in that group, for example under `& wait`) does not count.
-    const detached = setsid && (seg.end === '&' || fork);
+    // Detached: the segment's command runs under `setsid -f` (or setsid, ending in a bare &), in a new session; or it
+    // runs under nohup, ends in a bare &, is the last segment of the whole command and sends stdout and stderr away
+    // from the tool. Pi abandons a job left behind once the shell exits, but anything after the & (wait, sleep, echo)
+    // keeps the call open, so a cancel or timeout kills the script halfway; without both redirects it dies of SIGPIPE
+    // once Pi stops reading, which nohup does not ignore.
+    const detached = (setsid && (seg.end === '&' || fork)) || (nohup && seg.end === '&' && seg.last && quiet(seg.redirects));
     const script = word => items.push({ file: word.v, detached });
     // What a shell reads on stdin from the segment piped into it: echo or printf text, or a cat heredoc, runs.
     const stdin = () => {
@@ -602,6 +631,21 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     if (c === 'eval') { items.push({ command: words.slice(at + 1).map(word => word.v).join(' '), shell: 'posix' }); return items; }
     if (c === 'iex' || c === 'invoke-expression') {
       items.push({ command: words.slice(at + 1).filter(word => !/^-command$/i.test(word.v)).map(word => word.v).join(' '), shell: 'powershell' });
+      return items;
+    }
+    if (c === 'ssh') {
+      // ssh host '<cmd>' or ssh host -- <cmd>: the remote command, checked against the fleet-wide defaults only.
+      let j = at + 1;
+      for (; j < words.length; j++) {
+        const a = words[j].v;
+        if (a === '--') continue;
+        if (/^-[46AaCfGgKkMNnqsTtVvXxYy]*[BbcDEeFIiJLlmOoPpQRSWw]$/.test(a)) { j++; continue; }
+        if (/^-./.test(a)) continue;
+        break;
+      }
+      let rest = words.slice(j + 1);
+      if (rest[0]?.v === '--') rest = rest.slice(1);
+      if (j < words.length && rest.length) items.push({ command: rest.map(word => word.v).join(' '), shell: 'posix', remote: true });
       return items;
     }
     if (c === 'su') {
@@ -743,7 +787,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       const index = run.order++;
       for (const list of [...seg.subs, ...seg.nested]) { await walk(list, run, copy(state), mention, scope); if (stopped(run)) return; }
       const words = expandVars(seg.words, state);
-      const view = { ...seg, words, prev };
+      const view = { ...seg, words, prev, last: run.depth === 0 && nodes === run.root && seg === nodes[nodes.length - 1] };
       // Whether this segment runs: after `&&` only when the chain so far may have succeeded, after `||` only when it
       // may have failed. `status` is the chain's known result (true, false) or undefined.
       const joined = prev && (prev.end === '&&' || prev.end === '||');
@@ -771,7 +815,9 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       }
       if (words.length && words.every(word => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word.v) || ['export', 'local', 'declare', 'readonly'].includes(word.v)))
         for (const word of words) { const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word.v); if (m && !m[2].includes(SUB)) state.vars[m[1]] = m[2]; }
-      const found = await inspect(view, run, mention, scope);
+      // grep/rg patterns, journalctl arguments and git commit or tag messages are data, never commands.
+      const data = DATA.has(cmd) || (cmd === 'git' && words.slice(at + 1).some(word => ['commit', 'tag', 'notes'].includes(word.v)));
+      const found = data ? null : await inspect(view, run, mention, scope);
       if (found) { run.findings.push({ ...found, index }); if (stopped(run)) return; }
       if (run.collect && !mention && !skipped && !state.exited) {
         const restart = restartOf(words);
@@ -795,18 +841,19 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
         if (!conditional && !skipped && (['exit', 'return', 'logout'].includes(cmd) || (words[0]?.v === 'exec' && at < words.length))) state.exited = true;
       }
       // Heredocs and here-strings: a shell reading them runs them; anything else only mentions them.
-      for (const text of seg.input) {
+      for (const text of data ? [] : seg.input) {
         const shellInput = POSIX_SHELLS.has(cmd) || PS_SHELLS.has(cmd) || cmd === 'ssh' || cmd === 'su' || ca.shell;
         await walk(parse(text, PS_SHELLS.has(cmd) ? 'powershell' : 'posix'), run, copy(state), mention || !shellInput);
         if (stopped(run)) return;
       }
-      for (const word of words) {
+      for (const word of data ? [] : words) {
         if (!word.quoted || !/[\s;&|<>`]/.test(word.v)) continue;
         await walk(parse(word.v.replaceAll(SUB, ' '), run.shell), run, copy(state), true);
         if (stopped(run)) return;
       }
-      for (const item of runsOf(view)) {
-        if (item.command !== undefined) await walk(parse(item.command, item.shell), run, copy(state), mention);
+      for (const item of data ? [] : runsOf(view)) {
+        if (item.remote) { const remote = await remoteGuard().check(item.command, { cwd: state.dir, shell: 'posix' }); if (remote) run.findings.push({ ...remote, what: `ssh ${remote.what}`, index }); }
+        else if (item.command !== undefined) await walk(parse(item.command, item.shell), run, copy(state), mention);
         else { const inner = await scriptFinding(item, run, state, mention); if (inner) run.findings.push({ ...inner, index }); }
         if (stopped(run)) return;
       }
@@ -830,7 +877,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
 
 /** Refusal text for a finding: what ran, which protected name it touches, and the rule. */
 export const refusalReason = found => `Refused by the fleet service guard: ${found.what} touches protected service "${found.entry}". Rule: ${GUARD_RULE}. `
-  + 'Write that script with the write tool and run it in a new session, as setsid -f nohup bash <script> >log 2>&1, so a cancelled call cannot kill it halfway. This guard is a backstop, not a sandbox.';
+  + 'Write that script with the write tool and run it as the last command, with both outputs redirected: nohup bash <script> >log 2>&1 & (or setsid -f nohup bash <script> >log 2>&1). This guard is a backstop, not a sandbox.';
 
 /**
  * Pure entry point for any harness: {block: false} or {block: true, reason, what, entry}. Options: protectedServices
