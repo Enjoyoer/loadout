@@ -52,11 +52,16 @@ const definesFunction = (seg, words) => words[0]?.v === 'function' || (words.len
 // Commands whose file arguments may hold a PID for kill $(...) or ... | xargs kill.
 const READERS = new Set(['cat', 'jq', 'sed', 'awk', 'head', 'tail', 'grep', 'cut', 'tr', 'xargs', 'get-content', 'gc', 'type']);
 // Whether a segment's redirects, applied in order, send both stdout and stderr to a file (or /dev/null).
-// A target counts only when it is written out (no substitution such as >(tee log)) and is /dev/null or a file that is
-// not under /dev/ or /proc/ (so not /dev/stderr or /dev/fd/2).
-function quiet(redirects) {
+// A target counts only when it is written out (no substitution such as >(tee log)) and, with ~ expanded and resolved
+// against the segment's directory, is /dev/null or a file that is not under /dev/ or /proc/ (so not /dev/stderr,
+// /./dev/stderr or /dev/fd/2). Symlinks are not followed.
+function quiet(redirects, dir) {
   let out = false, err = false;
-  const away = target => !target.v.includes(SUB) && !target.v.includes('$') && (target.v === '/dev/null' || !/^\/(dev|proc)\//.test(target.v));
+  const away = target => {
+    if (target.v.includes(SUB) || target.v.includes('$')) return false;
+    const path = /^~([\\/]|$)/.test(target.v) ? resolve(home(), target.v.slice(2)) : resolve(dir, target.v);
+    return path === '/dev/null' || !/^\/(dev|proc)(\/|$)/.test(path);
+  };
   for (const { op, fd, target } of redirects) {
     if (op === '&>' || op === '&>>') { out = err = away(target); continue; }
     if (['>', '>>', '>|'].includes(op)) { if (fd === '1') out = away(target); if (fd === '2') err = away(target); continue; }
@@ -341,6 +346,28 @@ function commandAt(words) {
   }
   return { at: i, nohup, setsid, fork, shell: shell && i >= words.length, strings };
 }
+// Whether a segment runs a shell that reads its commands from stdin: sudo -s|-i, doas -s or su with no command, or a
+// POSIX shell with -s, a lone -, or no script and no -c.
+function readsStdin(words) {
+  const { at, shell } = commandAt(words);
+  if (shell) return true;
+  const c = base(words[at]?.v ?? '');
+  if (c === 'su') return !words.slice(at + 1).some(word => word.v === '-c' || word.v === '--command' || word.v.startsWith('--command='));
+  if (!POSIX_SHELLS.has(c)) return false;
+  for (let j = at + 1; j < words.length; j++) {
+    const a = words[j].v;
+    if (a === '--') return j + 1 >= words.length;
+    if (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(a)) return false;
+    if (a === '-' || /^-[a-zA-Z]*s[a-zA-Z]*$/.test(a)) return true;
+    if (['-o', '+o', '-O', '+O', '--rcfile', '--init-file'].includes(a)) { j++; continue; }
+    if (/^[-+]./.test(a)) continue;
+    return false;
+  }
+  return true;
+}
+// Whether a shell's options turn on errexit: -e (alone or combined) or -o errexit.
+const errexitOpts = args => args.some((arg, j) => /^-[a-zA-Z]*e[a-zA-Z]*$/.test(arg) || (arg === '-o' && args[j + 1] === 'errexit'));
+const SIGNAL = /^-(sig)?(hup|int|quit|ill|trap|abrt|iot|bus|emt|fpe|kill|usr1|segv|usr2|pipe|alrm|term|stkflt|chld|cld|cont|stop|tstp|ttin|ttou|urg|xcpu|xfsz|vtalrm|prof|winch|io|poll|pwr|sys|info|lost|rtmin(\+\d+)?|rtmax(-\d+)?)$/i;
 const psOption = (word, name, min) => word.length >= min && name.startsWith(word);
 const PS_VALUED = ['-executionpolicy', '-windowstyle', '-workingdirectory', '-configurationname', '-outputformat', '-inputformat', '-version', '-psconsolefile', '-custompipename', '-settingsfile'];
 
@@ -619,7 +646,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       // daemons included), like kill -1.
       const select = cmd === 'killall' ? ['-u', '--user', '-t'] : ['-u', '-U', '-g', '-G', '-s', '-t', '--euid', '--uid', '--group', '--pgroup', '--session', '--terminal'];
       const attached = cmd === 'killall' ? /^-u./ : /^-[uUgGst]./;
-      if (!patterns.length && rest.some(word => select.includes(word.v) || attached.test(word.v) || select.some(option => option.startsWith('--') && word.v.startsWith(option + '='))))
+      if (!patterns.length && rest.some(word => select.includes(word.v) || (attached.test(word.v) && !SIGNAL.test(word.v)) || select.some(option => option.startsWith('--') && word.v.startsWith(option + '='))))
         return refuse(`${cmd} by user or session`, 'every process of that user or session');
     }
     for (const pattern of patterns) {
@@ -667,9 +694,15 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     // process-group kill does not reach; or nohup ending in a bare & as the last segment of the whole command, since
     // Pi stops tracking a shell once it exits, while anything after the & keeps the call open and a cancel or timeout
     // then kills the group, repair included. Without the redirects the repair dies of SIGPIPE once Pi stops reading.
-    const detached = run.shell === 'posix' && !run.job.trap && quiet(seg.redirects)
-      && ((setsid && (seg.end === '&' || fork)) || (nohup && seg.end === '&' && seg.last));
-    const script = (word, extra = {}) => items.push({ file: word.v ?? word, detached, ...extra });
+    // The nohup form also needs no other job in the command left in the background (yes & nohup ... &), whose output
+    // keeps Pi reading, and so the call open.
+    const detached = run.shell === 'posix' && !run.job.trap && quiet(seg.redirects, seg.dir)
+      && ((setsid && (seg.end === '&' || fork))
+        || (nohup && seg.end === '&' && seg.last && flatten(run.root).filter(other => other.end === '&').length === 1));
+    // errexit from the runner (bash -e, bash -o errexit, SHELLOPTS=...errexit) holds from the script's first line.
+    const errexit = (POSIX_SHELLS.has(base(lc[at] ?? '')) && errexitOpts(words.slice(at + 1).map(word => word.v)))
+      || /errexit/.test(seg.shellopts ?? '') || words.slice(0, at).some(word => /^SHELLOPTS=.*errexit/.test(word.v));
+    const script = (word, extra = {}) => items.push({ file: word.v ?? word, detached, errexit, ...extra });
     // A substitution's body (bash <(echo ...), bash -c "$(cat f)"): its echo/printf/heredoc text runs, and so do the
     // files it cats.
     const substituted = (extra = {}) => {
@@ -679,7 +712,9 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     };
     // What a shell reads on stdin: a `<` file, and the whole upstream pipeline's echo/printf/heredoc text and cat files.
     const stdin = (extra = {}) => {
-      for (const redirect of seg.redirects) if (redirect.op === '<') script(redirect.target, extra);
+      for (const redirect of seg.redirects) if (redirect.op === '<') { if (redirect.target.v.includes(SUB)) substituted(extra); else script(redirect.target, extra); }
+      // A here-string with a substitution (bash <<< "$(cat f)"): the substitution's text and files.
+      if (seg.input.some(text => text.includes(SUB))) substituted(extra);
       const { texts, files } = feeds(upstream(seg));
       for (const command of texts) items.push({ command, shell: 'posix', ...extra });
       for (const file of files) script(file, extra);
@@ -717,10 +752,11 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       if (j >= words.length) return items;
       const remote = rest.map(word => word.v).join(' ');
       if (rest.length) items.push({ command: remote, shell: 'posix', remote: true });
-      const parts = remote.trim().split(/\s+/).filter(Boolean);
-      const readsStdin = !parts.length || (isShell(parts[0]) && !parts.slice(1).some(part => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(part))
-        && (parts.length === 1 || parts.slice(1).some(part => part === '-' || /^-[a-zA-Z]*s[a-zA-Z]*$/.test(part))));
-      if (readsStdin) stdin({ remote: true });
+      // The remote command parsed like a local one: any segment that runs a shell reading stdin (past sudo, options
+      // and a cd && prefix) takes the local stdin.
+      const remoteSegs = rest.length ? flatten(parse(remote, 'posix')) : [];
+      if (!remoteSegs.length || remoteSegs.some(other => !other.pipeIn && !other.redirects.some(redirect => redirect.op === '<') && readsStdin(other.words)))
+        stdin({ remote: true });
       return items;
     }
     if (c === 'su') {
@@ -816,6 +852,9 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       }
       if (run.depth + 1 > MAX_DEPTH) return mention ? null : refuse(`script ${item.file} runs scripts more than ${MAX_DEPTH} levels deep`, 'a script nested too deeply to check');
       const inner = await analyze(text, /\.ps1$/i.test(path) ? 'powershell' : 'posix', state.dir, run.depth + 1, run.job, true);
+      // errexit from the runner or a shebang such as #!/bin/bash -e holds from the first line.
+      const shebang = /^#!(.*)/.exec(text)?.[1] ?? '';
+      if (item.errexit || errexitOpts(shebang.trim().split(/\s+/).slice(1))) inner.errexit.unshift(-1);
       if (!inner.findings.length || (item.detached && !mention && repaired(inner))) return null;
       return refuse(`script ${item.file} runs ${inner.findings[0].what}`, inner.findings[0].entry);
     }
@@ -824,15 +863,15 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     return null;
   }
   // The repair exception. Each stop in the script must be undone by its pair, in order, each naming the whole entry,
-  // then followed by a health check, with no exit, return, exec or kill $$ between the stop and that check and no set -e
-  // before it:
+  // then followed by a health check, with no exit, return, exec, kill $$ or source between the stop and that check and
+  // no errexit before it:
   // bootout, unload or remove -> bootstrap or load; disable -> enable, then bootstrap, kickstart or start; mask ->
   // unmask, then start; stop or kill -> start, restart or kickstart; a restart is its own pair. Restarts and health
   // checks count only as the command (the restart verb as its subcommand) of an unconditional top-level segment: not
   // after && or ||, not in an if, while, until, for or case block, a function body or a subshell.
   const START = ['start', 'restart', 'kickstart', 'try-restart', 'reload-or-restart'];
-  const UNDO = { bootout: [['bootstrap', 'load']], unload: [['bootstrap', 'load']], remove: [['bootstrap', 'load']],
-    disable: [['enable'], ['bootstrap', 'kickstart', 'load', ...START]], mask: [['unmask'], START], stop: [START], kill: [START],
+  const UNDO = { bootout: [['bootstrap', 'load', 'load-w']], unload: [['bootstrap', 'load', 'load-w']], remove: [['bootstrap', 'load', 'load-w']],
+    disable: [['enable'], ['bootstrap', 'kickstart', 'load', 'load-w', ...START]], mask: [['unmask'], START], stop: [START], kill: [START],
     'force-stop': [START], down: [['up']], 'serve-off': [['serve']] };
   const SELF = new Set(['restart', 'try-restart', 'reload-or-restart', 'condrestart', 'force-reload']);
   function stopKind(what) {
@@ -847,25 +886,42 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     if (/^(kill|pkill|killall|taskkill|stop-process)\b/.test(w) && !/by user|-1|^kill 0/.test(w)) return 'kill';
     return null;
   }
+  // A restart target names the entry exactly, after stripping a domain such as gui/<uid>/, the directory, .plist and
+  // .service. bootstrap and load need a .plist path.
+  const stripped = v => norm(v).split('/').pop().replace(/\.(plist|service)$/, '');
+  const namesEntry = (r, entry) => r.entries.has(entry)
+    || r.words.some(word => (!['bootstrap', 'load', 'load-w'].includes(r.verb) || /\.plist$/i.test(word.v)) && stripped(word.v) === entry);
   const repaired = run => run.findings.every(found => {
-    const kind = stopKind(found.what), entry = norm(found.entry);
-    const steps = SELF.has(kind) ? [START] : UNDO[kind];
-    if (!steps) return false;
-    let from = found.index, strict = !SELF.has(kind);
-    for (const step of steps) {
-      const restart = run.restarts.find(r => (strict ? r.index > from : r.index >= from) && step.includes(r.verb)
-        && (r.entries.has(entry) || r.words.some(word => norm(word.v).includes(entry))));
-      if (!restart) return false;
-      from = restart.index; strict = true;
-    }
-    const health = run.healths.find(at => at > from);
-    // set -e anywhere before the health check makes any failing command between the stop and it an exit.
-    return health !== undefined && !run.exits.some(at => at > found.index && at < health) && !run.errexit.some(at => at < health);
+    const kind = stopKind(found.what), entry = stripped(found.entry);
+    if (!kind || !(SELF.has(kind) || UNDO[kind])) return false;
+    // launchctl unload -w also disables the job: undone by load -w, or by enable and then bootstrap or load.
+    const plans = SELF.has(kind) ? [[START]]
+      : kind === 'unload' && (found.words ?? []).some(word => /^-[a-zA-Z]*w/.test(word.v)) ? [[['load-w']], [['enable'], ['bootstrap', 'load', 'load-w']]]
+      : [UNDO[kind]];
+    return plans.some(steps => {
+      let from = found.index, strict = !SELF.has(kind);
+      for (const step of steps) {
+        const restart = run.restarts.find(r => (strict ? r.index > from : r.index >= from) && step.includes(r.verb) && namesEntry(r, entry));
+        if (!restart) return false;
+        from = restart.index; strict = true;
+      }
+      const health = run.healths.find(at => at > from);
+      // set -e before the health check makes any failing command between the stop and it an exit; a sourced file
+      // between them may exit.
+      return health !== undefined && !run.exits.some(at => at > found.index && at < health) && !run.errexit.some(at => at < health)
+        && !run.sources.some(at => at > found.index && at < health);
+    });
   });
   // The restart verb of a segment (its subcommand) and what it names, or null.
   function restartOf(words) {
     const { at } = commandAt(words);
     if (at >= words.length) return null;
+    // Only behind sudo (not -l, -v or -k), env and nice: command -v, timeout and the rest may keep it from running.
+    for (const word of words.slice(0, at)) {
+      const b = base(word.v);
+      if (WRAPPERS[b] && !['sudo', 'env', 'nice'].includes(b)) return null;
+      if (/^-[a-zA-Z]*[lvkK]/.test(word.v) && words.slice(0, at).some(w => base(w.v) === 'sudo') || ['--list', '--validate', '--reset-timestamp', '--remove-timestamp'].includes(word.v)) return null;
+    }
     const cmd = base(words[at].v), rest = words.slice(at + 1), rl = rest.map(word => word.v.toLowerCase());
     const sub = (valued = []) => { for (let j = 0; j < rest.length; j++) { if (valued.includes(rest[j].v)) { j++; continue; } if (!rest[j].v.startsWith('-')) return j; } return -1; };
     let verb = null, targets = [];
@@ -873,6 +929,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     if (cmd === 'launchctl' || cmd === 'systemctl') {
       const k = sub(cmd === 'systemctl' ? ['-H', '-M', '-t', '-p', '-n', '-o', '-s', '--host', '--machine', '--type', '--property', '--lines', '--output', '--signal'] : []);
       if (k >= 0) { verb = rl[k]; targets = rest.slice(k + 1); }
+      if (cmd === 'launchctl' && verb === 'load' && targets.some(word => /^-[a-zA-Z]*[wF]/.test(word.v))) verb = 'load-w';
     } else if (cmd === 'service') { const pos = options(rest); if (pos.length >= 2) { verb = pos[1].v.toLowerCase(); targets = [pos[0]]; } }
     else if (cmd === 'brew' && rl[0] === 'services') { verb = rl[1]; targets = rest.slice(2); }
     else if (['start-service', 'sasv', 'start-scheduledtask'].includes(cmd)) { verb = 'start'; targets = rest; }
@@ -936,7 +993,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       const index = run.order++;
       for (const list of [...seg.subs, ...seg.nested]) { await walk(list, run, copy(state), mention, scope); if (stopped(run)) return; }
       const words = expandVars(seg.words, state);
-      const view = { ...seg, words, prev, last: run.depth === 0 && nodes === run.root && seg === nodes[nodes.length - 1] };
+      const view = { ...seg, words, prev, last: run.depth === 0 && nodes === run.root && seg === nodes[nodes.length - 1], dir: state.dir, shellopts: state.vars.SHELLOPTS };
       const joined = prev && (prev.end === '&&' || prev.end === '||');
       prev = view;
       if (!words.length && !seg.input.length && !seg.redirects.length) continue;
@@ -948,8 +1005,11 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       if (words.length && ['fi', 'done', 'esac'].includes(words[0].v.toLowerCase())) state.blocks = Math.max(0, state.blocks - 1);
       if (words[0]?.v === '}' && !words[0].quoted) state.stack.pop();
       const fn = definesFunction(seg, words);
-      if (words.some(word => word.v === '{' && !word.quoted)) state.stack.push(fn ? 'function' : 'group');
-      const unconditional = !mention && !joined && state.blocks === 0 && !state.stack.includes('function') && nodes === run.root;
+      // A { that opens a function body (on its header's line or the next), or after && or ||, blocks what is inside.
+      const opens = words.some(word => word.v === '{' && !word.quoted);
+      if (opens) state.stack.push(fn || joined || state.header ? 'block' : 'group');
+      state.header = fn && !opens;
+      const unconditional = !mention && !joined && state.blocks === 0 && !state.stack.includes('block') && nodes === run.root;
       if (['cd', 'pushd', 'popd', 'chdir', 'set-location', 'sl', 'push-location', 'pop-location'].includes(cmd)) {
         const arg = options(words.slice(at + 1))[0] ?? words.slice(at + 1).find(word => word.v === '-');
         if (cmd === 'popd' || cmd === 'pop-location' || arg?.v === '-') state.uncertain = true;
@@ -965,9 +1025,10 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       // segment that defines a function never is.
       const data = !fn && (DATA.has(cmd) || (cmd === 'git' && ['commit', 'tag', 'notes'].includes(gitSubcommand(words, at))));
       const found = data ? null : await inspect(view, run, mention, scope);
-      if (found) { run.findings.push({ ...found, index }); if (stopped(run)) return; }
+      if (found) { run.findings.push({ ...found, index, words }); if (stopped(run)) return; }
       if (run.collect && !mention) {
         if (exitOf(words)) run.exits.push(index);
+        if (cmd === 'source' || cmd === '.') run.sources.push(index);
         if (errexitOf(words)) run.errexit.push(index);
         if (unconditional) {
           const restart = restartOf(words);
@@ -981,7 +1042,16 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
         // A file this command writes, kept so a later segment that runs it is checked against what was written.
         if (['cat', 'tee', 'echo', 'printf'].includes(cmd)) {
           let text = cmd === 'cat' || cmd === 'tee' ? seg.input.join('\n') : printed(words, at);
-          if (cmd === 'tee' && !text && seg.pipeIn) text = feeds(upstream(view)).texts.join('\n');
+          if (cmd === 'tee' && !text && seg.pipeIn) {
+            // A tee fed by a pipe records the feeders' text and the files they cat.
+            const { texts, files } = feeds(upstream(view));
+            for (const file of files) {
+              const path = resolvePath(state.dir, file);
+              const read = run.job.written.has(path) ? run.job.written.get(path) : await readScript(path);
+              if (typeof read === 'string') texts.push(read);
+            }
+            text = texts.join('\n');
+          }
           const targets = seg.redirects.filter(redirect => ['>', '>>', '>|', '&>'].includes(redirect.op)).map(redirect => ({ v: redirect.target.v, append: redirect.op === '>>' }));
           if (cmd === 'tee') targets.push(...options(words.slice(at + 1)).map(word => ({ v: word.v, append: words.some(w => w.v === '-a' || w.v === '--append') })));
           if (text) for (const target of targets) {
@@ -1015,8 +1085,8 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
   /** Findings, restarts and health checks of one text (a command line or a script), in segment order. */
   async function analyze(text, shell, cwd, depth, job, collect) {
     const root = parse(text, shell);
-    const run = { job, depth, collect, shell, root, findings: [], restarts: [], healths: [], exits: [], errexit: [], order: 0, wholes: new Map() };
-    await walk(root, run, { dir: cwd, uncertain: false, vars: {}, blocks: 0, stack: [] }, false);
+    const run = { job, depth, collect, shell, root, findings: [], restarts: [], healths: [], exits: [], errexit: [], sources: [], order: 0, wholes: new Map() };
+    await walk(root, run, { dir: cwd, uncertain: false, vars: {}, blocks: 0, stack: [], header: false }, false);
     return run;
   }
   async function check(command, { cwd = process.cwd(), shell = 'posix' } = {}) {
