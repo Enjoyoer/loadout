@@ -1,8 +1,9 @@
 // Stock Paseo 0.10.3 interim: each real agent gets a private, scoped mcp.json.
 import { spawn } from 'node:child_process';
-import { readFileSync, mkdirSync, writeFileSync, existsSync, statSync, rmSync, lstatSync, accessSync, constants } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, existsSync, statSync, rmSync, lstatSync, accessSync, constants, realpathSync,
+  chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve, isAbsolute } from 'node:path';
+import { dirname, join, resolve, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // One clear stderr line and a non-zero exit, before any Pi process starts.
@@ -124,26 +125,36 @@ function overlaySettings(settings, overlay, models, home) {
 if (process.argv.slice(2).some(arg => /^(--(?:no-)?codemode|--no-extensions)(=|$)/.test(arg)))
   throw Error('Pi Codemode cannot be overridden per agent');
 // The isolated provider row's command carries its markers right after launch.mjs:
-//   launch.mjs --loadout-isolated [--loadout-sandbox-profile <absolute path>] <Paseo's args>
+//   launch.mjs --loadout-isolated [--loadout-sandbox-profile <absolute path> | --loadout-sandbox-root <absolute dir>]
+//     <Paseo's args>
 // Paseo lets a per-agent request change a provider's env but never its command, so isolation and the sandbox come
-// only from these markers, never from env. The two --loadout-test-* markers are fixture-only seams for the platform
-// and the sandbox-exec path; a real macOS launch refuses them.
+// only from these markers, never from env. Only with --loadout-sandbox-root does the launcher read one env var, the
+// agent's own profile (LOADOUT_PI_SANDBOX_PROFILE), and only a regular file under that root passes. The two
+// --loadout-test-* markers are fixture-only seams for the platform and the sandbox-exec path; a real macOS launch
+// refuses them.
 const rawArgs = process.argv.slice(2);
-let isolated = false, sandboxProfile = null, testPlatform = null, testSandboxExec = null, lead = 0;
+let isolated = false, sandboxProfile = null, sandboxRoot = null, testPlatform = null, testSandboxExec = null, lead = 0;
 for (; lead < rawArgs.length; lead++) {
   const arg = rawArgs[lead], value = rawArgs[lead + 1];
   if (arg === '--loadout-isolated') isolated = true;
   else if (arg === '--loadout-sandbox-profile' && value !== undefined) { sandboxProfile = value; lead++; }
+  else if (arg === '--loadout-sandbox-root' && value !== undefined) { sandboxRoot = value; lead++; }
   else if (arg === '--loadout-test-platform' && value !== undefined) { testPlatform = value; lead++; }
   else if (arg === '--loadout-test-sandbox-exec' && value !== undefined) { testSandboxExec = value; lead++; }
   else break;
 }
 const args = rawArgs.slice(lead);
 if (args.some(arg => arg.startsWith('--loadout-'))) refuse('loadout markers go only at the start of the provider command');
-if (!isolated && (sandboxProfile !== null || testPlatform !== null || testSandboxExec !== null))
-  refuse('--loadout-sandbox-profile and the test markers need --loadout-isolated');
-if (isolated && ['LOADOUT_PI_ISOLATED', 'LOADOUT_PI_SANDBOX_PROFILE'].some(key => Object.hasOwn(process.env, key)))
-  refuse('remove LOADOUT_PI_ISOLATED and LOADOUT_PI_SANDBOX_PROFILE from the env: isolation comes from the provider command');
+if (!isolated && (sandboxProfile !== null || sandboxRoot !== null || testPlatform !== null || testSandboxExec !== null))
+  refuse('--loadout-sandbox-profile, --loadout-sandbox-root and the test markers need --loadout-isolated');
+if (sandboxProfile !== null && sandboxRoot !== null)
+  refuse('--loadout-sandbox-profile and --loadout-sandbox-root are exclusive');
+if (isolated) {
+  // LOADOUT_PI_SANDBOX_PROFILE is read only on a row with --loadout-sandbox-root; anywhere else it refuses.
+  const flag = ['LOADOUT_PI_ISOLATED', ...(sandboxRoot === null ? ['LOADOUT_PI_SANDBOX_PROFILE'] : [])]
+    .find(key => Object.hasOwn(process.env, key));
+  if (flag) refuse(`remove ${flag} from the env: isolation comes from the provider command`);
+}
 if ((testPlatform !== null || testSandboxExec !== null) && process.platform === 'darwin')
   refuse('the --loadout-test-* markers are for test fixtures, never a macOS launch');
 // Variables the isolated row's command clears through /usr/bin/env before Node starts (ISOLATED_SCRUBBED_ENV in
@@ -197,6 +208,79 @@ const caller = env.PASEO_AGENT_ID;
 const probe = args.length === 2 && args[0] === '--mode' && args[1] === 'rpc';
 // Without a caller there is no agent home, so Pi would read the shared agent dir and its mcp.json.
 if (isolated && !caller && !probe) refuse('the isolated Pi provider needs a Paseo caller (PASEO_AGENT_ID)');
+// The sandbox, decided before anything is written or run. With --loadout-sandbox-root, every agent launch (resume
+// included) needs its own profile in LOADOUT_PI_SANDBOX_PROFILE: an absolute path with no symbolic link at any level,
+// naming a regular file under the root, outside the agent's working directory and outside the Pi root (which holds
+// every agent home). Missing, empty or anything else refuses. Paseo's catalog probe carries no per-agent env, so a
+// probe without one runs under PROBE_PROFILE: no network, and writes only to the agent dir it reads (sessions).
+const PROBE_PROFILE = '(version 1)\n(allow default)\n(deny network*)\n(deny file-write*)\n(allow file-write* '
+  + '(subpath (param "PI_HOME")) (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") '
+  + '(regex #"^/dev/fd/[0-9]+$"))\n';
+let probeProfile = false;
+if (sandboxRoot !== null) {
+  if (!isAbsolute(sandboxRoot)) refuse('--loadout-sandbox-root must be an absolute path');
+  let realRoot = null;
+  try { realRoot = realpathSync(sandboxRoot); } catch {}
+  if (realRoot === null || !statSync(realRoot).isDirectory())
+    refuse(`sandbox profile root ${sandboxRoot} is not an existing directory`);
+  const named = process.env.LOADOUT_PI_SANDBOX_PROFILE;
+  delete env.LOADOUT_PI_SANDBOX_PROFILE;  // Pi gets only the checked path, as sandbox-exec's -f
+  if (named === undefined && probe) probeProfile = true;
+  else {
+    if (!named) refuse('the isolated Pi provider needs LOADOUT_PI_SANDBOX_PROFILE, the agent\'s profile under its sandbox root');
+    const where = `sandbox profile ${JSON.stringify(named)}`;
+    if (!isAbsolute(named) || resolve(named) !== named) refuse(`${where} must be an absolute path without . or .. parts`);
+    let real = null;
+    try { real = realpathSync(named); } catch {}
+    if (real === null) refuse(`${where} is missing or unreadable`);
+    if (real !== named) refuse(`${where} has a symbolic link in its path`);
+    if (!real.startsWith(realRoot + sep)) refuse(`${where} is not under the sandbox profile root ${realRoot}`);
+    const cwd = realpathSync(process.cwd()), piRoot = realpathSync(root);
+    if (real === cwd || real.startsWith(cwd + sep)) refuse(`${where} is under the agent's working directory`);
+    if (real.startsWith(piRoot + sep)) refuse(`${where} is under the Pi root`);
+    sandboxProfile = real;
+  }
+}
+const sandboxed = sandboxProfile !== null || probeProfile;
+const sandboxExec = testSandboxExec ?? '/usr/bin/sandbox-exec';
+if (sandboxed) {
+  // Every launch with a profile runs inside sandbox-exec, the probe included; never unsandboxed.
+  if (sandboxProfile !== null && !isAbsolute(sandboxProfile)) refuse('--loadout-sandbox-profile must be an absolute path');
+  try {
+    accessSync(sandboxExec, constants.X_OK);
+  } catch {
+    refuse(`${sandboxExec} is missing or not executable`);
+  }
+  if (sandboxProfile !== null) {
+    let regular = false;
+    try {
+      regular = lstatSync(sandboxProfile).isFile();
+      accessSync(sandboxProfile, constants.R_OK);
+    } catch {
+      refuse(`sandbox profile ${sandboxProfile} is missing or unreadable`);
+    }
+    if (!regular) refuse(`sandbox profile ${sandboxProfile} is not a regular file`);
+  }
+}
+// A profile lets Pi read only PI_ROOT/app and fleet-routing.mjs of the Pi root, so every extension the sandboxed Pi
+// loads must be a built-in or resolve to one of those; Pi packages are refused.
+function readableExtensions(settings) {
+  if (settings.packages !== undefined && !(Array.isArray(settings.packages) && !settings.packages.length))
+    refuse('a sandboxed isolated Pi loads no Pi packages: remove packages from the Pi settings');
+  const real = path => { try { return realpathSync(path); } catch { return null; } };
+  const app = real(join(root, 'app')), routing = real(join(root, 'fleet-routing.mjs'));
+  for (const entry of settings.extensions ?? []) {
+    if (typeof entry === 'string' && /^[-!]/.test(entry)) continue;  // an exclusion loads nothing
+    const path = typeof entry === 'string' ? entry.replace(/^\+/, '') : '';
+    if (/^builtin:[a-z0-9.-]+$/.test(path)) continue;  // built into the Pi package under app/
+    const target = isAbsolute(path) && !/[*?]/.test(path) ? real(path) : null;
+    if (target === null || !(target === routing || (app !== null && target.startsWith(app + sep))))
+      refuse(`extension ${JSON.stringify(entry)} is outside what a sandbox profile lets Pi read: `
+        + `${join(root, 'app')}/ and ${join(root, 'fleet-routing.mjs')}`);
+  }
+}
+// The router key of a sandboxed agent: the launcher reads it and Pi takes it from this variable.
+const ROUTER_KEY_ENV = 'LOADOUT_PI_ROUTER_KEY';
 if (caller && !probe) {
   if (!/^[a-zA-Z0-9-]{8,128}$/.test(caller)) throw Error('invalid Paseo caller identity');
   const home = join(root, 'agents', caller);
@@ -240,6 +324,31 @@ if (caller && !probe) {
     const own = JSON.parse(files['settings.json']);
     files['settings.json'] = JSON.stringify({ ...own, extensions: [...own.extensions, '-builtin:mcp'] }, null, 2) + '\n';
   }
+  if (sandboxed) {
+    readableExtensions(JSON.parse(files['settings.json']));
+    // A profile denies Pi the credential files and its own !command, so the launcher runs the router's credential
+    // helper here, outside the sandbox: the argv fleet-routing.mjs derives, with its timeout and retries, without a
+    // shell, and with no PYTHON* variable. Pi gets the value only in its env, and the agent's models.json names that
+    // variable instead of the command. No value, no launch.
+    const models = JSON.parse(files['models.json']);
+    const { credentialHelper, readCredential, CREDENTIAL } = await import(new URL('./fleet-routing.mjs', import.meta.url));
+    const found = credentialHelper(models, root);
+    if (!found) refuse('a sandboxed isolated Pi needs the router credential helper in models.json');
+    if (!isAbsolute(found.argv[0]))
+      refuse(`the credential helper program ${JSON.stringify(found.argv[0])} must be an absolute path: set the Pi runtime's python`);
+    const helperEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PYTHON')));
+    let value = null;
+    for (const delay of [0, ...CREDENTIAL.retryDelaysMs]) {
+      if (delay) await new Promise(done => setTimeout(done, delay));
+      if ((value = await readCredential(found.argv, { timeoutMs: CREDENTIAL.timeoutMs, env: helperEnv }))) break;
+    }
+    if (!value) refuse('the router credential helper failed, and a sandboxed Pi cannot read the key itself');
+    const row = models.providers[found.provider];
+    row.apiKey = '$' + ROUTER_KEY_ENV;
+    for (const name of found.headers) row.headers[name] = '$' + ROUTER_KEY_ENV;
+    files['models.json'] = JSON.stringify(models, null, 2) + '\n';
+    env[ROUTER_KEY_ENV] = value;
+  }
   for (const [file, data] of Object.entries(files)) writeFileSync(join(home, file), data, { mode: 0o600 });
   if (existsSync(join(root, 'agent/AGENTS.md')))
     writeFileSync(join(home, 'AGENTS.md'), readFileSync(join(root, 'agent/AGENTS.md')), { mode: 0o600 });
@@ -273,30 +382,23 @@ if (caller && !probe) {
 if (isolated && probe) {
   // The isolated row's probe (model catalog, and Paseo's MCP-support check) loads every extension but built-in MCP,
   // so Paseo sees no MCP support and refuses MCP servers requested for an isolated agent; no project files either.
+  const shared = JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8'));
+  if (sandboxed) readableExtensions(shared);
   const own = settings => settings.extensions.filter(entry => !/^[-+!]/.test(entry)).flatMap(entry => ['-e', entry]);
   args.unshift('--no-approve', '--no-extensions', '-e', 'builtin:codemode', '-e', 'builtin:tool-search',
-    '-e', 'builtin:llama.cpp', ...own(JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8'))));
+    '-e', 'builtin:llama.cpp', ...own(shared));
 }
 let command = process.execPath, argv = [cli, ...args];
-if (sandboxProfile !== null) {
-  // Every launch with a profile runs inside sandbox-exec, the probe included; never unsandboxed.
-  const sandboxExec = testSandboxExec ?? '/usr/bin/sandbox-exec';
-  if (!isAbsolute(sandboxProfile)) refuse('--loadout-sandbox-profile must be an absolute path');
-  try {
-    accessSync(sandboxExec, constants.X_OK);
-  } catch {
-    refuse(`${sandboxExec} is missing or not executable`);
-  }
-  let regular = false;
-  try {
-    regular = lstatSync(sandboxProfile).isFile();
-    accessSync(sandboxProfile, constants.R_OK);
-  } catch {
-    refuse(`sandbox profile ${sandboxProfile} is missing or unreadable`);
-  }
-  if (!regular) refuse(`sandbox profile ${sandboxProfile} is not a regular file`);
-  argv = ['-f', sandboxProfile, '-D', `CWD=${resolve(process.cwd())}`, '-D', `PI_HOME=${env.PI_CODING_AGENT_DIR}`,
-    '-D', `PI_ROOT=${root}`, process.execPath, ...argv];
+if (sandboxed) {
+  // A profile lets Pi write only under PI_HOME and CWD, so its temp files go to PI_HOME/tmp, owner-only. An existing
+  // tmp that is not a plain directory (a link the agent left) refuses.
+  const tmp = join(env.PI_CODING_AGENT_DIR, 'tmp');
+  try { mkdirSync(tmp, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  if (!lstatSync(tmp).isDirectory()) refuse(`${tmp} must be a directory`);
+  chmodSync(tmp, 0o700);
+  env.TMPDIR = env.TMP = env.TEMP = tmp;
+  argv = [...(probeProfile ? ['-p', PROBE_PROFILE] : ['-f', sandboxProfile]), '-D', `CWD=${resolve(process.cwd())}`,
+    '-D', `PI_HOME=${env.PI_CODING_AGENT_DIR}`, '-D', `PI_ROOT=${root}`, process.execPath, ...argv];
   command = sandboxExec;
 }
 const child = spawn(command, argv, { env, stdio: 'inherit' });

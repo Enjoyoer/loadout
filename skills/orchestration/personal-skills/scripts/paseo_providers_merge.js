@@ -60,15 +60,17 @@ try {
       ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, visit(v)])) : value;
   p.providers = visit(p.providers);
   // The isolated Pi row, on the host: this host's absolute node after the env scrub (so a per-agent PATH cannot pick
-  // another node) and its sandbox profile with ~ expanded. Only macOS takes an isolated row (see paseo_providers.py).
+  // another node) and its sandbox profile or profile root with ~ expanded. Only macOS takes an isolated row (see paseo_providers.py).
   for (const row of Object.values(p.providers)) {
     const command = Array.isArray(row.command) ? row.command : [], at = command.indexOf('--loadout-isolated');
     if (at < 0) continue;
     if (process.platform !== 'darwin') throw Error('the isolated Pi provider needs a macos host');
     if (command[0] !== '/usr/bin/env' || command[at - 2] !== 'node') throw Error('unexpected isolated Pi command');
     command[at - 2] = process.execPath;
-    const profile = command.indexOf('--loadout-sandbox-profile');
-    if (profile >= 0) command[profile + 1] = expand(command[profile + 1]);
+    for (const marker of ['--loadout-sandbox-profile', '--loadout-sandbox-root']) {
+      const at = command.indexOf(marker);
+      if (at >= 0) command[at + 1] = expand(command[at + 1]);
+    }
   }
   const servers = p.mcpServers || [];
   const envRoot = process.platform === 'win32'
