@@ -1,9 +1,15 @@
 // Stock Paseo 0.10.3 interim: each real agent gets a private, scoped mcp.json.
 import { spawn } from 'node:child_process';
-import { readFileSync, mkdirSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, existsSync, statSync, rmSync, lstatSync, accessSync, constants } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// One clear stderr line and a non-zero exit, before any Pi process starts.
+function refuse(message) {
+  process.stderr.write(`Pi launch refused: ${message}\n`);
+  process.exit(1);
+}
 
 const root = dirname(fileURLToPath(import.meta.url));
 const spec = JSON.parse(readFileSync(join(root, 'runtime.json'), 'utf8'));
@@ -117,6 +123,67 @@ function overlaySettings(settings, overlay, models, home) {
 }
 if (process.argv.slice(2).some(arg => /^(--(?:no-)?codemode|--no-extensions)(=|$)/.test(arg)))
   throw Error('Pi Codemode cannot be overridden per agent');
+// The isolated provider row's command carries its markers right after launch.mjs:
+//   launch.mjs --loadout-isolated [--loadout-sandbox-profile <absolute path>] <Paseo's args>
+// Paseo lets a per-agent request change a provider's env but never its command, so isolation and the sandbox come
+// only from these markers, never from env. The two --loadout-test-* markers are fixture-only seams for the platform
+// and the sandbox-exec path; a real macOS launch refuses them.
+const rawArgs = process.argv.slice(2);
+let isolated = false, sandboxProfile = null, testPlatform = null, testSandboxExec = null, lead = 0;
+for (; lead < rawArgs.length; lead++) {
+  const arg = rawArgs[lead], value = rawArgs[lead + 1];
+  if (arg === '--loadout-isolated') isolated = true;
+  else if (arg === '--loadout-sandbox-profile' && value !== undefined) { sandboxProfile = value; lead++; }
+  else if (arg === '--loadout-test-platform' && value !== undefined) { testPlatform = value; lead++; }
+  else if (arg === '--loadout-test-sandbox-exec' && value !== undefined) { testSandboxExec = value; lead++; }
+  else break;
+}
+const args = rawArgs.slice(lead);
+if (args.some(arg => arg.startsWith('--loadout-'))) refuse('loadout markers go only at the start of the provider command');
+if (!isolated && (sandboxProfile !== null || testPlatform !== null || testSandboxExec !== null))
+  refuse('--loadout-sandbox-profile and the test markers need --loadout-isolated');
+if (isolated && ['LOADOUT_PI_ISOLATED', 'LOADOUT_PI_SANDBOX_PROFILE'].some(key => Object.hasOwn(process.env, key)))
+  refuse('remove LOADOUT_PI_ISOLATED and LOADOUT_PI_SANDBOX_PROFILE from the env: isolation comes from the provider command');
+if ((testPlatform !== null || testSandboxExec !== null) && process.platform === 'darwin')
+  refuse('the --loadout-test-* markers are for test fixtures, never a macOS launch');
+// Variables the isolated row's command clears through /usr/bin/env before Node starts (ISOLATED_SCRUBBED_ENV in
+// paseo_providers.py, the same set), so a per-agent env cannot load code, modules, config or data files, or change
+// module resolution. Any still set, or any other LD_*, DYLD_*, OPENSSL_* or JITI_* variable, refuses an isolated launch.
+const ISOLATED_SCRUBBED_ENV = [
+  // Node.js 24 and 26 (doc/api/cli.md, Environment variables): code, module resolution, ICU data, compile cache, CA files.
+  'NODE_OPTIONS', 'NODE_PATH', 'NODE_REPL_EXTERNAL_MODULE', 'NODE_ICU_DATA', 'NODE_COMPILE_CACHE',
+  'NODE_COMPILE_CACHE_PORTABLE', 'NODE_COMPILE_CACHE_READONLY', 'NODE_EXTRA_CA_CERTS', 'NODE_PRESERVE_SYMLINKS',
+  // ICU, which Node embeds: its time-zone data override.
+  'ICU_TIMEZONE_FILES_DIR',
+  // OpenSSL 3.5 (openssl-env(7)), which Node reads at startup: config, providers, engines, data files.
+  'OPENSSL_CONF', 'OPENSSL_CONF_INCLUDE', 'OPENSSL_CONFIG', 'OPENSSL_ENGINES', 'OPENSSL_MODULES', 'CTLOG_FILE',
+  'RANDFILE', 'SSL_CERT_DIR', 'SSL_CERT_FILE',
+  // glibc ld.so(8), every LD_* it reads, and glibc's module, tunable, locale and resolver files.
+  'LD_ASSUME_KERNEL', 'LD_AUDIT', 'LD_BIND_NOT', 'LD_BIND_NOW', 'LD_DEBUG', 'LD_DEBUG_OUTPUT', 'LD_DYNAMIC_WEAK',
+  'LD_HWCAP_MASK', 'LD_LIBRARY_PATH', 'LD_ORIGIN_PATH', 'LD_POINTER_GUARD', 'LD_PREFER_MAP_32BIT_EXEC',
+  'LD_PRELOAD', 'LD_PROFILE', 'LD_PROFILE_OUTPUT', 'LD_SHOW_AUXV', 'LD_TRACE_LOADED_OBJECTS', 'LD_TRACE_PRELINKING',
+  'LD_USE_LOAD_BIAS', 'LD_VERBOSE', 'LD_WARN', 'GCONV_PATH', 'GLIBC_TUNABLES', 'LOCPATH', 'NLSPATH', 'HOSTALIASES',
+  // macOS dyld(1) library and framework loading (running through /usr/bin/env also purges every DYLD_*).
+  'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'DYLD_FRAMEWORK_PATH', 'DYLD_FALLBACK_LIBRARY_PATH',
+  'DYLD_FALLBACK_FRAMEWORK_PATH', 'DYLD_VERSIONED_LIBRARY_PATH', 'DYLD_VERSIONED_FRAMEWORK_PATH',
+  'DYLD_IMAGE_SUFFIX', 'DYLD_SHARED_CACHE_DIR', 'DYLD_SHARED_REGION', 'DYLD_ROOT_PATH',
+  // jiti, Pi's extension loader: every JITI_* in Pi 1.0.0's installed packages.
+  'JITI_ALIAS', 'JITI_CACHE', 'JITI_DEBUG', 'JITI_ESM_EVAL_TEMP_FILE', 'JITI_EXTENSIONS', 'JITI_FS_CACHE',
+  'JITI_INTEROP_DEFAULT', 'JITI_JSX', 'JITI_MODULE_CACHE', 'JITI_NATIVE_MODULES', 'JITI_REBUILD_FS_CACHE',
+  'JITI_REQUIRE_CACHE', 'JITI_RESPECT_TMPDIR_ENV', 'JITI_SOURCE_MAPS', 'JITI_TRANSFORM_MODULES', 'JITI_TRY_NATIVE',
+  'JITI_TSCONFIG_PATHS',
+  // Pi 1.0.0 (docs/environment-variables.md): its package and session directories.
+  'PI_PACKAGE_DIR', 'PI_CODING_AGENT_SESSION_DIR',
+];
+// Isolation is macOS only: elsewhere /usr/bin/env is dynamically linked, so a per-agent LD_PRELOAD runs inside it before
+// the scrub. The test-platform marker stands in for macOS in fixtures; a real macOS launch refuses it above.
+if (isolated && (testPlatform ?? process.platform) !== 'darwin') refuse('the isolated Pi provider needs macOS');
+// A per-agent env still reaches this process; the isolated row's scrub is the fix, this refusal its backstop.
+if (isolated) {
+  const preload = Object.keys(process.env)
+    .find(key => ISOLATED_SCRUBBED_ENV.includes(key) || /^(LD_|DYLD_|OPENSSL_|JITI_)/.test(key));
+  if (preload) refuse(`remove ${preload} from the env: the isolated Pi provider takes no preload or loader variables`);
+}
 const cli = join(root, 'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');
 const piPackage = JSON.parse(readFileSync(join(dirname(dirname(cli)), '../package.json'), 'utf8'));
 if (piPackage.version !== '1.0.0') throw Error('official Pi 1.0.0 required');
@@ -125,13 +192,33 @@ env.LOADOUT_PI_MCP_URL = spec.paseoMcp.url;
 env.LOADOUT_PI_PARENT_MODEL = '';
 env.LOADOUT_PI_PARENT_THINKING = spec.settings?.defaultThinkingLevel || '';
 const caller = env.PASEO_AGENT_ID;
-const args = process.argv.slice(2);
 // Paseo 0.11 probes Pi (model catalog, MCP support) with only --mode rpc. A catalog probe's PASEO_AGENT_ID is
 // inherited from whoever started the daemon, so a probe runs like an uncalled launch and writes no agent home.
 const probe = args.length === 2 && args[0] === '--mode' && args[1] === 'rpc';
+// Without a caller there is no agent home, so Pi would read the shared agent dir and its mcp.json.
+if (isolated && !caller && !probe) refuse('the isolated Pi provider needs a Paseo caller (PASEO_AGENT_ID)');
 if (caller && !probe) {
   if (!/^[a-zA-Z0-9-]{8,128}$/.test(caller)) throw Error('invalid Paseo caller identity');
   const home = join(root, 'agents', caller);
+  if (isolated) {
+    // Pi 1.0.0 takes MCP servers from <agent dir>/mcp.json, a trusted project's .pi/mcp.json, servers extensions
+    // register (Paseo's integration extension does when it detects built-in MCP), and an MCP extension's
+    // --mcp-config flag (Paseo passes one when it detects pi-mcp-adapter). Refuse what Paseo could pass to reopen one.
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (/^--mcp-config(=|$)/.test(arg)) refuse('the isolated Pi provider takes no --mcp-config');
+      if (arg === '--approve' || arg === '-a') refuse('the isolated Pi provider never trusts project files');
+      if ((arg === '--extension' || arg === '-e') && args[i + 1] === 'builtin:mcp')
+        refuse('the isolated Pi provider never loads built-in MCP');
+    }
+    // An auto-discovered extension in the agent home could register its own MCP support.
+    try {
+      lstatSync(join(home, 'extensions'));
+      refuse(`remove ${join(home, 'extensions')}: the isolated Pi provider loads no agent-home extensions`);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
   mkdirSync(home, { recursive: true, mode: 0o700 });
   // Keep sessions stable across resumes, without shared settings or MCP identity.
   const shared = Object.fromEntries(['models.json', 'settings.json']
@@ -148,28 +235,71 @@ if (caller && !probe) {
       files[file] = JSON.stringify(merged, null, 2) + '\n';
     } catch (error) { throw Error(`invalid ${path}: ${error.message}`); }
   }
+  if (isolated) {
+    // Built-in MCP off: nothing reads mcp.json or connects a registered server, so Codemode sees no MCP namespace.
+    const own = JSON.parse(files['settings.json']);
+    files['settings.json'] = JSON.stringify({ ...own, extensions: [...own.extensions, '-builtin:mcp'] }, null, 2) + '\n';
+  }
   for (const [file, data] of Object.entries(files)) writeFileSync(join(home, file), data, { mode: 0o600 });
   if (existsSync(join(root, 'agent/AGENTS.md')))
     writeFileSync(join(home, 'AGENTS.md'), readFileSync(join(root, 'agent/AGENTS.md')), { mode: 0o600 });
-  const url = new URL(spec.paseoMcp.url);
-  if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw Error('Paseo MCP must use loopback');
-  url.searchParams.set('callerAgentId', caller);
-  const mcp = JSON.parse(readFileSync(join(root, 'agent/mcp.json'), 'utf8'));
-  env.LOADOUT_PI_MCP_URL = url.href;
   const modelIndex = args.lastIndexOf('--model');
   // Paseo 0.11 resumes with --session and applies the model over RPC; mcp_bridge reads the live model.
   if (modelIndex >= 0 && args[modelIndex + 1]) env.LOADOUT_PI_PARENT_MODEL = args[modelIndex + 1];
   else if (!args.includes('--session')) throw Error('Paseo must resolve a concrete catalog model');
   const thinkingIndex = args.lastIndexOf('--thinking');
   env.LOADOUT_PI_PARENT_THINKING = thinkingIndex < 0 ? spec.settings?.defaultThinkingLevel || '' : args[thinkingIndex + 1];
-  // Pi treats an empty ${VAR} as missing and drops the server, so omit empty parent values (resume has no --model).
-  const bridgeEnv = mcp.mcpServers?.paseo?.env;
-  if (bridgeEnv) for (const key of ['LOADOUT_PI_PARENT_MODEL', 'LOADOUT_PI_PARENT_THINKING'])
-    if (!env[key]) delete bridgeEnv[key];
-  writeFileSync(join(home, 'mcp.json'), JSON.stringify(mcp, null, 2) + '\n', { mode: 0o600 });
+  if (isolated) {
+    // No MCP config at all, and a stale one from an earlier launch goes before Pi starts. Without the Paseo MCP URL
+    // the routing extension reads no agent labels, so Fast labels are ignored.
+    rmSync(join(home, 'mcp.json'), { force: true });
+    delete env.LOADOUT_PI_MCP_URL;
+    // First, so no flag still waiting for its value can take it.
+    args.unshift('--no-approve');
+  } else {
+    const url = new URL(spec.paseoMcp.url);
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw Error('Paseo MCP must use loopback');
+    url.searchParams.set('callerAgentId', caller);
+    const mcp = JSON.parse(readFileSync(join(root, 'agent/mcp.json'), 'utf8'));
+    env.LOADOUT_PI_MCP_URL = url.href;
+    // Pi treats an empty ${VAR} as missing and drops the server, so omit empty parent values (resume has no --model).
+    const bridgeEnv = mcp.mcpServers?.paseo?.env;
+    if (bridgeEnv) for (const key of ['LOADOUT_PI_PARENT_MODEL', 'LOADOUT_PI_PARENT_THINKING'])
+      if (!env[key]) delete bridgeEnv[key];
+    writeFileSync(join(home, 'mcp.json'), JSON.stringify(mcp, null, 2) + '\n', { mode: 0o600 });
+  }
   env.PI_CODING_AGENT_DIR = home;
 }
-const child = spawn(process.execPath, [cli, ...process.argv.slice(2)], { env, stdio: 'inherit' });
+if (isolated && probe) {
+  // The isolated row's probe (model catalog, and Paseo's MCP-support check) loads every extension but built-in MCP,
+  // so Paseo sees no MCP support and refuses MCP servers requested for an isolated agent; no project files either.
+  const own = settings => settings.extensions.filter(entry => !/^[-+!]/.test(entry)).flatMap(entry => ['-e', entry]);
+  args.unshift('--no-approve', '--no-extensions', '-e', 'builtin:codemode', '-e', 'builtin:tool-search',
+    '-e', 'builtin:llama.cpp', ...own(JSON.parse(readFileSync(join(root, 'agent/settings.json'), 'utf8'))));
+}
+let command = process.execPath, argv = [cli, ...args];
+if (sandboxProfile !== null) {
+  // Every launch with a profile runs inside sandbox-exec, the probe included; never unsandboxed.
+  const sandboxExec = testSandboxExec ?? '/usr/bin/sandbox-exec';
+  if (!isAbsolute(sandboxProfile)) refuse('--loadout-sandbox-profile must be an absolute path');
+  try {
+    accessSync(sandboxExec, constants.X_OK);
+  } catch {
+    refuse(`${sandboxExec} is missing or not executable`);
+  }
+  let regular = false;
+  try {
+    regular = lstatSync(sandboxProfile).isFile();
+    accessSync(sandboxProfile, constants.R_OK);
+  } catch {
+    refuse(`sandbox profile ${sandboxProfile} is missing or unreadable`);
+  }
+  if (!regular) refuse(`sandbox profile ${sandboxProfile} is not a regular file`);
+  argv = ['-f', sandboxProfile, '-D', `CWD=${resolve(process.cwd())}`, '-D', `PI_HOME=${env.PI_CODING_AGENT_DIR}`,
+    '-D', `PI_ROOT=${root}`, process.execPath, ...argv];
+  command = sandboxExec;
+}
+const child = spawn(command, argv, { env, stdio: 'inherit' });
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
 child.on('error', () => { process.stderr.write('Pi launch failed\n'); process.exitCode = 1; });
 child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });

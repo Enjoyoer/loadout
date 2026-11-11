@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "8269f0ac801fd55865175d265e236c60c48f2e51",
+  "source_commit": "68bab207f6382044ae24264413173c5e1a416dfa",
   "skill_count": 24,
   "file_count": 134,
   "files": [
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 59922,
-      "sha256": "fd300176f50e10301ed526fbd1eef88f9625f099a3afe89eada5ae3cecefccec"
+      "bytes": 67850,
+      "sha256": "49fc2e91abd2ab83aeebf9660b100b0c34b48b9161732ca60819607d73046e3c"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -527,15 +527,15 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 35389,
-      "sha256": "d5d909ddc048fd632dad56bf0d95cd14a700815a2977678b06bf5e29b491f5a2"
+      "bytes": 41867,
+      "sha256": "0d879d19bc723e7b1cd4129f1f6be6a85a7eb42d77e72d34353029b8860ac4fa"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 20689,
-      "sha256": "222668c446edb4d881d4192b9da1044ec671ed46ff37b244eb3990db26341292"
+      "bytes": 22137,
+      "sha256": "a649460a9eb5925e6205ba0d774714e19f0aca933415e1b3bec641169eefda61"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_reload_remote.js",
@@ -604,8 +604,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 12521,
-      "sha256": "c69adfb38773084faa15e59ff152ec8800172b4d150fe6ddf9efe9896af46786"
+      "bytes": 21518,
+      "sha256": "c7ff2685c670811b1684680ca5879f737387ef86b3aef2ab2b8bb4b51a41734d"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/mcp_bridge.py",

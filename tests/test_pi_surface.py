@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import os
 import subprocess
 import sys
@@ -598,10 +599,13 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         env={**os.environ,'PATH':str(bin_dir)+os.pathsep+os.environ['PATH']}
         # As shipped: remote_common.js ahead of the merge program.
         program=base/'merge.js';program.write_text((PI.parent/'remote_common.js').read_text()+'\n'+(PI.parent/'paseo_providers_merge.js').read_text())
-        def run(catalog):
+        def run(catalog,platform=None):
             data=paseo_providers.payload(catalog,'example','test',False);data['config_path']=str(base/'config.json')
             packed=base64.b64encode(gzip.compress(json.dumps(data).encode())).decode()
-            done=subprocess.run(['node',str(program),packed],env=env,capture_output=True,text=True)
+            # A platform stand-in, for a merge step that runs only on one OS.
+            fake=['--require',str(base/'platform.js')] if platform else []
+            if platform: (base/'platform.js').write_text(f"Object.defineProperty(process,'platform',{{value:{json.dumps(platform)}}});")
+            done=subprocess.run(['node',*fake,str(program),packed],env=env,capture_output=True,text=True)
             return paseo_providers.parse_result(done.stdout) or {'error':done.stdout+done.stderr}
         return {'providers':source,'pi':pi}, run
 
@@ -930,5 +934,269 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             with self.assertRaisesRegex(ValueError,'junction'):configure(spec,root)
             self.assertEqual(list(elsewhere.iterdir()),[])
             self.assertFalse((root/'runtime.json').exists())
+
+    def launcher_fixture(self, base):
+        """A configured Pi root whose fake cli.js records its argv and agent dir; returns (root, run, record)."""
+        sys.path.insert(0, str(PI))
+        from configure import build
+        spec = {'baseUrl': 'https://router.example.test/v1', 'credential': {'kind': 'env', 'name': 'EXISTING_KEY'},
+                'models': [{'id': 'current', 'name': 'Sol'}], 'paseoMcp': {'url': 'http://127.0.0.1:1/mcp/agents'},
+                'settings': {'defaultProvider': 'fleet', 'defaultModel': 'current', 'defaultThinkingLevel': 'high'}}
+        root = base/'pi'
+        for name, data in build(spec, root).items():
+            (root/name).parent.mkdir(parents=True, exist_ok=True); (root/name).write_text(json.dumps(data))
+        (root/'launch.mjs').write_bytes((PI/'launch.mjs').read_bytes())
+        app = root/'app/node_modules/@earendil-works/pi-coding-agent'
+        (app/'dist/bundle').mkdir(parents=True)
+        (app/'package.json').write_text('{"version": "1.0.0"}')
+        record = base/'pi-ran.json'
+        (app/'dist/bundle/cli.js').write_text(
+            "require('fs').writeFileSync(process.env.RECORD, JSON.stringify({argv: process.argv.slice(2), "
+            "dir: process.env.PI_CODING_AGENT_DIR, mcpUrl: process.env.LOADOUT_PI_MCP_URL ?? null}))")
+        def run(*args, command=('node',), **extra):
+            sys.path.insert(0, str(PI.parent))
+            import paseo_providers as pp
+            ambient = {k: v for k, v in os.environ.items()
+                       if not re.match(r'(LOADOUT_PI_|JITI_|LD_|DYLD_|OPENSSL_)', k) and k not in pp.ISOLATED_SCRUBBED_ENV}
+            env = {**ambient, 'PASEO_AGENT_ID': 'agent-0001', 'RECORD': str(record), **extra}
+            for key in [k for k, v in extra.items() if v is None]: env.pop(key)
+            return subprocess.run([*command, str(root/'launch.mjs'), *args], capture_output=True, text=True, env=env, cwd=base)
+        return root, run, record
+
+    # The isolated marker, plus the test-platform marker off macOS (isolation is macOS only; a real macOS launch
+    # refuses the test markers).
+    ISO = ('--loadout-isolated',) + (() if sys.platform == 'darwin' else ('--loadout-test-platform', 'darwin'))
+
+    def isolated_row_command(self):
+        """The isolated row's command up to launch.mjs: the env scrub, then this host's absolute node."""
+        sys.path.insert(0, str(PI.parent))
+        import paseo_providers as pp
+        node = subprocess.run(['node', '-p', 'process.execPath'], capture_output=True, text=True).stdout.strip()
+        return [*pp.ISOLATED_ENV_SCRUB, node]
+
+    def test_isolated_launch_writes_no_mcp_config_and_removes_a_stale_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            home = root/'agents/agent-0001'
+            # The main Pi provider writes the agent's mcp.json, as before; an isolation env never changes that.
+            done = run('--mode', 'rpc', '--model', 'fleet/current', LOADOUT_PI_ISOLATED='1')
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn('paseo', json.loads((home/'mcp.json').read_text())['mcpServers'])
+            # The isolated row removes that stale file before Pi starts and writes none.
+            record.unlink()
+            done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current')
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertFalse((home/'mcp.json').exists())
+            ran = json.loads(record.read_text())
+            self.assertEqual(ran['dir'], str(home))
+            self.assertEqual(ran['argv'], ['--no-approve', '--mode', 'rpc', '--model', 'fleet/current'])
+            self.assertIsNone(ran['mcpUrl'])
+            self.assertEqual(json.loads((home/'settings.json').read_text())['extensions'][-1], '-builtin:mcp')
+            # A per-agent env on the isolated row refuses, whatever its value (empty included).
+            record.unlink()
+            for key in ['LOADOUT_PI_ISOLATED', 'LOADOUT_PI_SANDBOX_PROFILE']:
+                done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current', **{key: ''})
+                self.assertNotEqual(done.returncode, 0, key)
+                self.assertIn('isolation comes from the provider command', done.stderr)
+                self.assertFalse(record.exists(), key)
+            # Without a caller there is no agent home, so an isolated launch refuses.
+            done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current', PASEO_AGENT_ID=None)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn('needs a Paseo caller', done.stderr)
+            self.assertFalse(record.exists())
+            # The isolated probe loads every extension but built-in MCP, so Paseo sees no MCP support.
+            done = run(*self.ISO, '--mode', 'rpc', PASEO_AGENT_ID=None)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            ran = json.loads(record.read_text())
+            self.assertEqual(ran['dir'], str(root/'agent'))
+            self.assertEqual(ran['argv'], ['--no-approve', '--no-extensions', '-e', 'builtin:codemode', '-e',
+                                           'builtin:tool-search', '-e', 'builtin:llama.cpp', '-e',
+                                           str(root/'fleet-routing.mjs'), '--mode', 'rpc'])
+            # Markers anywhere but the start of the command, or a profile without the isolated marker, refuse.
+            record.unlink()
+            for args in [('--mode', 'rpc', '--loadout-isolated'), ('--loadout-sandbox-profile', '/x.sb', '--mode', 'rpc')]:
+                done = run(*args)
+                self.assertNotEqual(done.returncode, 0, args)
+                self.assertFalse(record.exists(), args)
+            # Isolation is macOS only: off macOS an isolated launch, agent or probe, refuses.
+            if sys.platform != 'darwin':
+                for args in [('--mode', 'rpc', '--model', 'fleet/current'), ('--mode', 'rpc')]:
+                    done = run('--loadout-isolated', *args)
+                    self.assertNotEqual(done.returncode, 0, args)
+                    self.assertIn('needs macOS', done.stderr)
+                    self.assertFalse(record.exists(), args)
+
+    @unittest.skipIf(sys.platform == "darwin", "the test markers refuse a real macOS launch")
+    def test_sandbox_refusals_never_start_pi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            profile = base/'pi.sb'; profile.write_text('(version 1)\n')
+            fake = base/'sandbox-exec'; fake.write_text('#!/bin/sh\nexit 0\n'); fake.chmod(0o755)
+            cases = [
+                (['--loadout-test-platform', 'linux', '--loadout-test-sandbox-exec', str(fake),
+                  '--loadout-sandbox-profile', str(profile)], 'needs macOS'),
+                (['--loadout-test-platform', 'darwin', '--loadout-test-sandbox-exec', str(base/'missing-sandbox-exec'),
+                  '--loadout-sandbox-profile', str(profile)], 'missing or not executable'),
+                (['--loadout-test-platform', 'darwin', '--loadout-test-sandbox-exec', str(fake),
+                  '--loadout-sandbox-profile', str(base/'missing.sb')], 'missing or unreadable'),
+                (['--loadout-test-platform', 'darwin', '--loadout-test-sandbox-exec', str(fake),
+                  '--loadout-sandbox-profile', str(base)], 'not a regular file'),
+            ]
+            for markers, message in cases:
+                for args in [('--mode', 'rpc', '--model', 'fleet/current'), ('--mode', 'rpc')]:
+                    done = run('--loadout-isolated', *markers, *args)
+                    self.assertNotEqual(done.returncode, 0, message)
+                    self.assertEqual(done.stderr.count('\n'), 1, done.stderr)
+                    self.assertIn(message, done.stderr)
+                    self.assertFalse(record.exists(), message)
+
+    @unittest.skipIf(os.name == "nt" or sys.platform == "darwin",
+                     "the fake sandbox-exec is a POSIX shell script, and the test markers refuse a real macOS launch")
+    def test_sandbox_spawn_argv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            profile = base/'pi.sb'; profile.write_text('(version 1)\n')
+            argv_log = base/'sandbox-argv'
+            fake = base/'sandbox-exec'; fake.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{argv_log}"\nexit 7\n'); fake.chmod(0o755)
+            # A per-agent env naming another sandbox-exec (one that runs Pi unsandboxed) is ignored.
+            bypass = base/'bypass'; bypass.write_text('#!/bin/sh\nshift 8\nexec "$@"\n'); bypass.chmod(0o755)
+            done = run('--loadout-isolated', '--loadout-sandbox-profile', str(profile), '--loadout-test-platform', 'darwin',
+                       '--loadout-test-sandbox-exec', str(fake), '--mode', 'rpc', '--model', 'fleet/current',
+                       LOADOUT_PI_TEST_SANDBOX_EXEC=str(bypass), LOADOUT_PI_TEST_PLATFORM='darwin')
+            self.assertEqual(done.returncode, 7, done.stderr)
+            node = subprocess.run(['node', '-p', 'process.execPath'], capture_output=True, text=True).stdout.strip()
+            cli = root/'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'
+            self.assertEqual(argv_log.read_text().splitlines(), [
+                '-f', str(profile), '-D', f'CWD={base}', '-D', f'PI_HOME={root/"agents/agent-0001"}',
+                '-D', f'PI_ROOT={root}', node, str(cli), '--no-approve', '--mode', 'rpc', '--model', 'fleet/current'])
+            self.assertFalse(record.exists())
+
+    @unittest.skipIf(os.name == "nt" or sys.platform == "darwin",
+                     "the row command needs /usr/bin/env and POSIX shell fakes, and the test markers refuse a real macOS launch")
+    def test_a_per_agent_env_cannot_take_over_the_isolated_launcher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            home = root/'agents/agent-0001'
+            row = self.isolated_row_command()
+            # R6 and R7: a NODE_OPTIONS preload that strips the isolated or the profile marker never runs under the
+            # row's env scrub, so the launch stays isolated and sandboxed.
+            preloaded = base/'preload-ran'
+            preload = base/'preload.js'
+            preload.write_text(f"require('fs').writeFileSync({json.dumps(str(preloaded))}, 'ran');"
+                               "process.argv = process.argv.filter(a => !a.startsWith('--loadout-'));")
+            done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current', command=row,
+                       NODE_OPTIONS=f'--require={preload}')
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertFalse(preloaded.exists())
+            self.assertFalse((home/'mcp.json').exists())
+            self.assertEqual(json.loads(record.read_text())['argv'][0], '--no-approve')
+            record.unlink()
+            profile = base/'pi.sb'; profile.write_text('(version 1)\n')
+            argv_log = base/'sandbox-argv'
+            fake = base/'sandbox-exec'; fake.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{argv_log}"\nexit 7\n'); fake.chmod(0o755)
+            done = run('--loadout-isolated', '--loadout-sandbox-profile', str(profile), '--loadout-test-platform', 'darwin',
+                       '--loadout-test-sandbox-exec', str(fake), '--mode', 'rpc', '--model', 'fleet/current',
+                       command=row, NODE_OPTIONS=f'--require={preload}')
+            self.assertEqual(done.returncode, 7, done.stderr)
+            self.assertFalse(preloaded.exists())
+            self.assertEqual(argv_log.read_text().splitlines()[:2], ['-f', str(profile)])
+            self.assertFalse(record.exists())
+            # R8: an OPENSSL_CONF whose provider module node would load before any JavaScript (this one names a
+            # missing module, so node aborts if it reads the file) is cleared by the row's scrub; the launch stays isolated.
+            bad_conf = base/'openssl.cnf'
+            bad_conf.write_text(f'nodejs_conf = nc\n[nc]\nproviders = prov\n[prov]\nevil = evil_sect\n[evil_sect]\n'
+                                f'module = {base}/missing-provider.so\nactivate = 1\n')
+            done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current', command=row,
+                       OPENSSL_CONF=str(bad_conf))
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertFalse((home/'mcp.json').exists())
+            self.assertEqual(json.loads(record.read_text())['argv'][0], '--no-approve')
+            record.unlink()
+            # Without the scrub, the launcher itself refuses a preload or loader variable; Pi never starts.
+            benign = base/'benign.js'; benign.write_text('')
+            empty_conf = base/'empty.cnf'; empty_conf.write_text('')
+            for key, value in [('NODE_OPTIONS', f'--require={benign}'), ('JITI_ALIAS', '{}'), ('LD_PRELOAD', ''),
+                               ('DYLD_LIBRARY_PATH', str(base)), ('OPENSSL_CONF', str(empty_conf))]:
+                done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current', **{key: value})
+                self.assertNotEqual(done.returncode, 0, key)
+                self.assertEqual(done.stderr.count('\n'), 1, done.stderr)
+                self.assertIn(f'remove {key}', done.stderr)
+                self.assertFalse(record.exists(), key)
+            # A per-agent PATH with a fake node never runs it: the row names this host's node by absolute path.
+            fakebin = base/'fakebin'; fakebin.mkdir()
+            faked = base/'fake-node-ran'
+            (fakebin/'node').write_text(f'#!/bin/sh\ntouch "{faked}"\nexit 0\n'); (fakebin/'node').chmod(0o755)
+            done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current', command=row,
+                       PATH=f'{fakebin}{os.pathsep}{os.environ["PATH"]}')
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertFalse(faked.exists())
+            self.assertEqual(json.loads(record.read_text())['argv'][0], '--no-approve')
+
+    @unittest.skipIf(os.name == "nt", "the merge payload exceeds the Windows command line")
+    def test_isolated_provider_row_mirrors_pi_and_goes_when_dropped(self):
+        sys.path.insert(0, str(PI.parent))
+        import paseo_providers as pp
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);config=base/'config.json';config.write_text('{"agents":{"providers":{}}}')
+            catalog,run=self.pi_merge_fixture(base)
+            plain=pp.payload(catalog,'example','stamp',False)
+            self.assertEqual((set(plain['providers']),set(plain['env'])),({'codex','pi'},{'pi'}))
+            self.assertEqual(run(catalog)['error'],None)
+            before=config.read_text()
+            catalog['pi']['isolated']={'sandboxProfile':'~/.config/example/pi.sb'}
+            pp._pi(catalog['pi'],'pi')
+            got=run(catalog,'darwin')
+            self.assertEqual(got['error'],None)
+            rows=json.loads(config.read_text())['agents']['providers']
+            self.assertEqual(rows['pi-isolated']['extends'],'pi')
+            for key in ['models','enabled']:
+                self.assertEqual(rows['pi-isolated'][key],rows['pi'][key])
+            # The env scrub, then this host's absolute node (never a bare node a per-agent PATH could pick).
+            node=subprocess.run(['node','-p','process.execPath'],capture_output=True,text=True,
+                                env={**os.environ,'PATH':str(base/'bin')+os.pathsep+os.environ['PATH']}).stdout.strip()
+            self.assertEqual(rows['pi-isolated']['command'],[*pp.ISOLATED_ENV_SCRUB,node,*rows['pi']['command'][1:],
+                             '--loadout-isolated','--loadout-sandbox-profile',str(Path.home()/'.config/example/pi.sb')])
+            self.assertEqual(rows['pi-isolated']['paseoTools'],{'enabled':False})
+            # The row's scrub and the launcher's refusal are the same set.
+            launcher=(PI/'launch.mjs').read_text()
+            block=launcher[launcher.index('const ISOLATED_SCRUBBED_ENV = ['):]
+            self.assertEqual(re.findall(r"'([A-Z0-9_]+)'",block[:block.index('];')]),list(pp.ISOLATED_SCRUBBED_ENV))
+            self.assertNotIn('env',rows['pi-isolated'])
+            # Dropping the profile drops it from the row.
+            catalog['pi']['isolated']={}
+            self.assertEqual(run(catalog,'darwin')['error'],None)
+            rows=json.loads(config.read_text())['agents']['providers']
+            self.assertEqual(rows['pi-isolated']['command'],[*pp.ISOLATED_ENV_SCRUB,node,*rows['pi']['command'][1:],
+                             '--loadout-isolated'])
+            # Dropping the key removes the row, leaving the config byte-identical to a run that never had it.
+            del catalog['pi']['isolated']
+            got=run(catalog,'darwin')
+            self.assertEqual((got['error'],got['removed']),(None,['pi-isolated']))
+            self.assertEqual(config.read_text(),before)
+            for bad in [{'providerId':'pi'},{'providerId':'codex'},{'other':1},{'sandboxProfile':'relative.sb'}]:
+                with self.assertRaises(Exception):
+                    pp._pi({**catalog['pi'],'isolated':bad},'pi')
+            # A providerId that is already a pinned provider refuses at load.
+            import fleet as fleet_module
+            doc={'schema_version':2,'source_host':'example','transport':'ssh',
+                 'hosts':[{'name':'example','os':'macos','sync':['providers']}]}
+            path=base/'paseo-providers.json'
+            path.write_text(json.dumps({**catalog,'pi':{**catalog['pi'],'isolated':{'providerId':'codex-two'}},
+                                        'providers':{**catalog['providers'],'codex-two':catalog['providers']['codex']}}))
+            with self.assertRaisesRegex(fleet_module.FleetError,'already a provider'):
+                pp.load_config(path,doc)
+            # Isolation is macOS only: a linux or windows host refuses pi.isolated at load, and the merge refuses
+            # off macOS.
+            path.write_text(json.dumps({**catalog,'pi':{**catalog['pi'],'isolated':{}}}))
+            for os_name in ['linux','windows']:
+                doc['hosts'][0]['os']=os_name
+                with self.assertRaisesRegex(fleet_module.FleetError,'needs a macos host'):
+                    pp.load_config(path,doc)
+            self.assertEqual(run({**catalog,'pi':{**catalog['pi'],'isolated':{}}},'linux')['error'],
+                             'the isolated Pi provider needs a macos host')
 
 if __name__=='__main__':unittest.main()

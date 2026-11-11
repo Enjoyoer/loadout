@@ -46,6 +46,43 @@ HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi", "disabledP
 LAUNCH_PROVIDERS = {"claude", "codex", "pi"}
 # Providers the fleet itself runs on; disabledProviders never turns these off.
 PROTECTED_PROVIDERS = {"pi", "claude", "codex"}
+# Paseo's built-in provider ids and its provider id alphabet; a derived provider takes neither a built-in id nor
+# another character.
+PASEO_BUILTIN_PROVIDERS = {"claude", "codex", "copilot", "opencode", "pi", "omp"}
+PROVIDER_ID = re.compile(r"[a-z][a-z0-9-]{0,63}")
+ISOLATED_DEFAULT_ID = "pi-isolated"
+# Variables the isolated row clears before Node starts, so a per-agent env cannot load code, modules, config or data
+# files, or change module resolution, in the launcher or Pi. launch.mjs refuses the same set (ISOLATED_SCRUBBED_ENV).
+ISOLATED_SCRUBBED_ENV = (
+    # Node.js 24 and 26 (doc/api/cli.md, Environment variables): code, module resolution, ICU data, compile cache, CA files.
+    "NODE_OPTIONS", "NODE_PATH", "NODE_REPL_EXTERNAL_MODULE", "NODE_ICU_DATA", "NODE_COMPILE_CACHE",
+    "NODE_COMPILE_CACHE_PORTABLE", "NODE_COMPILE_CACHE_READONLY", "NODE_EXTRA_CA_CERTS", "NODE_PRESERVE_SYMLINKS",
+    # ICU, which Node embeds: its time-zone data override.
+    "ICU_TIMEZONE_FILES_DIR",
+    # OpenSSL 3.5 (openssl-env(7)), which Node reads at startup: config, providers, engines, data files.
+    "OPENSSL_CONF", "OPENSSL_CONF_INCLUDE", "OPENSSL_CONFIG", "OPENSSL_ENGINES", "OPENSSL_MODULES", "CTLOG_FILE",
+    "RANDFILE", "SSL_CERT_DIR", "SSL_CERT_FILE",
+    # glibc ld.so(8), every LD_* it reads, and glibc's module, tunable, locale and resolver files.
+    "LD_ASSUME_KERNEL", "LD_AUDIT", "LD_BIND_NOT", "LD_BIND_NOW", "LD_DEBUG", "LD_DEBUG_OUTPUT", "LD_DYNAMIC_WEAK",
+    "LD_HWCAP_MASK", "LD_LIBRARY_PATH", "LD_ORIGIN_PATH", "LD_POINTER_GUARD", "LD_PREFER_MAP_32BIT_EXEC",
+    "LD_PRELOAD", "LD_PROFILE", "LD_PROFILE_OUTPUT", "LD_SHOW_AUXV", "LD_TRACE_LOADED_OBJECTS",
+    "LD_TRACE_PRELINKING", "LD_USE_LOAD_BIAS", "LD_VERBOSE", "LD_WARN", "GCONV_PATH", "GLIBC_TUNABLES", "LOCPATH",
+    "NLSPATH", "HOSTALIASES",
+    # macOS dyld(1) library and framework loading (running through /usr/bin/env also purges every DYLD_*).
+    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_LIBRARY_PATH",
+    "DYLD_FALLBACK_FRAMEWORK_PATH", "DYLD_VERSIONED_LIBRARY_PATH", "DYLD_VERSIONED_FRAMEWORK_PATH",
+    "DYLD_IMAGE_SUFFIX", "DYLD_SHARED_CACHE_DIR", "DYLD_SHARED_REGION", "DYLD_ROOT_PATH",
+    # jiti, Pi's extension loader: every JITI_* in Pi 1.0.0's installed packages.
+    "JITI_ALIAS", "JITI_CACHE", "JITI_DEBUG", "JITI_ESM_EVAL_TEMP_FILE", "JITI_EXTENSIONS", "JITI_FS_CACHE",
+    "JITI_INTEROP_DEFAULT", "JITI_JSX", "JITI_MODULE_CACHE", "JITI_NATIVE_MODULES", "JITI_REBUILD_FS_CACHE",
+    "JITI_REQUIRE_CACHE", "JITI_RESPECT_TMPDIR_ENV", "JITI_SOURCE_MAPS", "JITI_TRANSFORM_MODULES",
+    "JITI_TRY_NATIVE", "JITI_TSCONFIG_PATHS",
+    # Pi 1.0.0 (docs/environment-variables.md): its package and session directories.
+    "PI_PACKAGE_DIR", "PI_CODING_AGENT_SESSION_DIR",
+)
+# The isolated row starts its command with this env scrub (on macOS, running through /usr/bin/env also drops every
+# DYLD_* variable). The merge puts the host's absolute node path after it, so a per-agent PATH cannot pick another node.
+ISOLATED_ENV_SCRUB = ("/usr/bin/env", *(arg for name in ISOLATED_SCRUBBED_ENV for arg in ("-u", name)))
 # argv prefix for every paseo call made here; tests replace it with their fake (production always runs bare "paseo").
 # An ssh host reloads through RELOAD_JS instead, which runs that host's own paseo.
 PASEO_COMMAND = ("paseo",)
@@ -346,9 +383,36 @@ def effective(config: dict, host: str) -> tuple[dict, list]:
             list(settings.get("disabledProviders", config.get("disabledProviders", []))))
 
 
+def _isolated(value, where):
+    """pi.isolated: an opt-in second Pi provider with no MCP, optionally under a macOS sandbox profile."""
+    if not isinstance(value, dict):
+        raise fleet.FleetError(f"{where} must be an object")
+    fleet._keys(value, {"providerId", "sandboxProfile"}, where)
+    provider_id = value.get("providerId", ISOLATED_DEFAULT_ID)
+    if not isinstance(provider_id, str) or not PROVIDER_ID.fullmatch(provider_id) \
+            or provider_id in PASEO_BUILTIN_PROVIDERS:
+        raise fleet.FleetError(f"{where}.providerId must be a lowercase provider id other than the main Pi "
+                               f"provider and every Paseo built-in ({', '.join(sorted(PASEO_BUILTIN_PROVIDERS))})")
+    if "sandboxProfile" in value:
+        path = value["sandboxProfile"]
+        if not isinstance(path, str) or not re.match(r"/|~/", path) or re.search(r"[\x00-\x1f%]", path):
+            raise fleet.FleetError(f"{where}.sandboxProfile must be an absolute path or start with ~/")
+
+
+def isolated_id(pi: Optional[dict]) -> Optional[str]:
+    """The isolated Pi provider id a host's effective pi block asks for, or None."""
+    if not pi or "isolated" not in pi:
+        return None
+    return pi["isolated"].get("providerId", ISOLATED_DEFAULT_ID)
+
+
 def _pi(value, where):
     if not isinstance(value, dict): raise fleet.FleetError(f"{where} must be an object")
-    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly", "claudeApiKeyRoute", "labelOrder", "contextWindows", "maxTokens", "options"}, where)
+    fleet._keys(value, {"root", "runtime", "catalogSources", "defaultSourceProvider", "catalogOnly", "claudeApiKeyRoute", "labelOrder", "contextWindows", "maxTokens", "options", "isolated"}, where)
+    if "isolated" in value:
+        if value.get("catalogOnly") is True:
+            raise fleet.FleetError(f"{where}.isolated needs a Pi runtime, not catalogOnly")
+        _isolated(value["isolated"], f"{where}.isolated")
     # Paseo's provider options for the generated Pi row (agents.providers.pi.options); Paseo validates the fields.
     if "options" in value and not isinstance(value["options"], dict): raise fleet.FleetError(f"{where}.options must be an object")
     if value.get('catalogOnly') is True:
@@ -394,11 +458,20 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
             isinstance(keys, list) and all(isinstance(k, str) for k in keys) for keys in required.values()
         ):
             raise fleet.FleetError(f"hosts.{name}.required_env must map providers to lists of env names")
+    os_by_host = {host["name"]: host.get("os") for host in fleet_doc["hosts"]}
     for name in sorted(scoped):
         providers, disabled = effective(data, name)
         both = sorted(set(providers) & set(disabled))
         if both:
             raise fleet.FleetError(f"{name}: {both} both pinned in providers and listed in disabledProviders")
+        pi = data.get("hosts", {}).get(name, {}).get("pi", data.get("pi"))
+        iso = isolated_id(pi)
+        if iso and (iso in providers or iso in disabled):
+            raise fleet.FleetError(f"{name}: pi.isolated.providerId {iso!r} is already a provider in providers "
+                                   "or disabledProviders")
+        if iso and os_by_host.get(name) != "macos":
+            raise fleet.FleetError(f"{name}: pi.isolated needs a macos host: elsewhere /usr/bin/env is dynamically linked, so "
+                                   "a per-agent LD_PRELOAD runs before its env scrub, and the sandbox is macOS only")
     return data
 
 
@@ -427,6 +500,17 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
             providers['pi'] = generated['provider']
             env.setdefault('pi', {})['LOADOUT_PI_ROOT'] = pi['root']
         if 'options' in pi: providers['pi']['options'] = pi['options']
+        iso = isolated_id(pi)
+        if iso:
+            # A second provider derived from Pi: the same picker rows and options, and the same command plus the
+            # isolation markers. They live in the command, not the env, because Paseo lets a per-agent request override
+            # a provider's env but never its command. The merge never wraps this row in the MCP env launcher, so no
+            # MCP bearer env or launch.pi setting reaches it, and Paseo's own tools are off for it.
+            profile = pi['isolated'].get('sandboxProfile')
+            providers[iso] = {'extends': 'pi', 'label': 'Pi isolated', 'description': 'Pi with no MCP servers',
+                              **providers['pi'], 'paseoTools': {'enabled': False},
+                              'command': [*ISOLATED_ENV_SCRUB, *providers['pi']['command'], '--loadout-isolated',
+                                          *(['--loadout-sandbox-profile', profile] if profile else [])]}
     return {
         "pi": generated,
         "mcpServers": mcp_servers,
@@ -585,6 +669,8 @@ def sync_host(runner: Runner, config: dict, program: str, stamp: str, dry_run: b
             # Only the ids this run turns off; none, and no line part, when every listed row is already off.
             disabled = result.get("disabled") or []
             off = (f"; {'would disable' if dry_run else 'disabled'} [{', '.join(disabled)}]" if disabled else "")
+            if result.get("removed"):
+                off += f"; {'would remove' if dry_run else 'removed'} [{', '.join(result['removed'])}]"
             emit(f"{name}: write {state}; labels {'verified' if result['verified'] else 'MISMATCH'}; "
                  f"preserved [{', '.join(result['preserved'])}]{off}{backup}")
         if result and result.get('mcp'):
