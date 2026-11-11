@@ -179,15 +179,18 @@ export function credentialHelper(models, root) {
 // Pi reads a config value as a template: "$$" is a literal "$" and a leading "$!" a literal "!", so the value is never
 // taken for an environment reference or a command.
 export const credentialLiteral = value => (value.startsWith('!') ? '$' : '') + value.replace(/\$/g, () => '$$');
-/** One run of the helper: its one stdout line, or null on any failure (a nonzero exit, a timeout, an abort, no line). */
-export function readCredential(argv, { timeoutMs = CREDENTIAL.timeoutMs, signal } = {}) {
+/**
+ * One run of the helper: its one stdout line, or null on any failure (a nonzero exit, a timeout, an abort, no line).
+ * env, when given, replaces the inherited environment (the isolated launcher passes a cleaned copy).
+ */
+export function readCredential(argv, { timeoutMs = CREDENTIAL.timeoutMs, signal, env } = {}) {
   return new Promise(done => {
     let out = '', settled = false, child, guard;
     const finish = value => {
       if (settled) return;
       settled = true; clearTimeout(guard); child?.stdout?.destroy(); done(value);
     };
-    try { child = spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: timeoutMs, signal }); }
+    try { child = spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: timeoutMs, signal, ...(env ? { env } : {}) }); }
     catch { finish(null); return; }
     // A process the helper left behind can hold stdout open after the helper exits; the try still ends on time.
     guard = setTimeout(() => { child.kill(); finish(null); }, timeoutMs + 1_000);

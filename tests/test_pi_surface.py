@@ -217,7 +217,8 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
         root = Path(tmp).resolve()  # the launcher checks settings against its own resolved path
         for name, data in build(spec, root).items():
             (root/name).parent.mkdir(parents=True, exist_ok=True); (root/name).write_text(json.dumps(data))
-        (root/'launch.mjs').write_bytes((PI/'launch.mjs').read_bytes())
+        for name in ['launch.mjs', 'fleet-routing.mjs', 'credential.py']:
+            (root/name).write_bytes((PI/name).read_bytes())
         app = root/'app/node_modules/@earendil-works/pi-coding-agent'
         (app/'dist/bundle').mkdir(parents=True)
         (app/'package.json').write_text('{"version": "1.0.0"}')
@@ -1107,7 +1108,8 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         root = base/'pi'
         for name, data in build(spec, root).items():
             (root/name).parent.mkdir(parents=True, exist_ok=True); (root/name).write_text(json.dumps(data))
-        (root/'launch.mjs').write_bytes((PI/'launch.mjs').read_bytes())
+        for name in ['launch.mjs', 'fleet-routing.mjs', 'credential.py']:
+            (root/name).write_bytes((PI/name).read_bytes())
         app = root/'app/node_modules/@earendil-works/pi-coding-agent'
         (app/'dist/bundle').mkdir(parents=True)
         (app/'package.json').write_text('{"version": "1.0.0"}')
@@ -1115,14 +1117,15 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         (app/'dist/bundle/cli.js').write_text(
             "require('fs').writeFileSync(process.env.RECORD, JSON.stringify({argv: process.argv.slice(2), "
             "dir: process.env.PI_CODING_AGENT_DIR, mcpUrl: process.env.LOADOUT_PI_MCP_URL ?? null}))")
-        def run(*args, command=('node',), **extra):
+        def run(*args, command=('node',), cwd=None, **extra):
             sys.path.insert(0, str(PI.parent))
             import paseo_providers as pp
             ambient = {k: v for k, v in os.environ.items()
                        if not re.match(r'(LOADOUT_PI_|JITI_|LD_|DYLD_|OPENSSL_)', k) and k not in pp.ISOLATED_SCRUBBED_ENV}
-            env = {**ambient, 'PASEO_AGENT_ID': 'agent-0001', 'RECORD': str(record), **extra}
+            env = {**ambient, 'PASEO_AGENT_ID': 'agent-0001', 'RECORD': str(record), 'EXISTING_KEY': 'fixture-key', **extra}
             for key in [k for k, v in extra.items() if v is None]: env.pop(key)
-            return subprocess.run([*command, str(root/'launch.mjs'), *args], capture_output=True, text=True, env=env, cwd=base)
+            return subprocess.run([*command, str(root/'launch.mjs'), *args], capture_output=True, text=True, env=env,
+                                  cwd=cwd or base)
         return root, run, record
 
     # The isolated marker, plus the test-platform marker off macOS (isolation is macOS only; a real macOS launch
@@ -1297,6 +1300,218 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertFalse(faked.exists())
             self.assertEqual(json.loads(record.read_text())['argv'][0], '--no-approve')
+
+    def sandbox_fixture(self, base):
+        """A fake sandbox-exec that records its argv and Pi's TMPDIR and router key variable, then exits 7."""
+        log = base/'sandbox-run'
+        fake = base/'sandbox-exec'
+        fake.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{log}"\n'
+                        f'printf "TMPDIR=%s\\nKEY=%s\\n" "$TMPDIR" "$LOADOUT_PI_ROUTER_KEY" >> "{log}"\nexit 7\n')
+        fake.chmod(0o755)
+        return fake, log
+
+    @unittest.skipIf(os.name == "nt" or sys.platform == "darwin",
+                     "the fake sandbox-exec is a POSIX shell script, and the test markers refuse a real macOS launch")
+    def test_per_agent_sandbox_profile_under_the_profile_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            fake, log = self.sandbox_fixture(base)
+            runs = base/'runs'; unit = runs/'unit'; work = unit/'work'; work.mkdir(parents=True)
+            profile = unit/'agent.sb'; profile.write_text('(version 1)\n')
+            (base/'outside.sb').write_text('(version 1)\n')
+            (work/'agent.sb').write_text('(version 1)\n')
+            (unit/'link.sb').symlink_to(profile)
+            (runs/'linkdir').symlink_to(unit)
+            markers = ('--loadout-isolated', '--loadout-sandbox-root', str(runs), '--loadout-test-platform', 'darwin',
+                       '--loadout-test-sandbox-exec', str(fake))
+            launch = lambda **extra: run(*markers, '--mode', 'rpc', '--model', 'fleet/current', cwd=work, **extra)
+            # Accepted: a regular file under the root, outside the agent's working directory; only its path reaches
+            # sandbox-exec.
+            done = launch(LOADOUT_PI_SANDBOX_PROFILE=str(profile))
+            self.assertEqual(done.returncode, 7, done.stderr)
+            self.assertEqual(log.read_text().splitlines()[:2], ['-f', str(profile)])
+            log.unlink()
+            # A case variant of a path inside the cwd: on a case-insensitive volume it is the same file, and its real
+            # path differs; on a case-sensitive one it does not exist. Either way it refuses.
+            (work/'inwork.sb').write_text('(version 1)\n')
+            cases = [(str(unit/'link.sb'), 'symbolic link'), (str(runs/'linkdir/agent.sb'), 'symbolic link'),
+                     (str(unit/'WORK/inwork.sb'), 'sandbox profile'),
+                     (f'{runs}/../outside.sb', 'without . or .. parts'), (str(base/'outside.sb'), 'not under the sandbox'),
+                     (str(work/'agent.sb'), "agent's working directory"), (None, 'needs LOADOUT_PI_SANDBOX_PROFILE'),
+                     ('', 'needs LOADOUT_PI_SANDBOX_PROFILE')]
+            for value, message in cases:
+                done = launch(LOADOUT_PI_SANDBOX_PROFILE=value)
+                self.assertNotEqual(done.returncode, 0, value)
+                self.assertEqual(done.stderr.count('\n'), 1, done.stderr)
+                self.assertIn(message, done.stderr)
+                self.assertFalse(log.exists(), value)
+                self.assertFalse(record.exists(), value)
+            # The root mode and a fixed sandboxProfile together refuse at sync.
+            sys.path.insert(0, str(PI.parent))
+            import paseo_providers as pp
+            sync = base/'sync'; sync.mkdir()
+            catalog, _ = self.pi_merge_fixture(sync)
+            with self.assertRaisesRegex(Exception, 'not both'):
+                pp._pi({**catalog['pi'], 'isolated': {'sandboxProfile': '/x.sb', 'sandboxProfileRoot': str(runs)}}, 'pi')
+
+    @unittest.skipIf(os.name == "nt" or sys.platform == "darwin",
+                     "the fake sandbox-exec is a POSIX shell script, and the test markers refuse a real macOS launch")
+    def test_sandboxed_launch_reads_the_key_and_sets_tmpdir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            fake, log = self.sandbox_fixture(base)
+            home = root/'agents/agent-0001'
+            profile = base/'pi.sb'; profile.write_text('(version 1)\n')
+            markers = ('--loadout-isolated', '--loadout-sandbox-profile', str(profile), '--loadout-test-platform', 'darwin',
+                       '--loadout-test-sandbox-exec', str(fake))
+            launch = lambda **extra: run(*markers, '--mode', 'rpc', '--model', 'fleet/current', **extra)
+            # The launcher reads the key; Pi gets it only in its env, and the agent's models.json names that variable.
+            done = launch(EXISTING_KEY='key-from-helper')
+            self.assertEqual(done.returncode, 7, done.stderr)
+            lines = log.read_text().splitlines()
+            self.assertIn('KEY=key-from-helper', lines)
+            self.assertFalse(any('key-from-helper' in line for line in lines if not line.startswith('KEY=')))
+            models = (home/'models.json').read_text()
+            self.assertNotIn('key-from-helper', models)
+            self.assertEqual(json.loads(models)['providers']['fleet']['apiKey'], '$LOADOUT_PI_ROUTER_KEY')
+            # Pi's temp files go under the agent home, owner-only.
+            self.assertIn(f'TMPDIR={home/"tmp"}', lines)
+            self.assertEqual((home/'tmp').stat().st_mode & 0o777, 0o700)
+            log.unlink()
+            # A failed helper refuses the launch; Pi never starts.
+            done = launch(EXISTING_KEY=None)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn('credential helper failed', done.stderr)
+            self.assertFalse(log.exists())
+            # An extension the profile would not let Pi read refuses.
+            settings = root/'agent/settings.json'
+            other = base/'other.mjs'; other.write_text('export default () => {}\n')
+            settings.write_text(json.dumps({**json.loads(settings.read_text()),
+                                            'extensions': [str(root/'fleet-routing.mjs'), str(other)]}))
+            for args in [('--mode', 'rpc', '--model', 'fleet/current'), ('--mode', 'rpc')]:
+                done = run(*markers, *args)
+                self.assertNotEqual(done.returncode, 0, args)
+                self.assertIn('outside what a sandbox profile lets Pi read', done.stderr)
+                self.assertFalse(log.exists(), args)
+            self.assertFalse(record.exists())
+
+    @unittest.skipIf(os.name == "nt" or sys.platform == "darwin",
+                     "the fake sandbox-exec is a POSIX shell script, and the test markers refuse a real macOS launch")
+    def test_credential_helper_never_sees_the_per_agent_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            fake, log = self.sandbox_fixture(base)
+            profile = base/'pi.sb'; profile.write_text('(version 1)\n')
+            # A stand-in helper at the pinned path records what it ran with.
+            seen = base/'helper-seen.json'
+            (root/'credential.py').write_text(
+                f"import json, os, sys\njson.dump({{'env': dict(os.environ), 'isolated': sys.flags.isolated}}, "
+                f"open({str(seen)!r}, 'w'))\nprint('fixture-key')\n")
+            # A per-agent HOME whose user site dir holds a .pth with an import line.
+            evil = base/'evil-home'; marker = base/'pth-ran'
+            site_dir = subprocess.run([sys.executable, '-c', 'import site; print(site.getusersitepackages())'],
+                                      capture_output=True, text=True, env={**os.environ, 'HOME': str(evil)}).stdout.strip()
+            Path(site_dir).mkdir(parents=True)
+            (Path(site_dir)/'zz.pth').write_text(f"import os; open({str(marker)!r}, 'a').write('ran')\n")
+            # Control: Python run with that HOME does execute the line.
+            subprocess.run([sys.executable, '-c', 'pass'], env={**os.environ, 'HOME': str(evil)})
+            import site
+            if site.ENABLE_USER_SITE: self.assertTrue(marker.exists())
+            marker.unlink(missing_ok=True)
+            done = run('--loadout-isolated', '--loadout-sandbox-profile', str(profile), '--loadout-test-platform', 'darwin',
+                       '--loadout-test-sandbox-exec', str(fake), '--mode', 'rpc', '--model', 'fleet/current',
+                       HOME=str(evil), DEVELOPER_DIR=str(base/'devdir'), PYTHONPATH=str(base))
+            self.assertEqual(done.returncode, 7, done.stderr)
+            self.assertFalse(marker.exists())
+            helper = json.loads(seen.read_text())
+            self.assertEqual(helper['isolated'], 1)
+            self.assertNotIn('DEVELOPER_DIR', helper['env'])
+            self.assertNotIn('PYTHONPATH', helper['env'])
+            self.assertNotEqual(helper['env']['HOME'], str(evil))
+            # Only the fixed PATH and HOME, and the env credential source's own variable.
+            self.assertLessEqual(set(helper['env']) - {'LC_CTYPE'}, {'PATH', 'HOME', 'EXISTING_KEY'})
+            self.assertEqual(helper['env']['PATH'], '/usr/bin:/bin:/usr/sbin:/sbin')
+
+    @unittest.skipIf(os.name == "nt", "symbolic links need privileges on Windows")
+    def test_a_symlink_in_the_agent_home_is_replaced_not_followed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            home = root/'agents/agent-0001'; home.mkdir(parents=True)
+            victim = base/'victim.txt'; victim.write_text('original')
+            (home/'models.json').symlink_to(victim)
+            done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current')
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(victim.read_text(), 'original')
+            self.assertFalse((home/'models.json').is_symlink())
+            self.assertIn('providers', json.loads((home/'models.json').read_text()))
+
+    @unittest.skipIf(os.name == "nt", "symbolic links need privileges on Windows")
+    def test_a_symlinked_overlay_refuses_without_echoing_its_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            home = root/'agents/agent-0001'; home.mkdir(parents=True)
+            token = base/'token.txt'; token.write_text('fake-token-0123456789\n')
+            for name in ['models.overlay.json', 'settings.overlay.json']:
+                (home/name).symlink_to(token)
+                for args in [self.ISO, ()]:
+                    done = run(*args, '--mode', 'rpc', '--model', 'fleet/current')
+                    self.assertNotEqual(done.returncode, 0, name)
+                    self.assertIn('is a symlink', done.stderr)
+                    self.assertNotIn('fake-token', done.stderr + done.stdout)
+                    self.assertFalse(record.exists())
+                (home/name).unlink()
+                # A regular overlay holding that text refuses as invalid JSON, without quoting it.
+                (home/name).write_text(token.read_text())
+                done = run(*self.ISO, '--mode', 'rpc', '--model', 'fleet/current')
+                self.assertNotEqual(done.returncode, 0, name)
+                self.assertIn('invalid JSON', done.stderr)
+                self.assertNotIn('fake-token', done.stderr + done.stdout)
+                (home/name).unlink()
+
+    @unittest.skipIf(os.name == "nt" or sys.platform == "darwin",
+                     "the fake sandbox-exec is a POSIX shell script, and the test markers refuse a real macOS launch")
+    def test_probe_profile_refuses_a_node_prefix_that_contains_the_pi_root(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            fake, log = self.sandbox_fixture(base)
+            # A node at <prefix>/bin/node whose prefix holds the Pi root, as with ~/.local/bin/node and a Pi root
+            # under ~/.local/share.
+            node = shutil.which('node'); local = base/'bin/node'; local.parent.mkdir()
+            try: os.link(os.path.realpath(node), local)
+            except OSError: shutil.copy2(os.path.realpath(node), local)
+            runs = base/'runs'; runs.mkdir()
+            markers = ('--loadout-isolated', '--loadout-sandbox-root', str(runs), '--loadout-test-platform', 'darwin',
+                       '--loadout-test-sandbox-exec', str(fake))
+            done = run(*markers, '--mode', 'rpc', command=(str(local),))
+            self.assertNotEqual(done.returncode, 0)
+            self.assertEqual(done.stderr.count('\n'), 1, done.stderr)
+            self.assertIn('contains the Pi root', done.stderr)
+            self.assertFalse(log.exists())
+            # The same probe with a node outside it runs under the probe profile.
+            done = run(*markers, '--mode', 'rpc')
+            self.assertEqual(done.returncode, 7, done.stderr)
+            self.assertEqual(log.read_text().splitlines()[0], '-p')
+
+    @unittest.skipUnless(sys.platform == "darwin" and os.path.exists('/usr/bin/sandbox-exec'), "macOS sandbox-exec")
+    def test_probe_profile_denies_reading_an_unlisted_file_under_the_home(self):
+        launcher = (PI/'launch.mjs').read_text()
+        profile = re.search(r"const PROBE_PROFILE = `(.*?)`;", launcher, re.S).group(1)
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
+            base = Path(tmp).resolve()
+            pi_home = base/'pi/agent'; pi_home.mkdir(parents=True)
+            (pi_home/'settings.json').write_text('{}')
+            secret = base/'token.txt'; secret.write_text('fake-token')
+            sandbox = ['/usr/bin/sandbox-exec', '-p', profile, '-D', f'HOME={Path.home().resolve()}', '-D', f'PI_HOME={pi_home}',
+                       '-D', f'PI_ROOT={base/"pi"}', '-D', f'CWD={base}', '-D', 'NODE_PREFIX=/nonexistent', '/bin/cat']
+            self.assertEqual(subprocess.run([*sandbox, str(pi_home/'settings.json')], capture_output=True).returncode, 0)
+            self.assertNotEqual(subprocess.run([*sandbox, str(secret)], capture_output=True).returncode, 0)
 
     @unittest.skipIf(os.name == "nt", "the merge payload exceeds the Windows command line")
     def test_isolated_provider_row_mirrors_pi_and_goes_when_dropped(self):

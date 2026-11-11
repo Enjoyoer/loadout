@@ -387,16 +387,18 @@ def _isolated(value, where):
     """pi.isolated: an opt-in second Pi provider with no MCP, optionally under a macOS sandbox profile."""
     if not isinstance(value, dict):
         raise fleet.FleetError(f"{where} must be an object")
-    fleet._keys(value, {"providerId", "sandboxProfile"}, where)
+    fleet._keys(value, {"providerId", "sandboxProfile", "sandboxProfileRoot"}, where)
     provider_id = value.get("providerId", ISOLATED_DEFAULT_ID)
     if not isinstance(provider_id, str) or not PROVIDER_ID.fullmatch(provider_id) \
             or provider_id in PASEO_BUILTIN_PROVIDERS:
         raise fleet.FleetError(f"{where}.providerId must be a lowercase provider id other than the main Pi "
                                f"provider and every Paseo built-in ({', '.join(sorted(PASEO_BUILTIN_PROVIDERS))})")
-    if "sandboxProfile" in value:
-        path = value["sandboxProfile"]
-        if not isinstance(path, str) or not re.match(r"/|~/", path) or re.search(r"[\x00-\x1f%]", path):
-            raise fleet.FleetError(f"{where}.sandboxProfile must be an absolute path or start with ~/")
+    if "sandboxProfile" in value and "sandboxProfileRoot" in value:
+        raise fleet.FleetError(f"{where} takes sandboxProfile or sandboxProfileRoot, not both")
+    for key in ("sandboxProfile", "sandboxProfileRoot"):
+        path = value.get(key)
+        if key in value and (not isinstance(path, str) or not re.match(r"/|~/", path) or re.search(r"[\x00-\x1f%]", path)):
+            raise fleet.FleetError(f"{where}.{key} must be an absolute path or start with ~/")
 
 
 def isolated_id(pi: Optional[dict]) -> Optional[str]:
@@ -506,11 +508,12 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
             # isolation markers. They live in the command, not the env, because Paseo lets a per-agent request override
             # a provider's env but never its command. The merge never wraps this row in the MCP env launcher, so no
             # MCP bearer env or launch.pi setting reaches it, and Paseo's own tools are off for it.
-            profile = pi['isolated'].get('sandboxProfile')
+            profile, profile_root = pi['isolated'].get('sandboxProfile'), pi['isolated'].get('sandboxProfileRoot')
             providers[iso] = {'extends': 'pi', 'label': 'Pi isolated', 'description': 'Pi with no MCP servers',
                               **providers['pi'], 'paseoTools': {'enabled': False},
                               'command': [*ISOLATED_ENV_SCRUB, *providers['pi']['command'], '--loadout-isolated',
-                                          *(['--loadout-sandbox-profile', profile] if profile else [])]}
+                                          *(['--loadout-sandbox-profile', profile] if profile else []),
+                                          *(['--loadout-sandbox-root', profile_root] if profile_root else [])]}
     return {
         "pi": generated,
         "mcpServers": mcp_servers,
