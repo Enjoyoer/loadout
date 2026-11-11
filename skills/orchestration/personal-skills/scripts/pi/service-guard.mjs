@@ -16,7 +16,7 @@
 // verb whose target is not a plain literal (computed, piped, a variable or a glob) falls back to the whole command.
 import { execFile } from 'node:child_process';
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createContext, Script } from 'node:vm';
 export const GUARD_RULE = 'shared fleet service: use one detached nohup script that changes, restarts, health-checks and rolls back';
@@ -59,7 +59,8 @@ function quiet(redirects, dir) {
   let out = false, err = false;
   const away = target => {
     if (target.v.includes(SUB) || target.v.includes('$')) return false;
-    const path = /^~([\\/]|$)/.test(target.v) ? resolve(home(), target.v.slice(2)) : resolve(dir, target.v);
+    // POSIX path rules on every host: the exception applies to the bash tool only (Git Bash on Windows).
+    const path = /^~([\\/]|$)/.test(target.v) ? posix.resolve(home().replace(/\\/g, '/'), target.v.slice(2)) : posix.resolve(String(dir ?? '/').replace(/\\/g, '/'), target.v);
     return path === '/dev/null' || !/^\/(dev|proc)(\/|$)/.test(path);
   };
   for (const { op, fd, target } of redirects) {
