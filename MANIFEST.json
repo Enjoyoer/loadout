@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "a1dff4f1b8211935d822c8c56a0c2f27b90fdfdd",
+  "source_commit": "b674f76d5cc0f259be8543c2690bd244a4d23a70",
   "skill_count": 24,
   "file_count": 134,
   "files": [
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 74316,
-      "sha256": "a35a7551e0f707448394159f2610dab6056975b92eee4da0351455e7d278046c"
+      "bytes": 75089,
+      "sha256": "82b7c0c6203fcdfd3b5be7c700b4d483a7417d902e3ad73779479dc85ba38675"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -604,8 +604,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 31387,
-      "sha256": "ca4218d792d89a8f4a8b17245fbbff265d6fb16fa009091a7bde905f79541002"
+      "bytes": 33112,
+      "sha256": "68b9a4495baaa78dc3680a0cfb8aaf602ac10f75a355dc57f32213980978c574"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/mcp_bridge.py",
