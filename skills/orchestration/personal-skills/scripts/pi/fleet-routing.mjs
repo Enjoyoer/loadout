@@ -319,22 +319,25 @@ export function compactFailure(event) {
 // compaction.reserveTokens), and the summary itself grows with every compaction. For a router model this extension
 // therefore runs Pi's own compact() itself from session_before_compact, after the credential refresh above, with the
 // lower of the agent's thinking level and COMPACTION.thinking, and with COMPACTION.lengthBound appended to the user's
-// /compact text, clamped to the model's levels as Pi clamps its own. compact() keeps Pi's prompts, its split-turn prefix
-// summary and its file lists. Pi carries file lists only from its own (fromHook false) summaries, so for every
-// provider this code first adds the previous fleet summary's lists to Pi's own preparation, in place: Pi's default
-// compaction gets that same object when this handler returns nothing. The request goes through the model registry with
-// the credential this process lent, the headers Pi's default summary request carries (service tier, client request
-// id), and Pi's timeout settings; its retries are capped at COMPACTION.maxRetries, because Pi's default compaction
-// follows any failure as a second full attempt. Pi saves the returned summary as its own. compact() is used only from
-// a tested Pi version with its known 12-parameter shape. On any failure, an empty summary included, it returns nothing,
-// so Pi's default compaction runs exactly as before; a failure that was not an abort leaves a compact_failed row with
-// fallback 'pi-default' (errorKind 'unavailable' when compact() could not be loaded or has another shape). Both
-// values are pi.runtime keys (runtime.json "compaction": {"thinking", "lengthBound"}), which configure.py validates.
+// /compact text, clamped to the model's levels as Pi clamps its own. compact() keeps Pi's prompts, its split-turn
+// prefix summary and its file lists. Pi carries file lists only from its own (fromHook false) summaries and never drops
+// a path, so for every provider this code first adds the previous fleet summary's lists to Pi's own preparation, in
+// place, and caps each list at COMPACTION.maxFiles paths, most recent first (mergeFileLists): Pi's default compaction
+// gets that same object when this handler returns nothing. The fleet summary also says how many paths were dropped. The
+// request goes through the model registry with the credential this process lent, the headers Pi's default summary
+// request carries (service tier, client request id), and Pi's timeout settings; its retries are capped at
+// COMPACTION.maxRetries, because Pi's default compaction follows any failure as a second full attempt. Pi saves the
+// returned summary as its own. compact() is used only from a tested Pi version with its known 12-parameter shape. On
+// any failure, an empty summary included, it returns nothing, so Pi's default compaction runs exactly as before; a
+// failure that was not an abort leaves a compact_failed row with fallback 'pi-default' (errorKind 'unavailable' when
+// compact() could not be loaded or has another shape). The thinking cap, the length bound and maxFiles are pi.runtime
+// keys (runtime.json "compaction": {"thinking", "lengthBound", "maxFiles"}), which configure.py validates.
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 export const COMPACTION = {
   thinking: 'medium',
   lengthBound: 'Keep the whole summary under 8,000 words. Drop finished items that no longer affect the next steps.',
   maxRetries: 2,
+  maxFiles: 100,
   versions: ['1.0.0'],
   // Pi's own bundled entry beside the cli.js launch.mjs starts, so compact() comes from the module instances Pi runs.
   // A dynamic import of the package name would not resolve: Pi maps that name only for an extension's static imports.
@@ -347,6 +350,7 @@ export function compactionSettings(root = dirname(fileURLToPath(import.meta.url)
   return {
     thinking: THINKING_LEVELS.includes(own.thinking) ? own.thinking : COMPACTION.thinking,
     lengthBound: typeof own.lengthBound === 'string' && own.lengthBound.trim() ? own.lengthBound.trim() : COMPACTION.lengthBound,
+    maxFiles: Number.isSafeInteger(own.maxFiles) && own.maxFiles >= 0 && own.maxFiles <= 100_000 ? own.maxFiles : COMPACTION.maxFiles,
   };
 }
 // Pi's clampThinkingLevel (pi-ai models.js): the model's own level, else the next one up it supports, else down.
@@ -389,17 +393,94 @@ function retryPolicy(settings) {
   return { enabled: retry.enabled ?? true, maxRetries: Math.min(retry.maxRetries ?? 3, COMPACTION.maxRetries),
     baseDelayMs: retry.baseDelayMs ?? 2_000, maxAgentDelayMs: retry.maxAgentDelayMs ?? 60_000 };
 }
-/** Adds the previous fleet summary's file lists to Pi's own preparation, in place (Pi carries only its own lists). */
-export function addPreviousFiles(preparation, entries) {
+// Pi's tool calls that touch a file (core/compaction/utils.js addFileOp), from the message or, for a Codemode script,
+// from the calls recorded on its result, in the order they ran.
+function fileCalls(message) {
+  if (message?.role === 'toolResult') return message.nestedCalls?.calls ?? [];
+  if (message?.role !== 'assistant' || !Array.isArray(message.content)) return [];
+  return message.content.filter(block => block && typeof block === 'object' && block.type === 'toolCall');
+}
+// The paths the messages read and modified, each in call order.
+function fileTouches(messages) {
+  const read = [], modified = [];
+  for (const message of messages) for (const call of fileCalls(message)) {
+    const path = call?.arguments?.path;
+    if (typeof path !== 'string' || !path) continue;
+    if (call.name === 'read') read.push(path);
+    else if (call.name === 'write' || call.name === 'edit') modified.push(path);
+  }
+  return { read, modified };
+}
+const strings = list => Array.isArray(list) ? list.filter(item => typeof item === 'string') : [];
+// Oldest first, each path once, at its latest position.
+const byRecency = (...lists) => { const seen = new Set(); for (const list of lists) for (const item of list) { seen.delete(item); seen.add(item); } return seen; };
+// The fleet details mark their lists as oldest first; Pi's own details (computeFileLists) are sorted, so their order
+// says nothing about recency.
+export const FILES_ORDER = 'oldest-first';
+const NOTE = /\n\n\(\d+ older file paths? (?:was|were) dropped; each list keeps the \d+ most recent\.\)$/;
+/**
+ * The file lists the next summary carries, set in Pi's own preparation, in place, for every provider. Pi carries lists
+ * only from its own (fromHook false) summaries, so the previous fleet summary's lists are added; Pi never drops a path,
+ * so each list keeps at most maxFiles paths (0 keeps all), most recent first. Recency comes from the last call that
+ * touched a path in the whole branch (Pi keeps every entry) and then the summarized span, so the span's paths always
+ * win; a path no call in the branch touched is older than all of those, in its stored order only when the previous
+ * details say they are oldest first. A path lands in exactly one list, as Pi's computeFileLists decides it, after the
+ * cap: modified when it is among the kept modified paths, else read. The previous summary's trailing list block and
+ * dropped-count line are removed from preparation.previousSummary, so a split turn that copies it verbatim carries them
+ * once, at the end. Returns both lists oldest first and how many paths were dropped.
+ */
+export function mergeFileLists(preparation, entries, maxFiles = COMPACTION.maxFiles) {
   const ops = preparation?.fileOps;
-  if (!ops?.read || !ops?.edited) return;
-  const previous = Array.isArray(entries) ? entries.findLast(entry => entry?.type === 'compaction') : undefined;
-  const details = previous?.fromHook ? previous.details : undefined;
-  for (const file of Array.isArray(details?.readFiles) ? details.readFiles : []) if (typeof file === 'string') ops.read.add(file);
-  for (const file of Array.isArray(details?.modifiedFiles) ? details.modifiedFiles : []) if (typeof file === 'string') ops.edited.add(file);
+  if (!ops?.read || !ops?.edited || !ops?.written) return undefined;
+  const branch = Array.isArray(entries) ? entries : [];
+  const previous = branch.findLast(entry => entry?.type === 'compaction');
+  const ordered = previous?.fromHook === true && previous?.details?.filesOrder === FILES_ORDER;
+  const stored = list => { const paths = strings(list); return ordered ? paths : [...paths].sort(); };
+  const prevRead = stored(previous?.details?.readFiles), prevModified = stored(previous?.details?.modifiedFiles);
+  const span = fileTouches([...(preparation.messagesToSummarize ?? []), ...(preparation.turnPrefixMessages ?? [])]);
+  const all = fileTouches(branch.filter(entry => entry?.type === 'message').map(entry => entry.message));
+  const modifiedAll = byRecency(prevModified, [...ops.edited, ...ops.written], span.modified);
+  const readAll = byRecency(prevRead, ops.read, span.read);
+  const reorder = (set, branchOrder, spanOrder) => [...byRecency([...set], branchOrder.filter(path => set.has(path)), spanOrder)];
+  const keep = list => maxFiles > 0 ? list.slice(-maxFiles) : list;
+  const modifiedFiles = keep(reorder(modifiedAll, all.modified, span.modified));
+  const keptModified = new Set(modifiedFiles);
+  const readFiles = keep(reorder(readAll, all.read, span.read).filter(path => !keptModified.has(path)));
+  const dropped = new Set([...modifiedAll, ...readAll]).size - readFiles.length - modifiedFiles.length;
+  ops.read.clear(); ops.edited.clear(); ops.written.clear();
+  for (const path of readFiles) ops.read.add(path);
+  for (const path of modifiedFiles) ops.edited.add(path);
+  if (typeof preparation.previousSummary === 'string') {
+    let text = preparation.previousSummary.replace(NOTE, '');
+    const block = fileBlock(strings(previous?.details?.readFiles).sort(), strings(previous?.details?.modifiedFiles).sort());
+    if (block && text.endsWith(block)) text = text.slice(0, -block.length);
+    preparation.previousSummary = text;
+  }
+  return { readFiles, modifiedFiles, dropped, maxFiles };
+}
+// Pi's list block (core/compaction/utils.js formatFileOperations), from its sorted lists.
+function fileBlock(readFiles, modifiedFiles) {
+  const sections = [];
+  if (readFiles.length) sections.push(`<read-files>\n${readFiles.join('\n')}\n</read-files>`);
+  if (modifiedFiles.length) sections.push(`<modified-files>\n${modifiedFiles.join('\n')}\n</modified-files>`);
+  return sections.length ? `\n\n${sections.join('\n\n')}` : '';
+}
+/**
+ * The fleet summary with the capped lists: Pi's own block, plus one line with the dropped count when any was dropped,
+ * and details holding the lists oldest first, marked so.
+ */
+export function withFileLists(compaction, lists) {
+  if (!lists || typeof compaction?.summary !== 'string') return compaction;
+  const block = fileBlock([...lists.readFiles].sort(), [...lists.modifiedFiles].sort());
+  // No paths, or a block that is not Pi's own: Pi's summary as it is (its lists are already capped).
+  if (!block || !compaction.summary.endsWith(block)) return compaction;
+  const note = lists.dropped > 0
+    ? `\n\n(${lists.dropped} older file path${lists.dropped === 1 ? ' was' : 's were'} dropped; each list keeps the ${lists.maxFiles} most recent.)` : '';
+  return { ...compaction, summary: compaction.summary + note,
+    details: { ...compaction.details, readFiles: lists.readFiles, modifiedFiles: lists.modifiedFiles, filesOrder: FILES_ORDER } };
 }
 const unavailable = () => Object.assign(Error('compact() unavailable'), { kind: 'unavailable' });
-async function fleetCompaction(pi, event, ctx, record, summaryHeaders) {
+async function fleetCompaction(pi, event, ctx, record, summaryHeaders, lists) {
   const { preparation, signal } = event ?? {};
   const model = ctx?.model, registry = ctx?.modelRegistry;
   if (signal?.aborted || !preparation || !model || typeof registry?.streamSimple !== 'function') return undefined;
@@ -434,7 +515,7 @@ async function fleetCompaction(pi, event, ctx, record, summaryHeaders) {
       undefined, undefined);
     if (signal?.aborted) return undefined;
     if (!compaction?.summary?.trim()) return failed('upstream');
-    return { compaction, thinking };
+    return { compaction: withFileLists(compaction, lists), thinking };
   } catch (error) {
     if (signal?.aborted) return undefined;
     return failed(error?.kind, error);
@@ -464,11 +545,12 @@ export default function(pi) {
     return headers;
   };
   pi.on('session_before_compact', async (event, ctx) => {
-    // Every provider, so a fallback to Pi's default, or a later model switch, keeps the fleet summary's file lists.
-    addPreviousFiles(event?.preparation, event?.branchEntries);
+    // Every provider, so a fallback to Pi's default, or a later model switch, keeps the fleet summary's file lists,
+    // bounded the same way.
+    const lists = mergeFileLists(event?.preparation, event?.branchEntries, compactionSettings().maxFiles);
     await credential.compactionStart(event, ctx);
     if (!credential.routes(ctx)) return undefined;
-    const done = await fleetCompaction(pi, event, ctx, record, summaryHeaders);
+    const done = await fleetCompaction(pi, event, ctx, record, summaryHeaders, lists);
     if (!done) return undefined;
     used.set(event?.reason, done.thinking);
     return { compaction: done.compaction };
