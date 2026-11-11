@@ -799,6 +799,30 @@ for(const c of ["ssh host 'ls -la'",'journalctl -u tailscaled --since today | gr
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_service_guard_review_round_5_cases(self):
+        # PM-specified (rev260 round 5 checklist), one case each.
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);
+const dir=mkdtempSync(join(tmpdir(),'guard-r5-'));process.env.HOME=dir;
+const W=(name,text)=>writeFileSync(join(dir,name),text);
+const L='com.example.model-bridge';
+const stop=`launchctl bootout gui/501/${L}\n`,boot=`launchctl bootstrap gui/501 ${dir}/${L}.plist\n`,health='curl -fsS http://127.0.0.1:1/health\n';
+W('stop.sh','pkill -f Paseo\n');W('fix.sh',stop+boot+health);W('nginx.pid','999\n');
+W('bashe.sh',stop+'false\n'+boot+health);
+W('group.sh',stop+'false && {\n'+boot+'}\n'+health);
+W('lib.sh','exit 0\n');W('sourced.sh',stop+'. ./lib.sh\n'+boot+health);
+W('noplist.sh',stop+`launchctl bootstrap gui/501/${L}\n`+health);
+const procs=[{pid:'63824',command:'Paseo Daemon     Paseo Daemon'},{pid:'999',command:'nginx: master process'}];
+const opts={protectedServices:[L],cwd:dir,resolvePid:async pid=>procs.find(p=>p.pid===pid)?.command??'',listProcesses:async()=>procs};
+for(const c of ["ssh host 'sudo bash -s' < stop.sh",'cat stop.sh | tee s.sh >/dev/null; bash s.sh','nohup bash fix.sh >/./dev/stderr 2>&1 &',
+ 'nohup bash -e bashe.sh >log 2>&1 &','nohup bash group.sh >log 2>&1 &','nohup bash sourced.sh >log 2>&1 &','nohup bash noplist.sh >log 2>&1 &',
+ 'yes & nohup bash fix.sh >log 2>&1 &'])assert.equal((await g.check(c,opts)).block,true,c);
+for(const c of ['pkill -USR1 -F nginx.pid','nohup bash fix.sh >log 2>&1 &'])assert.equal((await g.check(c,opts)).block,false,c);
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_service_guard_review_round_4_cases(self):
         # PM-specified (rev260 round 4), one case each; X is a protected kill.
         script=r"""
