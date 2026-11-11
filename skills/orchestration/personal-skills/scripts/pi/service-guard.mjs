@@ -60,7 +60,9 @@ function quiet(redirects, dir) {
   const away = target => {
     if (target.v.includes(SUB) || target.v.includes('$')) return false;
     // POSIX path rules on every host: the exception applies to the bash tool only (Git Bash on Windows).
-    const path = /^~([\\/]|$)/.test(target.v) ? posix.resolve(home().replace(/\\/g, '/'), target.v.slice(2)) : posix.resolve(String(dir ?? '/').replace(/\\/g, '/'), target.v);
+    // A drive path C:\x reads as Git Bash's /c/x, so ../ climbs to the same root /dev hangs from.
+    const bash = value => String(value ?? '/').replace(/\\/g, '/').replace(/^([A-Za-z]):/, (m, drive) => '/' + drive.toLowerCase());
+    const path = /^~([\\/]|$)/.test(target.v) ? posix.resolve(bash(home()), target.v.slice(2)) : posix.resolve(bash(dir), target.v);
     return path === '/dev/null' || !/^\/(dev|proc)(\/|$)/.test(path);
   };
   for (const { op, fd, target } of redirects) {
