@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "38ea9a98ab20b2ec5bec9e1d1594e15772944f3c",
+  "source_commit": "4e08adc83cee51b555d810973230c27048043321",
   "skill_count": 24,
   "file_count": 134,
   "files": [
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 76363,
-      "sha256": "f5a930306b3a2db0103cbda9a5a6d8cbdccee1079ce2f0d4a6fe901c60186d71"
+      "bytes": 77509,
+      "sha256": "8c79c6e4c96ccece4f20dff5528d41a333b60464ac1794968e89caf9895d1d9e"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -576,8 +576,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/configure.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 15493,
-      "sha256": "7144ac3a1f6002948b7731b2b1a47f4472556323990bf3ccbacbb52a36268c59"
+      "bytes": 15756,
+      "sha256": "a328b23436d4ccd0b96d61fe70dee1752faca59eef5d979a085a5af9df2e76af"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/credential.py",
@@ -597,15 +597,15 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 35626,
-      "sha256": "9f1f22b18322494d2374ad4ebe178844c469338e8b65ced576e755d1a4259861"
+      "bytes": 41552,
+      "sha256": "ba289ad8eaf3a0a04fc6ccc5e1286cf5f8d36bd27481e49324e7a7ea50ba1e2b"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 38068,
-      "sha256": "52e986571f1013a20581971367eb62ea58ae08adb4890ceb70793615957285dc"
+      "bytes": 38206,
+      "sha256": "6fc62b62205e161aac8187edbc7e65d58cb645c4a0af7b1bd0f15ddaf86fce07"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/mcp_bridge.py",
