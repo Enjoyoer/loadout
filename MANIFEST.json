@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "11933e8c067671f2ca6f18243799bc82bfa7ab6f",
+  "source_commit": "a8dff81aa889681292e4c4bd07eabc1b1c6489b1",
   "skill_count": 24,
   "file_count": 134,
   "files": [
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 68175,
-      "sha256": "c998cef366514a896a36192c42c6f6695ea0c799c729fcb4817c9ac4a27ae1af"
+      "bytes": 68199,
+      "sha256": "f53c33ff6d49eef75b011605dc4d0aae7c73030aa719a1781ac25ef7dfec0dfa"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -597,8 +597,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 24860,
-      "sha256": "1df1b94e50e50d3412cb26dc9d12fa2d0eb0a133e2458aff435fe236c01c56ed"
+      "bytes": 25224,
+      "sha256": "52b2542d55928d17267f6b8b83ec6f978f6a9f68bece04349e6f27066e152e05"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
