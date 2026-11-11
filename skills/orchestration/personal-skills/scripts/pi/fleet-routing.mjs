@@ -305,7 +305,8 @@ function fleetCredential(pi, record) {
     redact: text => {
       let out = text;
       for (const value of [held?.value, lent]) if (value) out = out.split(value).join('<redacted>');
-      return out.replace(/Bearer\s+\S+/gi, '<redacted>');
+      // A token ends at whitespace, a quote, a backslash, a comma or a semicolon, so JSON around it survives.
+      return out.replace(/Bearer\s+[^\s"'\\,;]+/gi, '<redacted>');
     },
   };
 }
