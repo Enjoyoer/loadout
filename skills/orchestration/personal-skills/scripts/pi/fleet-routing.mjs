@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { basename, dirname, join, resolve } from 'node:path';
 export function validateCodemode(pi) {
   const tools = pi.getActiveTools();
@@ -272,6 +272,7 @@ function fleetCredential(pi, record) {
   };
   const release = () => { if (!holding()) withdraw(); };
   return {
+    routes: ctx => Boolean(target()) && ctx?.model?.provider === found.provider,
     turnStart: ctx => { running = true; return refresh(ctx); },
     runEnd: () => { running = false; release(); },
     compactionStart: (event, ctx) => {
@@ -310,6 +311,90 @@ export function compactFailure(event) {
   const status = /\bfailed: (\d{3}):/.exec(text);
   return { errorKind, httpStatus: status ? Number(status[1]) : null };
 }
+// Fleet compaction. At a high thinking level the summary's reasoning can use most of its output cap (Pi sizes it from
+// compaction.reserveTokens), and the summary itself grows with every compaction. For a router model this extension
+// therefore runs Pi's own compact() itself from session_before_compact, after the credential refresh above, with the
+// lower of the agent's thinking level and COMPACTION.thinking, and with COMPACTION.lengthBound appended to the user's
+// /compact text. compact() keeps Pi's prompts, its split-turn prefix summary and its file lists; this code adds the
+// file lists of a previous summary it made itself, which Pi carries only for its own (fromHook false) summaries. The
+// request goes through the model registry with the credential this process lent, and Pi's retry and timeout settings.
+// Pi saves the returned summary as its own. On any failure it returns nothing, so Pi's default compaction runs exactly
+// as before; a failure that was not an abort leaves a compact_failed row with fallback 'pi-default'. Both values are
+// pi.runtime keys (runtime.json "compaction": {"thinking", "lengthBound"}), which configure.py validates.
+export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+export const COMPACTION = {
+  thinking: 'medium',
+  lengthBound: 'Keep the whole summary under 8,000 words. Drop finished items that no longer affect the next steps.',
+  // Pi's own bundled entry beside the cli.js launch.mjs starts, so compact() comes from the module instances Pi runs.
+  // A dynamic import of the package name would not resolve: Pi maps that name only for an extension's static imports.
+  load: () => import(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/index.js')).href),
+};
+/** The configured values from <root>/runtime.json, each falling back to its default when absent or not valid. */
+export function compactionSettings(root = dirname(fileURLToPath(import.meta.url))) {
+  let own = {};
+  try { own = JSON.parse(readFileSync(join(root, 'runtime.json'), 'utf8')).compaction ?? {}; } catch {}
+  return {
+    thinking: THINKING_LEVELS.includes(own.thinking) ? own.thinking : COMPACTION.thinking,
+    lengthBound: typeof own.lengthBound === 'string' && own.lengthBound.trim() ? own.lengthBound.trim() : COMPACTION.lengthBound,
+  };
+}
+/** The lower of the agent's level and the cap; the cap alone when the agent reports none. */
+export function compactionThinking(agent, cap) {
+  const at = THINKING_LEVELS.indexOf(agent);
+  return at < 0 ? cap : THINKING_LEVELS[Math.min(at, THINKING_LEVELS.indexOf(cap))];
+}
+export const compactionInstructions = (user, bound) => [typeof user === 'string' ? user.trim() : '', bound].filter(Boolean).join('\n\n');
+// Pi's own request options for a summary (core/sdk.js buildRequestOptions): the provider timeout and retry settings.
+function requestDefaults(settings) {
+  const provider = settings?.retry?.provider ?? {};
+  const idle = Number.isFinite(settings?.httpIdleTimeoutMs) ? settings.httpIdleTimeoutMs : 300_000;
+  return { timeoutMs: provider.timeoutMs ?? (idle === 0 ? 2_147_483_647 : idle), maxRetries: provider.maxRetries,
+    maxRetryDelayMs: provider.maxRetryDelayMs ?? 60_000 };
+}
+function retryPolicy(settings) {
+  const retry = settings?.retry ?? {};
+  return { enabled: retry.enabled ?? true, maxRetries: retry.maxRetries ?? 3, baseDelayMs: retry.baseDelayMs ?? 2_000,
+    maxAgentDelayMs: retry.maxAgentDelayMs ?? 60_000 };
+}
+/** Pi's compaction preparation plus the file lists of a previous summary this extension made (Pi drops those). */
+function withPreviousFiles(preparation, entries) {
+  const previous = Array.isArray(entries) ? entries.findLast(entry => entry?.type === 'compaction') : undefined;
+  const details = previous?.fromHook ? previous.details : undefined;
+  if (!Array.isArray(details?.readFiles) && !Array.isArray(details?.modifiedFiles)) return preparation;
+  const ops = preparation.fileOps;
+  const fileOps = { read: new Set(ops?.read), written: new Set(ops?.written), edited: new Set(ops?.edited) };
+  for (const file of details.readFiles ?? []) if (typeof file === 'string') fileOps.read.add(file);
+  for (const file of details.modifiedFiles ?? []) if (typeof file === 'string') fileOps.edited.add(file);
+  return { ...preparation, fileOps };
+}
+async function fleetCompaction(pi, event, ctx, record) {
+  const { preparation, signal } = event ?? {};
+  const model = ctx?.model, registry = ctx?.modelRegistry;
+  if (!preparation || !model || typeof registry?.streamSimple !== 'function') return undefined;
+  const own = compactionSettings();
+  const thinking = compactionThinking(ctx.thinkingLevel, own.thinking);
+  try {
+    const { compact } = await COMPACTION.load();
+    const auth = await registry.getApiKeyAndHeaders(model);
+    if (!auth?.ok) throw Error('Summarization failed: request credential unavailable');
+    const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+    let settings = {};
+    try { settings = pi.getSettings?.() ?? {}; } catch {}
+    const defaults = requestDefaults(settings);
+    const stream = (m, context, options) => registry.streamSimple(m, context, { ...defaults, ...options });
+    const compaction = await compact(withPreviousFiles(preparation, event.branchEntries), requestModel, auth.apiKey, auth.headers,
+      compactionInstructions(event.customInstructions, own.lengthBound), signal, thinking, stream, auth.env, retryPolicy(settings));
+    if (signal?.aborted || !compaction?.summary) return undefined;
+    return { compaction, thinking };
+  } catch (error) {
+    if (signal?.aborted) return undefined;
+    let sessionId = null;
+    try { sessionId = ctx.sessionManager?.getSessionId() ?? null; } catch {}
+    record({ event: 'compact_failed', reason: event?.reason ?? null, aborted: false,
+      ...compactFailure({ errorMessage: String(error?.message ?? error) }), sessionId, model: model.id ?? null, thinking, fallback: 'pi-default' });
+    return undefined;
+  }
+}
 export default function(pi) {
   let turnId=randomUUID();let intent={tier:'inherit',source:'fleet-default'};let tiers=null;
   // One request id shared by the payload and header hooks, whichever runs first.
@@ -324,10 +409,31 @@ export default function(pi) {
   const credential = fleetCredential(pi, record);
   pi.on('turn_start', (_event, ctx) => credential.turnStart(ctx));
   pi.on('agent_end', () => credential.runEnd());
-  pi.on('session_before_compact', (event, ctx) => credential.compactionStart(event, ctx));
-  pi.on('session_compact', event => credential.compactionEnd(event));
+  // The thinking level each running fleet compaction used, by reason, for its evidence row.
+  const used = new Map();
+  pi.on('session_before_compact', async (event, ctx) => {
+    await credential.compactionStart(event, ctx);
+    if (!credential.routes(ctx)) return undefined;
+    const done = await fleetCompaction(pi, event, ctx, record);
+    if (!done) return undefined;
+    used.set(event?.reason, done.thinking);
+    return { compaction: done.compaction };
+  });
+  pi.on('session_compact', (event, ctx) => {
+    credential.compactionEnd(event);
+    // A saved summary: its size and its output tokens (reasoning included), never its text.
+    const thinking = event?.fromExtension ? used.get(event?.reason) ?? null : null;
+    used.delete(event?.reason);
+    let sessionId = null, model = null, agentThinking = null;
+    try { sessionId = ctx?.sessionManager?.getSessionId() ?? null; model = ctx?.model?.id ?? null; agentThinking = ctx?.thinkingLevel ?? null; } catch {}
+    const entry = event?.compactionEntry;
+    record({ event: 'compact', reason: event?.reason ?? null, fromExtension: event?.fromExtension === true, sessionId, model,
+      thinking: thinking ?? agentThinking, outputTokens: entry?.usage?.output ?? null,
+      summaryChars: typeof entry?.summary === 'string' ? entry.summary.length : null, tokensBefore: entry?.tokensBefore ?? null });
+  });
   pi.on('session_compact_failed', (event, ctx) => {
     credential.compactionEnd(event);
+    used.delete(event?.reason);
     // A failed compaction saves nothing, so make it visible. Upstream error text can echo a credential or quote request
     // content, so none of it is written: only its kind, and the HTTP status Pi puts in its "<label> failed: <NNN>:" text.
     let sessionId = null, model = null, thinking = null;

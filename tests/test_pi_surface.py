@@ -480,6 +480,46 @@ rmSync(dir,{recursive:true,force:true});
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    @unittest.skipIf(os.name == "nt", "fake credential helper is a POSIX shell script")
+    def test_router_compaction_lowers_thinking_bounds_length_and_falls_back(self):
+        script=r"""
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync,chmodSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join,dirname} from 'node:path';import {fileURLToPath} from 'node:url';
+const root=dirname(fileURLToPath(process.argv[1]));const dir=mkdtempSync(join(tmpdir(),'fleet-compact-'));
+const helper=join(dir,'helper');writeFileSync(helper,'#!/bin/sh\necho synthetic-value\n');chmodSync(helper,0o755);
+const command=`!"${helper}" "${join(root,'credential.py')}" "${join(root,'runtime.json')}"`;
+writeFileSync(join(dir,'models.json'),JSON.stringify({providers:{fleet:{apiKey:command,models:[]}}}));
+process.env.PI_CODING_AGENT_DIR=dir;
+const m=await import(process.argv[1]);m.CREDENTIAL.retryDelaysMs=[1,1];
+let calls=[];let outcome;
+m.COMPACTION.load=async()=>({compact:async(...args)=>{calls.push(args);return outcome();}});
+const registry={getApiKeyAndHeaders:async()=>({ok:true,apiKey:'synthetic-value',headers:{}}),streamSimple:()=>{}};
+const ctx=provider=>({model:{provider,id:'example'},thinkingLevel:'xhigh',modelRegistry:registry,sessionManager:{getSessionId:()=> 'sess'}});
+const prep={firstKeptEntryId:'k',tokensBefore:9,messagesToSummarize:[],turnPrefixMessages:[],isSplitTurn:false,fileOps:{read:new Set(),written:new Set(),edited:new Set()},settings:{reserveTokens:16384}};
+const event=extra=>({reason:'manual',preparation:prep,branchEntries:[],signal:new AbortController().signal,...extra});
+function boot(){const h={};m.default({on:(e,f)=>h[e]=f,registerProvider:()=>{},unregisterProvider:()=>{}});return h;}
+const rows=()=>{try{return readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse).filter(r=>r.event==='compact_failed');}catch{return [];}};
+// A router model at xhigh: Pi's compact runs at the lower catalog level, with the bound after the user's /compact text.
+{const h=boot();calls=[];const result={summary:'s',firstKeptEntryId:'k',tokensBefore:9,usage:{output:5}};outcome=()=>result;
+ assert.deepEqual(await h.session_before_compact(event({customInstructions:'focus on X'}),ctx('fleet')),{compaction:result});
+ assert.equal(calls.length,1);assert.equal(calls[0][6],'medium');
+ assert.equal(calls[0][4],'focus on X\n\n'+m.COMPACTION.lengthBound);
+ await h.session_compact({reason:'manual',fromExtension:true,compactionEntry:{summary:'s',usage:{output:5},tokensBefore:9}},ctx('fleet'));
+ const done=readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse).filter(r=>r.event==='compact');
+ assert.deepEqual(done,[{event:'compact',reason:'manual',fromExtension:true,sessionId:'sess',model:'example',thinking:'medium',outputTokens:5,summaryChars:1,tokensBefore:9}]);}
+// Any failure returns nothing, so Pi's default compaction runs, and leaves a compact_failed row with no upstream text.
+{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const h=boot();calls=[];outcome=()=>{throw Error('Summarization failed: 502: key=synthetic-value');};
+ assert.equal(await h.session_before_compact(event(),ctx('fleet')),undefined);assert.equal(calls.length,1);
+ assert.deepEqual(rows(),[{event:'compact_failed',reason:'manual',aborted:false,errorKind:'upstream',httpStatus:502,sessionId:'sess',model:'example',thinking:'medium',fallback:'pi-default'}]);
+ assert.ok(!readFileSync(join(dir,'route-evidence.jsonl'),'utf8').includes('synth'));}
+// A non-router provider: Pi's own compaction, untouched.
+{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const h=boot();calls=[];
+ assert.equal(await h.session_before_compact(event(),ctx('direct')),undefined);assert.equal(calls.length,0);assert.deepEqual(rows(),[]);}
+rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_failed_compaction_writes_one_evidence_row(self):
         script=r"""
 import assert from 'node:assert/strict';

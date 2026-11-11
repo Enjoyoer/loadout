@@ -87,6 +87,16 @@ def direct_providers(spec, helper=""):
         out[name] = {"baseUrl": cfg["baseUrl"], "api": DIRECT_API, "apiKey": key, "models": rows}
     return out
 
+def validate_compaction(value):
+    """pi.runtime compaction: the thinking cap and the length bound fleet-routing.mjs uses for a router model's summary."""
+    if not isinstance(value, dict) or value.keys() - {"thinking", "lengthBound"}:
+        raise ValueError("compaction allows only thinking and lengthBound")
+    if "thinking" in value and value["thinking"] not in LEVELS:
+        raise ValueError("compaction thinking must be one of " + ", ".join(LEVELS))
+    bound = value.get("lengthBound", "x")
+    if not isinstance(bound, str) or not bound.strip() or len(bound) > 1000 or re.search(r"[\x00-\x1f\x7f]", bound):
+        raise ValueError("compaction lengthBound must be one line of 1 to 1000 characters")
+
 def validate_settings(settings):
     if settings.get('codemode') != {'mode': 'on'} or settings.get('defaultTools') != ['+codemode']:
         raise ValueError('Pi requires fixed Codemode on and defaultTools +codemode')
@@ -113,6 +123,7 @@ def build(spec, root):
     if not base.startswith("https://") and urlsplit(base).hostname not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("route base URL must use https unless the host is loopback")
     helper = "!" + " ".join(quote(v) for v in [spec.get("python", sys.executable), str(root / "credential.py"), str(root / "runtime.json")])
+    if "compaction" in spec: validate_compaction(spec["compaction"])
     if {'codemode', 'defaultTools', 'extensions', 'skills'} & spec.get('settings', {}).keys():
         raise ValueError('Codemode and its runtime check are fixed, not overridable settings')
     settings = {"codemode": {"mode": "on"}, "defaultTools": ["+codemode"], "enableInstallTelemetry": False,
