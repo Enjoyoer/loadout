@@ -113,8 +113,15 @@ export const EXTENSION_SHA256 = (() => { try { return createHash('sha256').updat
 export const GUARD_SHA256 = createHash('sha256').update(readFileSync(fileURLToPath(new URL('./service-guard.mjs', import.meta.url)))).digest('hex');
 // Shell tools the service guard checks. Any other tool whose input carries a string `command` is checked as POSIX.
 const GUARD_SHELLS = { bash: 'posix', powershell: 'powershell' };
-// Evidence keeps the start of a refused command with assignment values masked, so no env value is recorded.
-export const guardExcerpt = command => String(command).replace(/\b([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g, '$1=<redacted>').slice(0, 120);
+// Evidence keeps the start of a refused command with credential-shaped values masked: NAME=value, Bearer/Basic/Token
+// values, API key and cookie headers, --token/--password-style options and URL userinfo.
+export const guardExcerpt = command => String(command)
+  .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s\/@"']+@/gi, '$1<redacted>@')
+  .replace(/\b(bearer|basic|token|digest)\s+[^\s"']+/gi, '$1 <redacted>')
+  .replace(/\b((?:x-)?api-?key|cookie|private-token|x-auth-token)\s*:\s*[^\s"']+/gi, '$1: <redacted>')
+  .replace(/(--?(?:[a-z0-9]+-)*(?:token|password|passwd|pass|secret|api-?key|auth|credentials?)(?:=|\s+))("[^"]*"|'[^']*'|[^\s"']+)/gi, '$1<redacted>')
+  .replace(/\b([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s"']+)/g, '$1=<redacted>')
+  .slice(0, 120);
 /**
  * tool_call handler for the shared fleet service guard (service-guard.mjs). It refuses a shell command that stops,
  * unloads, disables or kills a protected service; an error inside it refuses too. options.guard replaces the guard

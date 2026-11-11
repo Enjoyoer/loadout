@@ -6,7 +6,8 @@ from urllib.parse import urlsplit
 from backups import prune_backups
 from credential import check_source, expand
 
-FILES = ("credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs", "service-guard.mjs")
+# service-guard.mjs first: fleet-routing.mjs imports it, so it must exist before the extension that loads it.
+FILES = ("service-guard.mjs", "credential.py", "launch.mjs", "mcp_bridge.py", "fleet-routing.mjs")
 
 def validate_guard(guard):
     """guard: {"protectedServices": [names]} for the shared fleet service guard; the extension adds its defaults."""

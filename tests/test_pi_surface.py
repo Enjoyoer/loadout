@@ -217,7 +217,7 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
         root = Path(tmp).resolve()  # the launcher checks settings against its own resolved path
         for name, data in build(spec, root).items():
             (root/name).parent.mkdir(parents=True, exist_ok=True); (root/name).write_text(json.dumps(data))
-        for name in ['launch.mjs', 'fleet-routing.mjs', 'credential.py']:
+        for name in ['launch.mjs', 'fleet-routing.mjs', 'service-guard.mjs', 'credential.py']:
             (root/name).write_bytes((PI/name).read_bytes())
         app = root/'app/node_modules/@earendil-works/pi-coding-agent'
         (app/'dist/bundle').mkdir(parents=True)
@@ -238,6 +238,11 @@ for(const state of [{tools:['read'],mode:'on'},{tools:['codemode'],mode:'off'}])
             unresolved = run('--mode', 'rpc', '--extension', str(root/'x.mjs'))
             self.assertNotEqual(unresolved.returncode, 0)
             self.assertIn('concrete catalog model', unresolved.stderr)
+            # PM-specified (rev260 item 5): without service-guard.mjs, which fleet-routing.mjs imports, no launch runs.
+            (root/'service-guard.mjs').unlink()
+            missing = run('--mode', 'rpc')
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn('service-guard.mjs is missing', missing.stderr)
 
     def test_launcher_merges_per_agent_overlays_over_the_shared_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1234,7 +1239,7 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
         root = base/'pi'
         for name, data in build(spec, root).items():
             (root/name).parent.mkdir(parents=True, exist_ok=True); (root/name).write_text(json.dumps(data))
-        for name in ['launch.mjs', 'fleet-routing.mjs', 'credential.py']:
+        for name in ['launch.mjs', 'fleet-routing.mjs', 'service-guard.mjs', 'credential.py']:
             (root/name).write_bytes((PI/name).read_bytes())
         app = root/'app/node_modules/@earendil-works/pi-coding-agent'
         (app/'dist/bundle').mkdir(parents=True)
