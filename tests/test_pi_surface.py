@@ -420,6 +420,21 @@ rmSync(dir,{recursive:true,force:true});
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_failed_compaction_writes_one_evidence_row(self):
+        script=r"""
+import assert from 'node:assert/strict';
+import {mkdtempSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const dir=mkdtempSync(join(tmpdir(),'compact-'));process.env.PI_CODING_AGENT_DIR=dir;
+const m=await import(process.argv[1]);const h={};m.default({on:(e,f)=>h[e]=f});
+const ctx={model:{provider:'fleet',id:'example'},thinkingLevel:'high',sessionManager:{getSessionId:()=> 'sess'}};
+await h.session_compact_failed({reason:'manual',errorMessage:'Compaction failed: '+'x'.repeat(400),aborted:false,willRetry:false,fromExtension:false},ctx);
+const rows=readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+assert.deepEqual(rows,[{event:'compact_failed',reason:'manual',errorMessage:('Compaction failed: '+'x'.repeat(400)).slice(0,300),aborted:false,sessionId:'sess',model:'example',thinking:'high'}]);
+rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_service_tier_fails_closed_on_lookup_and_diagnostic_errors(self):
         script=r"""
 import assert from 'node:assert/strict';

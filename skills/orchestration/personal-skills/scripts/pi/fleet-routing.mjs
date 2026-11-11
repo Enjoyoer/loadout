@@ -308,7 +308,15 @@ export default function(pi) {
   pi.on('agent_end', () => credential.runEnd());
   pi.on('session_before_compact', (event, ctx) => credential.compactionStart(event, ctx));
   pi.on('session_compact', event => credential.compactionEnd(event));
-  pi.on('session_compact_failed', event => credential.compactionEnd(event));
+  pi.on('session_compact_failed', (event, ctx) => {
+    credential.compactionEnd(event);
+    // A failed compaction saves nothing, so make it visible: outcome fields only, never the credential or messages.
+    let sessionId = null;
+    try { sessionId = ctx?.sessionManager?.getSessionId() ?? null; } catch {}
+    record({ event: 'compact_failed', reason: event?.reason ?? null,
+      errorMessage: typeof event?.errorMessage === 'string' ? event.errorMessage.slice(0, 300) : null,
+      aborted: event?.aborted === true, sessionId, model: ctx?.model?.id ?? null, thinking: ctx?.thinkingLevel ?? null });
+  });
   pi.on('session_before_tree', (event, ctx) => credential.summaryStart(event, ctx));
   pi.on('session_tree', () => credential.summaryEnd());
   pi.on('session_shutdown', () => credential.shutdown());
