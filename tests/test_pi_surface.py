@@ -467,12 +467,18 @@ const keyEcho='Compaction failed: Summarization failed: 500: {"message":"router 
  await h.session_compact_failed({reason:'manual',errorMessage:keyEcho,aborted:false},ctx);rmSync(fail);
  assert.deepEqual(failedRow(),{event:'compact_failed',reason:'manual',errorMessage:null,aborted:false,sessionId:'sess',model:'example',thinking:'high'});
  assert.ok(!readFileSync(join(dir,'route-evidence.jsonl'),'utf8').includes('synth'));}
-// A model of another provider: the extension never knows that key, so the text is not written either.
+// A compaction that started on another provider's model, with a switch to the router while it runs: the text is not
+// written, although the extension holds a router value and the session's model is the router's at the failure.
 {rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h}=boot();await h.turn_start({},ctx);await h.agent_end({});
  const direct={...ctx,model:{provider:'direct',id:'other'}};
- await h.session_compact_failed({reason:'threshold',errorMessage:'500: raw=direct-key',aborted:false},direct);
- assert.deepEqual(failedRow(),{event:'compact_failed',reason:'threshold',errorMessage:null,aborted:false,sessionId:'sess',model:'other',thinking:'high'});
+ await h.session_before_compact({reason:'threshold',signal:new AbortController().signal},direct);
+ await h.session_compact_failed({reason:'threshold',errorMessage:'500: raw=direct-key',aborted:false},ctx);
+ assert.deepEqual(failedRow(),{event:'compact_failed',reason:'threshold',errorMessage:null,aborted:false,sessionId:'sess',model:'example',thinking:'high'});
  assert.ok(!readFileSync(join(dir,'route-evidence.jsonl'),'utf8').includes('direct-key'));}
+// A failure with no recorded start (Pi's overflow retry or an early manual error) writes no text, even on the router.
+{rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h}=boot();await h.turn_start({},ctx);await h.agent_end({});
+ await h.session_compact_failed({reason:'overflow',errorMessage:keyEcho,aborted:false},ctx);
+ assert.deepEqual(failedRow(),{event:'compact_failed',reason:'overflow',errorMessage:null,aborted:false,sessionId:'sess',model:'example',thinking:'high'});}
 rmSync(dir,{recursive:true,force:true});
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)

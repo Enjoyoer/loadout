@@ -205,7 +205,7 @@ const pause = (ms, signal) => new Promise(done => {
 });
 function fleetCredential(pi, record) {
   let found, held = null, lent = null, expiry = null;
-  // Holders of the lend: the run (turn_start..agent_end), open compactions counted by reason (Pi names manual,
+  // Holders of the lend: the run (turn_start..agent_end), open compactions recorded by reason (Pi names manual,
   // threshold and overflow apart), and one branch summary lease (Pi runs one summary at a time); summary numbers the
   // latest summary so a stale abort or lease of an earlier one never ends it.
   let running = false, summarizing = false, summary = 0, lease = null;
@@ -272,18 +272,38 @@ function fleetCredential(pi, record) {
     }
   };
   const release = () => { if (!holding()) withdraw(); };
+  // Error text from upstream can echo the presented credential, so it is kept only when this process knows the value
+  // Pi presented: a compaction that started on the router's model, with a held value (a successful read or a last-good
+  // lend set it; expiry clears only the lend). Otherwise, a compaction with no recorded start, one on another
+  // provider's model, or a fresh process or a helper outage past max age (Pi's own command then supplied the value),
+  // it returns null. The known values, and any Bearer token as a second guard, are replaced on the whole text before
+  // a caller cuts it, so no prefix survives at the cut.
+  const errorText = (text, started) => {
+    if (typeof text !== 'string' || !started?.router || !held) return null;
+    let out = text;
+    for (const value of [held.value, lent]) if (value) out = out.split(value).join('<redacted>');
+    // A token ends at whitespace, a quote, a backslash, a comma or a semicolon, so JSON around it survives.
+    return out.replace(/Bearer\s+[^\s"'\\,;]+/gi, '<redacted>');
+  };
   return {
     turnStart: ctx => { running = true; return refresh(ctx); },
     runEnd: () => { running = false; release(); },
+    // Pi fixes a compaction's model when it starts, and the session's model can change before it ends, so whether it
+    // runs on the router is recorded at the start, one record per open compaction of that reason.
     compactionStart: (event, ctx) => {
-      compactions.set(event?.reason, (compactions.get(event?.reason) ?? 0) + 1);
+      const router = !!target() && ctx?.model?.provider === found.provider;
+      compactions.set(event?.reason, [...(compactions.get(event?.reason) ?? []), { router }]);
       return refresh(ctx, event?.signal);
     },
-    // Pi also reports some compactions that failed before session_before_compact; those find no count to take.
-    compactionEnd: event => {
-      const open = compactions.get(event?.reason) ?? 0;
-      if (open > 1) compactions.set(event.reason, open - 1); else compactions.delete(event?.reason);
+    // Pi also reports some compactions that failed before session_before_compact; those find no record to take. The
+    // returned error text (see errorText) is computed before the release can withdraw the lent value.
+    compactionEnd: (event, text) => {
+      const open = compactions.get(event?.reason) ?? [];
+      const started = open.length ? open[0] : null;
+      if (open.length > 1) compactions.set(event.reason, open.slice(1)); else compactions.delete(event?.reason);
+      const kept = errorText(text, started);
       release();
+      return kept;
     },
     summaryStart: async (event, ctx) => {
       const prep = event?.preparation;
@@ -299,18 +319,6 @@ function fleetCredential(pi, record) {
     },
     summaryEnd: () => { clearTimeout(lease); lease = null; summarizing = false; release(); },
     shutdown: () => { clearTimeout(lease); lease = null; running = summarizing = false; compactions.clear(); withdraw(); },
-    // Error text from upstream can echo the presented credential, so it is kept only when this process knows the value
-    // Pi presented: the router's model with a held value (a successful read or a last-good lend set it; expiry clears
-    // only the lend). Otherwise, a fresh process or a helper outage past max age (Pi's own command then supplied the
-    // value) or another provider's key, it returns null. The known values, and any Bearer token as a second guard, are
-    // replaced on the whole text before a caller cuts it, so no prefix survives at the cut.
-    errorText: (text, ctx) => {
-      if (typeof text !== 'string' || !held || !target() || ctx?.model?.provider !== found.provider) return null;
-      let out = text;
-      for (const value of [held?.value, lent]) if (value) out = out.split(value).join('<redacted>');
-      // A token ends at whitespace, a quote, a backslash, a comma or a semicolon, so JSON around it survives.
-      return out.replace(/Bearer\s+[^\s"'\\,;]+/gi, '<redacted>');
-    },
   };
 }
 export default function(pi) {
@@ -328,17 +336,14 @@ export default function(pi) {
   pi.on('turn_start', (_event, ctx) => credential.turnStart(ctx));
   pi.on('agent_end', () => credential.runEnd());
   pi.on('session_before_compact', (event, ctx) => credential.compactionStart(event, ctx));
-  pi.on('session_compact', event => credential.compactionEnd(event));
+  pi.on('session_compact', event => { credential.compactionEnd(event); });
   pi.on('session_compact_failed', (event, ctx) => {
     // A failed compaction saves nothing, so make it visible: outcome fields only, never the credential or messages.
-    // The row is built first, while the lent value is still known to redact; unvouched upstream text is left out.
-    let sessionId = null;
-    try { sessionId = ctx?.sessionManager?.getSessionId() ?? null; } catch {}
-    const row = { event: 'compact_failed', reason: event?.reason ?? null,
-      errorMessage: credential.errorText(event?.errorMessage, ctx)?.slice(0, 300) ?? null,
-      aborted: event?.aborted === true, sessionId, model: ctx?.model?.id ?? null, thinking: ctx?.thinkingLevel ?? null };
-    credential.compactionEnd(event);
-    record(row);
+    // Upstream text is kept only when the compaction's start vouches for it (errorText).
+    const errorMessage = credential.compactionEnd(event, event?.errorMessage)?.slice(0, 300) ?? null;
+    let sessionId = null, model = null, thinking = null;
+    try { sessionId = ctx?.sessionManager?.getSessionId() ?? null; model = ctx?.model?.id ?? null; thinking = ctx?.thinkingLevel ?? null; } catch {}
+    record({ event: 'compact_failed', reason: event?.reason ?? null, errorMessage, aborted: event?.aborted === true, sessionId, model, thinking });
   });
   pi.on('session_before_tree', (event, ctx) => credential.summaryStart(event, ctx));
   pi.on('session_tree', () => credential.summaryEnd());
