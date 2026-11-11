@@ -1399,6 +1399,69 @@ assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).
 
     @unittest.skipIf(os.name == "nt" or sys.platform == "darwin",
                      "the fake sandbox-exec is a POSIX shell script, and the test markers refuse a real macOS launch")
+    def test_sandboxed_launch_copies_paseos_extension_into_the_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root, run, record = self.launcher_fixture(base)
+            fake, log = self.sandbox_fixture(base)
+            home = root/'agents/agent-0001'
+            profile = base/'pi.sb'; profile.write_text('(version 1)\n')
+            # The daemon's temp folder; with the test-platform marker the launcher trusts os.tmpdir().
+            temp = base/'daemon-tmp'; temp.mkdir()
+            ext_dir = temp/'paseo-pi-extension-Ab12Cd'; ext_dir.mkdir(mode=0o700)
+            source = ext_dir/'paseo-integration.mjs'; source.write_text('export default () => {} // paseo\n')
+            markers = ('--loadout-isolated', '--loadout-sandbox-profile', str(profile), '--loadout-test-platform', 'darwin',
+                       '--loadout-test-sandbox-exec', str(fake))
+            launch = lambda path: run(*markers, '--mode', 'rpc', '--model', 'fleet/current', '--extension', str(path),
+                                      TMPDIR=str(temp))
+            # Paseo's extension under the temp folder: copied into the home, and Pi gets the copy.
+            done = launch(source)
+            self.assertEqual(done.returncode, 7, done.stderr)
+            copy = home/'paseo-integration.mjs'
+            self.assertEqual(copy.read_bytes(), source.read_bytes())
+            self.assertEqual(copy.stat().st_mode & 0o777, 0o600)
+            argv = log.read_text().splitlines()
+            self.assertEqual(argv[argv.index('--extension') + 1], str(copy))
+            self.assertNotIn(str(source), argv)
+            log.unlink()
+            # A symbolic link (the file or its folder) or a non-regular source refuses; so does an extension elsewhere
+            # outside what the profile lets Pi read, a Paseo-named one outside the temp folder included.
+            secret = base/'secret.mjs'; secret.write_text('secret\n')
+            (temp/'paseo-pi-extension-Link01').mkdir()
+            (temp/'paseo-pi-extension-Link01/paseo-integration.mjs').symlink_to(secret)
+            (temp/'paseo-pi-extension-Dir001').mkdir()
+            (temp/'paseo-pi-extension-Dir001/paseo-integration.mjs').mkdir()
+            (temp/'paseo-pi-extension-Fifo01').mkdir()
+            os.mkfifo(temp/'paseo-pi-extension-Fifo01/paseo-integration.mjs')
+            (temp/'paseo-pi-extension-Folder').symlink_to(ext_dir)
+            outside = base/'paseo-pi-extension-Out001'; outside.mkdir()
+            (outside/'paseo-integration.mjs').write_text('export default () => {}\n')
+            cases = [(temp/'paseo-pi-extension-Link01/paseo-integration.mjs', 'symbolic link'),
+                     (temp/'paseo-pi-extension-Folder/paseo-integration.mjs', 'symbolic link'),
+                     (temp/'paseo-pi-extension-Dir001/paseo-integration.mjs', 'not a regular file'),
+                     (temp/'paseo-pi-extension-Fifo01/paseo-integration.mjs', 'not a regular file'),
+                     (secret, 'outside what a sandbox profile lets Pi read'),
+                     (outside/'paseo-integration.mjs', 'outside what a sandbox profile lets Pi read')]
+            for path, message in cases:
+                copy.unlink(missing_ok=True)
+                done = launch(path)
+                self.assertNotEqual(done.returncode, 0, path)
+                self.assertEqual(done.stderr.count('\n'), 1, done.stderr)
+                self.assertIn(message, done.stderr)
+                self.assertFalse(log.exists(), path)
+                self.assertFalse(copy.exists(), path)
+            self.assertFalse(record.exists())
+            # A non-isolated row, and an isolated row without a profile, pass the argument unchanged.
+            for markers in [(), self.ISO]:
+                done = run(*markers, '--mode', 'rpc', '--model', 'fleet/current', '--extension', str(source),
+                           TMPDIR=str(temp))
+                self.assertEqual(done.returncode, 0, done.stderr)
+                ran = json.loads(record.read_text())['argv']
+                self.assertEqual(ran[ran.index('--extension') + 1], str(source))
+                record.unlink()
+
+    @unittest.skipIf(os.name == "nt" or sys.platform == "darwin",
+                     "the fake sandbox-exec is a POSIX shell script, and the test markers refuse a real macOS launch")
     def test_credential_helper_never_sees_the_per_agent_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp).resolve()
