@@ -1100,7 +1100,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
 
 /** Refusal text for a finding: what ran, which protected name it touches, and the rule. */
 export const refusalReason = found => `Refused by the fleet service guard: ${found.what} touches protected service "${found.entry}". Rule: ${GUARD_RULE}. `
-  + 'Write that script with the write tool: undo each stop with its pair, naming the full service (bootout -> bootstrap with the plist path named after its label; stop or kill -> start, restart or kickstart; disable -> enable, then bootstrap; mask -> unmask, then start), then health-check it (curl, launchctl print, systemctl is-active), with no exit between and no set -e. Run it as the last command, with both outputs redirected: nohup bash <script> >log 2>&1 &. This guard is a backstop, not a sandbox.';
+  + 'Write that script with the write tool: undo each stop with its pair, naming the full service (bootout -> bootstrap with the plist path named after its label; stop or kill -> start, restart or kickstart; disable -> enable, then bootstrap; mask -> unmask, then start), then health-check it (curl, launchctl print, systemctl is-active), with no exit or source between and no set -e or bash -e. Run it as the last command, with both outputs redirected: nohup bash <script> >log 2>&1 &. This guard is a backstop, not a sandbox.';
 
 /**
  * Pure entry point for any harness: {block: false} or {block: true, reason, what, entry}. Options: protectedServices
