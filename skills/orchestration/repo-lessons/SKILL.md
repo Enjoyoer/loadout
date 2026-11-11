@@ -26,7 +26,7 @@ When resuming a workstream or relying on earlier decisions, read the relevant ow
 
 ## STATUS.html
 
-`STATUS.html` is a fixed visual dashboard, subordinate to source evidence: browser-openable, restrained CSS, at most 25,000 bytes. Under the project name it has exactly these five sections, in this order:
+`STATUS.html` is a fixed visual dashboard, subordinate to source evidence: browser-openable, restrained CSS, at most 25,000 bytes. Directly under the project name, a PM's dashboard has one line, `Reports to: <PM or owner>` (see `$opn`). Below it are exactly these five sections, in this order:
 
 1. **Waiting on you**: owner decisions, oldest first, each with recommendation and deadline if known.
 2. **In flight**: each item with its exact known agent, workspace, branch, PR, session, and schedule IDs, its state, and its next action or trigger.
