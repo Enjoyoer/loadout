@@ -492,9 +492,9 @@ writeFileSync(join(dir,'models.json'),JSON.stringify({providers:{fleet:{apiKey:c
 process.env.PI_CODING_AGENT_DIR=dir;
 const m=await import(process.argv[1]);m.CREDENTIAL.retryDelaysMs=[1,1];
 let calls=[];let outcome;
-m.COMPACTION.load=async()=>({compact:async(...args)=>{calls.push(args);return outcome();}});
+m.COMPACTION.load=async()=>({VERSION:'1.0.0',compact:async(a,b,c,d,e,f,g,h,i,j,k,l)=>{calls.push([a,b,c,d,e,f,g,h,i,j,k,l]);return outcome();}});
 const registry={getApiKeyAndHeaders:async()=>({ok:true,apiKey:'synthetic-value',headers:{}}),streamSimple:()=>{}};
-const ctx=provider=>({model:{provider,id:'example'},thinkingLevel:'xhigh',modelRegistry:registry,sessionManager:{getSessionId:()=> 'sess'}});
+const ctx=provider=>({model:{provider,id:'example',reasoning:true},thinkingLevel:'xhigh',modelRegistry:registry,sessionManager:{getSessionId:()=> 'sess'}});
 const prep={firstKeptEntryId:'k',tokensBefore:9,messagesToSummarize:[],turnPrefixMessages:[],isSplitTurn:false,fileOps:{read:new Set(),written:new Set(),edited:new Set()},settings:{reserveTokens:16384}};
 const event=extra=>({reason:'manual',preparation:prep,branchEntries:[],signal:new AbortController().signal,...extra});
 function boot(){const h={};m.default({on:(e,f)=>h[e]=f,registerProvider:()=>{},unregisterProvider:()=>{}});return h;}
@@ -512,6 +512,14 @@ const rows=()=>{try{return readFileSync(join(dir,'route-evidence.jsonl'),'utf8')
  assert.equal(await h.session_before_compact(event(),ctx('fleet')),undefined);assert.equal(calls.length,1);
  assert.deepEqual(rows(),[{event:'compact_failed',reason:'manual',aborted:false,errorKind:'upstream',httpStatus:502,sessionId:'sess',model:'example',thinking:'medium',fallback:'pi-default'}]);
  assert.ok(!readFileSync(join(dir,'route-evidence.jsonl'),'utf8').includes('synth'));}
+// After a fleet summary, a fleet attempt that fails and falls back, and a switch to a direct provider, both hand Pi's
+// default compaction the previous fleet summary's file lists, in Pi's own preparation.
+for(const provider of ['fleet','direct']){const h=boot();outcome=()=>{throw Error('Summarization failed: 500: x');};
+ const fileOps={read:new Set(['new.txt']),written:new Set(),edited:new Set()};const preparation={...prep,fileOps};
+ const branchEntries=[{type:'compaction',fromHook:true,details:{readFiles:['a.txt'],modifiedFiles:['b.txt']}}];
+ assert.equal(await h.session_before_compact(event({preparation,branchEntries}),ctx(provider)),undefined,provider);
+ assert.equal(preparation.fileOps,fileOps,provider);
+ assert.deepEqual([[...fileOps.read].sort(),[...fileOps.edited]],[['a.txt','new.txt'],['b.txt']],provider);}
 // A non-router provider: Pi's own compaction, untouched.
 {rmSync(join(dir,'route-evidence.jsonl'),{force:true});const h=boot();calls=[];
  assert.equal(await h.session_before_compact(event(),ctx('direct')),undefined);assert.equal(calls.length,0);assert.deepEqual(rows(),[]);}
