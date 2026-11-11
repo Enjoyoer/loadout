@@ -428,7 +428,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,writeFileSync,chmodSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join,dirname} from 'node:path';import {fileURLToPath} from 'node:url';
 const root=dirname(fileURLToPath(process.argv[1]));const dir=mkdtempSync(join(tmpdir(),'lease-'));
 const helper=join(dir,'helper');const slow=join(dir,'slow');
-writeFileSync(helper,`#!/bin/sh\n[ -f "${slow}" ] && sleep 0.3\necho synthetic-value\n`);chmodSync(helper,0o755);
+writeFileSync(helper,`#!/bin/sh\n[ -f "${slow}" ] && sleep 1.5\necho synthetic-value\n`);chmodSync(helper,0o755);
 const command=`!"${helper}" "${join(root,'credential.py')}" "${join(root,'runtime.json')}"`;
 writeFileSync(join(dir,'models.json'),JSON.stringify({providers:{fleet:{apiKey:command,models:[]}}}));
 process.env.PI_CODING_AGENT_DIR=dir;
@@ -445,9 +445,11 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
 {const {h,s}=boot();const c=new AbortController();await h.session_before_tree(tree(c),ctx);assert.equal(s.lent,true);
  c.abort();assert.equal(s.lent,false);}
 // A prompt that starts and ends while the summary's refresh runs does not leave the summary unlent.
-{writeFileSync(slow,'');const {h,s}=boot();const pending=h.session_before_tree(tree(new AbortController()),ctx);
- await h.turn_start({},ctx);await h.agent_end({});await pending;assert.equal(s.lent,true);
- await wait(150);assert.equal(s.lent,false);rmSync(slow);}
+// Only the summary's read is slow: the run starts once that read is under way and ends before it returns.
+{writeFileSync(slow,'');const {h,s}=boot();let read=false;const pending=h.session_before_tree(tree(new AbortController()),ctx).then(()=>{read=true;});
+ await wait(300);rmSync(slow);await h.turn_start({},ctx);await h.agent_end({});assert.equal(read,false);
+ await pending;assert.equal(s.lent,true);
+ await wait(150);assert.equal(s.lent,false);}
 // A 500 body echoing the presented credential leaves no credential in route-evidence.jsonl.
 {rmSync(join(dir,'route-evidence.jsonl'),{force:true});const {h,s}=boot();
  await h.session_before_compact({reason:'manual',signal:new AbortController().signal},ctx);assert.equal(s.lent,true);
