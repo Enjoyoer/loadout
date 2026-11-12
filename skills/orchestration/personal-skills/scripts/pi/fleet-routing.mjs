@@ -175,25 +175,53 @@ export const SECRET_PATTERNS = [
   ['oauth-refresh-json', String.raw`"refresh_token"\s*:\s*"([^"]{20,})"`],
   ['google-apikey', String.raw`\bAIza[0-9A-Za-z_-]{35}`],
 ];
-// [kind, pattern, mask, value]: value is true for oauth-refresh-json, whose span is its captured value, which sits just
-// before the closing quote.
-const PASSES = SECRET_PATTERNS.map(([kind, source]) => [kind, new RegExp(source, 'g'), `[REDACTED:${kind}]`, kind === 'oauth-refresh-json']);
+// [kind, source, mask, value]: value is true for oauth-refresh-json, whose span is its captured value, which sits just
+// before the closing quote. The compiled patterns are in semantics() below.
+const PASSES = SECRET_PATTERNS.map(([kind, source]) => [kind, source, `[REDACTED:${kind}]`, kind === 'oauth-refresh-json']);
 // A mask this hook writes; a write or edit carrying one would put the mask in place of the real secret.
 const MASK = new RegExp(String.raw`\[REDACTED:(?:${SECRET_PATTERNS.map(([kind]) => kind).join('|')})\]`);
 // A mask's '[' and ']' give a glued \b pattern the word boundary the raw text lacked. These variants find such a match
-// next to a span in pass 1: GLUED_AFTER drops the leading \b and is tried at a span's end; GLUED_BEFORE drops the
-// trailing \b and must end at a span's start, within the 64 characters before it.
-const GLUED_AFTER = SECRET_PATTERNS.flatMap(([, source], k) => /(?:^|\|)\\b/.test(source)
-  ? [[k, new RegExp(source.replace(/(^|\|)\\b/g, '$1'), 'y')]] : []);
-const GLUED_BEFORE = SECRET_PATTERNS.flatMap(([, source], k) => /\\b(?:$|\|)/.test(source)
-  ? [[k, new RegExp(`(?:${source.replace(/\\b(?=$|\|)/g, '')})$`)]] : []);
-const isWord = c => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
-const wordAt = (text, i) => i >= 0 && i < text.length && isWord(text.charCodeAt(i));
+// next to a span in pass 1: after drops the leading \b and is tried at a span's end; before drops the trailing \b and
+// must end at a span's start, within the 64 characters before it.
+//
+// check.py runs these patterns with Python's re, where \s also covers U+001C to U+001F and U+0085, and \b treats every
+// Unicode letter and digit as a word character. JS differs on both, so text holding any of those characters gets the
+// same patterns compiled with Python's meaning (u flag, \b as a lookaround). Other text keeps the faster ASCII form,
+// which gives the same matches there.
+const PY_TRIGGER = /[\x1c-\x1f\u0080-\uffff]/;
+const PY_WORD = String.raw`[\p{L}\p{N}_]`;
+const PY_B = String.raw`(?:(?<=${PY_WORD})(?!${PY_WORD})|(?<!${PY_WORD})(?=${PY_WORD}))`;
+// A \b just before a word character can only be the start of a word, a lookbehind alone, which is much faster.
+const toPython = source => source.replace(/\\s/g, String.raw`[\s\x1c-\x1f\x85]`)
+  .replace(/\\b(?=[A-Za-z0-9_]|\[0-9\])/g, `(?<!${PY_WORD})`).replace(/\\b/g, PY_B);
+function semantics(py) {
+  const compile = (source, flags) => py ? new RegExp(toPython(source), flags + 'u') : new RegExp(source, flags);
+  const isWord = c => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+  const before = new RegExp(`(?<=${PY_WORD})`, 'uy'), after = new RegExp(PY_WORD, 'uy');
+  const glued = SECRET_PATTERNS.map(([, source], k) => [k, source.replace(/(^|\|)\\b/g, '$1')]).filter(([k, source]) => source !== SECRET_PATTERNS[k][1]);
+  const ending = SECRET_PATTERNS.map(([, source], k) => [k, `(?:${source.replace(/\\b(?=$|\|)/g, '')})`]).filter(([k, source]) => source !== `(?:${SECRET_PATTERNS[k][1]})`);
+  return {
+    patterns: SECRET_PATTERNS.map(([, source]) => compile(source, 'g')),
+    // One combined pattern first: nearly every span edge has no match, and one scan is cheaper than one per kind.
+    anyAfter: compile(glued.map(([, source]) => `(?:${source})`).join('|'), 'y'),
+    after: glued.map(([k, source]) => [k, compile(source, 'y')]),
+    anyBefore: compile(`(?:${ending.map(([, source]) => source).join('|')})$`, ''),
+    before: ending.map(([k, source]) => [k, compile(`${source}$`, '')]),
+    // Whether the character just before i, or the one at i, is a word character.
+    wordBefore: py ? (text, i) => i > 0 && (before.lastIndex = i, before.test(text))
+      : (text, i) => i > 0 && isWord(text.charCodeAt(i - 1)),
+    wordAfter: py ? (text, i) => i < text.length && (after.lastIndex = i, after.test(text))
+      : (text, i) => i < text.length && isWord(text.charCodeAt(i)),
+  };
+}
+const ASCII = semantics(false), PYTHON = semantics(true);
 /** [kind index, end] of the longest match a mask ending at e would create, or null. */
-function gluedAfter(text, e) {
-  if (!wordAt(text, e - 1) || !wordAt(text, e)) return null;
+function gluedAfter(text, e, sem) {
+  if (!sem.wordBefore(text, e) || !sem.wordAfter(text, e)) return null;
+  sem.anyAfter.lastIndex = e;
+  if (!sem.anyAfter.test(text)) return null;
   let best = null;
-  for (const [k, pattern] of GLUED_AFTER) {
+  for (const [k, pattern] of sem.after) {
     pattern.lastIndex = e;
     const m = pattern.exec(text);
     if (m && (!best || e + m[0].length > best[1])) best = [k, e + m[0].length];
@@ -201,16 +229,17 @@ function gluedAfter(text, e) {
   return best;
 }
 /** [kind index, start] of the earliest match, at or after floor (the previous mask's end), that a mask starting at s would create, or null. */
-function gluedBefore(text, s, floor) {
-  if (s <= floor || !wordAt(text, s - 1) || !wordAt(text, s)) return null;
+function gluedBefore(text, s, floor, sem) {
+  if (s <= floor || !sem.wordBefore(text, s) || !sem.wordAfter(text, s)) return null;
   const from = Math.max(floor, s - 64), window = text.slice(from, s);
+  if (!sem.anyBefore.test(window)) return null;
   let best = null;
-  for (const [k, pattern] of GLUED_BEFORE) {
+  for (const [k, pattern] of sem.before) {
     const m = pattern.exec(window);
     if (!m) continue;
     const t = from + m.index;
     // At the window's edge the \b held only inside the window; it holds in the text after a mask, at 0, or at a real boundary.
-    if (t === from && from > floor && wordAt(text, t - 1)) continue;
+    if (t === from && from > floor && sem.wordBefore(text, t)) continue;
     if (!best || t < best[1]) best = [k, t];
   }
   return best;
@@ -221,19 +250,20 @@ function gluedBefore(text, s, floor) {
  * created; there a span is widened to whole masks so none is split, and a span with no raw character is dropped.
  */
 export function redactText(text, counts) {
-  const first = maskSpans(text, counts, null);
-  return first.masks.length ? maskSpans(first.text, counts, first.masks).text : first.text;
+  const sem = PY_TRIGGER.test(text) ? PYTHON : ASCII;
+  const first = maskSpans(text, counts, null, sem);
+  return first.masks.length ? maskSpans(first.text, counts, first.masks, sem).text : first.text;
 }
 /**
  * One pass: the match spans of every kind on text, merged where they overlap or touch, each merged span replaced once by
  * the mask of the span that starts first (on a tie, the longest). guard lists the masks already in text as flat
- * [start, end] pairs in order, or is null. Returns the text and its masks, likewise.
+ * [start, end] pairs in order, or is null. sem is ASCII or PYTHON. Returns the text and its masks, likewise.
  */
-function maskSpans(text, counts, guard) {
+function maskSpans(text, counts, guard, sem = PY_TRIGGER.test(text) ? PYTHON : ASCII) {
   const starts = [], ends = [], kinds = [];
   let sorted = true;
   for (let k = 0; k < PASSES.length; k++) {
-    const pattern = PASSES[k][1], value = PASSES[k][3];
+    const pattern = sem.patterns[k], value = PASSES[k][3];
     pattern.lastIndex = 0;
     const from = starts.length;
     for (let m; (m = pattern.exec(text));) {
@@ -270,7 +300,7 @@ function maskSpans(text, counts, guard) {
         continue;
       }
       // A match this mask's end would create joins the span; so may further spans it reaches.
-      const next = gluedAfter(text, end);
+      const next = gluedAfter(text, end, sem);
       if (!next) break;
       hit[next[0]]++; end = next[1];
     }
@@ -280,7 +310,7 @@ function maskSpans(text, counts, guard) {
       for (let j = g; j < guard.length && guard[j] < end; j += 2) covered += Math.min(guard[j + 1], end) - Math.max(guard[j], start);
       if (covered >= end - start) continue;
       for (const k of members) hit[k]++;
-    } else for (let prior; (prior = gluedBefore(text, start, pos));) { hit[prior[0]]++; [kind, start] = prior; }
+    } else for (let prior; (prior = gluedBefore(text, start, pos, sem));) { hit[prior[0]]++; [kind, start] = prior; }
     const mask = PASSES[kind][2];
     pieces.push(text.slice(pos, start), mask);
     len += start - pos;

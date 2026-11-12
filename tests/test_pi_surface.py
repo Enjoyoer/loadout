@@ -752,12 +752,21 @@ const cases=[
   ['x '+t.apikey+t.apikey+t.apikey+' y','x '+R('google-apikey')+' y',{'google-apikey':3}],
   // A refresh_token value that the mask makes 20 characters long.
   [K+'ab'+'xo'+'xb-'+r('1',10)+'.."',K+R('oauth-refresh-json')+'"',{slack:1,'oauth-refresh-json':1}],
+  // check.py's Python semantics (rev292 B1): (a) \s covers U+001C and U+0085; (b1) a non-ASCII letter is a word
+  // character for \b; (b2) so is one before a token, which then is not a match and does not swallow the next one.
+  ['{"refresh'+'_token"\x1c:"'+r('v',24)+'"}','{"refresh'+'_token"\x1c:"'+R('oauth-refresh-json')+'"}',{'oauth-refresh-json':1}],
+  ['{"refresh'+'_token":\x85"'+r('v',24)+'"}','{"refresh'+'_token":\x85"'+R('oauth-refresh-json')+'"}',{'oauth-refresh-json':1}],
+  ['123456789'+':AA'+r('j',32)+'-é',R('telegram-bot')+'é',{'telegram-bot':1}],
+  ['123456789'+':AA'+r('j',32)+'-の',R('telegram-bot')+'の',{'telegram-bot':1}],
+  ['é'+'sk-'+r('a',40)+'sk'+'-proj-'+r('b',20),'é'+'sk-'+r('a',40)+R('openai'),{openai:1}],
+  ['Ω'+'gh'+'p_'+r('C',36)+'github'+'_pat_'+r('D',50),'Ω'+'gh'+'p_'+r('C',36)+R('github'),{github:1}],
 ];
 const patterns=m.SECRET_PATTERNS.map(([kind,source])=>[kind,new RegExp(source,'g')]);
 for(const [text,want,kinds] of cases){
   const counts={};const out=m.redactText(text,counts);
   assert.equal(out,want);assert.deepEqual(counts,kinds);
-  for(const [kind,p] of patterns)for(const hit of out.matchAll(p))assert.ok(kind==='oauth-refresh-json'&&hit[1]===R(kind),kind);
+  // JS and Python agree on ASCII text only; the cases above give the Python result for the rest.
+  if(/^[\x00-\x1b\x20-\x7f]*$/.test(text)) for(const [kind,p] of patterns)for(const hit of out.matchAll(p))assert.ok(kind==='oauth-refresh-json'&&hit[1]===R(kind),kind);
 }
 // Any non-empty string under a refresh_token key is masked: short, holding a quote, or holding newlines.
 const h=m.redactHandler(()=>{});
