@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "1fc033d48723b87180cc32b875c58b904489b7b9",
+  "source_commit": "3b221e9aa2e989fc12ae8d337fe28b7b23d550b7",
   "skill_count": 24,
   "file_count": 135,
   "files": [
@@ -401,8 +401,8 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 25055,
-      "sha256": "81939d7c69a2a4d470fe0b5ba72a4bc5ea690813d590f2cf06dfb00bcbadf25a"
+      "bytes": 21909,
+      "sha256": "50155790d3b30a210699daf913fcb6193d34038d30f8a67dbc48b7747a17217d"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 89123,
-      "sha256": "775b248a29c693fb314127fbcf25053395d635f0817f1301958a7e9d27575c74"
+      "bytes": 80344,
+      "sha256": "964ba8a82ba428ffbb1fafbd9d942e292cfce10962641fc0f3f937bddb69315d"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -987,8 +987,8 @@
     {
       "path": "plugins/cache-aware-autocompact/README.md",
       "plugin": "cache-aware-autocompact",
-      "bytes": 19780,
-      "sha256": "abd587fe305ac34b66736304e7a0229d076e3ecdcf5b6ad6aeb0f5b44049d4e9"
+      "bytes": 19535,
+      "sha256": "3328e1e9c10fc654204fb9bea4633f7069c560cd3130f7d11019997b9fd86a3c"
     },
     {
       "path": "plugins/cache-aware-autocompact/index.server.ts",
@@ -1209,8 +1209,8 @@
     {
       "path": "plugins/merged-worker-archiver/README.md",
       "plugin": "merged-worker-archiver",
-      "bytes": 63649,
-      "sha256": "b74d64496a4e62d2c30c92da3833cee0f59a0c15e00a735a7244b202c6b45edd"
+      "bytes": 41051,
+      "sha256": "d5f9bff060147e31fc2ad7edf51da377bc01f4fc19698080268924b53e621ac2"
     },
     {
       "path": "plugins/merged-worker-archiver/index.server.ts",
