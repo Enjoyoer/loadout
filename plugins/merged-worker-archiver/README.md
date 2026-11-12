@@ -1,7 +1,5 @@
 # merged-worker-archiver
 
-Startup endpoint resolution uses explicit `PASEO_HOST`, then `$PASEO_HOME/paseo.pid` runtime listen metadata. An explicit non-default `PASEO_HOME` without valid endpoint metadata refuses to connect instead of falling back to another daemon. Invalid explicit hosts also fail closed. The standard local endpoint is a fallback only for an unset home or `~/.paseo`.
-
 Server-only Paseo plugin. Requires Paseo 0.15. It archives worker **worktree** workspaces,
 and through Paseo's own workspace archive the agents in them, once the worker branch
 is merged into its base. It is **event-driven**: every finished agent turn (PM or
@@ -9,22 +7,18 @@ worker) evaluates the worktrees of that agent's project and repository within se
 It is **dry-run by default**: it only logs what it would do until `armed` is set in its
 settings.
 
-Since 0.4.0 its full sweeps also clean up stale workspaces (see Workspace cleanup): they
-archive the record of an idle, agentless project checkout or local workspace, archive an
-idle agentless worktree whose branch is merged and whose tree is clean, and tell the owning
-PM once about an idle agentless worktree they keep. That path has its own switch,
-`armWorkspaceCleanup`, and stays dry-run until it and `armed` are both on. Since 0.5.0 that
-PM may run on another Paseo daemon (`peerHosts`, see Messages to the PM), and an agentless
-worktree whose only ignored files are regenerable output counts as clean. Since 0.6.0 an optional
-stale sweep (`staleSweep`, off by default) tells each PM once a day about its non-PM agents idle
-for 3 days and its worktree or scratch workspaces with no live agent, in one message per daemon
-that also carries that day's kept-worktree report, and archives them instead for PMs or projects
-that opt in (see Stale sweep). Since 0.6.1 no workspace is archived while one of its live
-agents has an active or paused heartbeat or is owed a usage-limit-auto-resume resume (see Skip
-rules, `heartbeat` and `auto-resume`). Since 0.7.0 `staleArchiveAll` (off by default) opts every
-stale item in to that archive, including items with no PM to tell. Since 0.7.1 a stale archive
-that keeps failing backs off instead of taking a slot every sweep, and an item past the cap is
-still flagged or logged unrouted.
+Full sweeps run two more paths, each with its own switch:
+
+- **Workspace cleanup** (`armWorkspaceCleanup`): archives the record of an idle, agentless
+  project checkout or local workspace, archives an idle agentless worktree whose branch is
+  merged and whose tree is clean, and tells the owning PM once about an idle agentless
+  worktree it keeps. That PM may run on another Paseo daemon (`peerHosts`).
+- **Stale sweep** (`staleSweep`, off by default): tells each PM once a day about its non-PM
+  agents idle for 3 days and its worktree or scratch workspaces with no live agent, and
+  archives them instead for PMs or projects that opt in (`staleArchiveAll` opts in all).
+
+No workspace is archived while one of its live agents has an active or paused heartbeat or
+is owed a usage-limit-auto-resume resume (see Skip rules, `heartbeat` and `auto-resume`).
 
 ## What counts as merged
 
@@ -36,8 +30,8 @@ Checked with read-only git in the worktree (`GIT_OPTIONAL_LOCKS=0`, no prompts, 
    branch's configured upstream (`<baseRefName>@{upstream}`, else
    `refs/remotes/origin/<baseRefName>`). A candidate naming the worker branch itself, such
    as the `refs/remotes/origin/<branch>` that `git push -u` sets as its upstream, is never
-   used. The base comes from Paseo's own worktree metadata,
-   `<git-dir>/paseo/worktree.json`. No metadata means no base, which means skip.
+   used. The base comes from Paseo's worktree metadata, `<git-dir>/paseo/worktree.json`.
+   No metadata means no base, which means skip.
 2. **Pull request** (squash merges), only when ancestry fails and `useGh` is true:
    `gh pr view <branch> --json number,state,mergeCommit,headRefOid,headRefName,baseRefName`
    must report `MERGED` with a `mergeCommit`, the same head branch, the same base
@@ -45,69 +39,58 @@ Checked with read-only git in the worktree (`GIT_OPTIONAL_LOCKS=0`, no prompts, 
    (`git merge-base --is-ancestor HEAD <headRefOid>`). Local commits after the PR head
    are unmerged work.
 
-No fetch is performed. Refs are only as fresh as the last fetch made by the worker, the
-PM, or Paseo's own git service; the PR path covers remote merges the local refs have not
-seen yet. A fetch option was deliberately left out.
+No fetch is performed, deliberately. Refs are as fresh as the last fetch by the worker, the
+PM, or Paseo's git service; the PR path covers remote merges the local refs have not seen.
 
 ## Finished workspaces without a PR
 
-Review agents and abandoned lanes never merge, so they would linger. With
-`archiveFinishedWithoutPr` (default `true`) a worktree that is not merged is still
-archived when all of these hold:
+Review agents and abandoned lanes never merge. With `archiveFinishedWithoutPr` (default
+`true`) a worktree that is not merged is still archived when all of these hold:
 
-1. It is a Paseo `worktree` workspace whose real path is strictly inside Paseo's managed
-   worktrees directory (`<PASEO_HOME>/worktrees`, compared case-insensitively on Windows),
-   and it is not the root of any Paseo project. Local checkouts and directory workspaces
-   never qualify.
+1. It is a Paseo `worktree` workspace whose real path is strictly inside
+   `<PASEO_HOME>/worktrees` (compared case-insensitively on Windows), and not the root of
+   any Paseo project. Local checkouts and directory workspaces never qualify.
 2. It passes every agent and workspace gate below (all agents `idle` or `closed`, nothing
    running, no pending permission or attention), and its latest activity is at least
-   `finishedGraceMinutes` ago (default 120, and never less than `graceMinutes`).
-3. No agent is a PM, and no agent has the label `noarchive` (any value), which opts the
-   workspace out of this path.
-4. It passes the merged path's cleanliness gates, with one difference: no operation in
+   `finishedGraceMinutes` ago (default 120, never less than `graceMinutes`).
+3. No agent is a PM, and no agent has the label `noarchive` (any value).
+4. It passes the merged path's cleanliness gates, except for ignored files: no operation in
    progress, no changed or untracked file, no non-empty submodule directory, and no ignored
-   file except clearly regenerable output. An ignored path counts as regenerable when any
-   segment is `node_modules`, `__pycache__`, `.pytest_cache`, `.venv`, `.turbo`, `.next`,
-   `.cache`, or `coverage`, or the file name ends in `.tsbuildinfo`. `dist` and `build`
-   do not count. An ignored file whose name matches `.env*`, `*.pem`, `*.key`, `id_rsa*`,
-   `id_ed25519*`, or `id_ecdsa*` (any case) blocks it even inside a regenerable directory
-   (`git ls-files --others --ignored` lists those files). So does any other ignored
-   file, and any path git prints quoted. The merged path still counts every ignored file
-   as dirty.
+   file except **regenerable output**: a path with a segment `node_modules`, `__pycache__`,
+   `.pytest_cache`, `.venv`, `.turbo`, `.next`, `.cache`, or `coverage`, or a file name
+   ending in `.tsbuildinfo`. `dist` and `build` do not count. An ignored file whose name
+   matches `.env*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, or `id_ecdsa*` (any case)
+   blocks even inside a regenerable directory (`git ls-files --others --ignored` lists
+   them), as does any other ignored file and any path git prints quoted.
 5. It has no unpushed commits, checked live: `git ls-remote --heads` must succeed for every
-   remote, and `HEAD` must be contained in (or equal to) one of the listed head commits
-   that is also present locally. Remote-tracking refs are not trusted, and an offline or
-   failing remote is a skip.
+   remote, and `HEAD` must be contained in (or equal to) a listed head commit that is
+   present locally. Remote-tracking refs are not trusted; an offline or failing remote is
+   a skip.
 6. Every remote is a `github.com` remote, and `gh pr list -R github.com/<owner/repo> --head
-   <branch> --state open` returns no PR for each of their repositories. Every gh call runs
-   without `GH_HOST` and `GH_ENTERPRISE_TOKEN`, so it cannot query another host. It needs
-   `useGh`. A remote on any other host, or gh being disabled, missing, or failing for any
-   repository, is a skip.
+   <branch> --state open` returns no PR for each repository. gh runs without `GH_HOST` and
+   `GH_ENTERPRISE_TOKEN`, so it cannot query another host, and needs `useGh`. Another host,
+   or gh disabled, missing, or failing for any repository, is a skip.
 
-Only a merge-check result of "clean but not merged", or "dirty with ignored files only",
-falls through to this path (`dirty(ignored=N)`, `not-merged(...)`, `no-branch-commits`, `no-base(...)`, `branch-is-base`,
-`unmerged-commits(...)`, `pr-head-mismatch`, `pr-base-mismatch`). Every error, dirty, or
+Only these merge-check results fall through to this path: `dirty(ignored=N)`,
+`not-merged(...)`, `no-branch-commits`, `no-base(...)`, `branch-is-base`,
+`unmerged-commits(...)`, `pr-head-mismatch`, `pr-base-mismatch`. Every error, dirty, or
 ambiguous result stays a skip. A skip keeps the merge reason first and appends the no-PR
 reason, for example `not-merged(ahead=2 of refs/heads/main; no PR); no-pr: unpushed-commits(...)`.
-The archive reason is `finished-no-pr(pushed(live <remote>))`. Archiving never deletes
-the branch, so the commits stay reachable locally too.
-
-Archiving is the same `paseo.workspaces.archive` call as the merged path, with the same
-cap, back-off, and armed re-check. Dry-run logs a `would-archive` line for each.
+The archive reason is `finished-no-pr(pushed(live <remote>))`. The archive is the same call,
+cap, back-off and armed re-check as the merged path (dry-run logs `would-archive`), and
+never deletes the branch.
 
 ## Skip rules (fail closed)
 
-Non-worktree workspaces also qualify as `empty-disposable-workspace` when their
-absolute cwd is strictly under `<PASEO_HOME>/worktrees` (default `~/.paseo/worktrees`)
-or `~/.cache/fleet-scratch` (`%USERPROFILE%\.cache\fleet-scratch` on Windows), with
-both lexical and real paths contained in the same root. The root itself, missing or
-unresolvable paths, and symlinks escaping the root do not qualify. They must have
-**no non-archived agents**, no running scripts, a non-blocking workspace status, and
-activity older than `graceMinutes`. This rule ignores `allowAgentlessWorkspaces` and
-needs no git or merge check; it archives the workspace record via Paseo, not the
-scratch folder. Other local workspaces, including project checkouts, are never archived
-by the worker path; only workspace cleanup (below) archives their record, and only when it
-is armed. Actual `worktree` workspaces retain all existing merge and cleanliness gates.
+Non-worktree workspaces also qualify as `empty-disposable-workspace` when their absolute cwd
+is strictly under `<PASEO_HOME>/worktrees` (default `~/.paseo/worktrees`) or
+`~/.cache/fleet-scratch` (`%USERPROFILE%\.cache\fleet-scratch` on Windows), with both
+lexical and real paths in the same root. The root itself, missing or unresolvable paths,
+and symlinks escaping the root do not qualify. They need **no non-archived agents**, no
+running scripts, a non-blocking workspace status, and activity older than `graceMinutes`.
+This rule ignores `allowAgentlessWorkspaces`, needs no git check, and archives the workspace
+record, not the scratch folder. Other local workspaces, including project checkouts, are
+archived only by armed workspace cleanup.
 
 Every decision is `skip` unless its applicable gates pass. Reasons appear verbatim in the log.
 
@@ -126,18 +109,18 @@ Every decision is `skip` unless its applicable gates pass. Reasons appear verbat
 | `attention-<reason>` | `requiresAttention` for anything other than `finished`. |
 | `workspace-running` / `workspace-needs_input` / `workspace-failed` | Workspace status. |
 | `script-running(name)` | A workspace script or service is running. |
-| `heartbeat(<ids>) on agent <id>; else archivable: ...` | An archive decision whose workspace holds a live agent that an active or paused schedule targets (a heartbeat, `target.agentId`). The archive would archive the agent, and Paseo then completes its schedules. Delete or move the heartbeat (`paseo schedule delete <id>`), and the next sweep archives. `heartbeats-unknown(...)`: the daemon's schedule list could not be read, which blocks every archive of a workspace with a live agent. |
-| `auto-resume(<records>) on agent <id>; else archivable: ...` | Likewise for an agent that usage-limit-auto-resume still owes a resume: a record for it in `<PASEO_HOME>/plugin-state/usage-limit-auto-resume/state.json` that is not settled (only `done`, `exhausted`, `opted-out` and `superseded` are). Archiving would supersede it, and a weekly quota hold can wait days. `auto-resume-unknown(...)`: the file cannot be read or parsed, or is missing while that plugin is installed (the daemon's plugin list, which must be readable). A missing file without the plugin means no records. Either blocks every archive of a workspace with a live agent. |
-| `grace-period(idle, remaining)` | Latest activity (workspace activity/status time, agent updated, last user message, attention time) is younger than `graceMinutes` (default 0, so this only applies when raised). |
+| `heartbeat(<ids>) on agent <id>; else archivable: ...` | A live agent in the workspace is the target of an active or paused schedule (a heartbeat, `target.agentId`). Archiving would archive the agent, and Paseo would complete its schedules. Delete or move it (`paseo schedule delete <id>`) and the next sweep archives. `heartbeats-unknown(...)`: the schedule list could not be read, which blocks every archive of a workspace with a live agent. |
+| `auto-resume(<records>) on agent <id>; else archivable: ...` | usage-limit-auto-resume still owes a live agent a resume: a record for it in `<PASEO_HOME>/plugin-state/usage-limit-auto-resume/state.json` that is not settled (`detected`, `parked`, `resuming`, `verifying`, `uncertain`; only `done`, `exhausted`, `opted-out` and `superseded` are settled). Archiving would supersede it, and a weekly quota hold can wait days. `auto-resume-unknown(...)`, for example `auto-resume-unknown(installed, state file missing)`: the file cannot be read or parsed, or is missing while that plugin is installed (per the daemon's plugin list, which must be readable); this blocks every archive of a workspace with a live agent. A missing file without the plugin means no records. |
+| `grace-period(idle, remaining)` | Latest activity (workspace activity/status time, agent updated, last user message, attention time) is younger than `graceMinutes` (default 0). |
 | `ambiguous(...)` | No activity timestamp, path not statable, empty reflog, PR merged without merge commit, PR head commit not local, a submodule path that is not UTF-8, a git top level (`rev-parse --show-toplevel`, only its line end removed) whose realpath is not the workspace directory's. |
 | `path-missing` | Directory gone; left to Paseo's own reconciliation. |
 | `detached-head` | No branch. |
 | `no-base(...)` | No Paseo worktree metadata, or none of the base refs exist locally. |
 | `branch-is-base` | The worktree is on its base branch. |
 | `operation-in-progress(x)` | Merge, cherry-pick, revert, rebase, or bisect in progress. |
-| `dirty(changed, untracked, ignored)` | Any staged, unstaged, or untracked change (`--untracked-files=all`), or any git-ignored file (`--ignored=matching`). A worktree whose only extra files are ignored reports `dirty(ignored=N)`, for example an ignored `.env` or local notes. `N` counts the paths git lists, and an ignored directory counts once. On the merged worker path ignored dependency or build output (`node_modules`, `dist`) also blocks archival. That is intended: the owner chose safety over automatic cleanup. Delete such output, or archive the workspace by hand. The no-PR path and workspace cleanup's agentless worktrees count only ignored files that are not regenerable output (see Finished workspaces without a PR, item 4), so there `N` leaves out `__pycache__`, `node_modules` and the rest of that list, and an ignored file with a sensitive name inside such a directory reports `dirty(sensitive-ignored=n:path)`. |
-| `submodule(path)` | A submodule directory (a gitlink in the index, `git ls-files --stage` from the worktree top level) that is not an empty, real directory. The superproject's status cannot vouch for it: `submodule.<name>.ignore` or `diff.ignoreSubmodules` hides its changes, its ignored files are never listed, and files in an unpopulated submodule directory are invisible to git. An unpopulated submodule (an empty directory) does not block; a symlink or junction in its place does. |
-| `no-branch-commits` | The branch reflog has no `commit`/`cherry-pick` entry. A branch with no own commits is trivially an ancestor of its base (also after a pure rebase onto a newer base); that is "no work yet", not "merged". |
+| `dirty(changed, untracked, ignored)` | Any staged, unstaged, or untracked change (`--untracked-files=all`), or any git-ignored file (`--ignored=matching`); only ignored files reports `dirty(ignored=N)`, `N` counting the paths git lists (an ignored directory once). On the merged path every ignored file blocks, `node_modules` and `dist` included, by the owner's choice of safety over cleanup: delete such output or archive by hand. The no-PR path and agentless cleanup skip regenerable output (item 4 above), and report a sensitive name inside it as `dirty(sensitive-ignored=n:path)`. |
+| `submodule(path)` | A submodule directory (a gitlink in the index, `git ls-files --stage` from the worktree top level) that is not an empty, real directory. The superproject's status cannot vouch for it (`submodule.<name>.ignore`, `diff.ignoreSubmodules`, unlisted ignored files, invisible files in an unpopulated directory). An empty directory does not block; a symlink or junction in its place does. |
+| `no-branch-commits` | The branch reflog has no `commit`/`cherry-pick` entry: a branch with no own commits is trivially an ancestor of its base, which means "no work yet", not "merged". |
 | `not-merged(...)` | Commits not contained in the base, no merged PR (`no PR`, `PR #n open`, `gh unavailable`, `no GitHub remote`, `gh disabled`). |
 | `unmerged-commits(...)` | Local commits after the merged PR head. |
 | `pr-head-mismatch` / `pr-base-mismatch` | The PR found is not this branch into this base. |
@@ -145,57 +128,56 @@ Every decision is `skip` unless its applicable gates pass. Reasons appear verbat
 | `...; no-pr: <reason>` | Not merged, and the no-PR path also skipped it: `noarchive-label`, a grace or agent gate, a cleanliness gate, `project-root`, `outside-paseo-worktrees`, `dirty(sensitive-ignored=n:path)`, `unpushed-commits(...)`, `pr-open(owner/repo#n)`, `pr-unknown(...)` (gh disabled or unavailable, or a non-GitHub remote), `gh-error(...)`, `gh-timeout(...)`, or a failed `ls-remote` as `git-error(...)`. |
 | `recheck: ...` | Armed only: live state is re-read and every gate re-run immediately before archiving. |
 
-A sweep is aborted with no decisions if the daemon is unreachable or the workspace or
-agent list is incomplete (pagination without a cursor), because a hidden agent could be
-running, or if the project list is unavailable, fails, or has a project without a root path.
-That abort applies to both paths: nothing is archived. Invalid settings also abort the sweep.
+A sweep is aborted with no decisions, on every path, if the daemon is unreachable, the
+workspace or agent list is incomplete (pagination without a cursor, since a hidden agent
+could be running), the project list is unavailable, fails, or has a project without a root
+path, or the settings are invalid.
 
 ## What archiving does
 
 The only action is the official `paseo.workspaces.archive(workspaceId)` (the same
-request as `paseo workspace archive`). Because it archives the workspace's agents, which ends
-their heartbeats and supersedes a resume usage-limit-auto-resume owes them, the `heartbeat` and
-`auto-resume` gates above hold it back first. The archive (`archiveByScope`):
+`archive_workspace_request` as `paseo workspace archive`), handled by `archiveByScope`
+(workspace scope). It:
 
-- archives every agent in the workspace, kills its terminals, and archives the record;
-- runs the project's worktree teardown commands, if any;
-- if the worktree is Paseo-owned and no other active workspace references it, removes
-  the directory with `git worktree remove --force` (Paseo's force, not this plugin's).
-  The plugin already refused if any changed, untracked, or ignored file or any non-empty
-  submodule directory was present, so only clean, committed content is removed. The one
-  exception is regenerable ignored output (`__pycache__`, `node_modules`, ...), which the
-  no-PR path and agentless worktree cleanup allow and Paseo then removes with the tree;
-- does **not** delete the branch. Verified in the isolated test: after archive the
-  directory and its `git worktree` entry were gone and `worker-merged` still existed.
+- stops the workspace's setup, archives every agent in it (ending their heartbeats and
+  superseding any owed resume, hence the gates above), kills its terminals, and archives
+  the record;
+- for a Paseo-owned worktree that no other active workspace references, runs the project's
+  worktree teardown commands and removes the directory with `git worktree remove --force`
+  (Paseo's force). The plugin already refused any changed, untracked, or ignored file
+  except regenerable output, and any non-empty submodule directory, so only clean,
+  committed content is removed;
+- does **not** delete the branch.
+
+A `local_checkout` or `directory` record never claims to be Paseo-owned (cleanup skips one
+that does, `paseo-owned-worktree-record`), so archiving it runs no teardown and deletes no
+file. Archiving a project's last or main checkout record does **not** remove the project:
+`project ls` still lists it, and opening the folder again makes a new record in the same
+project. Only `project.remove` archives a project's workspaces, and `orphan-project-sweeper`
+removes a project only when its root folder is gone.
 
 The plugin never deletes branches, never forces anything itself, and never edits
 `~/.paseo/config.json`.
 
-### Relation to Paseo's built-in `autoArchiveAfterMerge`
-
-Paseo has `daemon.autoArchiveAfterMerge`. As checked on an older Paseo, it only fires when
-the daemon itself watched a pull request go from open to merged while running, and it
-ignores local merges, so locally merged worktrees stay. This plugin covers
-local merges (ancestry) and PRs merged while the daemon was not watching.
+Paseo's built-in `daemon.autoArchiveAfterMerge` fires only when the daemon itself watched a
+pull request go from open to merged while running, and ignores local merges. This plugin
+covers local merges (ancestry) and PRs merged while the daemon was not watching.
 
 ## Workspace cleanup
 
-Workspaces the worker path leaves alone used to stay forever: project checkouts and other
-local workspaces (`not-worktree(...)`), and worktrees with no live agent (`no-agents`). In
-every **full sweep** (the startup sweep and the backstop every `sweepIntervalMinutes`, never
-the event-driven ones) those workspaces go to workspace cleanup, which has two paths:
+In every **full sweep** (the startup sweep and the backstop every `sweepIntervalMinutes`,
+never the event-driven ones) the workspaces the worker path leaves alone, project checkouts
+and other local workspaces (`not-worktree(...)`) and worktrees with no live agent
+(`no-agents`), go to workspace cleanup, which has two paths:
 
 - **Stale record** (`cleanup: "stale-record"`, a `local_checkout` or `directory` workspace):
-  archive the workspace record. No file is touched (see below).
+  archive the workspace record. No file is touched.
 - **Agentless worktree** (`cleanup: "agentless-worktree"`): archive it when its branch is
-  merged and its tree is clean, by the same merge test as the worker path
-  (`stale-agentless-merged(...)`); this removes a Paseo-owned worktree's directory, as for
-  workers. Ignored files count as on the no-PR path (item 4 of Finished workspaces without a
-  PR): regenerable output such as `__pycache__` is clean, while an ignored file with a
-  sensitive name (`.env*`, keys), any other ignored file, or a path git prints quoted is not
-  (`dirty(ignored=N)`, `dirty(sensitive-ignored=n:path)`). An unmerged branch is kept either
-  way; only the reason changes. Any other result in the table below means the plugin keeps it
-  and tells its PM once (`notify`).
+  merged and its tree is clean, by the worker path's merge test
+  (`stale-agentless-merged(...)`), removing a Paseo-owned worktree's directory. Ignored files
+  count as on the no-PR path (item 4), so `dirty(ignored=N)` and
+  `dirty(sensitive-ignored=n:path)` are possible. Any other result in the tables keeps it,
+  and its PM is told once (`notify`).
 
 Both paths first need all of these, else the line is `skip` with the reason shown:
 
@@ -215,91 +197,61 @@ Both paths first need all of these, else the line is `skip` with the reason show
 
 ### Activity
 
-Last activity is the newest of these timestamps, as Paseo and git expose them:
+Last activity is the newest of:
 
-- the workspace: `createdAt`, `statusEnteredAt` (see below), `activityAt` and
+- the workspace's `createdAt`, `statusEnteredAt` (see below), `activityAt` and
   `lastUserMessageAt`;
-- every agent the workspace ever held, archived ones included: `createdAt`,
+- for every agent the workspace ever held, archived ones included: `createdAt`,
   `lastUserMessageAt`, `attentionTimestamp`, and `updatedAt` (see below);
-- every agent's newest delivered message, from Paseo's message receipts (see below), at most
-  its `archivedAt`;
+- every agent's newest delivered message, from message receipts (below), at most its
+  `archivedAt`;
 - for an archived agent, the end of its last turn: `min(archivedAt, newest input + 12 h)`,
-  where its inputs are its `createdAt`, its `lastUserMessageAt` and its newest delivered
-  message;
-- for a worktree, the committer date of its HEAD commit (`git log -1`), which covers work
-  committed after the last message. A worktree whose HEAD git cannot read is skipped as
-  `ambiguous(HEAD commit unreadable)`.
+  its inputs being its `createdAt`, `lastUserMessageAt` and newest delivered message;
+- for a worktree, the committer date of its HEAD commit (`git log -1`). A worktree whose HEAD
+  git cannot read is skipped as `ambiguous(HEAD commit unreadable)`.
 
-Archiving an agent is not activity in itself. Paseo stamps an agent's archive time on both
-`archivedAt` and `updatedAt`, and archiving clears its `attentionTimestamp`. Counting that
-time would date an agentless workspace from its last agent's archive, which often comes days
-after the last work. So an archived agent's `updatedAt` counts only when it is earlier than
-its `archivedAt`, and `archivedAt` serves only as the cap above. The work an agent does after
-its newest input leaves no other trace, so the 12 h last-turn allowance covers it. An agent
-archived within 12 h of its last input therefore counts as active until its archive.
+Archiving is not activity. Paseo stamps the archive time on both `archivedAt` and
+`updatedAt` and clears `attentionTimestamp`, so an archived agent's `updatedAt` counts only
+when earlier than its `archivedAt`, and `archivedAt` serves only as the cap above; the 12 h
+allowance covers work after the newest input.
 
-**Message receipts.** Messages from other agents, such as a PM's `paseo send`, do not set
-the recipient's `lastUserMessageAt`. The daemon
-writes a receipt for every `send_agent_message_request` that carries a `messageId`, which the
-CLI and the app always set: `<PASEO_HOME>/agent-requests/<sha256>.json` with the recipient's
-`agentId`, written `pending` and rewritten `completed` once the message is delivered. So the
-file's modification time is the delivery time. The plugin reads these files without writing
-anything. It counts `completed` and `pending` receipts, since a pending one may have reached
-the agent. It reads only files modified within `staleWorkspaceMinutes` plus 12 h, since
-older ones cannot make a workspace recent; the age a report shows therefore ignores older
-receipts. If the directory or a receipt cannot be read (a missing directory included), archive
-times count instead, which only makes workspaces newer, and `sweep-done` shows
-`receiptsUnreadable`. Messages sent through Paseo's MCP tools write no receipt; for those the
-last-turn allowance and the archive cap apply.
+**Message receipts.** Messages from other agents (a PM's `paseo send`) do not set the
+recipient's `lastUserMessageAt`. The daemon writes a receipt for every
+`send_agent_message_request` that carries a `messageId` (the CLI and app always set one):
+`<PASEO_HOME>/agent-requests/<sha256>.json` with the recipient's `agentId`, written
+`pending`, rewritten `completed` on delivery, so its modification time is the delivery time.
+The plugin reads them without writing, counts `completed` and `pending` ones, and reads only
+files modified within `staleWorkspaceMinutes` plus 12 h. If the directory or a receipt
+cannot be read (missing included), archive times count instead and `sweep-done` shows
+`receiptsUnreadable`. Messages sent through Paseo's MCP tools write no receipt.
 
-**`statusEnteredAt`.** A long-lived Paseo session stamps the workspace's `statusEnteredAt`
-with the moment its last busy agent leaves, which can be its archive. The plugin counts
-`statusEnteredAt` only when it is earlier than the newest `archivedAt` of the workspace's
-agents. In practice each sweep opens a new session, which for an agentless workspace reports
-the workspace's `createdAt` there.
+**`statusEnteredAt`** counts only when earlier than the newest `archivedAt` of the
+workspace's agents, since a long-lived session stamps it when the last busy agent leaves.
 
-Paseo does not expose the workspace record's `updatedAt`, and scripts report only their
-`lifecycle`, with no start or stop time, so neither can count; a running script or a live
-terminal blocks cleanup instead. Paseo reports `activityAt` as null. File
-edits made outside Paseo and not committed are not activity.
-
-### What archiving a record does
-
-The plugin calls `paseo.workspaces.archive(workspaceId)`, which sends
-`archive_workspace_request` to `archiveByScope` (workspace scope). It stops the
-workspace's setup, archives its agents, kills its terminals and archives the record. It
-removes a directory, after running the project's worktree teardown commands, only for a
-Paseo-owned worktree that no other active workspace references. For a record that is not a
-worktree, Paseo counts it as Paseo-owned only when the record itself says so, which a
-`local_checkout` or `directory` record never does, and cleanup skips any record that claims
-it (`paseo-owned-worktree-record`). So a stale record's archive runs no teardown command and
-deletes no file. On scratch daemons the checkout's files and git branches were unchanged
-afterwards.
-
-Archiving a project's last or main checkout record does **not** archive or remove the
-project: Paseo only logs that the project has no active workspace left, and `project ls`
-still lists it. Only removing the project (`project.remove`) archives its workspaces, and
-`orphan-project-sweeper` removes a project only when its root folder is gone. Opening the
-folder again in Paseo makes a new workspace record in the same project (checked on 0.13.0).
+Paseo exposes no record `updatedAt` and no script start or stop time, and reports
+`activityAt` as null; a running script or live terminal blocks cleanup instead. File edits
+made outside Paseo and not committed are not activity.
 
 ### Messages to the PM
 
 A kept agentless worktree is reported once, with its path, branch, last commit, age since
 last activity, and why it was kept. The owner is the parent named by the
 `paseo.parent-agent-id` (full id) or `parent` (id prefix) label of the worktree's last agent,
-when that parent is a live agent. Otherwise it is the one live agent labelled `role=pm`
-whose `project` label matches, case-insensitively, the last agent's `project` label or the
+when that parent is live. Otherwise it is the one live agent labelled `role=pm` whose
+`project` label matches, case-insensitively, the last agent's `project` label or the
 workspace's project name. The owner is resolved again just before sending. With several, or
-with none here and none on a peer daemon (see PMs on other daemons), the plugin logs
-`notify-unrouted` and sends nothing. Each PM gets one message per
-sweep listing at most 20 worktrees (`notify-deferred` for the rest). Right before each send
-the plugin reads that PM's status again, and sends only while it is idle or closed, not
-archived, and without a pending permission. Otherwise it logs `notify-deferred` and tries
-again at the next full sweep: a message would interrupt a turn, clear a pending permission
-request, or unarchive the PM. The message is sent with `activeTurnBehavior: "steer"`, so a
-turn that starts in the moment between that check and the send gets the text added where
-the provider can steer, instead of being replaced. With `staleSweep` on there is no separate
-report: kept worktrees go into the stale sweep's daily message to their PM (see Stale sweep).
+with none here and none on a peer daemon, the plugin logs `notify-unrouted` and sends
+nothing. Each PM gets one message per sweep listing at most 20 worktrees (`notify-deferred`
+for the rest).
+
+**Send rule** (every message this plugin sends, local, peer or stale): right before the send
+the PM's status is read again, and the message goes out only while it is idle or closed, not
+archived, and without a pending permission; otherwise it logs a deferral (`why` such as
+`PM running` or `PM error`) and retries at the next full sweep, since a message would interrupt a turn, clear a permission request, or
+unarchive the PM. It is sent with `activeTurnBehavior: "steer"`, so a turn that starts in
+between gets the text added where the provider can steer, instead of being replaced, and with a fixed `messageId`, so the daemon
+drops a duplicate. With `staleSweep` on, kept worktrees go into the stale sweep's daily
+message instead of a separate report.
 
 Reported worktrees are kept in `<PASEO_HOME>/plugin-state/merged-worker-archiver/notified.json`
 (owner-only), written before the message goes out, so a worktree is never reported twice:
@@ -308,291 +260,206 @@ Reported worktrees are kept in `<PASEO_HOME>/plugin-state/merged-worker-archiver
 - `unconfirmed`: the send failed in a way that may have delivered it; never resent;
 - `sending`: the plugin stopped between the two writes; never resent.
 
-A send refused before delivery (`Agent not found`) is retried. The message also carries a
-fixed `messageId`, so the daemon drops a duplicate. Entries of worktrees that are no longer
-listed are pruned by armed sweeps. To report a worktree again, delete its entry, or the file,
-while the plugin is stopped. A file that cannot be read (anything but missing) blocks every
-report and logs `notify-state-unreadable` until it is fixed.
+A send refused before delivery (`Agent not found`) is retried. Armed sweeps prune entries of
+worktrees no longer listed. To report a worktree again, delete its entry, or the file, while
+the plugin is stopped. A file that cannot be read (anything but missing) blocks every report
+and logs `notify-state-unreadable` until fixed.
 
 #### PMs on other daemons
 
-With `peerHosts` set (default empty, which changes nothing), a worktree with no owner on this
-daemon is looked up on those daemons, in the order listed. The plugin reaches each one as the
-Paseo CLI reaches an `ssh://<alias>` host, without the CLI: `ssh -o BatchMode=yes` (the `ssh`
-on the daemon's `PATH`, no shell) to the peer daemon's port (6767) on that host's loopback,
-then its own bundled `DaemonClient`, so the version of any `paseo` CLI on `PATH` does not
-matter. One connection per peer serves a whole sweep and is closed at its end. On macOS and
-Linux the tunnel is Paseo's own `ssh -W`. On Windows, where Win32-OpenSSH never answers
-`ssh -W` through a pipe, it is `ssh -N -L 127.0.0.1:<free port>:127.0.0.1:6767` run by a
-small watchdog on the daemon's own `node`, with no window; the watchdog ends `ssh` when the
-sweep closes the connection, when the plugin goes away, or when the sweep's peer budget ends.
+With `peerHosts` set (default empty), a worktree with no owner on this daemon is looked up
+on those daemons in order. Each is reached as the Paseo CLI reaches an `ssh://<alias>` host,
+without the CLI: `ssh -o BatchMode=yes` (the `ssh` on the daemon's `PATH`, no shell) to the
+peer daemon's port (6767) on that host's loopback, then the plugin's bundled `DaemonClient`,
+so any `paseo` CLI version on `PATH` does not matter. One connection per peer serves a sweep.
+On macOS and Linux the tunnel is Paseo's own `ssh -W`. On Windows, where Win32-OpenSSH never
+answers `ssh -W` through a pipe, it is `ssh -N -L 127.0.0.1:<free port>:127.0.0.1:6767` run
+by a small windowless watchdog on the daemon's `node`, which ends `ssh` when the sweep closes
+the connection, the plugin goes away, or the peer budget ends.
 
-1. The last agent's `paseo.parent-agent-id` (full id; the `parent` prefix label is not used).
-   It counts when the peer has an agent with exactly that id, live and not archived.
-2. Otherwise the peer's live `role=pm` agents whose `project` label matches, by the same
-   case-insensitive rule as here, the last agent's `project` label or the workspace's project
-   name.
+1. The last agent's `paseo.parent-agent-id` (full id; `parent` is not used): a live, not
+   archived agent with exactly that id on the peer.
+2. Otherwise the peer's live `role=pm` agents whose `project` label matches as above.
 
 The owner must be unique across all peers: the parent on exactly one peer, else exactly one
 project PM across all of them. Several matches log `notify-unrouted` with `several owners on
-peers`, and no match logs it with `no owner on peers`; both list the `peers` asked. A peer
-that fails (no connection, a timeout, an error from its daemon) logs one `notify-peer-error`
-line (`peer`, `query`, `error`) and is asked nothing more in that sweep. `query` is the
-step that failed: `connect`, `parent`, `list`, `state` or `send`; a failed connect names the
-`ssh` error, such as an unknown host or a refused key. While a peer has failed and the parent
-was not found elsewhere, no project PM is chosen, since the failed peer may hold another: the
-line is `notify-unrouted` with `owner unknown on peers` and `peerErrors`. Nothing is recorded
+peers`, none logs `no owner on peers`; both list the `peers` asked. A failing peer logs one
+`notify-peer-error` line (`peer`, `query`, `error`; `query` is `connect`, `parent`, `list`,
+`state` or `send`, and a failed connect names the `ssh` error) and is asked nothing more that
+sweep. While a peer has failed and the parent was not found elsewhere, no project PM is
+chosen: `notify-unrouted` with `owner unknown on peers` and `peerErrors`. Nothing is recorded
 for an unrouted worktree, so the next full sweep tries again.
 
-Each call to a peer is bounded by `commandTimeoutSeconds`, and all peer work in one sweep
-(connects, lookups, the state reads and the sends) by a budget of twice that per listed peer
-(60 s with the default timeout and two peers). Once it is spent, a peer asked again logs
-`notify-peer-error` with `peer time budget spent`, its worktrees are unrouted or deferred, and
-the next full sweep tries again.
+Each peer call is bounded by `commandTimeoutSeconds`, and all peer work in one sweep by twice
+that per listed peer (60 s with the default and two peers); once spent, a peer asked again
+logs `notify-peer-error` with `peer time budget spent`.
 
-Peers are asked only after every report to a PM on this daemon has been sent, so a slow or
-unreachable peer cannot delay or block those. A peer send follows the local rules: right
-before it the PM is read again, and the report goes out only while that PM is `idle` or
-`closed`, not archived and without a pending permission (else `notify-deferred`), with
-`activeTurnBehavior: "steer"` and the same fixed `messageId` as a local send. Its
-`notified.json` entry names the peer as `host`, and its log lines carry `host` and `via`
+Peers are asked only after every local report is sent. A peer send follows the send rule;
+its `notified.json` entry names the peer as `host`, and its log lines carry `host` and `via`
 (`peer-parent` or `peer-project-pm`). A send that cannot have been delivered (no connection,
-the budget spent, `Agent not found`) is retried at the next full sweep; any other failure,
-a timeout included, is recorded as `unconfirmed` and never resent. Dry-run sweeps look peers
-up too (read only; their connections refuse to send) and log `would-notify` with `host`.
+budget spent, `Agent not found`) is retried at the next full sweep; any other failure, a
+timeout included, is recorded `unconfirmed`. Dry-run sweeps look peers up read-only and log
+`would-notify` with `host`.
 
 Requirements and limits:
 
 - `ssh://<alias>` is the only accepted form (letters, digits, `.`, `_`, `-`; at most 8 unique
-  entries); a user, port, path or `daemonPort` makes the settings invalid. So the peer daemon
-  must listen on Paseo's default SSH daemon port (6767) on that host. The user, port and key
-  belong in the ssh config of the account the daemon runs as.
-- SSH to each alias must work without a prompt from the daemon's environment (`BatchMode=yes`).
-  No password is sent to a peer daemon, so one that requires a password refuses the connect.
-- Only agents the peer lists without `includeBackground` are found as project PMs, so a PM in a
-  background workspace on a peer is not seen (its parent id still is).
+  entries); a user, port, path or `daemonPort` makes the settings invalid, so the peer daemon
+  must listen on port 6767. User, port and key belong in the ssh config of the daemon's account.
+- SSH to each alias must work without a prompt (`BatchMode=yes`). No password is sent to a
+  peer daemon, so one that requires a password refuses the connect.
+- Project PMs are found only among agents the peer lists without `includeBackground`; a
+  parent id is still found.
 
-### Background workspaces
+### Background workspaces and cleanup listings
 
-Paseo hides background workspaces and their agents from listings unless the request
-sets `filter.includeBackground`. Every sweep sets it on its workspace and agent listings, as
-`orphan-project-sweeper` does.
-
-### Listings that only cleanup reads
-
-Cleanup also needs every agent with the archived ones (for activity and the owner) and the
-terminal list. Full sweeps read them in a separate listing, capped like the others at 50
-pages of 200 agents. If that listing or the terminal list fails or is incomplete, the sweep
-logs `cleanup-skipped` (also as `cleanupSkipped` in `sweep-done`) and runs only the worker
-path; cleanup waits for the next full sweep. An armed cleanup archive or report whose fresh
-re-read fails is skipped or deferred the same way. A failed workspace, live agent or project
-list still aborts the whole sweep. A daemon with more than 10,000 agents, archived ones
-included, skips cleanup at every full sweep until the cap is raised.
+Every sweep sets `filter.includeBackground` on its workspace and agent listings, as
+`orphan-project-sweeper` does. Full sweeps also list every agent with the archived ones
+(capped at 50 pages of 200) and the terminals. If that listing or the terminal list fails or
+is incomplete, the sweep logs `cleanup-skipped` (and `cleanupSkipped` in `sweep-done`) and
+runs only the worker path; an armed cleanup action whose fresh re-read fails is skipped or
+deferred the same way. A daemon with more than 10,000 agents, archived included, skips
+cleanup until the cap is raised. A failed workspace, live agent or project list still aborts
+the whole sweep.
 
 ### Arming
 
 Cleanup acts only when `armed` and `armWorkspaceCleanup` are both `true`. Otherwise every
 cleanup decision logs `would-archive` or `would-notify`, writes no state and sends nothing;
 with only `armed` on, these previews take no slot of `maxArchivesPerSweep`. An armed sweep
-re-reads live state and re-runs every gate just before each archive and before sending.
-`sweep-done` adds `cleanupMode`, `cleanup` (counts by action, `alreadyNotified` included)
-and `reports` (worktrees reported, or that would be).
+re-reads live state and re-runs every gate just before each archive and send. `sweep-done`
+adds `cleanupMode`, `cleanup` (counts by action, `alreadyNotified` included) and `reports`.
 
 ## Stale sweep
 
-Off by default (`staleSweep`). When on, every full sweep (the startup sweep and the backstop
-every `sweepIntervalMinutes`) also looks for stale items on this daemon and tells their PM, at
-most once a day:
+Off by default (`staleSweep`). When on, every full sweep also looks for stale items on this
+daemon and tells their PM, at most once a day:
 
-1. **Agents**: every live agent that is not a PM (no `role=pm` label and no standalone `PM` in
-   its title), not running or initializing, whose last activity is at least `staleAgentMinutes`
-   ago (default 4320, 3 days). Its activity is the newest of its `createdAt`, `updatedAt`,
-   `lastUserMessageAt` and `attentionTimestamp` and its newest delivered message (the receipts
-   of Activity above). A message delivered to a live agent also moves its `updatedAt`.
-2. **Workspaces**: every `worktree` workspace, and every workspace whose directory is under a
-   disposable root (`<PASEO_HOME>/worktrees`, `~/.cache/fleet-scratch`), with no live agent and
-   no activity for at least `staleWorkspaceMinutes`, dated as in workspace cleanup (Activity,
-   with a worktree's HEAD commit). A missing directory is left to Paseo.
+1. **Agents**: every live non-PM agent (no `role=pm` label, no standalone `PM` in its title),
+   not running or initializing, whose last activity is at least `staleAgentMinutes` ago
+   (default 4320). Activity is the newest of its `createdAt`, `updatedAt`,
+   `lastUserMessageAt`, `attentionTimestamp` and newest delivered message (see Activity).
+2. **Workspaces**: every `worktree` workspace, and every workspace under a disposable root
+   (`<PASEO_HOME>/worktrees`, `~/.cache/fleet-scratch`), with no live agent and no activity
+   for at least `staleWorkspaceMinutes`, dated as in Activity. A missing directory is left
+   to Paseo.
 
 Never flagged or archived: PMs; anything a `staleExclude` entry matches (an agent id, a
-workspace id, or a label as `key` with any value or `key=value`, for example `keep=1`; an agent
-also through its workspace's id or labels, a workspace also through the labels of any agent it
+workspace id, or a label as `key` or `key=value`, for example `keep=1`; an agent also
+through its workspace's id or labels, a workspace also through the labels of any agent it
 held); pinned workspaces and their agents; and anything labelled `noarchive`. `staleExclude`
-is the stale sweep's own: workspace cleanup still reports a kept worktree once, as before (with
-`staleSweep` on, inside the daily message).
+does not affect workspace cleanup's kept-worktree report.
 
-**The PM.** Up the item's parent labels, `paseo.parent-agent-id` (full id) or `parent` (id
-prefix), for a workspace those of its last agent, through live agents to the first PM, at most
-8 links up, so a sub-worker goes to its worker's PM. Else the one live `role=pm` agent whose
-`project` label matches, case-insensitively, the item's `project` label or workspace project
-name. With none here, the `peerHosts` daemons are asked as for workspace cleanup (the first
-parent not live here, then project PMs), except that a parent found on a peer that is not a PM is
-never told: it is climbed there, up its own parent labels, to the first PM, and with none above it
-the project names met on the way are matched to a peer's `role=pm` agent. With none or several,
-the item is logged `stale-unrouted` once a day and nothing is sent, unless `staleArchiveAll` is on
-(below): then, while `armed` is true, it is archived once every gate passes.
+**The PM.** Up the item's parent labels, `paseo.parent-agent-id` or `parent` (for a
+workspace, those of its last agent), through live agents to the first PM, at most 8 links,
+so a sub-worker goes to its worker's PM. Else the one live `role=pm` agent matching the
+item's `project` label or workspace project name. With none here, the `peerHosts` daemons
+are asked as in PMs on other daemons, except that a parent found on a peer that is not a PM
+is climbed there to the first PM, and with none above it the project names met on the way
+are matched to a peer's `role=pm` agent. With none or several, the item is logged
+`stale-unrouted` once a day and nothing is sent, unless `staleArchiveAll` is on (below).
 
-**Messages.** Each PM gets one message listing its items (at most 50): name and id, status or
-kind, where, branch, idle time and, when known, why it cannot be archived now
+**Messages.** Each PM gets one message listing its items (at most 50): name and id, status
+or kind, where, branch, idle time and, when known, why it cannot be archived now
 (`heartbeat(<id>)`, `live-children(n)`, `auto-resume(<record>)`, `not-merged(...)`, ...).
-While `staleSweep` is on, workspace cleanup sends no report of its own: the worktrees it keeps
-and would report (with `armWorkspaceCleanup` and `armed` on) go into the same message, first,
-with path, branch, last commit, age and why kept, at most 20, each still reported once
-(logged `notified` and recorded in `notified.json` as in Messages to the PM). They go to the PM found as
-above, not to a parent that is not a PM. A kept worktree that turns up after the PM's message of
-the day waits for the next one (`notify-deferred`). It goes out as `paseo send`
-sends, with `steer` and its own `messageId`, only while the PM is idle or closed, unarchived and
-without a pending permission; otherwise `stale-flag-deferred`, and the next full sweep tries
-again. A PM messaged within the last 23 hours gets nothing more, and an item listed within the
-last 23 hours is not listed again, so each PM hears at most once a day from this daemon and each
-item is listed at most once a day (23 hours, so the hourly backstop keeps a daily rhythm despite
-timer drift). The hold is per daemon: a PM that several daemons reach (their own items, routed
-over `peerHosts`) gets at most one message a day from each, so at most as many as there are
-daemons; that was accepted over coordinating daemons. That
-record is `<PASEO_HOME>/plugin-state/merged-worker-archiver/stale-flags.json` (owner-only),
-written `sending` before a message goes out, so an attempt that may have delivered is not
-repeated that day. An unreadable file stops the stale sweep (`stale-skipped`) until it is fixed
-or removed.
+Workspace cleanup's kept worktrees (with `armWorkspaceCleanup` and `armed` on) go first in
+the same message, at most 20, each still reported once (`notified`, `notified.json`), to the
+PM found as above. One that turns up after the day's message waits for the next
+(`notify-deferred`). Sends follow the send rule (deferral logged `stale-flag-deferred`). A PM
+messaged within the last 23 hours gets nothing more, and an item listed within 23 hours is
+not listed again (23, so the hourly backstop keeps a daily rhythm despite drift). The hold is
+per daemon: a PM several daemons reach gets at most one message a day from each. The record
+is `<PASEO_HOME>/plugin-state/merged-worker-archiver/stale-flags.json` (owner-only), written
+`sending` before a message goes out, so a possibly delivered attempt is not repeated that
+day. An unreadable file stops the stale sweep (`stale-skipped`) until fixed or removed.
 
-**Opt-in archive.** Items whose PM is listed in `staleArchivePms` (agent ids), or whose project
-is listed in `staleArchiveProjects` (names, case-insensitive), are archived instead of flagged,
-but only while `armed` is true; with `armed` off they are flagged and `would-archive` is logged.
-`staleArchiveAll` (default false) opts in every stale item the same way, so new projects need no
-listing, and also covers items with no PM to tell (no routable PM and no project label), which
-would otherwise be logged `stale-unrouted` every day. It is one switch: there is no `*` project
-match. An item archived only because of it logs `stale-archived` (or `would-archive` with `armed`
-off) with `reason` `staleArchiveAll`; an unrouted one has no `owner`, and nobody is told. With
-`armed` off nothing is archived: items are flagged, or logged `stale-unrouted`, as before. Every gate, and `staleExclude`, pinned and `noarchive`, is re-checked on a fresh read right
-before the archive:
+**Opt-in archive.** Items whose PM is in `staleArchivePms` (agent ids) or whose project is
+in `staleArchiveProjects` (names, case-insensitive) are archived instead of flagged, only
+while `armed` is true; otherwise they are flagged and `would-archive` is logged.
+`staleArchiveAll` (default false) opts in every stale item, including unrouted ones; there
+is no `*` project match. An item archived only because of it logs `stale-archived` (or
+`would-archive`) with `reason` `staleArchiveAll`, and an unrouted one has no `owner` and
+nobody is told. Every gate, `staleExclude`, pinned and `noarchive` is re-checked on a fresh
+read right before the archive:
 
 - An agent must be idle or closed, with no pending permission, no attention other than
-  `finished`, no live agent naming it as parent, and no active or paused heartbeat (a schedule
-  whose target is the agent; a schedule list that cannot be read blocks it). It must not be
-  owed a resume by usage-limit-auto-resume: a record in
-  `<PASEO_HOME>/plugin-state/usage-limit-auto-resume/state.json` for the agent that is not
-  settled (`detected`, `parked`, `resuming`, `verifying`, `uncertain`; only `done`,
-  `exhausted`, `opted-out` and `superseded` are settled) blocks it as `auto-resume(<record>)`,
-  since archiving would supersede a resume that may be days away (a weekly quota hold). A file
-  that cannot be read or parsed, or a missing file while that plugin is installed (the daemon's
-  plugin list, which must be readable), blocks every agent archive
-  (`auto-resume-unknown(...)`); a missing file without the plugin means no records. It is
-  archived alone (`paseo archive <id>`): no workspace and no file is touched.
-- A workspace must get an archive decision from the worker path or workspace cleanup: a merged,
-  clean, stale agentless worktree (`stale-agentless-merged(...)`, which removes a Paseo-owned
-  worktree's directory and keeps the branch) or an empty disposable workspace
-  (`empty-disposable-workspace`, the record only). An unmerged or dirty worktree is flagged with
-  the reason, never archived. `armWorkspaceCleanup` is not needed here.
+  `finished`, no live agent naming it as parent, no active or paused heartbeat (an unreadable
+  schedule list blocks), and no unsettled usage-limit-auto-resume record
+  (`auto-resume(<record>)`, `auto-resume-unknown(...)`, as in Skip rules). It is archived
+  alone (`paseo archive <id>`); no workspace or file is touched.
+- A workspace must get an archive decision from the worker path or workspace cleanup: a
+  merged, clean, stale agentless worktree (`stale-agentless-merged(...)`) or an empty
+  disposable workspace (`empty-disposable-workspace`). An unmerged or dirty worktree is
+  flagged with the reason, never archived. `armWorkspaceCleanup` is not needed here.
 
-Opt-in archives log `stale-archived` and take at most `maxArchivesPerSweep` per sweep (counted
-apart from the worker pass). The rest log `stale-deferred`, wait for the next full sweep, and
-meanwhile take their normal path: flagged to their PM, or logged `stale-unrouted`, with
-`maxArchivesPerSweep=N reached` as the reason. An item that fails a gate is flagged with the
-reason (`stale-archive-skipped`), or, when unrouted, logged `stale-unrouted` with it.
+Opt-in archives log `stale-archived` and take at most `maxArchivesPerSweep` per sweep
+(counted apart from the worker pass). The rest log `stale-deferred` and are flagged or logged
+`stale-unrouted` with `maxArchivesPerSweep=N reached`. An item that fails a gate is flagged
+with the reason (`stale-archive-skipped`) or logged `stale-unrouted`. A failed stale archive
+(refused re-check, error or throw) backs off as in Back-off below, logged `stale-backoff`;
+previews and unarmed sweeps do not count toward it, and an item no longer stale is forgotten.
 
-A stale archive that fails (the fresh re-check refused it, or the archive call errored or threw)
-backs off as in Back-off after a failed archive call: it sits out the next 1, 2, 4, then at most
-8 armed sweeps that would try it, logged `stale-backoff` and flagged or logged unrouted with the
-back-off as the reason, and takes no slot, so items behind it are not starved. When the back-off
-ends it is retried; an archive clears it. Back-offs live in memory, and an item that is no longer
-stale is forgotten. Previews and sweeps with `armed` off do not count toward it.
-
-**Hosts.** Only this daemon's agents and workspaces are swept, by its own plugin and settings.
-Peer daemons are only asked who the PM is, so a host where the plugin or `staleSweep` is off is
-never swept.
+**Hosts.** Only this daemon's agents and workspaces are swept, by its own settings; peers are
+only asked who the PM is.
 
 `sweep-done` adds `stale` with counts (`stale`, `flagged`, `messages`, `held`, `deferred`,
-`archived`, `backoff`, `unrouted`, `excluded`, `kept`, `pm`, and for kept worktrees `reported`,
-`reportDeferred`, `reportUnrouted`, `wouldNotify`, ...); its `reports` lists the kept worktrees
-reported.
+`archived`, `backoff`, `unrouted`, `excluded`, `kept`, `pm`, and for kept worktrees
+`reported`, `reportDeferred`, `reportUnrouted`, `wouldNotify`, ...); its `reports` lists the
+kept worktrees reported.
 
 ## Triggers
 
-Paseo has no git, PR, or merge hook. A merge is almost always performed by a PM or
-worker agent inside a Paseo turn, so the turn end is the trigger.
+Paseo has no git, PR, or merge hook; a merge is almost always made inside a Paseo turn, so
+the turn end is the trigger.
 
-- **`agent.turn_ended` (any agent, PMs in `local_checkout` workspaces included)**: the
-  hook only records the agent's workspace id and returns (hooks abort after 30 s).
-  After `eventDebounceSeconds` (default 3 s) of quiet, capped at 4x that under a
-  steady stream, one scoped evaluation runs for every recorded workspace plus every
-  worktree workspace with the same `projectId` **or** the same git common dir
-  (`git rev-parse --git-common-dir`, realpath-normalized, cached per directory), so
-  worktrees of one repository are covered even when project ids differ. A worker's
-  own workspace is always included. A burst of turns becomes one evaluation.
-- **Follow-ups**: when an event evaluation finds a worktree that passed every gate
-  except "merged" (clean, agents idle, own commits, `not-merged(...)`), that project
-  is re-checked after `followUpDelaysSeconds` (default 15 s, 60 s, 180 s; at most 5
-  entries, at most 64 workspaces pending). This covers merges that land a moment after
-  the turn (merge queue, `gh pr merge` returning before the ref updates). The chain
-  stops once the worktree stops being a pending merge, and a new event restarts it.
-- **Periodic sweep**: a slow backstop for merges made outside Paseo (GitHub web UI).
-  First full sweep 30 s after load, then every `sweepIntervalMinutes` (default 60).
-- **`agent.archived`**: also schedules its workspace for a debounced evaluation, so
-  an empty disposable workspace need not wait for the periodic sweep.
+- **`agent.turn_ended`** (any agent, PMs in `local_checkout` workspaces included): the hook
+  only records the agent's workspace id and returns (hooks abort after 30 s). After
+  `eventDebounceSeconds` (default 3 s) of quiet, capped at 4x that under a steady stream,
+  one scoped evaluation runs for every recorded workspace plus every worktree workspace with
+  the same `projectId` **or** the same git common dir (`git rev-parse --git-common-dir`,
+  realpath-normalized, cached per directory).
+- **Follow-ups**: a worktree that passed every gate except "merged" (`not-merged(...)`) gets
+  its project re-checked after `followUpDelaysSeconds` (default 15 s, 60 s, 180 s; at most
+  5 entries, at most 64 workspaces pending), for merges that land just after the turn
+  (merge queue, `gh pr merge` returning before the ref updates). The chain stops once the
+  worktree is no longer a pending merge, and a new event restarts it.
+- **Periodic sweep**: backstop for merges made outside Paseo. First full sweep 30 s after
+  load, then every `sweepIntervalMinutes` (default 60).
+- **`agent.archived`**: schedules its workspace for a debounced evaluation.
 
-Each finished turn logs one `event` line; each evaluation ends with `sweep-done`
-including `trigger`, `pendingMerge`, and `latencyMs` (first coalesced event to end of
-evaluation). Permission and attention state are read from agent snapshots at decision
-time. Sweeps are serialized.
+Each finished turn logs one `event` line; each evaluation ends with `sweep-done` including
+`trigger`, `pendingMerge`, and `latencyMs` (first coalesced event to end of evaluation).
+Permission and attention state are read from agent snapshots at decision time. Sweeps are
+serialized.
 
 ## Per-sweep cap
 
-One sweep makes at most `maxArchivesPerSweep` archive attempts (default 5). The cap
-counts attempts, not successes: an armed archive call that fails still uses a slot, a
-workspace that fails the armed fresh-state re-check does not, and deferred workspaces
-are not re-checked. Dry-run applies the same cap, order, and back-offs to
-`would-archive`, so it shows what an armed sweep would attempt from the same state. That
-is not a promise about the next armed sweep: see the dry-run note under Back-off.
-
-Further eligible workspaces are not archived: each gets a `deferred` log line, and they
-wait for a later sweep (the next turn end in their project or repository, or the
-periodic sweep), where they go first (see Fair order). In `sweep-done`, `counts.archive`
-covers only the candidates within the cap and `counts.deferred` the rest (also reported
-as `deferred`), so a sweep that finds 7 eligible workspaces reports
-`"archive":5,"deferred":2`.
+One sweep makes at most `maxArchivesPerSweep` archive attempts (default 5). An armed call
+that fails still uses a slot; a workspace that fails the armed re-check does not, and deferred workspaces are not
+freshly re-checked in that sweep. Dry-run
+applies the same cap, order, and back-offs to `would-archive`. Further eligible workspaces
+get a `deferred` line and go first in a later sweep. In `sweep-done`, `counts.archive`
+covers the candidates within the cap and `counts.deferred` the rest (also `deferred`), for
+example `"archive":5,"deferred":2`.
 
 ### Fair order across sweeps
 
-Paseo lists workspaces in a stable order, so without help the same first candidates
-would get the slots every sweep. Each sweep therefore visits first the workspaces that
-an earlier armed sweep deferred at the cap, longest-waiting first, and then the rest in
-listing order. A deferred workspace keeps its place in that queue until it is attempted
-or stops being eligible, so in full sweeps (the startup and periodic sweeps) a
-workspace that stays eligible is attempted within about (eligible candidates /
-`maxArchivesPerSweep`) sweeps, however many candidates ahead of it keep failing. The
-bound counts full sweeps of candidates that stay eligible throughout: a scoped sweep
-(after a turn end, or a follow-up) attempts only the workspaces in its scope. With the
-cap at 5 and 45 workspaces whose archive call always fails listed ahead of 1 healthy
-one, all of them eligible throughout, the healthy one is attempted by the 10th armed
-full sweep.
-
-The queue lives in memory only (a plugin reload or daemon restart clears it), and every
-full sweep, armed or dry-run, drops workspaces that are no longer listed. Apart from
-that, only armed sweeps change it: a dry-run sweep visits candidates in queue order but
-attempts nothing, so listed workspaces keep their places.
+Each sweep visits first the workspaces an earlier armed sweep deferred at the cap,
+longest-waiting first, then the rest in listing order. A deferred workspace keeps its place
+until attempted or no longer eligible, so in full sweeps a workspace that stays eligible is
+attempted within about (eligible candidates / `maxArchivesPerSweep`) sweeps. Scoped sweeps
+attempt only their scope. The queue lives in memory; every full sweep drops workspaces no
+longer listed, and only armed sweeps otherwise change it.
 
 ### Back-off after a failed archive call
 
-A workspace whose armed archive call fails (an error result or a thrown call) backs off,
-so a call that keeps failing does not keep spending slots. It sits out the next sweeps
-that find it eligible: 1 after its first consecutive failure, then 2, 4, and at most 8.
-While it sits out it gets a `backoff` log line and takes no slot, so other candidates
-get the slots. When its back-off ends it is retried like any other candidate; nothing
-is given up permanently. A successful archive clears the back-off. Back-offs live in
-memory only, so a plugin reload or daemon restart clears them, and a full sweep forgets
-workspaces that are no longer listed. Only sweeps that find the workspace eligible
-count toward its back-off.
-
-Dry-run sweeps count too: a dry-run sweep that finds a backed-off workspace eligible
-advances its back-off exactly as an armed sweep would. A dry-run preview therefore does
-not promise to match the next armed sweep. A back-off that the preview shows as active
-may have ended by the time an armed sweep runs, and that sweep then retries the
-workspace.
-
-In `sweep-done`, backed-off workspaces are counted as `counts.backoff` (also reported as
-`backoff`), never as `archive` or `deferred`. With 5 workspaces whose archive call
-always fails ahead of 2 good ones, the first armed sweep reports 5 `archive-failed` and
-`"archive":5,"deferred":2`. The next archives the deferred good two first and reports
-`"archive":2,"backoff":5`, and the one after retries the failing five.
+A workspace whose armed archive call fails (error result or throw) sits out the next sweeps
+that find it eligible: 1 after its first consecutive failure, then 2, 4, and at most 8, with
+a `backoff` line and no slot taken. It is then retried; a successful archive clears it.
+Back-offs live in memory, and a full sweep forgets workspaces no longer listed. Dry-run
+sweeps that find it eligible advance the back-off too, so a preview may not match the next
+armed sweep. In `sweep-done`, backed-off workspaces count as `counts.backoff` (also
+`backoff`), never as `archive` or `deferred`.
 
 ## Settings
 
@@ -600,31 +467,31 @@ Host-scoped plugin settings (`server.registerSettings`), stored by Paseo at
 `<PASEO_HOME>/plugin-settings/merged-worker-archiver/config.json` as
 `{"version":1,"values":{...}}`. Missing file means all defaults. Unknown keys or wrong
 types make the settings invalid, which stops all evaluation. Settings are re-read before
-every sweep, so edits take effect on the next sweep without a reload.
+every sweep, so edits take effect without a reload.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `armed` | `false` | `true` allows real archiving. Anything else is dry-run. |
-| `maxArchivesPerSweep` | `5` | Archive attempts per sweep; the rest are deferred to the next sweep. An armed archive call that fails still uses a slot, then that workspace backs off for a few sweeps (see Back-off), and dry-run previews the same number as `would-archive`. A whole number of at least 1; anything else makes the settings invalid. |
+| `maxArchivesPerSweep` | `5` | Archive attempts per sweep (see Per-sweep cap). A whole number of at least 1; anything else makes the settings invalid. |
 | `sweepIntervalMinutes` | `60` | Backstop full-sweep interval (1 to 1440). |
-| `graceMinutes` | `0` | Minimum idle time before archiving (0 to 10080). A merged branch means the PM already integrated the work; raise it to keep an inspection window. |
+| `graceMinutes` | `0` | Minimum idle time before archiving (0 to 10080). Raise it to keep an inspection window. |
 | `eventDebounceSeconds` | `3` | Coalescing window after a turn ends (0 to 60). |
 | `followUpDelaysSeconds` | `[15, 60, 180]` | Re-checks for clean, idle, not-yet-merged worktrees (at most 5, each 1 to 3600). |
 | `commandTimeoutSeconds` | `15` | Per git/gh call timeout. |
 | `useGh` | `true` | Use `gh pr view` for squash-merged PRs. |
 | `allowAgentlessWorkspaces` | `false` | Also consider worktrees with no live agents. |
 | `logNonCandidates` | `false` | Also log a line for non-worktree workspaces. |
-| `armWorkspaceCleanup` | `false` | `true` (with `armed`) lets workspace cleanup archive and message PMs. Anything else is dry-run for that path. |
-| `staleWorkspaceMinutes` | `4320` | Idle time before workspace cleanup acts (1 to 525600; 3 days by default). |
-| `archiveFinishedWithoutPr` | `true` | Also archive finished worktrees with no open PR that are clean and pushed (see Finished workspaces without a PR). |
-| `finishedGraceMinutes` | `120` | Minimum idle time for that path (0 to 10080). The larger of this and `graceMinutes` applies. |
-| `peerHosts` | `[]` | Other Paseo daemons, as `ssh://<alias>` (at most 8, unique), asked in order for the PM of a kept agentless worktree when this daemon has none (see PMs on other daemons). Any other form makes the settings invalid. Empty asks only this daemon. |
-| `staleSweep` | `false` | `true` turns on the stale sweep (see Stale sweep): flags to each PM once a day, in one message per daemon that also carries workspace cleanup's kept-worktree report. Flagging needs only this switch. |
-| `staleAgentMinutes` | `4320` | Idle time before the stale sweep flags a non-PM agent (1 to 525600; 3 days by default). Workspaces use `staleWorkspaceMinutes`. |
-| `staleArchivePms` | `[]` | PM agent ids whose stale items are archived instead of flagged, while `armed` and every gate passes (at most 100). |
-| `staleArchiveProjects` | `[]` | Project names (case-insensitive) whose stale items are archived instead of flagged, likewise (at most 100). |
-| `staleArchiveAll` | `false` | `true` opts every stale item in to that archive, including items with no PM to route to, with the same `armed` switch, gates and re-check. |
-| `staleExclude` | `[]` | Never flagged or archived by the stale sweep: agent ids, workspace ids, or labels as `key` or `key=value`, for example `keep=1` (at most 200, non-empty). |
+| `armWorkspaceCleanup` | `false` | `true` (with `armed`) lets workspace cleanup archive and message PMs. |
+| `staleWorkspaceMinutes` | `4320` | Idle time before workspace cleanup acts (1 to 525600). |
+| `archiveFinishedWithoutPr` | `true` | Also archive finished, clean, pushed worktrees with no open PR. |
+| `finishedGraceMinutes` | `120` | Minimum idle time for that path (0 to 10080); the larger of this and `graceMinutes` applies. |
+| `peerHosts` | `[]` | Other Paseo daemons, as `ssh://<alias>` (at most 8, unique), asked in order for a PM this daemon lacks. Any other form makes the settings invalid. |
+| `staleSweep` | `false` | `true` turns on the stale sweep (flagging needs only this switch). |
+| `staleAgentMinutes` | `4320` | Idle time before the stale sweep flags a non-PM agent (1 to 525600). |
+| `staleArchivePms` | `[]` | PM agent ids whose stale items are archived instead of flagged (at most 100). |
+| `staleArchiveProjects` | `[]` | Project names (case-insensitive), likewise (at most 100). |
+| `staleArchiveAll` | `false` | `true` opts every stale item in to that archive, unrouted ones included. |
+| `staleExclude` | `[]` | Agent ids, workspace ids, or labels as `key` or `key=value` the stale sweep never touches (at most 200, non-empty). |
 
 ## Logs
 
@@ -634,151 +501,38 @@ One stdout line per decision (`paseo plugin logs merged-worker-archiver`):
 [merged-worker-archiver] {"action":"would-archive","workspaceId":"wks_...","name":"...","agentIds":["..."],"branch":"opc/x","base":"main","reason":"merged-ancestry(refs/remotes/origin/main)"}
 ```
 
-`action` is `skip`, `would-archive` (dry-run), `archived`, `archive-failed` (its reason
-ends with the back-off length), `backoff` (sitting out after a failed archive call; the
-reason shows which back-off sweep this is), or `deferred` (over the per-sweep cap).
-Workspace cleanup lines also carry `cleanup` and `lastActivityAt`, and add the actions
-`would-notify`, `notified`, `notify-deferred`, `notify-unrouted` and `notify-failed`, with
-`path`, `lastCommit` and `owner` (and `host` for a PM on a peer daemon). A peer daemon that
-fails logs `notify-peer-error` with `peer`, `query` (`connect`, `parent`, `list`, `state` or
-`send`) and `error`. The stale sweep logs `stale-flagged`, `stale-flag-deferred`,
+`action` is `skip`, `would-archive` (dry-run), `archived`, `archive-failed` (its reason ends
+with the back-off length), `backoff` (the reason shows which back-off sweep this is), or
+`deferred` (over the cap). Workspace cleanup lines also carry `cleanup` and
+`lastActivityAt`, and add `would-notify`, `notified`, `notify-deferred`, `notify-unrouted`
+and `notify-failed`, with `path`, `lastCommit` and `owner` (and `host` for a peer PM), plus
+`notify-peer-error`. The stale sweep logs `stale-flagged`, `stale-flag-deferred`,
 `stale-flag-failed`, `stale-unrouted`, `stale-archived`, `stale-archive-skipped`,
-`stale-backoff`, `stale-deferred`, and in a preview `would-flag` and `would-archive`, each with `kind` (`agent` or
-`workspace`), `id`, `name`, `where`, `status`, `idle`, `owner` and, when known, `blocked`; it logs
-`stale-skipped` when it cannot run. Each
-evaluation ends with a `sweep-done` summary; failures log `sweep-aborted`. Non-worktree
-workspaces are counted in the summary only unless `logNonCandidates` is on.
+`stale-backoff`, `stale-deferred`, and in a preview `would-flag`, `would-flag-unrouted` and
+`would-archive`, each with `kind` (`agent` or `workspace`), `id`, `name`, `where`, `status`,
+`idle`, `owner` and, when known, `blocked`; it logs `stale-skipped` when it cannot run. Each
+evaluation ends with `sweep-done`; failures log `sweep-aborted`; invalid settings log
+`config-invalid`. Non-worktree workspaces are only counted unless `logNonCandidates` is on.
 
 ## Daemon access and version bound
 
-`PluginServerContext` has no Paseo SDK handle, so every sweep opens its own
-short-lived connection, as the Paseo CLI does, with the typed `DaemonClient` from
-`@getpaseo/client/internal/daemon-client` (an internal export, which is why the version is
-pinned exactly), and closes it when the sweep ends. The daemon is resolved at each sweep
-from `PASEO_HOST`, then `$PASEO_HOME/paseo.pid`, then `127.0.0.1:6767` only for the
-default home. A non-default home without valid listen metadata refuses to connect, and
-that sweep logs `sweep-aborted`.
+`PluginServerContext` has no Paseo SDK handle, so every sweep opens its own short-lived
+connection with the typed `DaemonClient` from `@getpaseo/client/internal/daemon-client` (an
+internal export, hence the exact pin) and closes it at the end. The daemon is resolved at
+each sweep from an explicit `PASEO_HOST`, then the `$PASEO_HOME/paseo.pid` listen metadata,
+then `127.0.0.1:6767` only for an unset home or `~/.paseo`. A non-default home without valid
+listen metadata, or an invalid explicit host, refuses to connect, and that sweep logs
+`sweep-aborted`.
 
 `paseo-plugin.json` pins `"paseo": ">=0.15.0 <0.16.0"` and `package.json` pins
-`@getpaseo/client`, `@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.15.3`, the
-same pins as `orphan-project-sweeper`. The plugin depends on Paseo's archive semantics
-(directory removal, branch kept), the worktree metadata location
-(`<git-dir>/paseo/worktree.json`), and snapshot field names. Re-check before admitting 0.16.
+`@getpaseo/client`, `@getpaseo/plugin`, and `@getpaseo/protocol` to exactly `0.15.3`, as
+`orphan-project-sweeper` does. The plugin depends on Paseo's archive semantics (directory
+removed, branch kept), `<git-dir>/paseo/worktree.json`, and snapshot field names. Re-check
+before admitting 0.16.
 
-Workspace cleanup (0.4.0) was checked on disposable Paseo 0.13.0 and 0.11.1 daemons, each with
-its own home and port, a fake ACP provider, scratch git repositories, and
-`staleWorkspaceMinutes` 4. Dry-run, and then `armed` alone, changed nothing: the same
-workspaces, projects, files, branches and PM timeline, and no state file. With both
-switches on, the first sweep archived the stale project checkout and local workspace
-records (and on 0.13.0 a background one) with their files intact and every project still
-listed, archived the merged clean agentless worktree, and kept the unmerged and the dirty
-(untracked file) agentless worktrees (and on 0.13.0 a background unmerged one). Their PM
-got one message, routed by the parent label for one and by `role=pm` plus `project` for
-the others. Workspaces with an agent, a running script, a terminal or recent activity were
-kept. A plugin reload and a daemon restart each ran another sweep that sent nothing more.
-A worktree whose project has no PM, and one whose project has two, logged
-`notify-unrouted` and nothing was recorded for them. A second round on both versions
-checked the activity and send rules. An agent archived just before the sweep left its
-workspace stale, and the record was archived with its files intact. A commit made just
-before the sweep kept a worktree `recent`. A worktree whose HEAD commit was its newest
-activity was reported with that age. A report to a PM in a running turn logged
-`notify-deferred` (`PM running`) and was sent at the next sweep, once the PM was idle.
-A third round checked the receipts on both versions. Each `paseo send` added one
-`completed` receipt for the recipient, with the send time as its file time. On 0.13.0 a
-send from another agent (`PASEO_AGENT_ID` set) left `lastUserMessageAt` unchanged and
-still wrote a receipt. A workspace whose agent was archived more than 4 minutes after its
-last input stayed `recent`, dated by the archive, and became `would-archive` 4 minutes
-after it. With the receipt directory made
-unreadable, the sweep showed `receiptsUnreadable` and dated the same workspaces by their
-archive.
-
-Peer routing and agentless cleanliness (0.5.0) were checked on a pair of disposable Paseo 0.13.0
-daemons on macOS, each with its own home and port and a fake ACP provider. The plugin ran on
-one; the other held the peer agents. The plugin's tunnel and client were used unchanged. Only
-`ssh` on the plugin daemon's `PATH` was a stand-in that bridged two fixture aliases to the
-peer's port, hung on a third, failed a fourth like an unknown host, and refused every other
-alias. With `peerHosts` empty, the two worktrees whose owners were on the peer logged
-`notify-unrouted` and no ssh call was made, as in 0.4.0. In dry-run with the failing alias
-listed first, lookups ran and nothing was sent or written. Armed, the local PM got its one
-report, the worktree whose parent was on the peer was reported to that parent (recorded with
-`host`; the peer kept a receipt for its `messageId`), and the project-PM worktree stayed
-`notify-unrouted` with `peerErrors`; the failing peer was asked once in the sweep. With only
-the working peer listed, the project worktree went to the peer's `role=pm` agent (`project`
-label `peerproj` against the worker's `PeerProj`), and a further sweep sent nothing. Reports
-to a peer PM in a running turn and to a local PM in status `error` logged `notify-deferred`
-(`PM running`, `PM error`) and were sent at the next sweep once each PM was idle. Two aliases
-for the same peer made one PM ambiguous (`several owners on peers`). With the hanging alias
-first and `commandTimeoutSeconds` 3, its connect failed after 3 s (`notify-peer-error`, query
-`connect`), the project worktrees stayed `notify-unrouted` (`owner unknown on peers`), and no
-stand-in process was left. An invalid `peerHosts` entry logged `config-invalid`. The same run
-archived a merged agentless worktree whose only ignored files were two `__pycache__`
-directories (its branch was kept), reported an unmerged one as `not-merged(...)` instead of
-`dirty(ignored=2)`, and reported a merged one with an ignored `.env` as `dirty(ignored=1)`.
-
-On Windows (Win32-OpenSSH 10.0p2, node 25) a disposable Paseo 0.13.0 daemon with its own home and
-port ran the plugin from the same source, started from an ssh session with no window. In
-dry-run with the real `ssh.exe` from `PATH`, one fixture worktree was routed to a real project
-PM on a Linux peer and another to its real parent on a second Windows peer, both read only; an
-unknown alias logged `notify-peer-error` with ssh's own `Could not resolve hostname` message
-(Win32-OpenSSH prints it and does not exit, which the watchdog handles). Armed, with a stand-in
-`ssh.exe` that served only one fixture alias, bridged to the macOS peer above, the project
-worktree was reported to the peer's PM, recorded with `host`, and not sent again by the next
-sweep. No tunnel `ssh` or watchdog process remained after any sweep, and the PC's own daemon
-was only observed.
-
-The stale sweep (0.6.0) was checked on a disposable 0.15.0 daemon on Linux with its own home,
-port and `HOME`, relay, dictation and voice off, real Pi on a fake local model, scratch git
-repositories, `sweepIntervalMinutes` 1 and both stale windows at 2 minutes. Seeded: three PMs
-(`role=pm`, projects alpha, beta, gamma); for alpha a plain worker, a worker labelled `keep=1`, a
-worker with a heartbeat, and agentless workspaces: a merged worktree, an unmerged one, one listed
-by id in `staleExclude`, and a fleet-scratch directory; for beta a worker, its sub-worker (parent
-label naming the worker) and a merged agentless worktree; and a worker with no PM. `npm run
-dry-run -- --stale` logged 8 `would-flag` lines, one `would-flag-unrouted` and 2 `would-notify`
-(workspace cleanup's, unarmed), and wrote nothing.
-Flag only: the alpha PM got one message listing its 5 items and the beta PM one listing its 3 (the
-sub-worker reached the beta PM up the parent labels), the gamma PM nothing, the PM-less worker
-was logged `stale-unrouted`, and the next sweep sent nothing (`held` 8). With `armed` and the
-alpha PM in `staleArchivePms` (and the flag record removed, as on a new day), the stale sweep
-archived the plain worker and the merged worktree (its directory removed, its branch kept), the
-worker path archived the scratch record (`empty-disposable-workspace`, its folder kept), and the
-alpha PM was told about the other two with `heartbeat(<id>)` and `not-merged(...)`, while every
-beta item was only flagged. With `staleArchiveProjects` `["Beta"]` added, the sub-worker and the
-beta worktree were archived, the beta worker was flagged with `live-children(1)` and archived at
-the next sweep, once its child was gone. In every phase the three PMs, the `keep=1` worker and the
-excluded worktree stayed live and untouched, and the heartbeat stayed active.
-
-The daily message, peer routing and the resume gate were checked on two such daemons, A and B,
-with both windows at 1 minute. A's sweeps ran the plugin's `Sweeper` from a script whose peer
-connection maps `ssh://peerb` to B's loopback port (the ssh path would reach the host's live
-daemon); A listed usage-limit-auto-resume as an installed, disabled plugin. On B (`armed`,
-`armWorkspaceCleanup`, `staleSweep`) the alpha PM got one message holding the report for an
-agentless unmerged worktree and its stale worker, and the next sweeps sent nothing. A worktree
-kept after that logged `notify-deferred` at the next two sweeps and went out, reported once, in
-the next day's single message (flag record removed). From A, the PM on B got one message for A's
-worker and for A's sub-worker of the B worker (climbed on B to its PM), so two that day, one per
-daemon; a sub-worker of a PM-less B worker was logged `stale-unrouted` (`parent ... on
-ssh://peerb is not a PM and has no PM above it there`) and that worker got nothing. With
-`staleArchiveProjects` naming a project on A, its worker stayed live while a `parked`
-usage-limit-auto-resume record named it (`auto-resume(<record>)`), with that state file missing
-(`auto-resume-unknown(installed, state file missing)`) and with it unreadable, and was archived
-once its only record was `done`. The ssh transport itself was not part of this check.
-
-The worker-path gates (0.6.1) were checked on such a daemon, with usage-limit-auto-resume listed as
-installed and disabled, `sweepIntervalMinutes` 1, and three merged worktrees, each with a live idle
-worker: a control, one whose worker had a heartbeat, and one whose worker had a `parked` resume
-record. With 0.6.0 the first armed sweep archived all three, and Paseo marked the heartbeat
-`completed`. With 0.6.1 the dry run and the armed sweeps archived only the control. The other two
-logged `heartbeat(<id>) on agent <id>; else archivable: merged-ancestry(...)` and
-`auto-resume(<record>) on agent <id>; ...`, and the heartbeat stayed `active`. The worktree stayed
-while the state file was unreadable (`auto-resume-unknown(state unreadable: ...)`) and while it was
-missing (`auto-resume-unknown(installed, state file missing)`). Once the heartbeat was deleted and
-the record was `done`, the next sweep archived both. In a second run, a plain schedule targeting
-the worker (`paseo schedule create --target <agent>`) blocked it the same way while paused, and
-the next sweep after its deletion archived it.
-
-Paseo compiles the plugin from source with esbuild and bundles `@getpaseo/client`
-(with `@getpaseo/protocol`), about 8.4 MB, so `npm install` must have run here before
-install or reload. Loading takes about 10 s.
+Paseo compiles the plugin from source with esbuild and bundles `@getpaseo/client` (with
+`@getpaseo/protocol`), about 8.4 MB, so `npm install` must have run here before install or
+reload. Loading takes about 10 s.
 
 ## Develop and verify
 
@@ -791,7 +545,7 @@ npm run dry-run -- --cleanup-only --config <settings.json>   # workspace cleanup
 npm run dry-run -- --stale --config <settings.json>          # stale sweep preview (as if staleSweep were on)
 ```
 
-`scripts/dry-run.ts` sweeps with `armed: false`, `armWorkspaceCleanup: false` and `forceDryRun: true`, so every decision returns at the `would-archive` or `would-notify` (or, past the cap, `deferred`) log line before an archive call or a message is reached. As a second guard, the client it passes refuses to archive (workspaces and agents) or send, and its state stores refuse to write. It reads the notify and stale-flag state of `PASEO_HOME` (default `~/.paseo`), so already reported worktrees show as skipped and items flagged within a day are held. With `--stale` the stale sweep runs as a preview (`would-flag`, `would-archive`) even when `staleSweep` is off.
+`scripts/dry-run.ts` sweeps with `armed: false`, `armWorkspaceCleanup: false` and `forceDryRun: true`, so every decision stops at its `would-archive`, `would-notify` or `deferred` line. As a second guard, its client refuses to archive (workspaces and agents) or send, and its state stores refuse to write. It reads the notify and stale-flag state of `PASEO_HOME` (default `~/.paseo`), so already reported worktrees show as skipped and items flagged within a day are held. `--stale` previews the stale sweep (`would-flag`, `would-archive`) even when `staleSweep` is off.
 
 ## Install and arm (PM, after owner approval)
 
@@ -810,23 +564,19 @@ mkdir -p ~/.paseo/plugin-settings/merged-worker-archiver
 printf '%s\n' '{"version":1,"values":{"armed":true}}' > ~/.paseo/plugin-settings/merged-worker-archiver/config.json
 ```
 
-Disarm by setting `armed` to `false` (takes effect at the next evaluation) or
+Disarm by setting `armed` to `false` (next evaluation) or
 `paseo plugin disable merged-worker-archiver`.
 
-The stale sweep is its own switch: preview it with `npm run dry-run -- --stale --config
-<settings.json>`, then add `"staleSweep":true` to `values`. It flags only; add PM ids to
-`staleArchivePms` or project names to `staleArchiveProjects` (with `armed` on) to archive their
-items instead, or set `"staleArchiveAll":true` to archive every stale item that passes the gates,
-unrouted ones included, and `staleExclude` entries such as `"keep=1"` for what must stay.
+The stale sweep: preview with `npm run dry-run -- --stale --config <settings.json>`, then
+add `"staleSweep":true` to `values`. It flags only; add `staleArchivePms`,
+`staleArchiveProjects` or `"staleArchiveAll":true` (with `armed` on) to archive, and
+`staleExclude` entries such as `"keep=1"` for what must stay.
 
-Workspace cleanup is a separate, later step: review its `would-archive` and `would-notify`
-lines (for example `npm run dry-run -- --cleanup-only --config <settings.json>`), then add
-`"armWorkspaceCleanup":true` next to `"armed":true` in the same `values` object. Setting it
-back to `false` stops cleanup at the next sweep and leaves worker archiving armed.
+Workspace cleanup is a separate, later step: review its lines (`npm run dry-run --
+--cleanup-only --config <settings.json>`), then add `"armWorkspaceCleanup":true` next to
+`"armed":true`. Setting it back to `false` stops cleanup at the next sweep and leaves worker
+archiving armed.
 
-Upgrading an installed copy (directory install): `npm install && npm run check`, then
+Upgrading a directory install: `npm install && npm run check`, then
 `paseo plugin reload merged-worker-archiver` and confirm `running` in `paseo plugin ls`.
-Existing settings files keep loading. A `maxArchivesPerSweep` value left in one from an
-earlier version is honored again, and a value below 1 makes the settings invalid.
-Worktrees that hold ignored files (for example `node_modules` or `.env`) are now skipped
-as `dirty(...)`.
+Existing settings files keep loading.
