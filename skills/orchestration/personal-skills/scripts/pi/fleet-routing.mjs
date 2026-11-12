@@ -156,9 +156,10 @@ export function serviceGuardHandler(record, { guard, runtime = join(dirname(file
 }
 // Secret-shaped text in tool results is masked as [REDACTED:<kind>] before the model or the session sees it; the tool's
 // own effects (files it wrote, output it piped or redirected) are untouched. The patterns are the security audit's
-// scanner patterns, x-api-key and bearer included, compiled once. Every pattern runs on the original text, and the match spans of
-// all kinds are merged and replaced once, so an earlier kind cannot hide part of a later token. [kind, source, value]:
-// a kind with value set masks only its capture group, which ends the match, and keeps the key before it.
+// scanner patterns, x-api-key and bearer included, compiled once. Every pattern runs on the original text, and the
+// match spans of all kinds are merged and replaced once, so an earlier kind cannot hide part of a later token.
+// [kind, source, value]: a kind with value set masks only its capture group, which ends the match, and keeps the key
+// before it.
 export const SECRET_PATTERNS = [
   ['anthropic', String.raw`sk-ant-(?:api|oat|ort|admin)[0-9]{2}-[A-Za-z0-9_-]{20,}`],
   ['openai', String.raw`sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bsk-[A-Za-z0-9]{40,}`],
@@ -443,9 +444,10 @@ const REFRESH_KEY = 'refresh_token';
  * non-empty string under a refresh_token key is masked whole, whatever its length or content: once JSON-escaped, a
  * short value or one holding '"' or a newline can still match the JSON pattern in the saved session. A string under a
  * header key in KEY_RULES (X-Api-Key or X_API_KEY, Authorization; any letter case) gets that header's value rule, so
- * placeholders and short values stay. The walk stops
- * below MAX_DEPTH, so deep data cannot overflow the stack. seen maps each object walked to its result: a complete result is reused anywhere, so shared and cyclic objects are walked once; a result the depth cap cut
- * short is reused only where the object is met as deep or deeper, never nearer the top, where a walk reaches further.
+ * placeholders and short values stay. The walk stops below MAX_DEPTH, so deep data cannot overflow the stack. seen maps
+ * each object walked to its result: a complete result is reused anywhere, so shared and cyclic objects are walked once;
+ * a result the depth cap cut short is reused only where the object is met as deep or deeper, never nearer the top,
+ * where a walk reaches further.
  */
 export function redactValue(value, counts) { return walkValue(value, counts, 0, new Map()).out; }
 const MAX_DEPTH = 64;
