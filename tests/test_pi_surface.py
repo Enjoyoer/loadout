@@ -649,7 +649,7 @@ const tokens={anthropic:'sk-'+'ant-api03-'+r('a',24),openai:'sk-'+'proj-'+r('b',
  tailscale:'tskey'+'-auth-'+r('f',22),huggingface:'h'+'f_'+r('g',32),
  'bws-access-token':'0.'+'0123abcd-0123-4567-89ab-0123456789ab'+'.'+r('h',22)+':'+r('i',22),
  'telegram-bot':'123456789'+':AA'+r('j',33),'cloudflare-tunnel':'eyJh'+'Ijoi'+r('k',44),'google-apikey':'AI'+'za'+r('m',35)};
-assert.deepEqual(m.SECRET_PATTERNS.map(([k])=>k).filter(k=>k!=='oauth-refresh-json'&&k!=='x-api-key'),Object.keys(tokens));
+assert.deepEqual(m.SECRET_PATTERNS.map(([k])=>k).filter(k=>!['oauth-refresh-json','x-api-key','bearer'].includes(k)),Object.keys(tokens));
 const rows=[];const h=m.redactHandler(row=>rows.push(row));
 // Each pattern is masked, with one evidence row per masked result and no value in it.
 for(const [kind,token] of Object.entries(tokens)){
@@ -665,6 +665,10 @@ assert.equal(h({toolName:'read',content:[{type:'text',text:json}]}).content[0].t
 const toml=v=>'[model_providers.example]\nhttp_headers = { "X-Api-Key" = "'+v+'" }\nname = "example"';
 const key=Array.from({length:40},(_,i)=>'Aa0_'[i%4]).join('');
 assert.equal(h({toolName:'read',content:[{type:'text',text:toml(key)}]}).content[0].text,toml(R('x-api-key')));
+// A TOML Bearer token and an X_API_KEY env value are masked; the names and "Bearer " stay (brief redact-bearer).
+const auth=v=>'http_headers = { "Authorization" = "Bearer '+v+'" }';
+assert.equal(h({toolName:'read',content:[{type:'text',text:auth(key)}]}).content[0].text,auth(R('bearer')));
+assert.equal(h({toolName:'bash',content:[{type:'text',text:'X_API_KEY='+key}]}).content[0].text,'X_API_KEY='+R('x-api-key'));
 // A nested Codemode call and the Codemode result itself: text, details and structuredContent; images untouched.
 const image={type:'image',data:'/'+tokens.huggingface,mimeType:'image/png'};
 const nested=h({toolName:'read',toolCallId:'c1/1',parentToolCallId:'c1',content:[{type:'text',text:tokens.github},image],structuredContent:{value:tokens.github},isError:false});
