@@ -15,8 +15,9 @@
 // `pwsh -Command` strings, heredocs into a shell and local scripts a segment runs are checked as commands. A refused
 // verb whose target is not a plain literal (computed, piped, a variable or a glob) falls back to the whole command.
 import { execFile } from 'node:child_process';
-import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
-import { isAbsolute, join, posix, resolve } from 'node:path';
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { isAbsolute, join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createContext, Script } from 'node:vm';
 export const GUARD_RULE = 'shared fleet service: use one detached nohup script that changes, restarts, health-checks and rolls back';
@@ -173,6 +174,74 @@ function printed(words, at) {
   while (/^-[neE]+$/.test(args[0] ?? '')) args.shift();
   return args.join(' ').replace(/\\(n|t|\\)/g, (_, e) => (e === 'n' ? '\n' : e === 't' ? '\t' : '\\'));
 }
+
+// ---- Scratch Paseo daemons -----------------------------------------------------------------------------------------
+
+// A throwaway Paseo daemon whose home is strictly inside the scratch root (~/.cache/fleet-scratch) may be stopped.
+// Paths are compared as real paths, so ~, .. and symlinks cannot reach the fleet home; ~ and ~/ are read as Paseo
+// reads them, from the account's home directory.
+const scratchRoot = () => { try { return realpathSync.native(join(homedir(), '.cache', 'fleet-scratch')); } catch { return null; } }; // probe-ok: fails closed, no root allows no stop; expires 2027-05-12
+const within = (root, path) => { const rel = relative(root, path); return rel !== '' && !isAbsolute(rel) && rel.split(/[\\/]/)[0] !== '..'; };
+/** The real path of a Paseo home strictly inside the scratch root, or null (missing, computed, ~user, relative without dir). */
+export function scratchHome(value, dir) {
+  const v = String(value ?? '');
+  if (!v.trim() || /[\u0001$`*?[\]{}]/.test(v) || (v.startsWith('~') && !/^~(\/|$)/.test(v))) return null;
+  const path = v.startsWith('~') ? join(homedir(), v.slice(2)) : isAbsolute(v) ? v : dir ? resolve(dir, v) : null;
+  const root = scratchRoot();
+  if (!path || !root) return null;
+  let real;
+  try { real = realpathSync.native(path); } catch { return null; } // probe-ok: fails closed, a home that cannot be resolved is refused; expires 2027-05-12
+  return within(root, real) ? real : null;
+}
+const isPaseoEntry = entry => norm(entry).includes('paseo');
+// A small file read without blocking: opened non-blocking, a regular file of at most 4 KB, else null (a FIFO, a device,
+// a directory or a larger file). Absent: undefined. Any other error: null.
+function readSmall(path) {
+  let fd;
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.size > 4096) return null;
+    const buf = Buffer.alloc(4097), n = readSync(fd, buf, 0, 4097, 0);
+    return n > 4096 ? null : buf.subarray(0, n).toString('utf8');
+  } catch (error) { return error?.code === 'ENOENT' ? undefined : null; } finally { if (fd !== undefined) closeSync(fd); } // probe-ok: fails closed, anything but a small regular file refuses the stop; expires 2027-05-12
+}
+const parsed = text => { try { return JSON.parse(text); } catch { return null; } }; // probe-ok: fails closed, an unparsable lock or record refuses the stop; expires 2027-05-12
+const pidOf = value => (Number.isInteger(value?.pid) ? value.pid : NaN);
+// Whether a PID runs now (EPERM counts as running).
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error?.code !== 'ESRCH'; } };
+/**
+ * Every process paseo daemon stop of the real home `real` may signal, as [{pid, role}], or null to refuse: the lock's
+ * PID (role supervisor) and, for each terminal-worker/<digits>.json or closing-*.json record, its worker PID and the
+ * PID of each terminal and each unresolved entry. Refused: a lock or record that is not a small regular file or does
+ * not parse, a terminal-worker that exists but cannot be listed, more than 64 records, and records with no lock.
+ */
+export function homeProcesses(real) {
+  const out = [];
+  const lock = readSmall(join(real, 'paseo.pid'));
+  if (lock === null) return null;
+  if (lock !== undefined) { const pid = pidOf(parsed(lock)); if (Number.isNaN(pid)) return null; out.push({ pid, role: 'supervisor' }); }
+  let names;
+  try { names = readdirSync(join(real, 'terminal-worker')); } catch (error) { if (error?.code !== 'ENOENT') return null; names = []; } // probe-ok: fails closed, only an absent directory has no records; expires 2027-05-12
+  const records = names.filter(name => /^\d+\.json$/.test(name) || /^closing-[A-Za-z0-9-]+\.json$/.test(name));
+  if (records.length > 64 || (records.length && lock === undefined)) return null;
+  for (const name of records) {
+    const text = readSmall(join(real, 'terminal-worker', name));
+    if (typeof text !== 'string') return null;
+    const record = parsed(text);
+    if (!record || typeof record !== 'object' || !Array.isArray(record.terminals)) return null;
+    const unresolved = record.closing === undefined ? [] : record.closing?.unresolved;
+    if (!Array.isArray(unresolved)) return null;
+    out.push({ pid: pidOf(record), role: 'worker' });
+    for (const entry of record.terminals) out.push({ pid: pidOf(entry), role: 'terminal' });
+    for (const entry of unresolved) out.push({ pid: pidOf(entry), role: entry?.role === 'worker' ? 'worker' : 'terminal' });
+  }
+  return out;
+}
+// The options paseo daemon stop takes (daemon-level ones too), with and without a value. --host, --keep-terminals
+// (a shutdown call to the lock's listen address) and anything else leave the stop refused.
+const STOP_VALUED = new Set(['--home', '--timeout', '--kill-timeout', '-o', '--format']);
+const STOP_FLAGS = new Set(['--force', '--json', '-q', '--quiet', '--no-headers', '--no-color']);
 
 /** runtime.json's guard.protectedServices plus the defaults; a missing or invalid value keeps the defaults and warns. */
 export function guardConfig(runtime) {
@@ -502,7 +571,7 @@ function regexTest(pattern, lines) {
 }
 
 export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid = defaultResolvePid, listProcesses = defaultListProcesses,
-  readScript = defaultReadScript } = {}) {
+  readScript = defaultReadScript, readEnv = defaultReadEnv, ownsHome = defaultOwnsHome, sessionMembers = defaultSessionMembers, scratch = true } = {}) {
   const names = protectedServices.map(entry => ({ entry, n: norm(entry) }));
   // Every protected entry a word names: it contains the entry, or (4+ characters) is part of one; for a glob, any
   // literal fragment of 4+ characters that is part of an entry. A substitution's placeholder splits the word.
@@ -533,15 +602,77 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
   // A remote command (ssh) is checked against the fleet-wide defaults only: per-host lists, PIDs, processes and
   // files are local.
   let remote;
-  const remoteGuard = () => remote ??= serviceGuard({ protectedServices: DEFAULT_PROTECTED, resolvePid: async () => '', listProcesses: async () => [], readScript: async () => null });
+  const remoteGuard = () => remote ??= serviceGuard({ protectedServices: DEFAULT_PROTECTED, resolvePid: async () => '', listProcesses: async () => [], readScript: async () => null, scratch: false });
   const running = job => job.processes ??= Promise.resolve().then(listProcesses);
 
-  async function pidHit(pid) {
+  // With `scratch`, a process that only Paseo entries name passes when its own environment, read now, has a
+  // PASEO_HOME strictly inside the scratch root; an environment that cannot be read refuses.
+  async function pidHit(pid, scratch = false) {
     let line;
     try { line = await resolvePid(pid); }
     catch { return refuse(`kill ${pid}`, 'a process whose command line could not be read in time'); }
-    const hit = line && textHit(line);
-    return hit ? refuse(`kill ${pid}`, hit) : null;
+    const n = line ? norm(line) : '';
+    const hits = n ? names.filter(({ n: p }) => n.includes(p)).map(({ entry }) => entry) : [];
+    if (!hits.length) return null;
+    if (scratch && hits.every(isPaseoEntry)) {
+      let env;
+      try { env = await readEnv(pid); } catch { env = null; }
+      if (env && typeof env.PASEO_HOME === 'string' && scratchHome(env.PASEO_HOME, null)) return null;
+    }
+    return refuse(`kill ${pid}`, hits[0]);
+  }
+  // paseo daemon stop of a scratch home: the whole call is this one command (so nothing in it can rewrite the home
+  // first), a bare `paseo` behind nothing but PASEO_HOME= assignments and a bare env (so no HOME= moves paseo's ~),
+  // every --home and same-command PASEO_HOME= resolves strictly inside the scratch root, nothing else selects a target,
+  // and every process the stop would signal is that home's own: the PID in paseo.pid and every PID its terminal worker
+  // records name (homeProcesses). Never on the remote guard: this host's files say nothing about another host.
+  async function scratchStop(words, i, seg, run, mention) {
+    if (!scratch || mention || run.depth > 0 || !seg.top || run.root.length !== 1 || seg.subs.length || seg.nested.length || seg.input.length) return false;
+    if (words[i].v !== 'paseo') return false;
+    const homes = [], pos = [];
+    for (let j = 0; j < i; j++) {
+      const v = words[j].v;
+      if (v.startsWith('PASEO_HOME=')) homes.push(v.slice(11));
+      else if (v !== 'env') return false;
+    }
+    for (let j = i + 1; j < words.length; j++) {
+      const v = words[j].v, eq = v.startsWith('--') ? v.indexOf('=') : -1, name = eq > 0 ? v.slice(0, eq) : v;
+      if (STOP_VALUED.has(name)) {
+        const value = eq > 0 ? v.slice(eq + 1) : words[++j]?.v;
+        if (value === undefined || value.startsWith('-')) return false;
+        if (name === '--home') homes.push(value);
+        continue;
+      }
+      if (eq < 0 && STOP_FLAGS.has(v)) continue;
+      if (v.startsWith('-')) return false;
+      pos.push(v);
+    }
+    if (pos.join(' ') !== 'daemon stop' || !homes.length) return false;
+    const reals = homes.map(value => scratchHome(value, seg.uncertain ? null : seg.dir));
+    if (reals.some(real => !real)) return false;
+    for (const real of new Set(reals)) {
+      const procs = homeProcesses(real);
+      if (!procs) return false;
+      // Each distinct PID once, in one role, and at most 16 of them, so many records cannot slow the guard.
+      const roles = new Map();
+      for (const { pid, role } of procs) {
+        if (!Number.isInteger(pid) || pid <= 1 || (roles.has(pid) && roles.get(pid) !== role)) return false;
+        roles.set(pid, role);
+      }
+      if (roles.size > 16) return false;
+      for (const [pid, role] of roles) {
+        try {
+          if (alive(pid)) { if (!await ownsHome(pid, real, role)) return false; continue; }
+          // Paseo's reaper (on Linux) also kills the live members of a gone terminal's session: each must be this home's.
+          if (role !== 'terminal') continue;
+          for (const member of await sessionMembers(pid)) {
+            const env = await readEnv(member);
+            if (scratchHome(env?.PASEO_HOME ?? '', null) !== real) return false;
+          }
+        } catch { return false; } // probe-ok: fails closed, an owner that cannot be checked refuses the stop; expires 2027-05-12
+      }
+    }
+    return true;
   }
   // The protected process a list of pgrep/pkill patterns would match on this host.
   async function processHit(cmd, patterns, job) {
@@ -695,6 +826,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       } else if (cmd === 'paseo') {
         const at = rl.indexOf('daemon');
         const verb = at >= 0 && rl.slice(at + 1).find(word => ['stop', 'restart', 'uninstall'].includes(word));
+        if (verb === 'stop' && await scratchStop(words, i, seg, run, mention)) continue;
         if (verb) return refuse(`paseo daemon ${verb}`, 'Paseo daemon');
         // paseo restart restarts the selected daemon worker.
         if (paseoWords(words, i, 1)[0] === 'restart') return refuse('paseo restart', 'Paseo daemon');
@@ -741,7 +873,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
         // $! is the last job this same command put in the background, never a service it did not start.
         if (value === '$!' && run.job.background) { literal++; continue; }
         if (/^-\d+$/.test(value) || value === '0') return refuse(`kill ${value}`, 'a process group');
-        if (/^\d+$/.test(value)) { literal++; const found = await pidHit(value); if (found) return found; continue; }
+        if (/^\d+$/.test(value)) { literal++; const found = await pidHit(value, true); if (found) return found; continue; }
         if (value.startsWith('%')) { literal++; continue; }
         computed++;
       }
@@ -1126,7 +1258,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
         if (stopped(run)) return;
       }
       const words = expandVars(seg.words, state);
-      const view = { ...seg, words, prev, last: run.depth === 0 && nodes === run.root && seg === nodes[nodes.length - 1], dir: state.dir, uncertain: state.uncertain, shellopts: state.vars.SHELLOPTS };
+      const view = { ...seg, words, prev, top: nodes === run.root, last: run.depth === 0 && nodes === run.root && seg === nodes[nodes.length - 1], dir: state.dir, uncertain: state.uncertain, shellopts: state.vars.SHELLOPTS };
       const joined = prev && (prev.end === '&&' || prev.end === '||');
       prev = view;
       if (!words.length && !seg.input.length && !seg.redirects.length) continue;
@@ -1237,6 +1369,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
 /** Refusal text for a finding: what ran, which protected name it touches, and the rule. */
 export const refusalReason = found => `Refused by the fleet service guard: ${found.what} touches protected service "${found.entry}". Rule: ${GUARD_RULE}. `
   + 'Write that script with the write tool: undo each stop with its pair, naming the full service (bootout -> bootstrap with the plist path named after its label; stop or kill -> start, restart or kickstart; disable -> enable, then bootstrap; mask -> unmask, then start), then health-check it (curl, launchctl print, systemctl is-active), with no exit or source between and no set -e or bash -e. Run it as the last command, with both outputs redirected: nohup bash <script> >log 2>&1 &. This guard is a backstop, not a sandbox.'
+  + (found.what === 'paseo daemon stop' ? ' A daemon whose home is under the scratch root may be stopped with `paseo daemon stop --home <that home>`, as a command of its own.' : '')
   + (found.entry === 'every service on this host' ? ' A planned reboot of another host needs its owner or Config PM; let the OS update restart it in its maintenance window, or ask.' : '')
   + (found.mention ? ' To send or write text that names a protected service, put it in a file and pass the file.' : '');
 
@@ -1300,6 +1433,74 @@ async function defaultResolvePid(pid) {
   }
   const { code, stdout } = await run('ps', ['-ww', '-o', 'comm=,args=', '-p', String(id)], 3000);
   return (code === 0 && stdout.trim()) || absent(id);
+}
+/** A process's environment as {NAME: value}: /proc/<pid>/environ on Linux, ps eww on macOS; throws when unreadable. */
+async function defaultReadEnv(pid) {
+  const id = Number(pid), env = {};
+  if (process.platform === 'linux') {
+    for (const pair of readFileSync(`/proc/${id}/environ`, 'utf8').split('\0')) {
+      const at = pair.indexOf('=');
+      if (at > 0) env[pair.slice(0, at)] = pair.slice(at + 1);
+    }
+    return env;
+  }
+  if (process.platform !== 'darwin') throw Error('no environment reader on this platform');
+  // ps eww prints the arguments, then the environment as NAME=value words; a value with a space cannot be told apart.
+  const args = await run('ps', ['-ww', '-o', 'command=', '-p', String(id)], 3000);
+  const full = await run('ps', ['-E', '-ww', '-o', 'command=', '-p', String(id)], 3000);
+  const head = args.stdout.replace(/\n$/, ''), text = full.stdout.replace(/\n$/, '');
+  if (args.code !== 0 || full.code !== 0 || !text.startsWith(head) || !text.slice(head.length).trim()) throw Error(`the environment of ${id} could not be read`);
+  const homes = new Set();
+  for (const word of text.slice(head.length).trim().split(/\s+/)) if (word.startsWith('PASEO_HOME=')) homes.add(word.slice(11));
+  if (homes.size > 1) throw Error(`the environment of ${id} is ambiguous`);
+  if (homes.size) env.PASEO_HOME = [...homes][0];
+  return env;
+}
+/**
+ * Whether a running PID belongs to the Paseo home `real` (a real path) in `role` (supervisor, worker or terminal). On
+ * Linux its PASEO_HOME resolves to `real`. On macOS, whose ps shows no environment of another process: a supervisor
+ * is titled "Paseo Supervisor" and holds <home>/daemon.log open; a worker runs with --paseo-terminal-worker and holds
+ * <home>/terminal-worker.log open (an open file descriptor, not its cwd); a terminal program never passes. Elsewhere
+ * false.
+ */
+async function defaultOwnsHome(pid, real, role) {
+  if (process.platform === 'linux') return scratchHome((await defaultReadEnv(pid)).PASEO_HOME ?? '', null) === real;
+  if (process.platform !== 'darwin' || role === 'terminal') return false;
+  const ps = await run('ps', ['-ww', '-o', 'command=', '-p', String(pid)], 3000);
+  const command = ps.stdout.trim();
+  if (ps.code !== 0 || !(role === 'supervisor' ? /^Paseo Supervisor(\s|$)/.test(command) : /\s--paseo-terminal-worker\s/.test(command))) return false;
+  const { code, stdout } = await run('lsof', ['-w', '-a', '-p', String(pid), '-FfDi'], 5000);
+  return code === 0 && holdsFile(stdout, join(real, role === 'supervisor' ? 'daemon.log' : 'terminal-worker.log'));
+}
+/**
+ * Whether `lsof -FfDi` output shows a numbered file descriptor on the file at `path`, by device and inode, not by name
+ * (APFS names an open file by its last looked-up link). The file must be a regular file with one link, so a hard link
+ * to another home's log never counts.
+ */
+export function holdsFile(output, path) {
+  let info;
+  try { info = lstatSync(path, { bigint: true }); } catch { return false; } // probe-ok: fails closed, a missing log is no proof of ownership; expires 2027-05-12
+  if (!info.isFile() || info.nlink !== 1n) return false;
+  const files = [];
+  for (const line of String(output).split('\n')) {
+    if (line.startsWith('f')) files.push({ fd: line.slice(1) });
+    else if (files.length && line.startsWith('D')) files.at(-1).dev = line.slice(1);
+    else if (files.length && line.startsWith('i')) files.at(-1).ino = line.slice(1);
+  }
+  const big = value => { try { return BigInt(value); } catch { return null; } }; // probe-ok: fails closed, an unreadable number matches nothing; expires 2027-05-12
+  return files.some(file => /^\d+$/.test(file.fd) && big(file.dev) === info.dev && big(file.ino) === info.ino);
+}
+/** The live processes whose session id (field 6 of /proc/<pid>/stat) is `sid`, on Linux; elsewhere none. */
+async function defaultSessionMembers(sid) {
+  if (process.platform !== 'linux') return [];
+  const out = [];
+  for (const name of readdirSync('/proc')) {
+    if (!/^\d+$/.test(name)) continue;
+    let stat;
+    try { stat = readFileSync(`/proc/${name}/stat`, 'utf8'); } catch (error) { if (error?.code === 'ENOENT' || error?.code === 'ESRCH') continue; throw error; }
+    if (Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[3]) === sid) out.push(Number(name));
+  }
+  return out;
 }
 async function defaultListProcesses() {
   if (process.platform === 'win32') {
