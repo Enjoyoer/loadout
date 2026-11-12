@@ -156,7 +156,7 @@ export function serviceGuardHandler(record, { guard, runtime = join(dirname(file
 }
 // Secret-shaped text in tool results is masked as [REDACTED:<kind>] before the model or the session sees it; the tool's
 // own effects (files it wrote, output it piped or redirected) are untouched. The patterns are the security audit's
-// scanner patterns, x-api-key included, compiled once. Every pattern runs on the original text, and the match spans of
+// scanner patterns, x-api-key and bearer included, compiled once. Every pattern runs on the original text, and the match spans of
 // all kinds are merged and replaced once, so an earlier kind cannot hide part of a later token. [kind, source, value]:
 // a kind with value set masks only its capture group, which ends the match, and keeps the key before it.
 export const SECRET_PATTERNS = [
@@ -174,10 +174,13 @@ export const SECRET_PATTERNS = [
   ['cloudflare-tunnel', String.raw`eyJhIjoi[A-Za-z0-9+/=]{40,}`],
   ['oauth-refresh-json', String.raw`"refresh_token"\s*:\s*"([^"]{20,})(?=")`, true],
   ['google-apikey', String.raw`\bAIza[0-9A-Za-z_-]{35}`],
-  // The value of an X-Api-Key header in TOML, JSON or HTTP form, also inside a JSON string (\" quotes). Its
-  // character set leaves out $, {, < and *, so a placeholder stays. The case is spelled out so both compiles in
-  // semantics() keep it.
-  ['x-api-key', String.raw`[Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy](?:\\?["'])?[ \t]*[=:][ \t]*(?:\\?["'])?([A-Za-z0-9_.+/=-]{16,})`, true],
+  // The value of an X-Api-Key header (or an X_API_KEY variable; each separator is - or _) in TOML, JSON, HTTP, env or
+  // YAML form, also inside a JSON string (\" quotes). Its character set leaves out $, {, < and *, so a placeholder
+  // stays. The case is spelled out so both compiles in semantics() keep it.
+  ['x-api-key', String.raw`[Xx][-_][Aa][Pp][Ii][-_][Kk][Ee][Yy](?:\\?["'])?[ \t]*[=:][ \t]*(?:\\?["'])?([A-Za-z0-9_.+/=-]{16,})`, true],
+  // The token of an Authorization: Bearer header in the same forms (RFC 6750 b64token, so a JWT is masked whole); the
+  // name and "Bearer " stay, and so does a placeholder or a token under 16 characters.
+  ['bearer', String.raw`[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn](?:\\?["'])?[ \t]*[=:][ \t]*(?:\\?["'])?[Bb][Ee][Aa][Rr][Ee][Rr][ \t]+([A-Za-z0-9._~+/-]{16,}=*)`, true],
 ];
 // [kind, source, mask, value]. The compiled patterns are in semantics() below.
 const PASSES = SECRET_PATTERNS.map(([kind, source, value]) => [kind, source, `[REDACTED:${kind}]`, value === true]);
@@ -438,17 +441,18 @@ const REFRESH_KEY = 'refresh_token';
 /**
  * Every string in plain JSON-like data (details, structuredContent), rebuilt only where something was masked. Every
  * non-empty string under a refresh_token key is masked whole, whatever its length or content: once JSON-escaped, a
- * short value or one holding '"' or a newline can still match the JSON pattern in the saved session. A string under an
- * X-Api-Key key (any letter case) gets the x-api-key value rule, so placeholders and short values stay. The walk stops
+ * short value or one holding '"' or a newline can still match the JSON pattern in the saved session. A string under a
+ * header key in KEY_RULES (X-Api-Key or X_API_KEY, Authorization; any letter case) gets that header's value rule, so
+ * placeholders and short values stay. The walk stops
  * below MAX_DEPTH, so deep data cannot overflow the stack. seen maps each object walked to its result: a complete result is reused anywhere, so shared and cyclic objects are walked once; a result the depth cap cut
  * short is reused only where the object is met as deep or deeper, never nearer the top, where a walk reaches further.
  */
 export function redactValue(value, counts) { return walkValue(value, counts, 0, new Map()).out; }
 const MAX_DEPTH = 64;
 const OAUTH_MASK = PASSES.find(([kind]) => kind === 'oauth-refresh-json')[2];
-// A parsed JSON X-Api-Key is a key and a bare value; the value is put back behind a header name, so the pattern
-// decides.
-const API_KEY_NAME = /^x-api-key$/i, API_KEY_PREFIX = 'X-Api-Key: ';
+// A parsed JSON header is a key and a bare value; the value is put back behind its header name, so the pattern
+// decides. [key name, prefix].
+const KEY_RULES = [[/^x[-_]api[-_]key$/i, 'X-Api-Key: '], [/^authorization$/i, 'Authorization: ']];
 function walkValue(value, counts, depth, seen) {
   if (typeof value === 'string') return { out: redactText(value, counts), cut: false };
   if (!value || typeof value !== 'object') return { out: value, cut: false };
@@ -465,12 +469,12 @@ function walkValue(value, counts, depth, seen) {
   } else {
     const proto = Object.getPrototypeOf(value);
     if (proto === Object.prototype || proto === null) for (const [key, item] of Object.entries(value)) {
-      let next;
+      let next, rule;
       if (key === REFRESH_KEY && typeof item === 'string' && item.length) {
         counts['oauth-refresh-json'] = (counts['oauth-refresh-json'] ?? 0) + 1;
         next = OAUTH_MASK;
-      } else if (typeof item === 'string' && API_KEY_NAME.test(key)) {
-        next = redactText(API_KEY_PREFIX + item, counts).slice(API_KEY_PREFIX.length);
+      } else if (typeof item === 'string' && (rule = KEY_RULES.find(([name]) => name.test(key)))) {
+        next = redactText(rule[1] + item, counts).slice(rule[1].length);
       } else next = step(item);
       if (next !== item) { if (out === value) out = { ...value }; out[key] = next; }
     }
