@@ -186,8 +186,9 @@ const MASK = new RegExp(String.raw`\[REDACTED:(?:${SECRET_PATTERNS.map(([kind]) 
 //
 // check.py runs these patterns with Python's re, where \s also covers U+001C to U+001F and U+0085, and \b treats every
 // Unicode letter and digit as a word character. JS differs on both, so text holding any of those characters gets the
-// same patterns compiled with Python's meaning (u flag, \b as a lookaround). Other text keeps the faster ASCII form,
-// which gives the same matches there.
+// same patterns compiled with Python's meaning (u flag, \b as a lookaround), and masks the union of what those and the
+// ASCII form find: every check.py match, plus a token glued to a non-ASCII letter as before (Python's \b fails there).
+// Other text keeps the ASCII form alone, which gives the same matches there.
 const PY_TRIGGER = /[\x1c-\x1f\u0080-\uffff]/;
 const PY_WORD = String.raw`[\p{L}\p{N}_]`;
 const PY_B = String.raw`(?:(?<=${PY_WORD})(?!${PY_WORD})|(?<!${PY_WORD})(?=${PY_WORD}))`;
@@ -201,7 +202,10 @@ function semantics(py) {
   const glued = SECRET_PATTERNS.map(([, source], k) => [k, source.replace(/(^|\|)\\b/g, '$1')]).filter(([k, source]) => source !== SECRET_PATTERNS[k][1]);
   const ending = SECRET_PATTERNS.map(([, source], k) => [k, `(?:${source.replace(/\\b(?=$|\|)/g, '')})`]).filter(([k, source]) => source !== `(?:${SECRET_PATTERNS[k][1]})`);
   return {
+    py,
     patterns: SECRET_PATTERNS.map(([, source]) => compile(source, 'g')),
+    // A pattern with no \b or \s matches the same text under both meanings.
+    same: SECRET_PATTERNS.map(([, source]) => !/\\[bs]/.test(source)),
     // One combined pattern first: nearly every span edge has no match, and one scan is cheaper than one per kind.
     anyAfter: compile(glued.map(([, source]) => `(?:${source})`).join('|'), 'y'),
     after: glued.map(([k, source]) => [k, compile(source, 'y')]),
@@ -215,8 +219,23 @@ function semantics(py) {
   };
 }
 const ASCII = semantics(false), PYTHON = semantics(true);
-/** [kind index, end] of the longest match a mask ending at e would create, or null. */
+// Cheap first checks at a span's edge: a glued match after it starts with one of these (sk-, gh, AKIA, AIza, 1//0,
+// ya29., hf_, 0., Telegram digits), and one before it (AWS or Telegram) ends with an ASCII word character or '-'.
+const startsAfter = c => c === 115 || c === 103 || c === 65 || c === 121 || c === 104 || (c >= 48 && c <= 57);
+const endsBefore = c => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 45;
+/** [kind index, end] of the longest match a mask ending at e would create, under either meaning on the Python path. */
 function gluedAfter(text, e, sem) {
+  if (!startsAfter(text.charCodeAt(e))) return null;
+  const a = gluedAfterIn(text, e, sem), b = sem.py ? gluedAfterIn(text, e, ASCII) : null;
+  return b && (!a || b[1] > a[1]) ? b : a;
+}
+/** [kind index, start] of the earliest match before a mask starting at s, under either meaning on the Python path. */
+function gluedBefore(text, s, floor, sem) {
+  if (s <= floor || !endsBefore(text.charCodeAt(s - 1))) return null;
+  const a = gluedBeforeIn(text, s, floor, sem), b = sem.py ? gluedBeforeIn(text, s, floor, ASCII) : null;
+  return b && (!a || b[1] < a[1]) ? b : a;
+}
+function gluedAfterIn(text, e, sem) {
   if (!sem.wordBefore(text, e) || !sem.wordAfter(text, e)) return null;
   sem.anyAfter.lastIndex = e;
   if (!sem.anyAfter.test(text)) return null;
@@ -228,9 +247,9 @@ function gluedAfter(text, e, sem) {
   }
   return best;
 }
-/** [kind index, start] of the earliest match, at or after floor (the previous mask's end), that a mask starting at s would create, or null. */
-function gluedBefore(text, s, floor, sem) {
-  if (s <= floor || !sem.wordBefore(text, s) || !sem.wordAfter(text, s)) return null;
+// The earliest match, at or after floor (the previous mask's end), that a mask starting at s would create.
+function gluedBeforeIn(text, s, floor, sem) {
+  if (!sem.wordBefore(text, s) || !sem.wordAfter(text, s)) return null;
   const from = Math.max(floor, s - 64), window = text.slice(from, s);
   if (!sem.anyBefore.test(window)) return null;
   let best = null;
@@ -271,6 +290,21 @@ function maskSpans(text, counts, guard, sem = PY_TRIGGER.test(text) ? PYTHON : A
       starts.push(value ? end - m[1].length : m.index); ends.push(end); kinds.push(k);
       // Resume at the span's end: a value's closing quote can open the next "refresh_token" key.
       pattern.lastIndex = end;
+    }
+    if (sem.py && !sem.same[k]) {
+      // The union: add the ASCII matches of this kind that the Python scan did not find (both lists are in order).
+      const mid = starts.length, ascii = ASCII.patterns[k];
+      let j = from;
+      ascii.lastIndex = 0;
+      for (let m; (m = ascii.exec(text));) {
+        const end = value ? m.index + m[0].length - 1 : m.index + m[0].length, start = value ? end - m[1].length : m.index;
+        while (j < mid && starts[j] < start) j++;
+        if (!(j < mid && starts[j] === start && ends[j] === end)) {
+          starts.push(start); ends.push(end); kinds.push(k);
+          if (mid > from) sorted = false;
+        }
+        ascii.lastIndex = end;
+      }
     }
     if (from && starts.length > from) sorted = false;
   }

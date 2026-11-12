@@ -753,13 +753,17 @@ const cases=[
   // A refresh_token value that the mask makes 20 characters long.
   [K+'ab'+'xo'+'xb-'+r('1',10)+'.."',K+R('oauth-refresh-json')+'"',{slack:1,'oauth-refresh-json':1}],
   // check.py's Python semantics (rev292 B1): (a) \s covers U+001C and U+0085; (b1) a non-ASCII letter is a word
-  // character for \b; (b2) so is one before a token, which then is not a match and does not swallow the next one.
+  // character for \b; (b2) so is one before a token, which then is not a check.py match and does not swallow the next
+  // one; it is still masked, as the ASCII patterns match it too (rev292 R2-P1).
   ['{"refresh'+'_token"\x1c:"'+r('v',24)+'"}','{"refresh'+'_token"\x1c:"'+R('oauth-refresh-json')+'"}',{'oauth-refresh-json':1}],
   ['{"refresh'+'_token":\x85"'+r('v',24)+'"}','{"refresh'+'_token":\x85"'+R('oauth-refresh-json')+'"}',{'oauth-refresh-json':1}],
   ['123456789'+':AA'+r('j',32)+'-é',R('telegram-bot')+'é',{'telegram-bot':1}],
   ['123456789'+':AA'+r('j',32)+'-の',R('telegram-bot')+'の',{'telegram-bot':1}],
-  ['é'+'sk-'+r('a',40)+'sk'+'-proj-'+r('b',20),'é'+'sk-'+r('a',40)+R('openai'),{openai:1}],
-  ['Ω'+'gh'+'p_'+r('C',36)+'github'+'_pat_'+r('D',50),'Ω'+'gh'+'p_'+r('C',36)+R('github'),{github:1}],
+  ['é'+'sk-'+r('a',40)+'sk'+'-proj-'+r('b',20),'é'+R('openai'),{openai:2}],
+  ['Ω'+'gh'+'p_'+r('C',36)+'github'+'_pat_'+r('D',50),'Ω'+R('github'),{github:2}],
+  // A token glued after a non-ASCII letter is not a check.py match, and is masked all the same (rev292 R2-P1).
+  ...['認証','トークンは','clé'].flatMap(lead=>[['github',t.github],['aws',t.aws],['openai','sk-'+r('b',40)],
+    ['huggingface',t.huggingface],['google-apikey',t.apikey]].map(([kind,token])=>[lead+token+' ok',lead+R(kind)+' ok',{[kind]:1}])),
 ];
 const patterns=m.SECRET_PATTERNS.map(([kind,source])=>[kind,new RegExp(source,'g')]);
 for(const [text,want,kinds] of cases){
