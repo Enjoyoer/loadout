@@ -154,6 +154,93 @@ export function serviceGuardHandler(record, { guard, runtime = join(dirname(file
     return { block: true, reason };
   };
 }
+// Secret-shaped text in tool results is masked as [REDACTED:<kind>] before the model or the session sees it; the tool's
+// own effects (files it wrote, output it piped or redirected) are untouched. The patterns are the security audit's
+// scanner patterns, compiled once into one alternation; oauth-refresh-json masks only its value and keeps the key.
+export const SECRET_PATTERNS = [
+  ['anthropic', String.raw`sk-ant-(?:api|oat|ort|admin)[0-9]{2}-[A-Za-z0-9_-]{20,}`],
+  ['openai', String.raw`sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bsk-[A-Za-z0-9]{40,}`],
+  ['github', String.raw`\bgh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,}`],
+  ['slack', String.raw`xox[abposr]-[A-Za-z0-9-]{10,}`],
+  ['aws', String.raw`\bAKIA[0-9A-Z]{16}\b`],
+  ['google-refresh', String.raw`\b1//0[A-Za-z0-9_-]{30,}`],
+  ['google-access', String.raw`\bya29\.[A-Za-z0-9_-]{30,}`],
+  ['tailscale', String.raw`tskey-(?:auth|api|client|webhook)-[A-Za-z0-9-]{20,}`],
+  ['huggingface', String.raw`\bhf_[A-Za-z0-9]{30,}`],
+  ['bws-access-token', String.raw`\b0\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9]{20,}:[A-Za-z0-9+/=]{20,}`],
+  ['telegram-bot', String.raw`\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33}\b`],
+  ['cloudflare-tunnel', String.raw`eyJhIjoi[A-Za-z0-9+/=]{40,}`],
+  ['oauth-refresh-json', String.raw`"refresh_token"\s*:\s*"(?<value>[^"]{20,})"`],
+  ['google-apikey', String.raw`\bAIza[0-9A-Za-z_-]{35}`],
+];
+const SECRET = new RegExp(SECRET_PATTERNS.map(([, source], i) => `(?<k${i}>${source})`).join('|'), 'g');
+// A mask this hook writes; a write or edit carrying one would put the mask in place of the real secret.
+const MASK = new RegExp(String.raw`\[REDACTED:(?:${SECRET_PATTERNS.map(([kind]) => kind).join('|')})\]`);
+/** text with every secret-shaped run masked; counts gets one per mask, by kind. */
+export function redactText(text, counts) {
+  return text.replace(SECRET, (match, ...args) => {
+    const groups = args.at(-1);
+    const kind = SECRET_PATTERNS[SECRET_PATTERNS.findIndex((_, i) => groups[`k${i}`] !== undefined)][0];
+    counts[kind] = (counts[kind] ?? 0) + 1;
+    const mask = `[REDACTED:${kind}]`;
+    // The JSON value always ends the match, right before its closing quote.
+    return groups.value === undefined ? mask : match.slice(0, match.length - groups.value.length - 1) + mask + '"';
+  });
+}
+// Every string in plain JSON-like data (details, structuredContent), rebuilt only where something was masked.
+function redactValue(value, counts, depth = 0) {
+  if (typeof value === 'string') return redactText(value, counts);
+  if (!value || typeof value !== 'object' || depth > 64) return value;
+  if (Array.isArray(value)) {
+    const out = value.map(item => redactValue(item, counts, depth + 1));
+    return out.some((item, i) => item !== value[i]) ? out : value;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  let out = value;
+  for (const [key, item] of Object.entries(value)) {
+    const next = redactValue(item, counts, depth + 1);
+    if (next !== item) { if (out === value) out = { ...value }; out[key] = next; }
+  }
+  return out;
+}
+/**
+ * tool_result handler: masks every text part of every tool result (a codemode script's nested calls get their own
+ * tool_result, so the script sees masked text too), and the strings in details and structuredContent, which Pi saves
+ * with the result. One evidence row per masked result: tool and counts by kind, never a value. On an error the result
+ * stays as it was and one row records the failure.
+ */
+export function redactHandler(record) {
+  return event => {
+    try {
+      const counts = {};
+      const content = Array.isArray(event.content) ? event.content.map(part =>
+        part?.type === 'text' && typeof part.text === 'string' ? { ...part, text: redactText(part.text, counts) } : part) : event.content;
+      const details = redactValue(event.details, counts);
+      const structured = event.structuredContent !== undefined;
+      const structuredContent = structured ? redactValue(event.structuredContent, counts) : undefined;
+      if (!Object.keys(counts).length) return undefined;
+      record({ event: 'redact', tool: event.toolName, ...(event.parentToolCallId ? { nested: true } : {}), kinds: counts });
+      // Pi drops structuredContent when a handler replaces content without it.
+      return { content, ...(details !== event.details ? { details } : {}), ...(structured ? { structuredContent } : {}) };
+    } catch (error) {
+      record({ event: 'redact', tool: typeof event?.toolName === 'string' ? event.toolName : null, status: 'failed', error: String(error?.name ?? 'Error') });
+      return undefined;
+    }
+  };
+}
+export const REDACT_REFUSAL = 'This text contains a [REDACTED:...] mask from a tool result. Writing it would replace the real secret. Leave that value as it is, or change the file with a command that does not print the secret.';
+/** tool_call handler: refuses a write or edit whose new text carries a mask from redactHandler. */
+export function writeBackGuard(record) {
+  return event => {
+    if (event?.toolName !== 'write' && event?.toolName !== 'edit') return undefined;
+    const input = event.input ?? {};
+    const texts = [input.content, input.newText, ...(Array.isArray(input.edits) ? input.edits.map(edit => edit?.newText) : [])];
+    if (!texts.some(text => typeof text === 'string' && MASK.test(text))) return undefined;
+    record({ event: 'redact-guard', tool: event.toolName });
+    return { block: true, reason: REDACT_REFUSAL };
+  };
+}
 export const BLOCKED_MODEL_PREFIX = 'fleet-service-tier-refused';
 export function blockedPayload(payload, error) {
   const reason = String(error).toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/^-|-$/g, '').slice(0, 120);
@@ -632,6 +719,8 @@ export default function(pi) {
   const privacy = sessionPrivacy(record);
   pi.on('turn_end', (_event, ctx) => { privacy.turnEnd(ctx); });
   pi.on('tool_call', serviceGuardHandler(record));
+  pi.on('tool_call', writeBackGuard(record));
+  pi.on('tool_result', redactHandler(record));
   pi.on('turn_start', (_event, ctx) => credential.turnStart(ctx));
   pi.on('agent_end', () => credential.runEnd());
   // The thinking level each running fleet compaction used, by reason, for its evidence row.
