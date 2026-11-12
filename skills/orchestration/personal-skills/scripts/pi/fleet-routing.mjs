@@ -279,7 +279,8 @@ export function redactText(text, counts) {
 }
 /**
  * The span indices in order of start, then longest first, from runs that are each in that order already (bottom-up merge
- * of the non-empty runs; a comparator sort is far slower on a fresh process). null when the spans are in order as they are.
+ * of the non-empty runs; a comparator sort is far slower on a fresh process). Always an Int32Array, so the loop that
+ * reads it sees one type and is not recompiled midway through a large result.
  */
 function mergeRuns(starts, ends, runs) {
   const n = starts.length, bounds = [];
@@ -287,10 +288,11 @@ function mergeRuns(starts, ends, runs) {
     const end = r + 1 < runs.length ? runs[r + 1] : n;
     if (end > runs[r]) bounds.push(runs[r]);
   }
-  if (bounds.length < 2) return null;
-  bounds.push(n);
-  let a = new Int32Array(n), b = new Int32Array(n);
+  let a = new Int32Array(n);
   for (let i = 0; i < n; i++) a[i] = i;
+  if (bounds.length < 2) return a;
+  bounds.push(n);
+  let b = new Int32Array(n);
   for (let width = 1; width < bounds.length - 1; width *= 2) {
     for (let r = 0; r + 1 < bounds.length; r += 2 * width) {
       const lo = bounds[r], mid = bounds[Math.min(r + width, bounds.length - 1)], hi = bounds[Math.min(r + 2 * width, bounds.length - 1)];
@@ -313,84 +315,123 @@ function mergeRuns(starts, ends, runs) {
  * [start, end] pairs in order, or is null. sem is ASCII or PYTHON. Returns the text and its masks, likewise.
  */
 function maskSpans(text, counts, guard, sem = PY_TRIGGER.test(text) ? PYTHON : ASCII) {
-  // runs: where each scan's spans begin; each scan yields its spans in order.
-  const starts = [], ends = [], kinds = [], runs = [];
+  // Small functions, each compiled on its own: one large function took tens of milliseconds to optimize, and a large
+  // result ran slowly until it was.
+  const spans = collectSpans(text, sem);
+  if (!spans.starts.length) return { text, masks: [] };
+  const order = mergeRuns(spans.starts, spans.ends, spans.runs);
+  const out = { pieces: [], masks: [], len: 0, pos: 0, hit: new Array(PASSES.length).fill(0), guard };
+  if (guard) replaceGuarded(text, spans, order, guard, out); else replaceSpans(text, spans, order, sem, out);
+  if (!out.masks.length) return { text, masks: out.masks };
+  out.pieces.push(text.slice(out.pos));
+  for (let k = 0; k < PASSES.length; k++) if (out.hit[k]) counts[PASSES[k][0]] = (counts[PASSES[k][0]] ?? 0) + out.hit[k];
+  return { text: out.pieces.join(''), masks: out.masks };
+}
+/** The match spans of every kind on text; runs holds where each scan's spans begin, as each scan yields them in order. */
+function collectSpans(text, sem) {
+  const spans = { starts: [], ends: [], kinds: [], runs: [] };
   for (let k = 0; k < PASSES.length; k++) {
-    const pattern = sem.patterns[k], value = PASSES[k][3];
-    pattern.lastIndex = 0;
-    const from = starts.length;
-    runs.push(from);
-    for (let m; (m = pattern.exec(text));) {
-      const end = value ? m.index + m[0].length - 1 : m.index + m[0].length;
-      starts.push(value ? end - m[1].length : m.index); ends.push(end); kinds.push(k);
-      // Resume at the span's end: a value's closing quote can open the next "refresh_token" key.
-      pattern.lastIndex = end;
-    }
+    const from = spans.starts.length;
+    spans.runs.push(from);
+    scan(text, sem.patterns[k], k, spans);
     if (sem.py && !sem.same[k]) {
-      // The union: add the ASCII matches of this kind that the Python scan did not find (both lists are in order).
-      const mid = starts.length, ascii = ASCII.patterns[k];
-      runs.push(mid);
-      let j = from;
-      ascii.lastIndex = 0;
-      for (let m; (m = ascii.exec(text));) {
-        const end = value ? m.index + m[0].length - 1 : m.index + m[0].length, start = value ? end - m[1].length : m.index;
-        while (j < mid && starts[j] < start) j++;
-        if (!(j < mid && starts[j] === start && ends[j] === end)) {
-          starts.push(start); ends.push(end); kinds.push(k);
-        }
-        ascii.lastIndex = end;
-      }
+      // The union: add the ASCII matches of this kind that the Python scan did not find.
+      spans.runs.push(spans.starts.length);
+      scanUnion(text, ASCII.patterns[k], k, spans, from);
     }
   }
-  const n = starts.length;
-  if (!n) return { text, masks: [] };
-  const order = mergeRuns(starts, ends, runs);
-  const pieces = [], masks = [], hit = new Array(PASSES.length).fill(0), members = [];
-  let pos = 0, len = 0, g = 0, i = 0;
+  return spans;
+}
+function scan(text, pattern, k, { starts, ends, kinds }) {
+  const value = PASSES[k][3];
+  pattern.lastIndex = 0;
+  for (let m; (m = pattern.exec(text));) {
+    const end = value ? m.index + m[0].length - 1 : m.index + m[0].length;
+    starts.push(value ? end - m[1].length : m.index); ends.push(end); kinds.push(k);
+    // Resume at the span's end: a value's closing quote can open the next "refresh_token" key.
+    pattern.lastIndex = end;
+  }
+}
+/** Like scan, skipping a match the run from `from` (the same kind, in order) already holds. */
+function scanUnion(text, pattern, k, { starts, ends, kinds }, from) {
+  const value = PASSES[k][3], mid = starts.length;
+  let j = from;
+  pattern.lastIndex = 0;
+  for (let m; (m = pattern.exec(text));) {
+    const end = value ? m.index + m[0].length - 1 : m.index + m[0].length, start = value ? end - m[1].length : m.index;
+    while (j < mid && starts[j] < start) j++;
+    if (!(j < mid && starts[j] === start && ends[j] === end)) { starts.push(start); ends.push(end); kinds.push(k); }
+    pattern.lastIndex = end;
+  }
+}
+/** Pass 1: merges spans that overlap or touch, with the matches a mask would create next to them, and masks each. */
+function replaceSpans(text, { starts, ends, kinds }, order, sem, out) {
+  const n = starts.length, hit = out.hit;
+  let i = 0;
   while (i < n) {
-    let at = order ? order[i] : i;
+    let at = order[i];
     let start = starts[at], end = ends[at], kind = kinds[at];
-    // Pass 1 keeps every span, so it counts at once; pass 2 counts a span's members only if the span is kept.
-    if (guard) members.length = 0;
     for (;;) {
-      for (; i < n && starts[at = order ? order[i] : i] <= end; i++) {
-        if (guard) members.push(kinds[at]); else hit[kinds[at]]++;
+      for (; i < n && starts[at = order[i]] <= end; i++) {
+        hit[kinds[at]]++;
         if (ends[at] > end) end = ends[at];
-      }
-      if (guard) {
-        // Widen over every mask the span overlaps; a widened end can reach further spans, so merge again.
-        while (g < guard.length && guard[g + 1] <= start) g += 2;
-        if (g < guard.length && guard[g] < start) start = guard[g];
-        let grew = false;
-        for (let j = g; j < guard.length && guard[j] < end; j += 2) if (guard[j + 1] > end) { end = guard[j + 1]; grew = true; }
-        if (!grew || i >= n || starts[order ? order[i] : i] > end) break;
-        continue;
       }
       // A match this mask's end would create joins the span; so may further spans it reaches.
       const next = gluedAfter(text, end, sem);
       if (!next) break;
       hit[next[0]]++; end = next[1];
     }
-    if (guard) {
-      // Drop a span made only of masks; it holds no raw character.
-      let covered = 0;
-      for (let j = g; j < guard.length && guard[j] < end; j += 2) covered += Math.min(guard[j + 1], end) - Math.max(guard[j], start);
-      if (covered >= end - start) continue;
-      for (const k of members) hit[k]++;
-    } else for (let prior; (prior = gluedBefore(text, start, pos, sem));) { hit[prior[0]]++; [kind, start] = prior; }
-    const mask = PASSES[kind][2];
-    pieces.push(text.slice(pos, start), mask);
-    len += start - pos;
-    masks.push(len, len + mask.length);
-    len += mask.length;
-    pos = end;
+    for (let prior; (prior = gluedBefore(text, start, out.pos, sem));) { hit[prior[0]]++; [kind, start] = prior; }
+    emit(out, text, start, end, kind);
   }
-  if (!masks.length) return { text, masks };
-  pieces.push(text.slice(pos));
-  for (let k = 0; k < PASSES.length; k++) if (hit[k]) counts[PASSES[k][0]] = (counts[PASSES[k][0]] ?? 0) + hit[k];
-  return { text: pieces.join(''), masks };
+}
+/** Pass 2: widens each merged span over the masks it overlaps, so none is split, and drops one with no raw character. */
+function replaceGuarded(text, { starts, ends, kinds }, order, guard, out) {
+  const n = starts.length, members = [];
+  let i = 0, g = 0;
+  while (i < n) {
+    let at = order[i];
+    let start = starts[at], end = ends[at];
+    const kind = kinds[at];
+    members.length = 0;
+    for (;;) {
+      for (; i < n && starts[at = order[i]] <= end; i++) {
+        members.push(kinds[at]);
+        if (ends[at] > end) end = ends[at];
+      }
+      // A widened end can reach further spans, so merge again.
+      while (g < guard.length && guard[g + 1] <= start) g += 2;
+      if (g < guard.length && guard[g] < start) start = guard[g];
+      let grew = false;
+      for (let j = g; j < guard.length && guard[j] < end; j += 2) if (guard[j + 1] > end) { end = guard[j + 1]; grew = true; }
+      if (!grew || i >= n || starts[order[i]] > end) break;
+    }
+    let covered = 0;
+    for (let j = g; j < guard.length && guard[j] < end; j += 2) covered += Math.min(guard[j + 1], end) - Math.max(guard[j], start);
+    if (covered >= end - start) continue;
+    for (const k of members) out.hit[k]++;
+    emit(out, text, start, end, kind);
+  }
+}
+/** Appends the raw text before start and the mask of kind for [start, end). */
+function emit(out, text, start, end, kind) {
+  const { pieces, pos } = out, mask = PASSES[kind][2];
+  pieces.push(text.slice(pos, start), mask);
+  out.len += start - pos;
+  out.masks.push(out.len, out.len + mask.length);
+  out.len += mask.length;
+  out.pos = end;
 }
 const REFRESH_KEY = 'refresh_token';
+// Run every path once at import on short samples (both passes, merged runs, glued tokens before and after a span, ASCII
+// and non-ASCII text), so the code is compiled having seen them all: a path first met inside a large result otherwise
+// costs a recompile there (up to about 80 ms on 1 MB). The samples are built here.
+{
+  const r = (c, n) => c.repeat(n);
+  const sample = '{"' + REFRESH_KEY + '":"ab' + 'xo' + 'xb-' + r('1', 10) + '.."} ' + 'AK' + 'IA' + r('Q', 16) + 'tskey' + '-auth-' + r('f', 20)
+    + ' ' + 'AI' + 'za' + r('m', 35) + 'h' + 'f_' + r('g', 30) + ' ' + 'gh' + 'p_' + r('C', 36) + ' ';
+  for (const extra of ['', '\u00e9']) for (let i = 0; i < 3; i++) redactText((sample + extra).repeat(4), {});
+}
 /**
  * Every string in plain JSON-like data (details, structuredContent), rebuilt only where something was masked. Every
  * non-empty string under a refresh_token key is masked whole, whatever its length or content: once JSON-escaped, a
