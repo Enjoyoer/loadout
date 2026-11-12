@@ -55,6 +55,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // hook handler that is still finishing.
   let stopped = false;
   let client: OpenedClient | null = null;
+  // The open in flight, if any (acquire).
+  let opening: Promise<OpenedClient> | null = null;
   let stateErrorLogged = false;
   let turnsErrorLogged = false;
   // One entry per agent with a send in flight; see processRecord.
@@ -125,9 +127,23 @@ export default function contribute(server: PluginServerContext, openClient: () =
   async function acquire(): Promise<NonNullable<typeof client>> {
     // The client never reconnects, so one lost transport (sleep, a stalled daemon) would fail every later sweep; open a fresh one instead.
     if (client?.getConnectionState().status === "connected") return client;
-    await release();
-    client = await openClient();
-    return client;
+    // Callers that need a client while one is opening share that open, so only one client ever exists.
+    opening ??= (async () => {
+      try {
+        await release();
+        const opened = await openClient();
+        // Cleanup ran while it opened: nothing would ever close it, so close it now.
+        if (stopped) {
+          await opened.close().catch(() => undefined);
+          throw new Error("plugin stopped");
+        }
+        client = opened;
+        return opened;
+      } finally {
+        opening = null;
+      }
+    })();
+    return opening;
   }
 
   async function release() {
