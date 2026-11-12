@@ -220,9 +220,13 @@ function semantics(py) {
 }
 const ASCII = semantics(false), PYTHON = semantics(true);
 // Cheap first checks at a span's edge: a glued match after it starts with one of these (sk-, gh, AKIA, AIza, 1//0,
-// ya29., hf_, 0., Telegram digits), and one before it (AWS or Telegram) ends with an ASCII word character or '-'.
+// ya29., hf_, 0., Telegram digits).
 const startsAfter = c => c === 115 || c === 103 || c === 65 || c === 121 || c === 104 || (c >= 48 && c <= 57);
-const endsBefore = c => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 45;
+// The patterns with a trailing \b are AWS (AKIA and 16 characters) and Telegram (:AA and 33 characters), so a match
+// ending at s has its fixed part at s - 20 or s - 36; should that set change, the check passes everything.
+const TRAILING = SECRET_PATTERNS.filter(([, source]) => /\\b(?:$|\|)/.test(source)).map(([kind]) => kind).join();
+const endsBefore = TRAILING === 'aws,telegram-bot'
+  ? (text, s) => text.startsWith('AKIA', s - 20) || text.startsWith(':AA', s - 36) : () => true;
 /** [kind index, end] of the longest match a mask ending at e would create, under either meaning on the Python path. */
 function gluedAfter(text, e, sem) {
   if (!startsAfter(text.charCodeAt(e))) return null;
@@ -231,7 +235,7 @@ function gluedAfter(text, e, sem) {
 }
 /** [kind index, start] of the earliest match before a mask starting at s, under either meaning on the Python path. */
 function gluedBefore(text, s, floor, sem) {
-  if (s <= floor || !endsBefore(text.charCodeAt(s - 1))) return null;
+  if (s <= floor || !endsBefore(text, s)) return null;
   const a = gluedBeforeIn(text, s, floor, sem), b = sem.py ? gluedBeforeIn(text, s, floor, ASCII) : null;
   return b && (!a || b[1] < a[1]) ? b : a;
 }
@@ -274,17 +278,48 @@ export function redactText(text, counts) {
   return first.masks.length ? maskSpans(first.text, counts, first.masks, sem).text : first.text;
 }
 /**
+ * The span indices in order of start, then longest first, from runs that are each in that order already (bottom-up merge
+ * of the non-empty runs; a comparator sort is far slower on a fresh process). null when the spans are in order as they are.
+ */
+function mergeRuns(starts, ends, runs) {
+  const n = starts.length, bounds = [];
+  for (let r = 0; r < runs.length; r++) {
+    const end = r + 1 < runs.length ? runs[r + 1] : n;
+    if (end > runs[r]) bounds.push(runs[r]);
+  }
+  if (bounds.length < 2) return null;
+  bounds.push(n);
+  let a = new Int32Array(n), b = new Int32Array(n);
+  for (let i = 0; i < n; i++) a[i] = i;
+  for (let width = 1; width < bounds.length - 1; width *= 2) {
+    for (let r = 0; r + 1 < bounds.length; r += 2 * width) {
+      const lo = bounds[r], mid = bounds[Math.min(r + width, bounds.length - 1)], hi = bounds[Math.min(r + 2 * width, bounds.length - 1)];
+      let i = lo, j = mid, o = lo;
+      while (i < mid && j < hi) {
+        const x = a[i], y = a[j];
+        // On a tie the earlier run (the lower kind) goes first.
+        if (starts[y] < starts[x] || (starts[y] === starts[x] && ends[y] > ends[x])) { b[o++] = y; j++; } else { b[o++] = x; i++; }
+      }
+      while (i < mid) b[o++] = a[i++];
+      while (j < hi) b[o++] = a[j++];
+    }
+    [a, b] = [b, a];
+  }
+  return a;
+}
+/**
  * One pass: the match spans of every kind on text, merged where they overlap or touch, each merged span replaced once by
  * the mask of the span that starts first (on a tie, the longest). guard lists the masks already in text as flat
  * [start, end] pairs in order, or is null. sem is ASCII or PYTHON. Returns the text and its masks, likewise.
  */
 function maskSpans(text, counts, guard, sem = PY_TRIGGER.test(text) ? PYTHON : ASCII) {
-  const starts = [], ends = [], kinds = [];
-  let sorted = true;
+  // runs: where each scan's spans begin; each scan yields its spans in order.
+  const starts = [], ends = [], kinds = [], runs = [];
   for (let k = 0; k < PASSES.length; k++) {
     const pattern = sem.patterns[k], value = PASSES[k][3];
     pattern.lastIndex = 0;
     const from = starts.length;
+    runs.push(from);
     for (let m; (m = pattern.exec(text));) {
       const end = value ? m.index + m[0].length - 1 : m.index + m[0].length;
       starts.push(value ? end - m[1].length : m.index); ends.push(end); kinds.push(k);
@@ -294,6 +329,7 @@ function maskSpans(text, counts, guard, sem = PY_TRIGGER.test(text) ? PYTHON : A
     if (sem.py && !sem.same[k]) {
       // The union: add the ASCII matches of this kind that the Python scan did not find (both lists are in order).
       const mid = starts.length, ascii = ASCII.patterns[k];
+      runs.push(mid);
       let j = from;
       ascii.lastIndex = 0;
       for (let m; (m = ascii.exec(text));) {
@@ -301,24 +337,21 @@ function maskSpans(text, counts, guard, sem = PY_TRIGGER.test(text) ? PYTHON : A
         while (j < mid && starts[j] < start) j++;
         if (!(j < mid && starts[j] === start && ends[j] === end)) {
           starts.push(start); ends.push(end); kinds.push(k);
-          if (mid > from) sorted = false;
         }
         ascii.lastIndex = end;
       }
     }
-    if (from && starts.length > from) sorted = false;
   }
   const n = starts.length;
   if (!n) return { text, masks: [] };
-  let order = null;
-  if (!sorted) order = starts.map((_, i) => i).sort((a, b) => starts[a] - starts[b] || ends[b] - ends[a]);
+  const order = mergeRuns(starts, ends, runs);
   const pieces = [], masks = [], hit = new Array(PASSES.length).fill(0), members = [];
   let pos = 0, len = 0, g = 0, i = 0;
   while (i < n) {
     let at = order ? order[i] : i;
     let start = starts[at], end = ends[at], kind = kinds[at];
     // Pass 1 keeps every span, so it counts at once; pass 2 counts a span's members only if the span is kept.
-    members.length = 0;
+    if (guard) members.length = 0;
     for (;;) {
       for (; i < n && starts[at = order ? order[i] : i] <= end; i++) {
         if (guard) members.push(kinds[at]); else hit[kinds[at]]++;
