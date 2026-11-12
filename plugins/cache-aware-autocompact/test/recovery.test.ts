@@ -660,6 +660,22 @@ describe("restart recovery", () => {
     assert.deepEqual(f.sends, ["/compact"]);
   }));
 
+  it("recovers from a remembered turn whose running tool keeps only its type, call ID and status", async () => fixture(async (f) => {
+    const slim = { type: "tool_call", callId: "tool1", status: "running" };
+    await writeFile(f.file, JSON.stringify({ version: 1, entries: [], turns: [{ agentId: "a1", turnId: "t1", key: "a1:t1",
+      timeline: [slim], lastUserMessageAt: messageAt, retryCount: 0, endedAt }] }));
+    const a = agent(); const page = history(a);
+    f.setAgents([a]); f.histories.set(a.id, page);
+    f.start(f.store); await f.recovered(); f.timers.fire();
+    await until(() => f.logs.some((line) => line.action === "retry-scheduled"));
+    assert.equal(f.logs.find((line) => line.action === "skip")?.data.reason, "running-tool");
+    assert.deepEqual(f.sends, []);
+    page.entries.unshift({ ...page.entries[0]!, item: { type: "tool_call", callId: "tool1", name: "tool", detail: { type: "plain_text", text: "work" }, status: "completed", error: null } });
+    f.timers.fire();
+    await until(() => f.logs.some((line) => line.action === "compacted"));
+    assert.deepEqual(f.sends, ["/compact"]);
+  }));
+
   it("keeps teardown pending until the state write of the store it owns settles", async () => fixture(async (f) => {
     const home = process.env.PASEO_HOME;
     process.env.PASEO_HOME = path.dirname(f.file);

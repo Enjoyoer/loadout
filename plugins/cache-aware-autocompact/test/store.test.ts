@@ -180,4 +180,44 @@ describe("StateStore", () => {
     assert.deepEqual(await readdir(dir), ["state.json"]);
     await rm(dir, { recursive: true, force: true });
   });
+
+  // A token-shaped value, built at runtime so no literal credential sits in the repository.
+  const secret = () => ["sk", "test", "x".repeat(24)].join("-");
+  const legacyTool = () => ({ type: "tool_call", callId: "tool1", name: "bash", status: "running", error: null,
+    input: { command: `echo ${secret()}` }, detail: { type: "plain_text", text: "work", output: secret() } });
+
+  it("remembers a running tool without its input or output", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "cache-aware-autocompact-"));
+    const filePath = path.join(dir, "state.json");
+    const store = new StateStore(filePath);
+    await store.rememberTurn({ agentId: "a", turnId: "t1", key: "a:t1", timeline: [legacyTool() as never],
+      lastUserMessageAt: null, retryCount: 0, endedAt: "2026-09-26T08:00:00.000Z" }, 100);
+    const text = await readFile(filePath, "utf8");
+    assert.equal(text.includes(secret()), false);
+    assert.deepEqual(JSON.parse(text).turns[0].timeline, [{ type: "tool_call", callId: "tool1", status: "running" }]);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("cleans remembered tools in a legacy state file on the first read and changes nothing else", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "cache-aware-autocompact-"));
+    const filePath = path.join(dir, "state.json");
+    const turn = (agentId: string, timeline: unknown[]) => ({ agentId, turnId: "t1", key: `${agentId}:t1`, timeline,
+      lastUserMessageAt: null, inputId: "m1", retryCount: 1, endedAt: "2026-09-26T08:00:00.000Z" });
+    const legacy = { version: 1, entries: [entry("a:t0"), { ...entry("b:t0"), agentId: "b" }],
+      turns: [turn("b", []), turn("a", [legacyTool(), { ...legacyTool(), callId: "tool2" }])] };
+    await writeFile(filePath, JSON.stringify(legacy));
+    const landed: string[] = [];
+    const writer = recordingWriter("clean", landed);
+    const store = new StateStore(filePath, writer.write);
+    assert.equal((await store.latestTurn("a"))?.timeline.length, 2);
+    const cleaned = JSON.parse(await readFile(filePath, "utf8"));
+    assert.equal(JSON.stringify(cleaned).includes(secret()), false);
+    const slim = (callId: string) => ({ type: "tool_call", callId, status: "running" });
+    assert.deepEqual(cleaned, { ...legacy, turns: [legacy.turns[0], { ...legacy.turns[1], timeline: [slim("tool1"), slim("tool2")] }] });
+    // Already clean: later reads, and a new store, write nothing.
+    await store.read();
+    await new StateStore(filePath, writer.write).read();
+    assert.equal(writer.calls(), 1);
+    await rm(dir, { recursive: true, force: true });
+  });
 });

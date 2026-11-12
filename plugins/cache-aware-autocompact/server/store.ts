@@ -1,5 +1,6 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { unsettledTool } from "./model.ts";
 import type { Checkpoint } from "./runtime.ts";
 import { writeJsonAtomically } from "./vendor/atomic-json.ts";
@@ -43,6 +44,14 @@ function isRememberedTool(item: Record<string, unknown> | null): boolean {
     typeof item.callId === "string" && item.callId !== "";
 }
 
+// The fields of a remembered tool the evaluator reads: type and status (unsettledTool) and callId
+// (withFreshToolState). Input, arguments, detail and output are never stored: they can hold a credential.
+const REMEMBERED_TOOL_FIELDS = new Set(["type", "callId", "status"]);
+const rememberedTool = (callId: string) => ({ type: "tool_call", callId, status: "running" }) as unknown as AgentTimelineItem;
+const hasExtraFields = (turn: Checkpoint) => turn.timeline.some((item) => Object.keys(item).some((key) => !REMEMBERED_TOOL_FIELDS.has(key)));
+const slimTurn = (turn: Checkpoint): Checkpoint =>
+  ({ ...turn, timeline: turn.timeline.map((item) => rememberedTool((item as { callId: string }).callId)) });
+
 function isTurn(value: unknown): value is Checkpoint {
   if (typeof value !== "object" || value === null) return false;
   const turn = value as Record<string, unknown>;
@@ -78,6 +87,7 @@ export class StateStore {
   private readonly generation: number;
   private writes: Promise<void> = Promise.resolve();
   private closed = false;
+  private cleaning: Promise<void> | undefined;
   constructor(filePath = path.join(paseoHome(), "plugin-state", "cache-aware-autocompact", "state.json"), writeJson = writeJsonAtomically) {
     this.filePath = filePath;
     this.writeJson = writeJson;
@@ -95,8 +105,17 @@ export class StateStore {
       throw error;
     }
   }
-  async read(): Promise<StateEntry[]> { return (await this.readState()).entries; }
+  // On the first read, drop every field a remembered tool does not need from a file an older version wrote.
+  // Nothing else changes. A file the reader rejects is never rewritten; a failed cleanup is tried again on the next read.
+  private clean(): Promise<void> {
+    return this.cleaning ??= this.exclusive(async () => {
+      const state = await this.readState();
+      if (state.turns?.some(hasExtraFields)) await this.write({ ...state, turns: state.turns.map(slimTurn) });
+    }).catch((error) => { this.cleaning = undefined; throw error; });
+  }
+  async read(): Promise<StateEntry[]> { await this.clean(); return (await this.readState()).entries; }
   async latestTurn(agentId: string): Promise<Checkpoint | null> {
+    await this.clean();
     return (await this.readState()).turns?.find((turn) => turn.agentId === agentId) ?? null;
   }
   private async write(state: State): Promise<void> {
@@ -120,12 +139,13 @@ export class StateStore {
     await this.writes;
   }
   async rememberTurn(turn: Checkpoint, maxEntries: number): Promise<void> {
+    await this.clean();
     await this.exclusive(async () => {
       const state = await this.readState();
-      // The evaluator only inspects unsettled tools. Keep their guard state, not
-      // whole transcripts, alongside the already-derived checkpoint identity. A status
-      // it does not know is kept as running; a turn the reader would reject is not written.
-      const durableTurn = { ...turn, timeline: turn.timeline.filter(unsettledTool).map((item) => ({ ...item, status: "running" as const, error: null })) };
+      // The evaluator only inspects unsettled tools. Keep their call ID as running, nothing
+      // else, alongside the already-derived checkpoint identity. A status it does not know
+      // is kept as running; a turn the reader would reject is not written.
+      const durableTurn = { ...turn, timeline: turn.timeline.filter(unsettledTool).map((item) => rememberedTool(item.callId)) };
       if (!isTurn(durableTurn)) throw new Error("Invalid turn");
       const turns = [...(state.turns ?? []).filter((candidate) => candidate.agentId !== turn.agentId), durableTurn].slice(-maxEntries);
       await this.write({ ...state, turns });
@@ -135,6 +155,7 @@ export class StateStore {
     return (await this.read()).some((entry) => entry.key === key);
   }
   async append(entry: StateEntry, maxEntries: number): Promise<void> {
+    await this.clean();
     await this.exclusive(async () => {
       const state = await this.readState();
       const next = [...state.entries.filter((candidate) => candidate.key !== entry.key), entry].slice(-maxEntries);
