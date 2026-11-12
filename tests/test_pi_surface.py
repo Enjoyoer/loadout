@@ -638,6 +638,122 @@ rmSync(dir,{recursive:true,force:true});
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_tool_results_are_masked_and_masks_are_never_written_back(self):
+        # PM-specified cases (brief pi-redact). Tokens are joined at run time so no token-shaped literal is in the repo.
+        script=r"""
+import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';
+const m=await import(process.argv[1]);
+const r=(c,n)=>c.repeat(n);const R=k=>'[REDACTED'+':'+k+']';
+const tokens={anthropic:'sk-'+'ant-api03-'+r('a',24),openai:'sk-'+'proj-'+r('b',24),github:'gh'+'p_'+r('C',36),
+ slack:'xo'+'xb-'+r('1',12),aws:'AK'+'IA'+r('Q',16),'google-refresh':'1/'+'/0'+r('d',32),'google-access':'ya'+'29.'+r('e',32),
+ tailscale:'tskey'+'-auth-'+r('f',22),huggingface:'h'+'f_'+r('g',32),
+ 'bws-access-token':'0.'+'0123abcd-0123-4567-89ab-0123456789ab'+'.'+r('h',22)+':'+r('i',22),
+ 'telegram-bot':'123456789'+':AA'+r('j',33),'cloudflare-tunnel':'eyJh'+'Ijoi'+r('k',44),'google-apikey':'AI'+'za'+r('m',35)};
+assert.deepEqual(m.SECRET_PATTERNS.map(([k])=>k).filter(k=>k!=='oauth-refresh-json'),Object.keys(tokens));
+const rows=[];const h=m.redactHandler(row=>rows.push(row));
+// Each pattern is masked, with one evidence row per masked result and no value in it.
+for(const [kind,token] of Object.entries(tokens)){
+  const out=h({toolName:'bash',content:[{type:'text',text:'x '+token+' y'}],details:undefined,isError:false});
+  assert.equal(out.content[0].text,'x '+R(kind)+' y',kind);
+  assert.deepEqual(rows.at(-1),{event:'redact',tool:'bash',kinds:{[kind]:1}});
+}
+assert.equal(rows.length,Object.keys(tokens).length);assert.ok(!Object.values(tokens).some(t=>JSON.stringify(rows).includes(t)));
+// The JSON refresh_token key is kept, only its value is masked.
+const json='{"refresh'+'_token": "'+r('l',24)+'", "other": 1}';
+assert.equal(h({toolName:'read',content:[{type:'text',text:json}]}).content[0].text,'{"refresh'+'_token": "'+R('oauth-refresh-json')+'", "other": 1}');
+// A nested Codemode call and the Codemode result itself: text, details and structuredContent; images untouched.
+const image={type:'image',data:'/'+tokens.huggingface,mimeType:'image/png'};
+const nested=h({toolName:'read',toolCallId:'c1/1',parentToolCallId:'c1',content:[{type:'text',text:tokens.github},image],structuredContent:{value:tokens.github},isError:false});
+assert.deepEqual(nested.content,[{type:'text',text:R('github')},image]);assert.deepEqual(nested.structuredContent,{value:R('github')});
+assert.deepEqual(rows.at(-1),{event:'redact',tool:'read',nested:true,kinds:{github:2}});
+const details={calls:[{name:'bash',args:'{"command":"echo '+tokens.slack+'"}',status:'ok'}],fullOutputPath:'/tmp/out'};
+const top=h({toolName:'codemode',content:[{type:'text',text:'saw '+tokens.aws}],details});
+assert.equal(top.content[0].text,'saw '+R('aws'));assert.equal(top.details.calls[0].args,'{"command":"echo '+R('slack')+'"}');
+assert.equal(top.details.fullOutputPath,'/tmp/out');assert.ok(details.calls[0].args.includes(tokens.slack));
+// A non-secret base64 run is left alone unless it matches a pattern.
+const b64=Buffer.from(Array.from({length:3000},(_,i)=>(i*37+11)%256)).toString('base64');
+assert.equal(h({toolName:'bash',content:[{type:'text',text:b64}]}),undefined);
+assert.equal(h({toolName:'bash',content:[{type:'text',text:b64+' '+tokens['cloudflare-tunnel']}]}).content[0].text,b64+' '+R('cloudflare-tunnel'));
+// A handler error leaves the result unmasked and writes one row.
+const before=rows.length;const bad={toolName:'bash',get content(){throw Error('boom '+tokens.github);}};
+assert.equal(h(bad),undefined);assert.equal(rows.length,before+1);assert.deepEqual(rows.at(-1),{event:'redact',tool:'bash',status:'failed',error:'Error'});
+// 1 MB of back-to-back matches of each kind is masked in under 50 ms (best of 3), leaving no token.
+const MB=1<<20;
+for(const [kind,token] of [...Object.entries(tokens),['oauth-refresh-json',json]]){
+  const unit=token+' ';const big=unit.repeat(Math.ceil(MB/unit.length)+1);
+  let ms=Infinity,counts,masked;
+  for(let i=0;i<3;i++){counts={};const t0=performance.now();masked=m.redactText(big,counts);ms=Math.min(ms,performance.now()-t0);}
+  assert.ok(counts[kind]>=Math.floor(MB/unit.length),kind);assert.ok(!masked.includes(token.slice(0,-1)),kind);
+  assert.ok(ms<50,kind+' '+ms.toFixed(1)+' ms');
+}
+// A refresh_token key in details or structuredContent is masked; a short or quoted value is not.
+const rt=h({toolName:'mcp',content:[],structuredContent:{auth:{['refresh'+'_token']:r('n',24),access:'x'}},details:{['refresh'+'_token']:'short'}});
+assert.deepEqual(rt.structuredContent,{auth:{['refresh'+'_token']:R('oauth-refresh-json'),access:'x'}});assert.equal(rt.details,undefined);
+assert.equal(h({toolName:'mcp',content:[],details:{['refresh'+'_token']:r('n',24)+'"'}}),undefined);
+// Cyclic and shared objects are walked once: linear, and a cycle keeps its shape.
+const cyc={};let node=cyc;for(let i=0;i<60;i++){const next={};node.a=next;node.b=next;node.self=cyc;node=next;}node.v=tokens.github;
+const t1=performance.now();const cout=m.redactValue(cyc,{});assert.ok(performance.now()-t1<50);
+let walk=cout;for(let i=0;i<60;i++)walk=walk.a;assert.equal(walk.v,R('github'));
+// Live partial results are masked in place, with no evidence row.
+const upd=hooksOf().tool_execution_update[0];const partial={content:[{type:'text',text:'x '+tokens.github},image],details:{out:tokens.aws}};
+const rowsBefore=rows.length;upd({type:'tool_execution_update',partialResult:partial});
+assert.deepEqual(partial.content,[{type:'text',text:'x '+R('github')},image]);assert.deepEqual(partial.details,{out:R('aws')});assert.equal(rows.length,rowsBefore);
+upd({type:'tool_execution_update'});upd({type:'tool_execution_update',partialResult:{content:'raw'}});
+// The write and edit guard refuses a mask and passes normal text.
+const gate=[];const g=m.writeBackGuard(row=>gate.push(row));const mask=R('github');
+for(const input of [{path:'a',content:'k='+mask},{path:'a',newText:mask,oldText:'x'},{path:'a',edits:[{oldText:'x',newText:'y'},{oldText:'z',newText:'k='+mask}]}]){
+  const out=g({toolName:input.content===undefined?'edit':'write',input});
+  assert.deepEqual(out,{block:true,reason:m.REDACT_REFUSAL});
+}
+assert.equal(gate.length,3);assert.deepEqual(gate[0],{event:'redact-guard',tool:'write'});
+assert.match(m.REDACT_REFUSAL,/^This text contains a \[REDACTED:\.\.\.\] mask from a tool result\. Writing it would replace the real secret\./);
+assert.equal(g({toolName:'write',input:{path:'a',content:'plain text with [REDACTED:<kind>] as prose'}}),undefined);
+assert.equal(g({toolName:'edit',input:{path:'a',edits:[{oldText:'x',newText:'y'}]}}),undefined);
+assert.equal(g({toolName:'bash',input:{command:'echo '+mask}}),undefined);
+// A shared object met first just below the depth cap and again near the top is masked near the top (rev289 R2-B2).
+for(const wrappers of [62,63,64]){
+  const S={inner:{v:tokens.github}};let chain=S;for(let i=0;i<wrappers;i++)chain={c:chain};
+  const res=h({toolName:'t',content:[{type:'text',text:'x'}],details:{deep:chain,shallow:S}});
+  assert.ok(!JSON.stringify((res?.details??{}).shallow).includes(tokens.github),wrappers+' wrappers');
+}
+// The guard refuses none of this extension, the fleet README or this test file (rev289 R2-B1).
+for(const path of process.argv.slice(2)){
+  const text=readFileSync(path,'utf8');
+  assert.equal(g({toolName:'write',input:{path,content:text}}),undefined,path);
+  assert.equal(g({toolName:'edit',input:{path,edits:text.split('\n').map(line=>({oldText:'x',newText:line}))}}),undefined,path);
+}
+// All handlers are registered.
+const hooks=hooksOf();assert.equal(hooks.tool_result.length,1);assert.equal(hooks.tool_call.length,2);assert.equal(hooks.tool_execution_update.length,1);
+function hooksOf(){const hooks={};m.default({on:(e,f)=>(hooks[e]??=[]).push(f)});return hooks;}
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri(),
+            str(PI/'fleet-routing.mjs'), str(PI.parent.parent/'fleet/README.md'), __file__], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_pi_forwards_the_partial_result_object_extensions_masked(self):
+        # Pins what the tool_execution_update mask relies on: Pi hands extensions the same partialResult object it then
+        # forwards to its client. Needs an installed Pi (LOADOUT_PI_APP, else the default fleet root); skipped without.
+        app = Path(os.environ.get('LOADOUT_PI_APP') or Path.home()/'.local/share/loadout-pi-1.0.0/app')/'node_modules/@earendil-works/pi-coding-agent'
+        if not (app/'dist/bundle/index.js').is_file():
+            self.skipTest('no installed Pi package')
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const pi=await import(process.argv[1]);const m=await import(process.argv[2]);
+const dir=mkdtempSync(join(tmpdir(),'pin-'));process.env.PI_CODING_AGENT_DIR=dir;
+const token='gh'+'p_'+'Q'.repeat(36);
+const loader=new pi.DefaultResourceLoader({cwd:dir,agentDir:dir,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true,
+  extensionFactories:[p=>p.on('tool_execution_update',m.redactUpdateHandler())]});
+await loader.reload();
+const {session}=await pi.createAgentSession({cwd:dir,agentDir:dir,sessionManager:pi.SessionManager.inMemory(),settingsManager:pi.SettingsManager.inMemory(),resourceLoader:loader});
+const out=[];session.subscribe(e=>{if(e.type==='tool_execution_update')out.push(e.partialResult);});
+const partial={content:[{type:'text',text:token+'\n'}],details:{}};
+await session._handleAgentEvent({type:'tool_execution_update',toolCallId:'c1',toolName:'bash',args:{},partialResult:partial});
+assert.equal(out.length,1);assert.equal(out[0],partial);assert.equal(out[0].content[0].text,'[REDACTED'+':github]\n');
+session.dispose();rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (app/'dist/bundle/index.js').as_uri(), (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_service_guard_refuses_shared_service_stops_and_allows_the_rest(self):
         # PM-specified cases (brief pi-service-guard): a forged instruction must not stop a shared fleet service.
         script=r"""

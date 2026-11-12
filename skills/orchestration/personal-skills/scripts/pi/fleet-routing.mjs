@@ -154,6 +154,134 @@ export function serviceGuardHandler(record, { guard, runtime = join(dirname(file
     return { block: true, reason };
   };
 }
+// Secret-shaped text in tool results is masked as [REDACTED:<kind>] before the model or the session sees it; the tool's
+// own effects (files it wrote, output it piped or redirected) are untouched. The patterns are the security audit's
+// scanner patterns, compiled once, one replace pass per kind with a plain string replacement (a callback per match is
+// too slow on dense input); oauth-refresh-json masks only its value and keeps the key.
+export const SECRET_PATTERNS = [
+  ['anthropic', String.raw`sk-ant-(?:api|oat|ort|admin)[0-9]{2}-[A-Za-z0-9_-]{20,}`],
+  ['openai', String.raw`sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bsk-[A-Za-z0-9]{40,}`],
+  ['github', String.raw`\bgh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,}`],
+  ['slack', String.raw`xox[abposr]-[A-Za-z0-9-]{10,}`],
+  ['aws', String.raw`\bAKIA[0-9A-Z]{16}\b`],
+  ['google-refresh', String.raw`\b1//0[A-Za-z0-9_-]{30,}`],
+  ['google-access', String.raw`\bya29\.[A-Za-z0-9_-]{30,}`],
+  ['tailscale', String.raw`tskey-(?:auth|api|client|webhook)-[A-Za-z0-9-]{20,}`],
+  ['huggingface', String.raw`\bhf_[A-Za-z0-9]{30,}`],
+  ['bws-access-token', String.raw`\b0\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9]{20,}:[A-Za-z0-9+/=]{20,}`],
+  ['telegram-bot', String.raw`\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33}\b`],
+  ['cloudflare-tunnel', String.raw`eyJhIjoi[A-Za-z0-9+/=]{40,}`],
+  ['oauth-refresh-json', String.raw`"refresh_token"\s*:\s*"([^"]{20,})"`],
+  ['google-apikey', String.raw`\bAIza[0-9A-Za-z_-]{35}`],
+];
+const PASSES = SECRET_PATTERNS.map(([kind, source]) => kind === 'oauth-refresh-json'
+  ? [kind, new RegExp(String.raw`("refresh_token"\s*:\s*")[^"]{20,}"`, 'g'), `$1[REDACTED:${kind}]"`]
+  : [kind, new RegExp(source, 'g'), `[REDACTED:${kind}]`]);
+// A mask this hook writes; a write or edit carrying one would put the mask in place of the real secret.
+const MASK = new RegExp(String.raw`\[REDACTED:(?:${SECRET_PATTERNS.map(([kind]) => kind).join('|')})\]`);
+/** text with every secret-shaped run masked; counts gets one per mask, by kind. */
+export function redactText(text, counts) {
+  for (const [kind, pattern, mask] of PASSES) {
+    const found = text.match(pattern)?.length;
+    if (!found) continue;
+    counts[kind] = (counts[kind] ?? 0) + found;
+    text = text.replace(pattern, mask);
+  }
+  return text;
+}
+const REFRESH_KEY = 'refresh_token';
+/**
+ * Every string in plain JSON-like data (details, structuredContent), rebuilt only where something was masked. A string
+ * of 20 or more characters with no '"' under a refresh_token key is masked whole, as the JSON pattern would mask it in
+ * text. The walk stops below MAX_DEPTH, so deep data cannot overflow the stack. seen maps each object walked to its
+ * result: a complete result is reused anywhere, so shared and cyclic objects are walked once; a result the depth cap cut
+ * short is reused only where the object is met as deep or deeper, never nearer the top, where a walk reaches further.
+ */
+export function redactValue(value, counts) { return walkValue(value, counts, 0, new Map()).out; }
+const MAX_DEPTH = 64;
+const OAUTH_MASK = PASSES.find(([kind]) => kind === 'oauth-refresh-json')[2].slice(2, -1);
+function walkValue(value, counts, depth, seen) {
+  if (typeof value === 'string') return { out: redactText(value, counts), cut: false };
+  if (!value || typeof value !== 'object') return { out: value, cut: false };
+  const known = seen.get(value);
+  // An object still being walked (a cycle) resolves to itself; a complete result is reused past the cap too.
+  if (known && (!known.cut || depth >= known.depth)) return { out: known.out, cut: known.cut };
+  if (depth > MAX_DEPTH) return { out: value, cut: true };
+  seen.set(value, { out: value, cut: false, depth });
+  let out = value, cut = false;
+  const step = item => { const next = walkValue(item, counts, depth + 1, seen); cut ||= next.cut; return next.out; };
+  if (Array.isArray(value)) {
+    const items = value.map(step);
+    if (items.some((item, i) => item !== value[i])) out = items;
+  } else {
+    const proto = Object.getPrototypeOf(value);
+    if (proto === Object.prototype || proto === null) for (const [key, item] of Object.entries(value)) {
+      let next;
+      if (key === REFRESH_KEY && typeof item === 'string' && item.length >= 20 && !item.includes('"')) {
+        counts['oauth-refresh-json'] = (counts['oauth-refresh-json'] ?? 0) + 1;
+        next = OAUTH_MASK;
+      } else next = step(item);
+      if (next !== item) { if (out === value) out = { ...value }; out[key] = next; }
+    }
+  }
+  seen.set(value, { out, cut, depth });
+  return { out, cut };
+}
+/**
+ * tool_execution_update handler: masks a running tool's live partial result (text parts and details) in place. Pi
+ * awaits extension handlers on the same partialResult object before it forwards the update to its client (Paseo), so
+ * the client never gets the raw text. Tools build a fresh partial object per update, so the tool itself is untouched.
+ * No evidence row per update; the final result's tool_result row counts the masks.
+ */
+export function redactUpdateHandler() {
+  return event => {
+    try {
+      const partial = event?.partialResult;
+      if (!partial || typeof partial !== 'object') return;
+      const counts = {};
+      if (Array.isArray(partial.content)) partial.content = partial.content.map(part =>
+        part?.type === 'text' && typeof part.text === 'string' ? { ...part, text: redactText(part.text, counts) } : part);
+      if (partial.details !== undefined) partial.details = redactValue(partial.details, counts);
+    } catch {}
+  };
+}
+/**
+ * tool_result handler: masks every text part of every tool result (a codemode script's nested calls get their own
+ * tool_result, so the script sees masked text too), and the strings in details and structuredContent, which Pi saves
+ * with the result. One evidence row per masked result: tool and counts by kind, never a value. On an error the result
+ * stays as it was and one row records the failure.
+ */
+export function redactHandler(record) {
+  return event => {
+    try {
+      const counts = {};
+      const content = Array.isArray(event.content) ? event.content.map(part =>
+        part?.type === 'text' && typeof part.text === 'string' ? { ...part, text: redactText(part.text, counts) } : part) : event.content;
+      const details = redactValue(event.details, counts);
+      const structured = event.structuredContent !== undefined;
+      const structuredContent = structured ? redactValue(event.structuredContent, counts) : undefined;
+      if (!Object.keys(counts).length) return undefined;
+      record({ event: 'redact', tool: event.toolName, ...(event.parentToolCallId ? { nested: true } : {}), kinds: counts });
+      // Pi drops structuredContent when a handler replaces content without it.
+      return { content, ...(details !== event.details ? { details } : {}), ...(structured ? { structuredContent } : {}) };
+    } catch (error) {
+      record({ event: 'redact', tool: typeof event?.toolName === 'string' ? event.toolName : null, status: 'failed', error: String(error?.name ?? 'Error') });
+      return undefined;
+    }
+  };
+}
+export const REDACT_REFUSAL = 'This text contains a [REDACTED:...] mask from a tool result. Writing it would replace the real secret. Leave that value as it is, or change the file with a command that does not print the secret.';
+/** tool_call handler: refuses a write or edit whose new text carries a mask from redactHandler. */
+export function writeBackGuard(record) {
+  return event => {
+    if (event?.toolName !== 'write' && event?.toolName !== 'edit') return undefined;
+    const input = event.input ?? {};
+    const texts = [input.content, input.newText, ...(Array.isArray(input.edits) ? input.edits.map(edit => edit?.newText) : [])];
+    if (!texts.some(text => typeof text === 'string' && MASK.test(text))) return undefined;
+    record({ event: 'redact-guard', tool: event.toolName });
+    return { block: true, reason: REDACT_REFUSAL };
+  };
+}
 export const BLOCKED_MODEL_PREFIX = 'fleet-service-tier-refused';
 export function blockedPayload(payload, error) {
   const reason = String(error).toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/^-|-$/g, '').slice(0, 120);
@@ -632,6 +760,9 @@ export default function(pi) {
   const privacy = sessionPrivacy(record);
   pi.on('turn_end', (_event, ctx) => { privacy.turnEnd(ctx); });
   pi.on('tool_call', serviceGuardHandler(record));
+  pi.on('tool_call', writeBackGuard(record));
+  pi.on('tool_result', redactHandler(record));
+  pi.on('tool_execution_update', redactUpdateHandler());
   pi.on('turn_start', (_event, ctx) => credential.turnStart(ctx));
   pi.on('agent_end', () => credential.runEnd());
   // The thinking level each running fleet compaction used, by reason, for its evidence row.
