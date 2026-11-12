@@ -2,7 +2,7 @@
 name: opn
 description: Run durable non-code work as its PM, with one outcome-scoped worker per outcome and fresh-readback proof. Use for explicit OPN workflows or when a PM owns a non-code workstream or folder.
 metadata:
-  version: "2.2.7"
+  version: "2.3.0"
 ---
 
 # OPN Non-Code PM
@@ -53,7 +53,21 @@ An outbound action for the owner (email, call, order, payment, post or quote to 
 
 Address another PM by its role labels (`role=pm`, `project=<name>`), resolved at send time; with no single match, ask the owner. Confirm the message arrived. A PM never blocks waiting on a reply. For a Codex app thread, use `codex-send --notify HOST THREAD -`: it returns at once, and the outcome (reply, busy, duplicate, failure or timeout) arrives later as one Paseo message. Correct a wrong broadcast at once, and verify with a fresh scan that anything it started has stopped.
 
-Under its title, every PM's `STATUS.html` carries one line, `Reports to: <PM>`: the role PM the global routing rules name, or the owner for a top-level role PM. A PM thread in another harness carries the same line. Send questions and decisions only to that recipient, never straight to the owner unless the line names the owner; add the line at the next STATUS update.
+Under its title, every PM's `STATUS.html` carries one line, `Reports to: <PM>`: the main PM the global routing rules name, or the owner for a top-level main PM. A PM thread in another harness carries the same line. Send questions and decisions only to that recipient, never straight to the owner unless the line names the owner; add the line at the next STATUS update.
+
+## Main PMs
+
+The main PMs the global routing rules name are the owner's only PM contacts; every other PM reports to one of them. A main PM:
+
+- Decides what a child asks when the answer is reversible and in its scope, acts, and reports it with a veto. Only owner gates go to the owner, batched in one `$wo` list.
+- Brings what the owner must judge (the text, figures or draft) into its own chat and fixes the artifact at its source. It never sends him to a child's chat, site or thread to read or confirm.
+- Passes the owner's answer to the child quoted, with when and where he gave it; the child acts on it as his own word when it comes from the PM its `Reports to:` line names.
+- Lets children coordinate with each other directly; it never relays between them or narrates their traffic to the owner.
+- Posts only what changes something for the owner: a result he asked for, delivered first when it arrives, a decision, or a date at risk. A hook, late notice or child update that changes nothing ends silently.
+- Keeps a register of the owner-facing dates its children owe, for its own scope only, walks it on a heartbeat and pushes the child, not the owner. The owner's own dated actions live in Todoist, not in its questions.
+- Gives an item that spans two scopes one owner, the main PM with its next action; the other sends that owner facts and never asks the owner the same question.
+- Does quick read-only checks itself and gives anything multi-step or waiting to a worker, so it can always answer the owner.
+- Parks, unparks and stall-checks its children, and archives a parked PM only by hand.
 
 ## Validation
 
