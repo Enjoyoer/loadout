@@ -249,7 +249,7 @@ the PM's status is read again, and the message goes out only while it is idle or
 archived, and without a pending permission; otherwise it logs a deferral (`why` such as
 `PM running` or `PM error`) and retries at the next full sweep, since a message would interrupt a turn, clear a permission request, or
 unarchive the PM. It is sent with `activeTurnBehavior: "steer"`, so a turn that starts in
-between gets the text added instead of replaced, and with a fixed `messageId`, so the daemon
+between gets the text added where the provider can steer, instead of being replaced, and with a fixed `messageId`, so the daemon
 drops a duplicate. With `staleSweep` on, kept worktrees go into the stale sweep's daily
 message instead of a separate report.
 
@@ -421,8 +421,8 @@ the turn end is the trigger.
 - **Follow-ups**: a worktree that passed every gate except "merged" (`not-merged(...)`) gets
   its project re-checked after `followUpDelaysSeconds` (default 15 s, 60 s, 180 s; at most
   5 entries, at most 64 workspaces pending), for merges that land just after the turn
-  (merge queue, `gh pr merge` returning before the ref updates). A new
-  event restarts the chain.
+  (merge queue, `gh pr merge` returning before the ref updates). The chain stops once the
+  worktree is no longer a pending merge, and a new event restarts it.
 - **Periodic sweep**: backstop for merges made outside Paseo. First full sweep 30 s after
   load, then every `sweepIntervalMinutes` (default 60).
 - **`agent.archived`**: schedules its workspace for a debounced evaluation.
@@ -435,7 +435,8 @@ serialized.
 ## Per-sweep cap
 
 One sweep makes at most `maxArchivesPerSweep` archive attempts (default 5). An armed call
-that fails still uses a slot; a workspace that fails the armed re-check does not. Dry-run
+that fails still uses a slot; a workspace that fails the armed re-check does not, and deferred workspaces are not
+freshly re-checked in that sweep. Dry-run
 applies the same cap, order, and back-offs to `would-archive`. Further eligible workspaces
 get a `deferred` line and go first in a later sweep. In `sweep-done`, `counts.archive`
 covers the candidates within the cap and `counts.deferred` the rest (also `deferred`), for

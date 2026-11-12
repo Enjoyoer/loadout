@@ -36,7 +36,7 @@ Edit the fleet only on the source host. `python3 scripts/fleet.py push [--dry-ru
 
 - Each copy carries a `.loadout-sync.json` record of the hashes last synced, and a host's copy is replaced only while it still matches that record. Before writing, a push records there the versions it is about to write, so a push cut off part way recognizes its own writes.
 - A hand-edited, added, or unrecorded differing file is a conflict: nothing is written on that host until you resolve it, usually by deleting the host's copy.
-- Each file and the record are written through a uniquely named, exclusively created temp file, and the record is read back. Each write and removal checks its file and the directories from the home directory down again right before it, and a removal first moves the file aside and verifies it, so a linked `~/.config` or a file edited during the push stops the host and keeps the edit.
+- Each file and the record are written through a uniquely named, exclusively created temp file, and the record is read back. Each copied file is verified by SHA256, and the resulting copy is verified again after writing. Each write and removal checks its file and the directories from the home directory down again right before it, and a removal first moves the file aside and verifies it, so a linked `~/.config` or a file edited during the push stops the host and keeps the edit.
 
 ### Helpers in `bin/`
 
