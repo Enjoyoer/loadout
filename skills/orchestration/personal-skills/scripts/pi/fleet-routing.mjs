@@ -156,9 +156,9 @@ export function serviceGuardHandler(record, { guard, runtime = join(dirname(file
 }
 // Secret-shaped text in tool results is masked as [REDACTED:<kind>] before the model or the session sees it; the tool's
 // own effects (files it wrote, output it piped or redirected) are untouched. The patterns are the security audit's
-// scanner patterns, compiled once. Every pattern runs on the original text, and the match spans of all kinds are merged
-// and replaced once, so an earlier kind cannot hide part of a later token; oauth-refresh-json masks only its value and
-// keeps the key.
+// scanner patterns plus x-api-key, compiled once. Every pattern runs on the original text, and the match spans of all
+// kinds are merged and replaced once, so an earlier kind cannot hide part of a later token. [kind, source, value]: a kind
+// with value set masks only its capture group, which ends the match, and keeps the key before it.
 export const SECRET_PATTERNS = [
   ['anthropic', String.raw`sk-ant-(?:api|oat|ort|admin)[0-9]{2}-[A-Za-z0-9_-]{20,}`],
   ['openai', String.raw`sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bsk-[A-Za-z0-9]{40,}`],
@@ -172,20 +172,22 @@ export const SECRET_PATTERNS = [
   ['bws-access-token', String.raw`\b0\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9]{20,}:[A-Za-z0-9+/=]{20,}`],
   ['telegram-bot', String.raw`\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33}\b`],
   ['cloudflare-tunnel', String.raw`eyJhIjoi[A-Za-z0-9+/=]{40,}`],
-  ['oauth-refresh-json', String.raw`"refresh_token"\s*:\s*"([^"]{20,})"`],
+  ['oauth-refresh-json', String.raw`"refresh_token"\s*:\s*"([^"]{20,})(?=")`, true],
   ['google-apikey', String.raw`\bAIza[0-9A-Za-z_-]{35}`],
+  // The value of an X-Api-Key header in TOML, JSON or HTTP form. Its character set leaves out $, {, < and *, so a
+  // placeholder stays. The case is spelled out so both compiles in semantics() keep it.
+  ['x-api-key', String.raw`[Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy]["']?[ \t]*[=:][ \t]*["']?([A-Za-z0-9_.+/=-]{16,})`, true],
 ];
-// [kind, source, mask, value]: value is true for oauth-refresh-json, whose span is its captured value, which sits just
-// before the closing quote. The compiled patterns are in semantics() below.
-const PASSES = SECRET_PATTERNS.map(([kind, source]) => [kind, source, `[REDACTED:${kind}]`, kind === 'oauth-refresh-json']);
+// [kind, source, mask, value]. The compiled patterns are in semantics() below.
+const PASSES = SECRET_PATTERNS.map(([kind, source, value]) => [kind, source, `[REDACTED:${kind}]`, value === true]);
 // A mask this hook writes; a write or edit carrying one would put the mask in place of the real secret.
 const MASK = new RegExp(String.raw`\[REDACTED:(?:${SECRET_PATTERNS.map(([kind]) => kind).join('|')})\]`);
 // A mask's '[' and ']' give a glued \b pattern the word boundary the raw text lacked. These variants find such a match
 // next to a span in pass 1: after drops the leading \b and is tried at a span's end; before drops the trailing \b and
 // must end at a span's start, within the 64 characters before it.
 //
-// check.py runs these patterns with Python's re, where \s also covers U+001C to U+001F and U+0085, and \b treats every
-// Unicode letter and digit as a word character. JS differs on both, so text holding any of those characters gets the
+// check.py runs these patterns (all but x-api-key) with Python's re, where \s also covers U+001C to U+001F and U+0085,
+// and \b treats every Unicode letter and digit as a word character. JS differs on both, so text holding any of those characters gets the
 // same patterns compiled with Python's meaning (u flag, \b as a lookaround), and masks the union of what those and the
 // ASCII form find: every check.py match, plus a token glued to a non-ASCII letter as before (Python's \b fails there).
 // Other text keeps the ASCII form alone, which gives the same matches there.
@@ -346,7 +348,7 @@ function scan(text, pattern, k, { starts, ends, kinds }) {
   const value = PASSES[k][3];
   pattern.lastIndex = 0;
   for (let m; (m = pattern.exec(text));) {
-    const end = value ? m.index + m[0].length - 1 : m.index + m[0].length;
+    const end = m.index + m[0].length;
     starts.push(value ? end - m[1].length : m.index); ends.push(end); kinds.push(k);
     // Resume at the span's end: a value's closing quote can open the next "refresh_token" key.
     pattern.lastIndex = end;
@@ -358,7 +360,7 @@ function scanUnion(text, pattern, k, { starts, ends, kinds }, from) {
   let j = from;
   pattern.lastIndex = 0;
   for (let m; (m = pattern.exec(text));) {
-    const end = value ? m.index + m[0].length - 1 : m.index + m[0].length, start = value ? end - m[1].length : m.index;
+    const end = m.index + m[0].length, start = value ? end - m[1].length : m.index;
     while (j < mid && starts[j] < start) j++;
     if (!(j < mid && starts[j] === start && ends[j] === end)) { starts.push(start); ends.push(end); kinds.push(k); }
     pattern.lastIndex = end;
