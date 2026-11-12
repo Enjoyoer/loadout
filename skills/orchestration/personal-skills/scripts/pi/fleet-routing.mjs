@@ -1,7 +1,7 @@
 // Router protocol metadata and an explicit, catalog-checked service tier (Fast/Standard/Ultrafast).
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -567,6 +567,56 @@ async function fleetCompaction(pi, event, ctx, record, summaryHeaders, lists) {
     return failed(error?.kind, error);
   }
 }
+// Pi creates session files and their directories under the normal umask (0644/0755), and they hold transcripts.
+// Keep the agent's own session data private on POSIX without touching the umask: on session_start the session
+// directory, its sessions/ parent and any non-private file in it; on turn_end the session file, once it exists.
+// Best effort: never throws, never writes to stdout, one session-mode evidence row on the first failure per session.
+export function sessionPrivacy(record, platform = process.platform) {
+  const privateFiles = new Set(), failed = new Set();
+  const fail = (ctx, stage, error) => {
+    let sessionId = null;
+    try { sessionId = ctx?.sessionManager?.getSessionId() ?? null; } catch {}
+    if (failed.has(sessionId)) return;
+    failed.add(sessionId);
+    record({ event: 'session-mode', stage, sessionId, code: error?.code ?? 'error' });
+  };
+  // Drops group and other bits from a directory or regular file that has them; a missing path is not a failure.
+  const tighten = (path, keep) => {
+    const st = lstatSync(path, { throwIfNoEntry: false });
+    if (!st || st.isSymbolicLink()) return false;
+    if (st.mode & 0o077) chmodSync(path, st.mode & keep);
+    return true;
+  };
+  return {
+    start(ctx) {
+      if (platform === 'win32') return;
+      try {
+        const dir = ctx?.sessionManager?.getSessionDir();
+        if (!dir) return;
+        const parent = dirname(dir);
+        // Only a sessions/ parent: a custom sessionDir's parent can be any folder.
+        if (basename(parent) === 'sessions') tighten(parent, 0o700);
+        if (!tighten(dir, 0o700)) return;
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (!entry.isFile()) continue;
+          const path = join(dir, entry.name);
+          if (tighten(path, 0o600)) privateFiles.add(path);
+        }
+      } catch (error) { fail(ctx, 'session_start', error); }
+    },
+    turnEnd(ctx) {
+      if (platform === 'win32') return;
+      let file;
+      try {
+        file = ctx?.sessionManager?.getSessionFile();
+        if (!file || privateFiles.has(file)) return;
+        // One call per turn: Pi creates the file with 0666 under the umask, so 0600 is mode & 0o600.
+        chmodSync(file, 0o600);
+        privateFiles.add(file);
+      } catch (error) { if (error?.code !== 'ENOENT') fail(ctx, 'turn_end', error); }
+    },
+  };
+}
 export default function(pi) {
   let turnId=randomUUID();let intent={tier:'inherit',source:'fleet-default'};let tiers=null;
   // One request id shared by the payload and header hooks, whichever runs first.
@@ -579,6 +629,8 @@ export default function(pi) {
     try { if(process.env.PI_CODING_AGENT_DIR) appendFileSync(join(process.env.PI_CODING_AGENT_DIR,'route-evidence.jsonl'),JSON.stringify(row)+'\n',{mode:0o600}); } catch {}
   };
   const credential = fleetCredential(pi, record);
+  const privacy = sessionPrivacy(record);
+  pi.on('turn_end', (_event, ctx) => { privacy.turnEnd(ctx); });
   pi.on('tool_call', serviceGuardHandler(record));
   pi.on('turn_start', (_event, ctx) => credential.turnStart(ctx));
   pi.on('agent_end', () => credential.runEnd());
@@ -627,6 +679,7 @@ export default function(pi) {
   pi.on('session_tree', () => credential.summaryEnd());
   pi.on('session_shutdown', () => credential.shutdown());
   pi.on('session_start',(_event,ctx)=>{
+    privacy.start(ctx);
     const check = enforceCodemode(pi);
     const evidence = { event: 'codemode-check', ...check, sessionId: ctx.sessionManager.getSessionId(), extensionSha256: EXTENSION_SHA256, guardSha256: GUARD_SHA256 };
     record(evidence);
