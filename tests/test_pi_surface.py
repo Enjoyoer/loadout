@@ -1023,6 +1023,100 @@ for(const c of [`launchctl bootout ${L}`,'bash -c "tailscale down"','eval "tails
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_service_guard_scratch_daemon_cases(self):
+        # PM-specified (brief guard-scratch-daemon): a Paseo daemon whose home is under the scratch root may be stopped.
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,mkdirSync,symlinkSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);
+// Forward slashes: the bash tool's shell reads a backslash as an escape, on Windows (Git Bash) too.
+const dir=mkdtempSync(join(tmpdir(),'guard-scratch-')).replace(/\\/g,'/');process.env.HOME=dir;process.env.USERPROFILE=dir;
+const S=dir+'/.cache/fleet-scratch',H=S+'/t/home';
+mkdirSync(H,{recursive:true});mkdirSync(join(dir,'.paseo'));symlinkSync(join(dir,'.paseo'),join(S,'t','link'),'junction');
+const V='paseo daemon stop';
+const envs={'101':{PASEO_HOME:H},'102':{}};
+const opts={cwd:dir,resolvePid:async pid=>['101','102','103'].includes(pid)?'Paseo Supervisor':'',
+ readEnv:async pid=>{if(!envs[pid])throw Error('unreadable');return envs[pid];}};
+for(const c of [`${V} --home ${H}`,`PASEO_HOME=${H} ${V}`,'kill 101'])assert.equal((await g.check(c,opts)).block,false,c);
+for(const c of [`${V} --home ${join(dir,'.paseo')}`,V,`${V} --home ${S}/t/../../../.paseo`,`${V} --home ${S}/t/link`,`${V} --home ${S}`,
+ `${V} --home ${S}/t/missing`,`${V} --home ${H} && ${V}`,'kill 102','kill 103'])assert.equal((await g.check(c,opts)).block,true,c);
+assert.match((await g.check(V,opts)).reason,/may be stopped with `paseo daemon stop --home <that home>`/);
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_service_guard_scratch_daemon_round_2_cases(self):
+        # PM-specified (rev291 round 2 checklist): terminal worker records, HOME=/USERPROFILE= prefixes, ssh scripts.
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);
+const dir=mkdtempSync(join(tmpdir(),'guard-scratch2-')).replace(/\\/g,'/');process.env.HOME=dir;process.env.USERPROFILE=dir;
+const S=dir+'/.cache/fleet-scratch',T='~/.cache/fleet-scratch',V='paseo daemon stop';
+mkdirSync(join(dir,'.paseo'));
+// A home whose lock names a gone PID, with one worker record; `own` is the set of live PIDs ownsHome accepts.
+const DEAD=999999,LIVE=process.pid;
+const home=(name,record)=>{const h=S+'/'+name;mkdirSync(h+'/terminal-worker',{recursive:true});
+ writeFileSync(h+'/paseo.pid',JSON.stringify({pid:DEAD,startedAt:'x',hostname:'x',uid:1,listen:null}));
+ if(record)writeFileSync(h+'/terminal-worker/'+record.pid+'.json',JSON.stringify({recordId:'r',bootId:null,createdAt:'x',identity:{startedAt:'x',commandLine:'x'},
+  protocolVersion:5,paseoVersion:'x',socketPath:'/x',secret:'x',terminals:[],...record}));return h;};
+let own=new Set();
+const opts={cwd:dir,ownsHome:async pid=>own.has(pid)};
+const ok=home('ok',{pid:DEAD-1,terminals:[{id:'t',pid:LIVE,startedAt:'x'}]});
+const demo1=home('rec',{pid:DEAD,terminals:[{id:'t',pid:LIVE,startedAt:'x'}]});
+const pid1=home('pid1',{pid:DEAD,terminals:[{id:'t',pid:1,startedAt:'x'}]});
+const fleet=home('fleet',{pid:DEAD,terminals:[{id:'t',pid:process.ppid,startedAt:'x'}]});
+const copied=home('copied',{pid:LIVE,socketPath:dir+'/.paseo/terminal-worker/sock/tw.sock'});
+const bad=home('bad');writeFileSync(bad+'/terminal-worker/closing-r.json','{not json');
+const nolock=S+'/nolock';mkdirSync(nolock+'/terminal-worker',{recursive:true});writeFileSync(nolock+'/terminal-worker/5.json','{"pid":999998,"terminals":[]}');
+// demo1, a record naming pid 1, the fleet supervisor (a live PID not of this home), a copied fleet record, a bad record, records with no lock.
+for(const h of [demo1,pid1,fleet,copied,bad,nolock])assert.equal((await g.check(`${V} --home ${h}`,opts)).block,true,h);
+own=new Set([LIVE]);assert.equal((await g.check(`${V} --home ${ok}`,opts)).block,false);
+own=new Set();
+// p291-1 cases 53 to 55 and p291-2 case 17: a prefix that moves paseo's ~ (h1 resolves for the guard, the fleet for paseo).
+const evil=dir+'/evil';mkdirSync(evil+'/.cache/fleet-scratch',{recursive:true});symlinkSync(join(dir,'.paseo'),join(evil,'.cache','fleet-scratch','h1'),'junction');mkdirSync(S+'/h1');
+for(const c of [`HOME=${evil} ${V} --home '${T}/h1'`,`env HOME=${evil} ${V} --home '${T}/h1'`,`HOME=${evil} PASEO_HOME='${T}/h1' ${V}`,
+ `USERPROFILE=${evil} ${V} --home '${T}/h1'`])assert.equal((await g.check(c,opts)).block,true,c);
+assert.equal((await g.check(`${V} --home '${T}/h1'`,opts)).block,false);
+// p291-2 cases 4 to 8: a scratch stop in a script sent to ssh.
+writeFileSync(dir+'/stop.sh',`${V} --home ${T}/h1\n`);
+for(const c of ['ssh host < stop.sh','ssh host bash -s < stop.sh',"ssh host 'bash stop.sh'",'ssh host bash stop.sh','cat stop.sh | ssh host'])
+ assert.equal((await g.check(c,opts)).block,true,c);
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_service_guard_scratch_daemon_round_3_cases(self):
+        # PM-specified (rev291 round 3 checklist): p291-5 hl-sv and hl-w with their no-link controls, and p291-6.
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,mkdirSync,writeFileSync,linkSync,lstatSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);
+const dir=mkdtempSync(join(tmpdir(),'guard-scratch3-')).replace(/\\/g,'/');process.env.HOME=dir;process.env.USERPROFILE=dir;
+const S=dir+'/.cache/fleet-scratch';
+// lsof -FfDi output for a process holding `file` open on fd 15.
+const lsof=file=>{const s=lstatSync(file,{bigint:true});return `p1\nfcwd\nD0x${s.dev.toString(16)}\ni1\nf15\nD0x${s.dev.toString(16)}\ni${s.ino}\n`;};
+for(const log of ['daemon.log','terminal-worker.log']){
+ const real=S+'/real-'+log,forged=S+'/hl-'+log,own=S+'/own-'+log;
+ for(const h of [real,forged,own])mkdirSync(h,{recursive:true});
+ writeFileSync(real+'/'+log,'x');writeFileSync(own+'/'+log,'x');
+ // hl-sv / hl-w: another home's log hard-linked in passes by name, and is refused by link count.
+ linkSync(real+'/'+log,forged+'/'+log);
+ assert.equal(g.holdsFile(lsof(real+'/'+log),forged+'/'+log),false,log+' hard link');
+ // The no-link control: a process holding its own home's log passes; a different file does not.
+ assert.equal(g.holdsFile(lsof(own+'/'+log),own+'/'+log),true,log+' own');
+ assert.equal(g.holdsFile(lsof(own+'/'+log),forged+'/'+log),false,log+' other file');
+}
+// p291-6: a dead terminal PID whose session still has a live member; paseo's Linux reaper kills that member.
+const H=S+'/fx6';mkdirSync(H+'/terminal-worker',{recursive:true});
+writeFileSync(H+'/paseo.pid',JSON.stringify({pid:999999,startedAt:'x',hostname:'x',uid:1,listen:null}));
+writeFileSync(H+'/terminal-worker/999998.json',JSON.stringify({recordId:'r1',pid:999998,terminals:[{id:'term-fleet-1',pid:999997,startedAt:'x'}]}));
+const run=async(members,home)=>(await g.check(`paseo daemon stop --home ${H}`,{cwd:dir,ownsHome:async()=>false,
+ sessionMembers:async sid=>sid===999997?members:[],readEnv:async()=>({PASEO_HOME:home})})).block;
+assert.equal(await run([4242],dir+'/.paseo'),true,'member of another home');
+assert.equal(await run([4242],H),false,'member of this home');
+assert.equal(await run([],dir+'/.paseo'),false,'no member');
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_service_tier_fails_closed_on_lookup_and_diagnostic_errors(self):
         script=r"""
 import assert from 'node:assert/strict';
