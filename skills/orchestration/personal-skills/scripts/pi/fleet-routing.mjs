@@ -156,9 +156,9 @@ export function serviceGuardHandler(record, { guard, runtime = join(dirname(file
 }
 // Secret-shaped text in tool results is masked as [REDACTED:<kind>] before the model or the session sees it; the tool's
 // own effects (files it wrote, output it piped or redirected) are untouched. The patterns are the security audit's
-// scanner patterns, compiled once. Every pattern runs on the original text, and the match spans of all kinds are merged
-// and replaced once, so an earlier kind cannot hide part of a later token; oauth-refresh-json masks only its value and
-// keeps the key.
+// scanner patterns, x-api-key included, compiled once. Every pattern runs on the original text, and the match spans of
+// all kinds are merged and replaced once, so an earlier kind cannot hide part of a later token. [kind, source, value]:
+// a kind with value set masks only its capture group, which ends the match, and keeps the key before it.
 export const SECRET_PATTERNS = [
   ['anthropic', String.raw`sk-ant-(?:api|oat|ort|admin)[0-9]{2}-[A-Za-z0-9_-]{20,}`],
   ['openai', String.raw`sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bsk-[A-Za-z0-9]{40,}`],
@@ -172,12 +172,15 @@ export const SECRET_PATTERNS = [
   ['bws-access-token', String.raw`\b0\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9]{20,}:[A-Za-z0-9+/=]{20,}`],
   ['telegram-bot', String.raw`\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33}\b`],
   ['cloudflare-tunnel', String.raw`eyJhIjoi[A-Za-z0-9+/=]{40,}`],
-  ['oauth-refresh-json', String.raw`"refresh_token"\s*:\s*"([^"]{20,})"`],
+  ['oauth-refresh-json', String.raw`"refresh_token"\s*:\s*"([^"]{20,})(?=")`, true],
   ['google-apikey', String.raw`\bAIza[0-9A-Za-z_-]{35}`],
+  // The value of an X-Api-Key header in TOML, JSON or HTTP form, also inside a JSON string (\" quotes). Its
+  // character set leaves out $, {, < and *, so a placeholder stays. The case is spelled out so both compiles in
+  // semantics() keep it.
+  ['x-api-key', String.raw`[Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy](?:\\?["'])?[ \t]*[=:][ \t]*(?:\\?["'])?([A-Za-z0-9_.+/=-]{16,})`, true],
 ];
-// [kind, source, mask, value]: value is true for oauth-refresh-json, whose span is its captured value, which sits just
-// before the closing quote. The compiled patterns are in semantics() below.
-const PASSES = SECRET_PATTERNS.map(([kind, source]) => [kind, source, `[REDACTED:${kind}]`, kind === 'oauth-refresh-json']);
+// [kind, source, mask, value]. The compiled patterns are in semantics() below.
+const PASSES = SECRET_PATTERNS.map(([kind, source, value]) => [kind, source, `[REDACTED:${kind}]`, value === true]);
 // A mask this hook writes; a write or edit carrying one would put the mask in place of the real secret.
 const MASK = new RegExp(String.raw`\[REDACTED:(?:${SECRET_PATTERNS.map(([kind]) => kind).join('|')})\]`);
 // A mask's '[' and ']' give a glued \b pattern the word boundary the raw text lacked. These variants find such a match
@@ -346,7 +349,7 @@ function scan(text, pattern, k, { starts, ends, kinds }) {
   const value = PASSES[k][3];
   pattern.lastIndex = 0;
   for (let m; (m = pattern.exec(text));) {
-    const end = value ? m.index + m[0].length - 1 : m.index + m[0].length;
+    const end = m.index + m[0].length;
     starts.push(value ? end - m[1].length : m.index); ends.push(end); kinds.push(k);
     // Resume at the span's end: a value's closing quote can open the next "refresh_token" key.
     pattern.lastIndex = end;
@@ -358,7 +361,7 @@ function scanUnion(text, pattern, k, { starts, ends, kinds }, from) {
   let j = from;
   pattern.lastIndex = 0;
   for (let m; (m = pattern.exec(text));) {
-    const end = value ? m.index + m[0].length - 1 : m.index + m[0].length, start = value ? end - m[1].length : m.index;
+    const end = m.index + m[0].length, start = value ? end - m[1].length : m.index;
     while (j < mid && starts[j] < start) j++;
     if (!(j < mid && starts[j] === start && ends[j] === end)) { starts.push(start); ends.push(end); kinds.push(k); }
     pattern.lastIndex = end;
@@ -435,13 +438,17 @@ const REFRESH_KEY = 'refresh_token';
 /**
  * Every string in plain JSON-like data (details, structuredContent), rebuilt only where something was masked. Every
  * non-empty string under a refresh_token key is masked whole, whatever its length or content: once JSON-escaped, a
- * short value or one holding '"' or a newline can still match the JSON pattern in the saved session. The walk stops
+ * short value or one holding '"' or a newline can still match the JSON pattern in the saved session. A string under an
+ * X-Api-Key key (any letter case) gets the x-api-key value rule, so placeholders and short values stay. The walk stops
  * below MAX_DEPTH, so deep data cannot overflow the stack. seen maps each object walked to its result: a complete result is reused anywhere, so shared and cyclic objects are walked once; a result the depth cap cut
  * short is reused only where the object is met as deep or deeper, never nearer the top, where a walk reaches further.
  */
 export function redactValue(value, counts) { return walkValue(value, counts, 0, new Map()).out; }
 const MAX_DEPTH = 64;
 const OAUTH_MASK = PASSES.find(([kind]) => kind === 'oauth-refresh-json')[2];
+// A parsed JSON X-Api-Key is a key and a bare value; the value is put back behind a header name, so the pattern
+// decides.
+const API_KEY_NAME = /^x-api-key$/i, API_KEY_PREFIX = 'X-Api-Key: ';
 function walkValue(value, counts, depth, seen) {
   if (typeof value === 'string') return { out: redactText(value, counts), cut: false };
   if (!value || typeof value !== 'object') return { out: value, cut: false };
@@ -462,6 +469,8 @@ function walkValue(value, counts, depth, seen) {
       if (key === REFRESH_KEY && typeof item === 'string' && item.length) {
         counts['oauth-refresh-json'] = (counts['oauth-refresh-json'] ?? 0) + 1;
         next = OAUTH_MASK;
+      } else if (typeof item === 'string' && API_KEY_NAME.test(key)) {
+        next = redactText(API_KEY_PREFIX + item, counts).slice(API_KEY_PREFIX.length);
       } else next = step(item);
       if (next !== item) { if (out === value) out = { ...value }; out[key] = next; }
     }

@@ -649,7 +649,7 @@ const tokens={anthropic:'sk-'+'ant-api03-'+r('a',24),openai:'sk-'+'proj-'+r('b',
  tailscale:'tskey'+'-auth-'+r('f',22),huggingface:'h'+'f_'+r('g',32),
  'bws-access-token':'0.'+'0123abcd-0123-4567-89ab-0123456789ab'+'.'+r('h',22)+':'+r('i',22),
  'telegram-bot':'123456789'+':AA'+r('j',33),'cloudflare-tunnel':'eyJh'+'Ijoi'+r('k',44),'google-apikey':'AI'+'za'+r('m',35)};
-assert.deepEqual(m.SECRET_PATTERNS.map(([k])=>k).filter(k=>k!=='oauth-refresh-json'),Object.keys(tokens));
+assert.deepEqual(m.SECRET_PATTERNS.map(([k])=>k).filter(k=>k!=='oauth-refresh-json'&&k!=='x-api-key'),Object.keys(tokens));
 const rows=[];const h=m.redactHandler(row=>rows.push(row));
 // Each pattern is masked, with one evidence row per masked result and no value in it.
 for(const [kind,token] of Object.entries(tokens)){
@@ -661,6 +661,10 @@ assert.equal(rows.length,Object.keys(tokens).length);assert.ok(!Object.values(to
 // The JSON refresh_token key is kept, only its value is masked.
 const json='{"refresh'+'_token": "'+r('l',24)+'", "other": 1}';
 assert.equal(h({toolName:'read',content:[{type:'text',text:json}]}).content[0].text,'{"refresh'+'_token": "'+R('oauth-refresh-json')+'", "other": 1}');
+// A TOML X-Api-Key header value is masked; the header name and the TOML around it stay (brief redact-apikey-header).
+const toml=v=>'[model_providers.example]\nhttp_headers = { "X-Api-Key" = "'+v+'" }\nname = "example"';
+const key=Array.from({length:40},(_,i)=>'Aa0_'[i%4]).join('');
+assert.equal(h({toolName:'read',content:[{type:'text',text:toml(key)}]}).content[0].text,toml(R('x-api-key')));
 // A nested Codemode call and the Codemode result itself: text, details and structuredContent; images untouched.
 const image={type:'image',data:'/'+tokens.huggingface,mimeType:'image/png'};
 const nested=h({toolName:'read',toolCallId:'c1/1',parentToolCallId:'c1',content:[{type:'text',text:tokens.github},image],structuredContent:{value:tokens.github},isError:false});
