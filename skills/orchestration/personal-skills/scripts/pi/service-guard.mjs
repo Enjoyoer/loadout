@@ -37,6 +37,56 @@ const isPlain = word => !/[\u0001$*?[\]{}`]/.test(word.v);
 const options = list => list.filter(word => !/^-./.test(word.v));
 // Commands whose arguments are data: search patterns and log filters.
 const DATA = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'journalctl']);
+// The fleet's message senders: fleet-send, codex-send, and paseo send or paseo agent send. Their message (arguments, or
+// stdin with -) is data only under senderCall, unsafeSeg and stdoutOn below.
+const SENDERS = ['fleet-send', 'codex-send', 'paseo'];
+const PASEO_VALUED = ['--host', '--home', '-o', '--format', '--prompt', '--prompt-file', '--image', '--behavior'];
+// The first positional words after paseo, past its global options and their values.
+function paseoWords(words, at, count) {
+  const pos = [];
+  for (let j = at + 1; j < words.length && pos.length < count; j++) {
+    if (PASEO_VALUED.includes(words[j].v)) { j++; continue; }
+    if (!words[j].v.startsWith('-')) pos.push(words[j].v.toLowerCase());
+  }
+  return pos;
+}
+// A sender call: the bare name (a word with a slash may be a local script) at command position behind nothing but
+// assignments, keywords, env without -S, or nice (watch, timeout, xargs, sudo and every other wrapper disqualify it);
+// paseo only for send or agent send and when no word is `daemon`, so an unknown global option cannot turn
+// `paseo <opt> send daemon stop` into one.
+function senderCall(words, at) {
+  const v = words[at]?.v ?? '', c = base(v);
+  if (/[\\/]/.test(v) || !SENDERS.includes(c)) return false;
+  for (let i = 0; i < at; i++) {
+    const w = words[i].v, b = base(w);
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w) || KEYWORDS.has(w.toLowerCase())) continue;
+    if ((b !== 'env' && b !== 'nice') || /[\\/]/.test(w) && !/^\/(usr\/)?bin\//.test(w)) return false;
+    for (i++; i < at && /^-./.test(words[i].v); i++) {
+      if (b === 'env' && /^(-[a-zA-Z]*S|--split-string)/.test(words[i].v)) return false;
+      if (WRAPPERS[b].vals.includes(words[i].v)) i++;
+    }
+    i--;
+  }
+  if (c !== 'paseo') return true;
+  if (words.some(word => word.v.toLowerCase() === 'daemon')) return false;
+  const pos = paseoWords(words, at, 2);
+  return pos[0] === 'send' || (pos[0] === 'agent' && pos[1] === 'send');
+}
+// A segment that, anywhere in the command, could make a sender's name run something else or hand its output to a
+// shell: a function or alias definition of any name, source, ., eval, hash or enable; a PATH assignment or export; a
+// segment other than a sender call that names a file called like a sender (a write, link, copy or move); or a
+// subshell or { } group piped on.
+function unsafeSeg(seg) {
+  const { at } = commandAt(seg.words), c = base(seg.words[at]?.v ?? '');
+  if (definesFunction(seg, seg.words) || ['alias', 'source', '.', 'eval', 'hash', 'enable'].includes(c)) return true;
+  if (seg.words.some(word => /^PATH(\+?=|$)/.test(word.v))) return true;
+  if (seg.end === '|' && (seg.subs.length || (seg.words[0]?.v === '}' && !seg.words[0].quoted))) return true;
+  if (senderCall(seg.words, at)) return false;
+  return [...seg.words.slice(at + 1), ...seg.redirects.map(redirect => redirect.target)].some(word => SENDERS.includes(base(word.v.split('=').pop())));
+}
+// Whether a segment's stdout goes on: a pipe, or a redirect of stdout anywhere but /dev/null or stderr.
+const stdoutOn = seg => seg.end === '|' || seg.redirects.some(({ op, fd, target }) => (op === '&>' || op === '&>>' || (fd === '1' && op.startsWith('>')))
+  && target.v !== '/dev/null' && !(op === '>&' && target.v === '2'));
 // git's subcommand: the first word after git that is not a global option (or its value).
 function gitSubcommand(words, at) {
   for (let j = at + 1; j < words.length; j++) {
@@ -49,16 +99,28 @@ function gitSubcommand(words, at) {
 }
 // A segment that defines a function: name() ... or function name ...
 const definesFunction = (seg, words) => words[0]?.v === 'function' || (words.length > 0 && seg.subs.some(list => list.length === 0));
+// grep/rg patterns, journalctl arguments, git commit, tag or notes messages and, when `senders` allows it (nothing in
+// the command unsafe, stdout not going on, not inside a substitution that may become a command), a sender call's
+// message are data, never commands; a segment that defines a function never is.
+const dataSeg = (seg, words, at, senders) => {
+  const c = base(words[at]?.v ?? '');
+  return !definesFunction(seg, words) && (DATA.has(c) || (c === 'git' && ['commit', 'tag', 'notes'].includes(gitSubcommand(words, at)))
+    || (senders && !stdoutOn(seg) && senderCall(words, at)));
+};
 // Commands whose file arguments may hold a PID for kill $(...) or ... | xargs kill.
 const READERS = new Set(['cat', 'jq', 'sed', 'awk', 'head', 'tail', 'grep', 'cut', 'tr', 'xargs', 'get-content', 'gc', 'type']);
 // Whether a segment's redirects, applied in order, send both stdout and stderr to a file (or /dev/null).
 // A target counts only when it is written out (no substitution such as >(tee log)) and, with ~ expanded and resolved
 // against the segment's directory, is /dev/null or a file that is not under /dev/ or /proc/ (so not /dev/stderr,
 // /./dev/stderr or /dev/fd/2). Symlinks are not followed.
-function quiet(redirects, dir) {
+// A target starting with ~ but not ~/ (~user) never counts, and while a cd could not be followed only an absolute target
+// (or one under ~/) does.
+function quiet(redirects, dir, uncertain = false) {
   let out = false, err = false;
   const away = target => {
     if (target.v.includes(SUB) || target.v.includes('$')) return false;
+    if (/^~/.test(target.v) && !/^~([\\/]|$)/.test(target.v)) return false;
+    if (uncertain && !/^(~([\\/]|$)|[\\/]|[A-Za-z]:[\\/])/.test(target.v)) return false;
     // POSIX path rules on every host: the exception applies to the bash tool only (Git Bash on Windows).
     // A drive path C:\x reads as Git Bash's /c/x, so ../ climbs to the same root /dev hangs from.
     const bash = value => String(value ?? '/').replace(/\\/g, '/').replace(/^([A-Za-z]):/, (m, drive) => '/' + drive.toLowerCase());
@@ -123,7 +185,9 @@ export function guardConfig(runtime) {
 
 // ---- Parsing -------------------------------------------------------------------------------------------------------
 
-const segment = prev => ({ words: [], redirects: [], input: [], subs: [], nested: [], end: null, pipeIn: prev === '|' });
+// input holds heredoc bodies and here-strings; expand[k] is true for a heredoc body whose delimiter is unquoted, whose
+// $(...) and backticks the shell runs.
+const segment = prev => ({ words: [], redirects: [], input: [], expand: [], subs: [], nested: [], end: null, pipeIn: prev === '|' });
 function expandBraces(value, limit = 64) {
   const out = [], queue = [value];
   while (queue.length && out.length + queue.length <= limit) {
@@ -165,8 +229,8 @@ class Parser {
       if (redirect) {
         const op = redirect, v = expandBraces(done.v)[0], from = fd ?? (op.startsWith('<') ? '0' : '1');
         redirect = null; fd = null;
-        if (op === '<<' || op === '<<-') this.heredocs.push({ seg, delim: v, strip: op === '<<-' });
-        else if (op === '<<<') seg.input.push(v);
+        if (op === '<<' || op === '<<-') this.heredocs.push({ seg, delim: v, strip: op === '<<-', quoted: done.quoted });
+        else if (op === '<<<') { seg.input.push(v); seg.expand.push(false); }
         else seg.redirects.push({ op, fd: from, target: { v, quoted: done.quoted } });
         return;
       }
@@ -291,12 +355,26 @@ class Parser {
         lines.push(line);
       }
       doc.seg.input.push(lines.join('\n'));
+      doc.seg.expand.push(!doc.quoted);
     }
+  }
+  // The $(...) and backtick substitutions of a heredoc body (an unquoted delimiter), each a list of segments.
+  expansions() {
+    const s = this.s, out = [];
+    while (this.i < s.length) {
+      const c = s[this.i], n = s[this.i + 1];
+      if (c === '\\') { this.i += 2; continue; }
+      if (c === '$' && n === '(') { this.i += 2; out.push(this.list(')')); continue; }
+      if (c === '`') { out.push(this.backtick()); continue; }
+      this.i++;
+    }
+    return out;
   }
 }
 
 /** Parse a command line or script into segments: {words: [{v, quoted}], redirects, input, subs, nested, end, pipeIn}. */
 export function parse(text, shell = 'posix') { return new Parser(String(text), shell).list(null); }
+const expansions = text => new Parser(String(text), 'posix').expansions();
 const flatten = (nodes, out = []) => {
   for (const seg of nodes) { out.push(seg); for (const list of [...seg.subs, ...seg.nested]) flatten(list, out); }
   return out;
@@ -310,7 +388,7 @@ const STOP_SERVICE = new Set(['stop-service', 'spsv', 'suspend-service', 'remove
 const STOP_TASK = new Set(['stop-scheduledtask', 'disable-scheduledtask', 'unregister-scheduledtask']);
 const PKILL_ARG = new Set(['-u', '-U', '-g', '-G', '-P', '-s', '-t', '-F', '--signal', '--euid', '--uid', '--group', '--pgroup', '--session', '--terminal', '--pidfile', '--ns', '--nslist']);
 const KILLALL_ARG = new Set(['-s', '-u', '-t', '-c', '-o', '-y', '--signal', '--user', '--context', '--older-than', '--younger-than']);
-const POSIX_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish']);
+const POSIX_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'csh', 'tcsh']);
 const PS_SHELLS = new Set(['pwsh', 'powershell']);
 const KEYWORDS = new Set(['!', '{', '}', 'if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'coproc']);
 // Commands that run the rest of their words as a command, with the options that take a value and leading positionals.
@@ -368,10 +446,44 @@ function readsStdin(words) {
   }
   return true;
 }
+// Commands that run, schedule or keep their stdin text for the shell: a heredoc into one is still a mention.
+const KEEPS = new Set(['source', '.', 'eval', 'read', 'mapfile', 'readarray', 'at', 'batch', 'crontab', 'busybox', 'toybox', 'parallel', 'script', 'make', 'expect', 'osascript']);
+// What a heredoc or here-string is to the segment that reads it: 'run' (a shell runs it), 'mention' (checked for literal
+// protected names) or 'data'. Mentions: a compound command (done, fi, }), a computed command name ($SHELL), KEEPS, a
+// command with a shell among its arguments (pkexec bash, docker exec -i c sh), and cat or tee that writes a file, pipes
+// on, or sits in a substitution that may become a command. Anything else (python3 -, node -, cat to the terminal)
+// reads data.
+function docMode(seg, words, ca, cmd, state) {
+  if (POSIX_SHELLS.has(cmd) || PS_SHELLS.has(cmd) || cmd === 'ssh' || cmd === 'su' || ca.shell) return 'run';
+  const shellArg = words.slice(ca.at + 1).some(word => POSIX_SHELLS.has(base(word.v)) || PS_SHELLS.has(base(word.v)) || ['ssh', 'su'].includes(base(word.v)));
+  // A consumer whose stdout is piped on may hand the text to the next segment (codex-send - <<EOF | sh).
+  if (!cmd || KEEPS.has(cmd) || /[\u0001$`]/.test(words[ca.at].v) || shellArg || seg.end === '|') return 'mention';
+  if (cmd !== 'cat' && cmd !== 'tee') return 'data';
+  const writes = seg.redirects.some(({ op, fd, target }) => op === '&>' || op === '&>>' || (fd === '1' && (['>', '>>', '>|'].includes(op) || (op === '>&' && !/^(\d+|-)$/.test(target.v)))))
+    || (cmd === 'tee' && options(words.slice(ca.at + 1)).length > 0);
+  return writes || seg.end === '|' || seg.end === '|&' || state.sub === 'cmd' ? 'mention' : 'data';
+}
 // Whether a shell's options turn on errexit: -e (alone or combined) or -o errexit.
 const errexitOpts = args => args.some((arg, j) => /^-[a-zA-Z]*e[a-zA-Z]*$/.test(arg) || (arg === '-o' && args[j + 1] === 'errexit'));
 const SIGNAL = /^-(sig)?(hup|int|quit|ill|trap|abrt|iot|bus|emt|fpe|kill|usr1|segv|usr2|pipe|alrm|term|stkflt|chld|cld|cont|stop|tstp|ttin|ttou|urg|xcpu|xfsz|vtalrm|prof|winch|io|poll|pwr|sys|info|lost|rtmin(\+\d+)?|rtmax(-\d+)?)$/i;
 const psOption = (word, name, min) => word.length >= min && name.startsWith(word);
+// The local script a segment runs by the local rule (bash|sh <file>, source <file>, ./file, behind wrappers), or null.
+function scriptOf(words) {
+  const { at } = commandAt(words), w = words[at];
+  if (!w) return null;
+  const c = base(w.v);
+  if (c === 'source' || c === '.') return words[at + 1] ?? null;
+  if (!POSIX_SHELLS.has(c)) return /^(\.{1,2}[\\/]|[\\/]|~[\\/])/.test(w.v) ? w : null;
+  for (let j = at + 1; j < words.length; j++) {
+    const a = words[j].v;
+    if (a === '--') return words[j + 1] ?? null;
+    if (/^-[a-zA-Z]*[cs][a-zA-Z]*$/.test(a) || a === '-') return null;
+    if (['-o', '+o', '-O', '+O', '--rcfile', '--init-file'].includes(a)) { j++; continue; }
+    if (/^[-+]./.test(a)) continue;
+    return words[j];
+  }
+  return null;
+}
 const PS_VALUED = ['-executionpolicy', '-windowstyle', '-workingdirectory', '-configurationname', '-outputformat', '-inputformat', '-version', '-psconsolefile', '-custompipename', '-settingsfile'];
 
 // ---- The guard -----------------------------------------------------------------------------------------------------
@@ -584,6 +696,8 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
         const at = rl.indexOf('daemon');
         const verb = at >= 0 && rl.slice(at + 1).find(word => ['stop', 'restart', 'uninstall'].includes(word));
         if (verb) return refuse(`paseo daemon ${verb}`, 'Paseo daemon');
+        // paseo restart restarts the selected daemon worker.
+        if (paseoWords(words, i, 1)[0] === 'restart') return refuse('paseo restart', 'Paseo daemon');
       } else if (cmd === 'tailscale') {
         const verb = rl.find(word => ['down', 'logout', 'switch'].includes(word));
         if (verb) return refuse(`tailscale ${verb}`, 'tailscale');
@@ -699,7 +813,7 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     // then kills the group, repair included. Without the redirects the repair dies of SIGPIPE once Pi stops reading.
     // The nohup form also needs no other job in the command left in the background (yes & nohup ... &), whose output
     // keeps Pi reading, and so the call open.
-    const detached = run.shell === 'posix' && !run.job.trap && quiet(seg.redirects, seg.dir)
+    const detached = run.shell === 'posix' && !run.job.trap && quiet(seg.redirects, seg.dir, seg.uncertain)
       && ((setsid && (seg.end === '&' || fork))
         || (nohup && seg.end === '&' && seg.last && flatten(run.root).filter(other => other.end === '&').length === 1));
     // errexit from the runner (bash -e, bash -o errexit, SHELLOPTS=...errexit) holds from the script's first line.
@@ -758,6 +872,9 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       // The remote command parsed like a local one: any segment that runs a shell reading stdin (past sudo, options
       // and a cd && prefix) takes the local stdin.
       const remoteSegs = rest.length ? flatten(parse(remote, 'posix')) : [];
+      // A remote segment that runs a script by the local rule (bash stop.sh, sudo bash ./stop.sh, cd /tmp && bash
+      // stop.sh): its local copy is checked against the defaults.
+      for (const other of remoteSegs) { const file = scriptOf(other.words); if (file && !/[\u0001$]/.test(file.v)) script(file, { remote: true }); }
       if (!remoteSegs.length || remoteSegs.some(other => !other.pipeIn && !other.redirects.some(redirect => redirect.op === '<') && readsStdin(other.words)))
         stdin({ remote: true });
       return items;
@@ -845,6 +962,8 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     return { unresolved };
   }
   async function scriptFinding(item, run, state, mention) {
+    // A path inside quoted text (python3 -c "open('$F')") is a mention, not a script anything runs.
+    if (mention === 'quoted') return null;
     const { path, text, unresolved } = await readFirst(item, run, state);
     if (text !== undefined) {
       if (typeof text === 'object' && text.tooLarge) return mention ? null : refuse(`script ${item.file} is over ${SCRIPT_CAP / 1024} KB`, 'a script too large to check');
@@ -989,14 +1108,25 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     return !word.quoted && /\s/.test(v) ? v.split(/\s+/).filter(Boolean).map(part => ({ v: part, quoted: false })) : [{ ...word, v }];
   });
   const copy = state => ({ ...state, vars: { ...state.vars }, stack: [...state.stack] });
-  const stopped = run => !run.collect && run.findings.length > 0;
+  // Outside a script, the walk stops at the first finding that is not a mention.
+  const stopped = run => !run.collect && run.findings.some(item => !item.mention);
   async function walk(nodes, run, state, mention, scope = nodes) {
     let prev = null;
+    // Anything unsafe for the senders' data rule in this text turns it off for the rest of the job.
+    if (!run.job.unsafeSenders && flatten(nodes).some(unsafeSeg)) run.job.unsafeSenders = true;
     for (const seg of nodes) {
       const index = run.order++;
-      for (const list of [...seg.subs, ...seg.nested]) { await walk(list, run, copy(state), mention, scope); if (stopped(run)) return; }
+      // A substitution inside a data segment (git commit -m "$(cat <<EOF ...)") feeds data; any other may feed a command.
+      const senders = !run.job.unsafeSenders && state.sub !== 'cmd';
+      const feedsData = dataSeg(seg, seg.words, commandAt(seg.words).at, senders);
+      for (const list of [...seg.subs, ...seg.nested]) {
+        const inner = copy(state);
+        if (seg.nested.includes(list)) inner.sub = feedsData ? 'data' : 'cmd';
+        await walk(list, run, inner, mention, scope);
+        if (stopped(run)) return;
+      }
       const words = expandVars(seg.words, state);
-      const view = { ...seg, words, prev, last: run.depth === 0 && nodes === run.root && seg === nodes[nodes.length - 1], dir: state.dir, shellopts: state.vars.SHELLOPTS };
+      const view = { ...seg, words, prev, last: run.depth === 0 && nodes === run.root && seg === nodes[nodes.length - 1], dir: state.dir, uncertain: state.uncertain, shellopts: state.vars.SHELLOPTS };
       const joined = prev && (prev.end === '&&' || prev.end === '||');
       prev = view;
       if (!words.length && !seg.input.length && !seg.redirects.length) continue;
@@ -1024,11 +1154,10 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
       }
       if (words.length && words.every(word => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word.v) || ['export', 'local', 'declare', 'readonly'].includes(word.v)))
         for (const word of words) { const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word.v); if (m && !m[2].includes(SUB)) state.vars[m[1]] = m[2]; }
-      // grep/rg patterns, journalctl arguments and git commit, tag or notes messages are data, never commands; a
-      // segment that defines a function never is.
-      const data = !fn && (DATA.has(cmd) || (cmd === 'git' && ['commit', 'tag', 'notes'].includes(gitSubcommand(words, at))));
+      const data = dataSeg(seg, words, at, senders);
+      const marked = mention ? { mention: true } : {};
       const found = data ? null : await inspect(view, run, mention, scope);
-      if (found) { run.findings.push({ ...found, index, words }); if (stopped(run)) return; }
+      if (found) { run.findings.push({ ...found, index, words, ...marked }); if (stopped(run)) return; }
       if (run.collect && !mention) {
         if (exitOf(words)) run.exits.push(index);
         if (cmd === 'source' || cmd === '.') run.sources.push(index);
@@ -1064,23 +1193,26 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
           }
         }
       }
-      // Heredocs and here-strings: a shell reading them runs them; anything else only mentions them.
-      for (const text of data ? [] : seg.input) {
-        const shellInput = POSIX_SHELLS.has(cmd) || PS_SHELLS.has(cmd) || cmd === 'ssh' || cmd === 'su' || ca.shell;
-        await walk(parse(text, PS_SHELLS.has(cmd) ? 'powershell' : 'posix'), run, copy(state), mention || !shellInput);
+      // Heredocs and here-strings: a shell reading them runs them; some consumers only mention them (docMode); for the
+      // rest, and for a data segment, the text is data. The $(...) and backticks of a heredoc whose delimiter is
+      // unquoted run in every case.
+      for (const [k, text] of seg.input.entries()) {
+        const mode = data ? 'data' : docMode(seg, words, ca, cmd, state);
+        if (mode !== 'data') await walk(parse(text, PS_SHELLS.has(cmd) ? 'powershell' : 'posix'), run, copy(state), mode === 'run' ? mention : mention || true);
         if (stopped(run)) return;
+        if (mode !== 'run' && seg.expand[k]) for (const list of expansions(text)) { await walk(list, run, copy(state), mention, scope); if (stopped(run)) return; }
       }
       for (const word of data ? [] : words) {
         if (!word.quoted || !/[\s;&|<>`]/.test(word.v)) continue;
-        await walk(parse(word.v.replaceAll(SUB, ' '), run.shell), run, copy(state), true);
+        await walk(parse(word.v.replaceAll(SUB, ' '), run.shell), run, copy(state), 'quoted');
         if (stopped(run)) return;
       }
       for (const item of data ? dataRuns(words, at) : runsOf(view, run)) {
         if (item.remote && item.command !== undefined) {
           const remote = await remoteGuard().check(item.command, { cwd: state.dir, shell: 'posix' });
-          if (remote) run.findings.push({ ...remote, what: `ssh ${remote.what}`, index });
+          if (remote) run.findings.push({ ...remote, what: `ssh ${remote.what}`, index, ...marked });
         } else if (item.command !== undefined) await walk(parse(item.command, item.shell), run, copy(state), mention);
-        else { const inner = await scriptFinding(item, run, state, mention); if (inner) run.findings.push({ ...inner, index }); }
+        else { const inner = await scriptFinding(item, run, state, mention); if (inner) run.findings.push({ ...inner, index, ...marked }); }
         if (stopped(run)) return;
       }
     }
@@ -1093,17 +1225,20 @@ export function serviceGuard({ protectedServices = DEFAULT_PROTECTED, resolvePid
     return run;
   }
   async function check(command, { cwd = process.cwd(), shell = 'posix' } = {}) {
-    const job = { processes: undefined, dirs: new Set([cwd]), written: new Map(), background: false, trap: false };
+    const job = { processes: undefined, dirs: new Set([cwd]), written: new Map(), background: false, trap: false, unsafeSenders: false };
     const run = await analyze(String(command), shell, cwd, 0, job, false);
-    const found = run.findings[0];
-    return found ? refuse(found.what, found.entry) : null;
+    // A real command finding wins over a mention, so the file tip goes only with text that is not run.
+    const found = run.findings.find(item => !item.mention) ?? run.findings[0];
+    return found ? { ...refuse(found.what, found.entry), ...(found.mention ? { mention: true } : {}) } : null;
   }
   return { check, protectedServices: names.map(({ entry }) => entry) };
 }
 
 /** Refusal text for a finding: what ran, which protected name it touches, and the rule. */
 export const refusalReason = found => `Refused by the fleet service guard: ${found.what} touches protected service "${found.entry}". Rule: ${GUARD_RULE}. `
-  + 'Write that script with the write tool: undo each stop with its pair, naming the full service (bootout -> bootstrap with the plist path named after its label; stop or kill -> start, restart or kickstart; disable -> enable, then bootstrap; mask -> unmask, then start), then health-check it (curl, launchctl print, systemctl is-active), with no exit or source between and no set -e or bash -e. Run it as the last command, with both outputs redirected: nohup bash <script> >log 2>&1 &. This guard is a backstop, not a sandbox.';
+  + 'Write that script with the write tool: undo each stop with its pair, naming the full service (bootout -> bootstrap with the plist path named after its label; stop or kill -> start, restart or kickstart; disable -> enable, then bootstrap; mask -> unmask, then start), then health-check it (curl, launchctl print, systemctl is-active), with no exit or source between and no set -e or bash -e. Run it as the last command, with both outputs redirected: nohup bash <script> >log 2>&1 &. This guard is a backstop, not a sandbox.'
+  + (found.entry === 'every service on this host' ? ' A planned reboot of another host needs its owner or Config PM; let the OS update restart it in its maintenance window, or ask.' : '')
+  + (found.mention ? ' To send or write text that names a protected service, put it in a file and pass the file.' : '');
 
 /**
  * Pure entry point for any harness: {block: false} or {block: true, reason, what, entry}. Options: protectedServices
