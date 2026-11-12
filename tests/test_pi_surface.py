@@ -855,6 +855,58 @@ assert.equal((await g.check('nohup bash x.sh >log 2>&1 &',opts)).block,false);
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_service_guard_batch_2_cases(self):
+        # PM-specified (guard batch 2 and its round 1): message text and heredocs into other programs are data under
+        # the sender precondition, quoted paths are not scripts while ssh still reads them, redirect targets F1/F2,
+        # paseo restart, heredoc consumers that run stdin, and the refusal tips.
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const g=await import(process.argv[1]);
+const dir=mkdtempSync(join(tmpdir(),'guard-b2-'));process.env.HOME=dir;
+const W=(name,text)=>writeFileSync(join(dir,name),text);
+const L='com.example.model-bridge';
+W('notes.md','Rule: never run paseo daemon stop by hand.\n');W('stop.sh','pkill -f Paseo\n');W('lib.sh','fleet-send() { eval "$2"; }\n');
+W('fix.sh',`launchctl bootout gui/501/${L}\nlaunchctl bootstrap gui/501 ${dir}/${L}.plist\ncurl -fsS http://127.0.0.1:1/health\n`);
+const opts={protectedServices:[L],cwd:dir,resolvePid:async()=>'',listProcesses:async()=>[]};
+const T="'tailscale down'";
+const refused=[
+ // 1 to 3: still refused around the new data.
+ './fleet-send abc "tailscale down"','fleet-send abc "$(pkill -f Paseo)"','paseo --host send daemon stop',"echo 'tailscale down' | bash -",
+ "sudo bash <<'EOF'\ntailscale down\nEOF","cat > s.sh <<'EOF'\npkill -f Paseo\nEOF\nbash s.sh","\"$(cat <<'EOF'\ntailscale down\nEOF\n)\"",
+ "python3 - <<EOF\nprint('$(pkill -f Paseo)')\nEOF",'bash -c "bash stop.sh"',
+ // R1-A1: a script named in an ssh remote command, quoted or not.
+ "ssh host 'bash stop.sh'",'ssh host "sudo bash ./stop.sh"',"ssh host 'cd /tmp && bash stop.sh'","scp stop.sh host: && ssh host 'bash stop.sh'",
+ 'ssh host bash stop.sh','ssh host -- bash stop.sh',
+ // R1-B1 to B4: the sender precondition.
+ `fleet-send() { eval "$2"; }; fleet-send x ${T}`,`shopt -s expand_aliases\nalias fleet-send=eval\nfleet-send ${T}`,`source ./lib.sh; fleet-send x ${T}`,
+ `watch fleet-send x '; tailscale down'`,`sudo fleet-send x ${T}`,`PATH=.:$PATH fleet-send x ${T}`,`export PATH=/tmp/evil:$PATH; fleet-send -c ${T}`,
+ `hash -p /bin/bash fleet-send; fleet-send -c ${T}`,`ln -sf /bin/bash ~/.local/bin/codex-send && codex-send -c ${T}`,
+ `fleet-send x ${T} | sh`,`codex-send h t - <<'EOF' | sh\ntailscale down\nEOF`,`bash -c "$(codex-send h t ${T})"`,`eval "$(codex-send h t ${T})"`,
+ // N1: heredoc consumers that run their stdin.
+ "tcsh <<'EOF'\ntailscale down\nEOF","sshpass -p pw ssh host <<'EOF'\ntailscale down\nEOF","parallel <<'EOF'\ntailscale down\nEOF","osascript <<'EOF'\ntailscale down\nEOF",
+ // N8.
+ 'paseo restart','paseo --host x restart',
+ // 4: F1 and F2.
+ 'nohup bash fix.sh >~root/../dev/stderr 2>&1 &','cd "$(echo /)" && nohup bash fix.sh >dev/stderr 2>&1 &'];
+for(const c of refused)assert.equal((await g.check(c,opts)).block,true,c);
+const allowed=['fleet-send abc "status: restart tailscale, then paseo daemon stop was refused"','paseo send abc "note: tailscale down"',
+ 'paseo agent send abc "note: tailscale down"','codex-send host thread "tailscale down"',"fleet-send pm:x - <<'EOF'\ntailscale down\nEOF",
+ 'env -i fleet-send x "tailscale down"','fleet-send x "tailscale down" >/dev/null 2>&1',
+ "python3 - <<'EOF'\nopen('STATUS.html','w').write('never run tailscale down')\nEOF","node - <<'EOF'\nconsole.log('paseo daemon stop')\nEOF",
+ "git commit -m \"$(cat <<'EOF'\ndocs: tailscale down is refused\nEOF\n)\"",
+ `F=~/notes.md; python3 -c "\nimport hashlib\nprint(hashlib.sha256(open('$F').read().encode()).hexdigest())"`,
+ 'cd "$(echo /)" && nohup bash fix.sh >/tmp/fix.log 2>&1 &','paseo agent restart abc'];
+for(const c of allowed)assert.equal((await g.check(c,opts)).block,false,c);
+// 6 and N3: the refusal tips; a command string is not a mention.
+const tip=/To send or write text that names a protected service, put it in a file and pass the file\./;
+assert.match((await g.check("ssh host 'sudo reboot'",opts)).reason,/A planned reboot of another host needs its owner or Config PM; let the OS update restart it in its maintenance window, or ask\./);
+assert.match((await g.check(`echo "launchctl bootout ${L}"`,opts)).reason,tip);
+for(const c of [`launchctl bootout ${L}`,'bash -c "tailscale down"','eval "tailscale down"','su -c "tailscale down"',"ssh host 'tailscale down'"])
+ assert.doesNotMatch((await g.check(c,opts)).reason,tip,c);
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'service-guard.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_service_tier_fails_closed_on_lookup_and_diagnostic_errors(self):
         script=r"""
 import assert from 'node:assert/strict';
