@@ -686,10 +686,9 @@ for(const [kind,token] of [...Object.entries(tokens),['oauth-refresh-json',json]
   assert.ok(counts[kind]>=Math.floor(MB/unit.length),kind);assert.ok(!masked.includes(token.slice(0,-1)),kind);
   assert.ok(ms<50,kind+' '+ms.toFixed(1)+' ms');
 }
-// A refresh_token key in details or structuredContent is masked; a short or quoted value is not.
-const rt=h({toolName:'mcp',content:[],structuredContent:{auth:{['refresh'+'_token']:r('n',24),access:'x'}},details:{['refresh'+'_token']:'short'}});
+// A refresh_token key in details or structuredContent is masked; an empty value is left.
+const rt=h({toolName:'mcp',content:[],structuredContent:{auth:{['refresh'+'_token']:r('n',24),access:'x'}},details:{['refresh'+'_token']:''}});
 assert.deepEqual(rt.structuredContent,{auth:{['refresh'+'_token']:R('oauth-refresh-json'),access:'x'}});assert.equal(rt.details,undefined);
-assert.equal(h({toolName:'mcp',content:[],details:{['refresh'+'_token']:r('n',24)+'"'}}),undefined);
 // Cyclic and shared objects are walked once: linear, and a cycle keeps its shape.
 const cyc={};let node=cyc;for(let i=0;i<60;i++){const next={};node.a=next;node.b=next;node.self=cyc;node=next;}node.v=tokens.github;
 const t1=performance.now();const cout=m.redactValue(cyc,{});assert.ok(performance.now()-t1<50);
@@ -728,6 +727,60 @@ function hooksOf(){const hooks={};m.default({on:(e,f)=>(hooks[e]??=[]).push(f)})
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri(),
             str(PI/'fleet-routing.mjs'), str(PI.parent.parent/'fleet/README.md'), __file__], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_glued_tokens_are_masked_whole(self):
+        # Config-specified cases (brief pi-redact-spans). Tokens are joined at run time so no token-shaped literal is in the repo.
+        script=r"""
+import assert from 'node:assert/strict';
+const m=await import(process.argv[1]);
+const r=(c,n)=>c.repeat(n);const R=k=>'[REDACTED'+':'+k+']';const K='"refresh'+'_token":"';
+const t={github:'gh'+'p_'+r('C',36),slack:'xo'+'xb-'+r('1',12),aws:'AK'+'IA'+r('Q',16),tailscale:'tskey'+'-auth-'+r('f',22),
+ huggingface:'h'+'f_'+r('g',32),telegram:'123456789'+':AA'+r('j',33),apikey:'AI'+'za'+r('m',35)};
+const cases=[
+  // One punctuation character between tokens of two kinds.
+  ['x '+t.github+'-'+t.slack+' y','x '+R('github')+'-'+R('slack')+' y',{github:1,slack:1}],
+  ['x '+t.aws+'.'+t.telegram+' y','x '+R('aws')+'.'+R('telegram-bot')+' y',{aws:1,'telegram-bot':1}],
+  // A value's closing quote is the next key's opening quote.
+  ['{'+K+r('l',24)+K+r('n',24)+'"}','{'+K+R('oauth-refresh-json')+K+R('oauth-refresh-json')+'"}',{'oauth-refresh-json':2}],
+  // No separator: a body that holds another kind's token is masked whole, not cut where the inner token was.
+  ['x '+'ya'+'29.'+r('e',8)+t.slack+r('e',12)+' y','x '+R('google-access')+' y',{'google-access':1,slack:1}],
+  ['x '+'1/'+'/0'+r('d',20)+t.slack+' y','x '+R('google-refresh')+' y',{'google-refresh':1,slack:1}],
+  // No separator: matches the masking would create (a mask gives a glued \b pattern its boundary) are masked too.
+  ['x '+t.aws+t.tailscale+' y','x '+R('aws')+' y',{aws:1,tailscale:1}],
+  ['x '+t.apikey+t.huggingface+' y','x '+R('google-apikey')+' y',{'google-apikey':1,huggingface:1}],
+  ['x '+t.apikey+t.apikey+t.apikey+' y','x '+R('google-apikey')+' y',{'google-apikey':3}],
+  // A refresh_token value that the mask makes 20 characters long.
+  [K+'ab'+'xo'+'xb-'+r('1',10)+'.."',K+R('oauth-refresh-json')+'"',{slack:1,'oauth-refresh-json':1}],
+  // check.py's Python semantics (rev292 B1): (a) \s covers U+001C and U+0085; (b1) a non-ASCII letter is a word
+  // character for \b; (b2) so is one before a token, which then is not a check.py match and does not swallow the next
+  // one; it is still masked, as the ASCII patterns match it too (rev292 R2-P1).
+  ['{"refresh'+'_token"\x1c:"'+r('v',24)+'"}','{"refresh'+'_token"\x1c:"'+R('oauth-refresh-json')+'"}',{'oauth-refresh-json':1}],
+  ['{"refresh'+'_token":\x85"'+r('v',24)+'"}','{"refresh'+'_token":\x85"'+R('oauth-refresh-json')+'"}',{'oauth-refresh-json':1}],
+  ['123456789'+':AA'+r('j',32)+'-é',R('telegram-bot')+'é',{'telegram-bot':1}],
+  ['123456789'+':AA'+r('j',32)+'-の',R('telegram-bot')+'の',{'telegram-bot':1}],
+  ['é'+'sk-'+r('a',40)+'sk'+'-proj-'+r('b',20),'é'+R('openai'),{openai:2}],
+  ['Ω'+'gh'+'p_'+r('C',36)+'github'+'_pat_'+r('D',50),'Ω'+R('github'),{github:2}],
+  // A token glued after a non-ASCII letter is not a check.py match, and is masked all the same (rev292 R2-P1).
+  ...['認証','トークンは','clé'].flatMap(lead=>[['github',t.github],['aws',t.aws],['openai','sk-'+r('b',40)],
+    ['huggingface',t.huggingface],['google-apikey',t.apikey]].map(([kind,token])=>[lead+token+' ok',lead+R(kind)+' ok',{[kind]:1}])),
+];
+const patterns=m.SECRET_PATTERNS.map(([kind,source])=>[kind,new RegExp(source,'g')]);
+for(const [text,want,kinds] of cases){
+  const counts={};const out=m.redactText(text,counts);
+  assert.equal(out,want);assert.deepEqual(counts,kinds);
+  // JS and Python agree on ASCII text only; the cases above give the Python result for the rest.
+  if(/^[\x00-\x1b\x20-\x7f]*$/.test(text)) for(const [kind,p] of patterns)for(const hit of out.matchAll(p))assert.ok(kind==='oauth-refresh-json'&&hit[1]===R(kind),kind);
+}
+// Any non-empty string under a refresh_token key is masked: short, holding a quote, or holding newlines.
+const h=m.redactHandler(()=>{});
+for(const value of ['ab','a"b',r('n',8)+'\n'+r('n',8)+'\n']){
+  const res=h({toolName:'mcp',content:[],details:{['refresh'+'_token']:value}});
+  assert.deepEqual(res.details,{['refresh'+'_token']:R('oauth-refresh-json')});
+  assert.ok(!JSON.stringify(res.details).includes(value.slice(0,2)),JSON.stringify(value));
+}
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_pi_forwards_the_partial_result_object_extensions_masked(self):

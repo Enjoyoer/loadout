@@ -156,8 +156,9 @@ export function serviceGuardHandler(record, { guard, runtime = join(dirname(file
 }
 // Secret-shaped text in tool results is masked as [REDACTED:<kind>] before the model or the session sees it; the tool's
 // own effects (files it wrote, output it piped or redirected) are untouched. The patterns are the security audit's
-// scanner patterns, compiled once, one replace pass per kind with a plain string replacement (a callback per match is
-// too slow on dense input); oauth-refresh-json masks only its value and keeps the key.
+// scanner patterns, compiled once. Every pattern runs on the original text, and the match spans of all kinds are merged
+// and replaced once, so an earlier kind cannot hide part of a later token; oauth-refresh-json masks only its value and
+// keeps the key.
 export const SECRET_PATTERNS = [
   ['anthropic', String.raw`sk-ant-(?:api|oat|ort|admin)[0-9]{2}-[A-Za-z0-9_-]{20,}`],
   ['openai', String.raw`sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bsk-[A-Za-z0-9]{40,}`],
@@ -174,32 +175,273 @@ export const SECRET_PATTERNS = [
   ['oauth-refresh-json', String.raw`"refresh_token"\s*:\s*"([^"]{20,})"`],
   ['google-apikey', String.raw`\bAIza[0-9A-Za-z_-]{35}`],
 ];
-const PASSES = SECRET_PATTERNS.map(([kind, source]) => kind === 'oauth-refresh-json'
-  ? [kind, new RegExp(String.raw`("refresh_token"\s*:\s*")[^"]{20,}"`, 'g'), `$1[REDACTED:${kind}]"`]
-  : [kind, new RegExp(source, 'g'), `[REDACTED:${kind}]`]);
+// [kind, source, mask, value]: value is true for oauth-refresh-json, whose span is its captured value, which sits just
+// before the closing quote. The compiled patterns are in semantics() below.
+const PASSES = SECRET_PATTERNS.map(([kind, source]) => [kind, source, `[REDACTED:${kind}]`, kind === 'oauth-refresh-json']);
 // A mask this hook writes; a write or edit carrying one would put the mask in place of the real secret.
 const MASK = new RegExp(String.raw`\[REDACTED:(?:${SECRET_PATTERNS.map(([kind]) => kind).join('|')})\]`);
-/** text with every secret-shaped run masked; counts gets one per mask, by kind. */
-export function redactText(text, counts) {
-  for (const [kind, pattern, mask] of PASSES) {
-    const found = text.match(pattern)?.length;
-    if (!found) continue;
-    counts[kind] = (counts[kind] ?? 0) + found;
-    text = text.replace(pattern, mask);
+// A mask's '[' and ']' give a glued \b pattern the word boundary the raw text lacked. These variants find such a match
+// next to a span in pass 1: after drops the leading \b and is tried at a span's end; before drops the trailing \b and
+// must end at a span's start, within the 64 characters before it.
+//
+// check.py runs these patterns with Python's re, where \s also covers U+001C to U+001F and U+0085, and \b treats every
+// Unicode letter and digit as a word character. JS differs on both, so text holding any of those characters gets the
+// same patterns compiled with Python's meaning (u flag, \b as a lookaround), and masks the union of what those and the
+// ASCII form find: every check.py match, plus a token glued to a non-ASCII letter as before (Python's \b fails there).
+// Other text keeps the ASCII form alone, which gives the same matches there.
+const PY_TRIGGER = /[\x1c-\x1f\u0080-\uffff]/;
+const PY_WORD = String.raw`[\p{L}\p{N}_]`;
+const PY_B = String.raw`(?:(?<=${PY_WORD})(?!${PY_WORD})|(?<!${PY_WORD})(?=${PY_WORD}))`;
+// A \b just before a word character can only be the start of a word, a lookbehind alone, which is much faster.
+const toPython = source => source.replace(/\\s/g, String.raw`[\s\x1c-\x1f\x85]`)
+  .replace(/\\b(?=[A-Za-z0-9_]|\[0-9\])/g, `(?<!${PY_WORD})`).replace(/\\b/g, PY_B);
+function semantics(py) {
+  const compile = (source, flags) => py ? new RegExp(toPython(source), flags + 'u') : new RegExp(source, flags);
+  const isWord = c => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+  const before = new RegExp(`(?<=${PY_WORD})`, 'uy'), after = new RegExp(PY_WORD, 'uy');
+  const glued = SECRET_PATTERNS.map(([, source], k) => [k, source.replace(/(^|\|)\\b/g, '$1')]).filter(([k, source]) => source !== SECRET_PATTERNS[k][1]);
+  const ending = SECRET_PATTERNS.map(([, source], k) => [k, `(?:${source.replace(/\\b(?=$|\|)/g, '')})`]).filter(([k, source]) => source !== `(?:${SECRET_PATTERNS[k][1]})`);
+  return {
+    py,
+    patterns: SECRET_PATTERNS.map(([, source]) => compile(source, 'g')),
+    // A pattern with no \b or \s matches the same text under both meanings.
+    same: SECRET_PATTERNS.map(([, source]) => !/\\[bs]/.test(source)),
+    // One combined pattern first: nearly every span edge has no match, and one scan is cheaper than one per kind.
+    anyAfter: compile(glued.map(([, source]) => `(?:${source})`).join('|'), 'y'),
+    after: glued.map(([k, source]) => [k, compile(source, 'y')]),
+    anyBefore: compile(`(?:${ending.map(([, source]) => source).join('|')})$`, ''),
+    before: ending.map(([k, source]) => [k, compile(`${source}$`, '')]),
+    // Whether the character just before i, or the one at i, is a word character.
+    wordBefore: py ? (text, i) => i > 0 && (before.lastIndex = i, before.test(text))
+      : (text, i) => i > 0 && isWord(text.charCodeAt(i - 1)),
+    wordAfter: py ? (text, i) => i < text.length && (after.lastIndex = i, after.test(text))
+      : (text, i) => i < text.length && isWord(text.charCodeAt(i)),
+  };
+}
+const ASCII = semantics(false), PYTHON = semantics(true);
+// Cheap first checks at a span's edge: a glued match after it starts with one of these (sk-, gh, AKIA, AIza, 1//0,
+// ya29., hf_, 0., Telegram digits).
+const startsAfter = c => c === 115 || c === 103 || c === 65 || c === 121 || c === 104 || (c >= 48 && c <= 57);
+// The patterns with a trailing \b are AWS (AKIA and 16 characters) and Telegram (:AA and 33 characters), so a match
+// ending at s has its fixed part at s - 20 or s - 36; should that set change, the check passes everything.
+const TRAILING = SECRET_PATTERNS.filter(([, source]) => /\\b(?:$|\|)/.test(source)).map(([kind]) => kind).join();
+const endsBefore = TRAILING === 'aws,telegram-bot'
+  ? (text, s) => text.startsWith('AKIA', s - 20) || text.startsWith(':AA', s - 36) : () => true;
+/** [kind index, end] of the longest match a mask ending at e would create, under either meaning on the Python path. */
+function gluedAfter(text, e, sem) {
+  if (!startsAfter(text.charCodeAt(e))) return null;
+  const a = gluedAfterIn(text, e, sem), b = sem.py ? gluedAfterIn(text, e, ASCII) : null;
+  return b && (!a || b[1] > a[1]) ? b : a;
+}
+/** [kind index, start] of the earliest match before a mask starting at s, under either meaning on the Python path. */
+function gluedBefore(text, s, floor, sem) {
+  if (s <= floor || !endsBefore(text, s)) return null;
+  const a = gluedBeforeIn(text, s, floor, sem), b = sem.py ? gluedBeforeIn(text, s, floor, ASCII) : null;
+  return b && (!a || b[1] < a[1]) ? b : a;
+}
+function gluedAfterIn(text, e, sem) {
+  if (!sem.wordBefore(text, e) || !sem.wordAfter(text, e)) return null;
+  sem.anyAfter.lastIndex = e;
+  if (!sem.anyAfter.test(text)) return null;
+  let best = null;
+  for (const [k, pattern] of sem.after) {
+    pattern.lastIndex = e;
+    const m = pattern.exec(text);
+    if (m && (!best || e + m[0].length > best[1])) best = [k, e + m[0].length];
   }
-  return text;
+  return best;
+}
+// The earliest match, at or after floor (the previous mask's end), that a mask starting at s would create.
+function gluedBeforeIn(text, s, floor, sem) {
+  if (!sem.wordBefore(text, s) || !sem.wordAfter(text, s)) return null;
+  const from = Math.max(floor, s - 64), window = text.slice(from, s);
+  if (!sem.anyBefore.test(window)) return null;
+  let best = null;
+  for (const [k, pattern] of sem.before) {
+    const m = pattern.exec(window);
+    if (!m) continue;
+    const t = from + m.index;
+    // At the window's edge the \b held only inside the window; it holds in the text after a mask, at 0, or at a real boundary.
+    if (t === from && from > floor && sem.wordBefore(text, t)) continue;
+    if (!best || t < best[1]) best = [k, t];
+  }
+  return best;
+}
+/**
+ * text with every secret-shaped run masked; counts gets one per match, by kind. Pass 1 masks every match in the original
+ * text, and every \b match a mask next to it creates. Pass 2 runs once on the result, for matches the masking still
+ * created; there a span is widened to whole masks so none is split, and a span with no raw character is dropped.
+ */
+export function redactText(text, counts) {
+  const sem = PY_TRIGGER.test(text) ? PYTHON : ASCII;
+  const first = maskSpans(text, counts, null, sem);
+  return first.masks.length ? maskSpans(first.text, counts, first.masks, sem).text : first.text;
+}
+/**
+ * The span indices in order of start, then longest first, from runs that are each in that order already (bottom-up merge
+ * of the non-empty runs; a comparator sort is far slower on a fresh process). Always an Int32Array, so the loop that
+ * reads it sees one type and is not recompiled midway through a large result.
+ */
+function mergeRuns(starts, ends, runs) {
+  const n = starts.length, bounds = [];
+  for (let r = 0; r < runs.length; r++) {
+    const end = r + 1 < runs.length ? runs[r + 1] : n;
+    if (end > runs[r]) bounds.push(runs[r]);
+  }
+  let a = new Int32Array(n);
+  for (let i = 0; i < n; i++) a[i] = i;
+  if (bounds.length < 2) return a;
+  bounds.push(n);
+  let b = new Int32Array(n);
+  for (let width = 1; width < bounds.length - 1; width *= 2) {
+    for (let r = 0; r + 1 < bounds.length; r += 2 * width) {
+      const lo = bounds[r], mid = bounds[Math.min(r + width, bounds.length - 1)], hi = bounds[Math.min(r + 2 * width, bounds.length - 1)];
+      let i = lo, j = mid, o = lo;
+      while (i < mid && j < hi) {
+        const x = a[i], y = a[j];
+        // On a tie the earlier run (the lower kind) goes first.
+        if (starts[y] < starts[x] || (starts[y] === starts[x] && ends[y] > ends[x])) { b[o++] = y; j++; } else { b[o++] = x; i++; }
+      }
+      while (i < mid) b[o++] = a[i++];
+      while (j < hi) b[o++] = a[j++];
+    }
+    [a, b] = [b, a];
+  }
+  return a;
+}
+/**
+ * One pass: the match spans of every kind on text, merged where they overlap or touch, each merged span replaced once by
+ * the mask of the span that starts first (on a tie, the longest). guard lists the masks already in text as flat
+ * [start, end] pairs in order, or is null. sem is ASCII or PYTHON. Returns the text and its masks, likewise.
+ */
+function maskSpans(text, counts, guard, sem = PY_TRIGGER.test(text) ? PYTHON : ASCII) {
+  // Small functions, each compiled on its own: one large function took tens of milliseconds to optimize, and a large
+  // result ran slowly until it was.
+  const spans = collectSpans(text, sem);
+  if (!spans.starts.length) return { text, masks: [] };
+  const order = mergeRuns(spans.starts, spans.ends, spans.runs);
+  const out = { pieces: [], masks: [], len: 0, pos: 0, hit: new Array(PASSES.length).fill(0), guard };
+  if (guard) replaceGuarded(text, spans, order, guard, out); else replaceSpans(text, spans, order, sem, out);
+  if (!out.masks.length) return { text, masks: out.masks };
+  out.pieces.push(text.slice(out.pos));
+  for (let k = 0; k < PASSES.length; k++) if (out.hit[k]) counts[PASSES[k][0]] = (counts[PASSES[k][0]] ?? 0) + out.hit[k];
+  return { text: out.pieces.join(''), masks: out.masks };
+}
+/** The match spans of every kind on text; runs holds where each scan's spans begin, as each scan yields them in order. */
+function collectSpans(text, sem) {
+  const spans = { starts: [], ends: [], kinds: [], runs: [] };
+  for (let k = 0; k < PASSES.length; k++) {
+    const from = spans.starts.length;
+    spans.runs.push(from);
+    scan(text, sem.patterns[k], k, spans);
+    if (sem.py && !sem.same[k]) {
+      // The union: add the ASCII matches of this kind that the Python scan did not find.
+      spans.runs.push(spans.starts.length);
+      scanUnion(text, ASCII.patterns[k], k, spans, from);
+    }
+  }
+  return spans;
+}
+function scan(text, pattern, k, { starts, ends, kinds }) {
+  const value = PASSES[k][3];
+  pattern.lastIndex = 0;
+  for (let m; (m = pattern.exec(text));) {
+    const end = value ? m.index + m[0].length - 1 : m.index + m[0].length;
+    starts.push(value ? end - m[1].length : m.index); ends.push(end); kinds.push(k);
+    // Resume at the span's end: a value's closing quote can open the next "refresh_token" key.
+    pattern.lastIndex = end;
+  }
+}
+/** Like scan, skipping a match the run from `from` (the same kind, in order) already holds. */
+function scanUnion(text, pattern, k, { starts, ends, kinds }, from) {
+  const value = PASSES[k][3], mid = starts.length;
+  let j = from;
+  pattern.lastIndex = 0;
+  for (let m; (m = pattern.exec(text));) {
+    const end = value ? m.index + m[0].length - 1 : m.index + m[0].length, start = value ? end - m[1].length : m.index;
+    while (j < mid && starts[j] < start) j++;
+    if (!(j < mid && starts[j] === start && ends[j] === end)) { starts.push(start); ends.push(end); kinds.push(k); }
+    pattern.lastIndex = end;
+  }
+}
+/** Pass 1: merges spans that overlap or touch, with the matches a mask would create next to them, and masks each. */
+function replaceSpans(text, { starts, ends, kinds }, order, sem, out) {
+  const n = starts.length, hit = out.hit;
+  let i = 0;
+  while (i < n) {
+    let at = order[i];
+    let start = starts[at], end = ends[at], kind = kinds[at];
+    for (;;) {
+      for (; i < n && starts[at = order[i]] <= end; i++) {
+        hit[kinds[at]]++;
+        if (ends[at] > end) end = ends[at];
+      }
+      // A match this mask's end would create joins the span; so may further spans it reaches.
+      const next = gluedAfter(text, end, sem);
+      if (!next) break;
+      hit[next[0]]++; end = next[1];
+    }
+    for (let prior; (prior = gluedBefore(text, start, out.pos, sem));) { hit[prior[0]]++; [kind, start] = prior; }
+    emit(out, text, start, end, kind);
+  }
+}
+/** Pass 2: widens each merged span over the masks it overlaps, so none is split, and drops one with no raw character. */
+function replaceGuarded(text, { starts, ends, kinds }, order, guard, out) {
+  const n = starts.length, members = [];
+  let i = 0, g = 0;
+  while (i < n) {
+    let at = order[i];
+    let start = starts[at], end = ends[at];
+    const kind = kinds[at];
+    members.length = 0;
+    for (;;) {
+      for (; i < n && starts[at = order[i]] <= end; i++) {
+        members.push(kinds[at]);
+        if (ends[at] > end) end = ends[at];
+      }
+      // A widened end can reach further spans, so merge again.
+      while (g < guard.length && guard[g + 1] <= start) g += 2;
+      if (g < guard.length && guard[g] < start) start = guard[g];
+      let grew = false;
+      for (let j = g; j < guard.length && guard[j] < end; j += 2) if (guard[j + 1] > end) { end = guard[j + 1]; grew = true; }
+      if (!grew || i >= n || starts[order[i]] > end) break;
+    }
+    let covered = 0;
+    for (let j = g; j < guard.length && guard[j] < end; j += 2) covered += Math.min(guard[j + 1], end) - Math.max(guard[j], start);
+    if (covered >= end - start) continue;
+    for (const k of members) out.hit[k]++;
+    emit(out, text, start, end, kind);
+  }
+}
+/** Appends the raw text before start and the mask of kind for [start, end). */
+function emit(out, text, start, end, kind) {
+  const { pieces, pos } = out, mask = PASSES[kind][2];
+  pieces.push(text.slice(pos, start), mask);
+  out.len += start - pos;
+  out.masks.push(out.len, out.len + mask.length);
+  out.len += mask.length;
+  out.pos = end;
 }
 const REFRESH_KEY = 'refresh_token';
+// Run every path once at import on short samples (both passes, merged runs, glued tokens before and after a span, ASCII
+// and non-ASCII text), so the code is compiled having seen them all: a path first met inside a large result otherwise
+// costs a recompile there (up to about 80 ms on 1 MB). The samples are built here.
+{
+  const r = (c, n) => c.repeat(n);
+  const sample = '{"' + REFRESH_KEY + '":"ab' + 'xo' + 'xb-' + r('1', 10) + '.."} ' + 'AK' + 'IA' + r('Q', 16) + 'tskey' + '-auth-' + r('f', 20)
+    + ' ' + 'AI' + 'za' + r('m', 35) + 'h' + 'f_' + r('g', 30) + ' ' + 'gh' + 'p_' + r('C', 36) + ' ';
+  for (const extra of ['', '\u00e9']) for (let i = 0; i < 3; i++) redactText((sample + extra).repeat(4), {});
+}
 /**
- * Every string in plain JSON-like data (details, structuredContent), rebuilt only where something was masked. A string
- * of 20 or more characters with no '"' under a refresh_token key is masked whole, as the JSON pattern would mask it in
- * text. The walk stops below MAX_DEPTH, so deep data cannot overflow the stack. seen maps each object walked to its
- * result: a complete result is reused anywhere, so shared and cyclic objects are walked once; a result the depth cap cut
+ * Every string in plain JSON-like data (details, structuredContent), rebuilt only where something was masked. Every
+ * non-empty string under a refresh_token key is masked whole, whatever its length or content: once JSON-escaped, a
+ * short value or one holding '"' or a newline can still match the JSON pattern in the saved session. The walk stops
+ * below MAX_DEPTH, so deep data cannot overflow the stack. seen maps each object walked to its result: a complete result is reused anywhere, so shared and cyclic objects are walked once; a result the depth cap cut
  * short is reused only where the object is met as deep or deeper, never nearer the top, where a walk reaches further.
  */
 export function redactValue(value, counts) { return walkValue(value, counts, 0, new Map()).out; }
 const MAX_DEPTH = 64;
-const OAUTH_MASK = PASSES.find(([kind]) => kind === 'oauth-refresh-json')[2].slice(2, -1);
+const OAUTH_MASK = PASSES.find(([kind]) => kind === 'oauth-refresh-json')[2];
 function walkValue(value, counts, depth, seen) {
   if (typeof value === 'string') return { out: redactText(value, counts), cut: false };
   if (!value || typeof value !== 'object') return { out: value, cut: false };
@@ -217,7 +459,7 @@ function walkValue(value, counts, depth, seen) {
     const proto = Object.getPrototypeOf(value);
     if (proto === Object.prototype || proto === null) for (const [key, item] of Object.entries(value)) {
       let next;
-      if (key === REFRESH_KEY && typeof item === 'string' && item.length >= 20 && !item.includes('"')) {
+      if (key === REFRESH_KEY && typeof item === 'string' && item.length) {
         counts['oauth-refresh-json'] = (counts['oauth-refresh-json'] ?? 0) + 1;
         next = OAUTH_MASK;
       } else next = step(item);
