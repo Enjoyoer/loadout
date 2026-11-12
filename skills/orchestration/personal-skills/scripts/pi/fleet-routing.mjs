@@ -156,7 +156,8 @@ export function serviceGuardHandler(record, { guard, runtime = join(dirname(file
 }
 // Secret-shaped text in tool results is masked as [REDACTED:<kind>] before the model or the session sees it; the tool's
 // own effects (files it wrote, output it piped or redirected) are untouched. The patterns are the security audit's
-// scanner patterns, compiled once into one alternation; oauth-refresh-json masks only its value and keeps the key.
+// scanner patterns, compiled once, one replace pass per kind with a plain string replacement (a callback per match is
+// too slow on dense input); oauth-refresh-json masks only its value and keeps the key.
 export const SECRET_PATTERNS = [
   ['anthropic', String.raw`sk-ant-(?:api|oat|ort|admin)[0-9]{2}-[A-Za-z0-9_-]{20,}`],
   ['openai', String.raw`sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bsk-[A-Za-z0-9]{40,}`],
@@ -170,39 +171,72 @@ export const SECRET_PATTERNS = [
   ['bws-access-token', String.raw`\b0\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9]{20,}:[A-Za-z0-9+/=]{20,}`],
   ['telegram-bot', String.raw`\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33}\b`],
   ['cloudflare-tunnel', String.raw`eyJhIjoi[A-Za-z0-9+/=]{40,}`],
-  ['oauth-refresh-json', String.raw`"refresh_token"\s*:\s*"(?<value>[^"]{20,})"`],
+  ['oauth-refresh-json', String.raw`"refresh_token"\s*:\s*"([^"]{20,})"`],
   ['google-apikey', String.raw`\bAIza[0-9A-Za-z_-]{35}`],
 ];
-const SECRET = new RegExp(SECRET_PATTERNS.map(([, source], i) => `(?<k${i}>${source})`).join('|'), 'g');
+const PASSES = SECRET_PATTERNS.map(([kind, source]) => kind === 'oauth-refresh-json'
+  ? [kind, new RegExp(String.raw`("refresh_token"\s*:\s*")[^"]{20,}"`, 'g'), `$1[REDACTED:${kind}]"`]
+  : [kind, new RegExp(source, 'g'), `[REDACTED:${kind}]`]);
 // A mask this hook writes; a write or edit carrying one would put the mask in place of the real secret.
 const MASK = new RegExp(String.raw`\[REDACTED:(?:${SECRET_PATTERNS.map(([kind]) => kind).join('|')})\]`);
 /** text with every secret-shaped run masked; counts gets one per mask, by kind. */
 export function redactText(text, counts) {
-  return text.replace(SECRET, (match, ...args) => {
-    const groups = args.at(-1);
-    const kind = SECRET_PATTERNS[SECRET_PATTERNS.findIndex((_, i) => groups[`k${i}`] !== undefined)][0];
-    counts[kind] = (counts[kind] ?? 0) + 1;
-    const mask = `[REDACTED:${kind}]`;
-    // The JSON value always ends the match, right before its closing quote.
-    return groups.value === undefined ? mask : match.slice(0, match.length - groups.value.length - 1) + mask + '"';
-  });
+  for (const [kind, pattern, mask] of PASSES) {
+    const found = text.match(pattern)?.length;
+    if (!found) continue;
+    counts[kind] = (counts[kind] ?? 0) + found;
+    text = text.replace(pattern, mask);
+  }
+  return text;
 }
-// Every string in plain JSON-like data (details, structuredContent), rebuilt only where something was masked.
-function redactValue(value, counts, depth = 0) {
+const REFRESH_KEY = 'refresh_token';
+/**
+ * Every string in plain JSON-like data (details, structuredContent), rebuilt only where something was masked. A string
+ * of 20 or more characters with no '"' under a refresh_token key is masked whole, as the JSON pattern would mask it in
+ * text. seen maps each object already walked to its result, so shared and cyclic objects are walked once.
+ */
+export function redactValue(value, counts, depth = 0, seen = new Map()) {
   if (typeof value === 'string') return redactText(value, counts);
   if (!value || typeof value !== 'object' || depth > 64) return value;
-  if (Array.isArray(value)) {
-    const out = value.map(item => redactValue(item, counts, depth + 1));
-    return out.some((item, i) => item !== value[i]) ? out : value;
-  }
-  const proto = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) return value;
+  if (seen.has(value)) return seen.get(value);
+  // An object still being walked (a cycle) resolves to itself.
+  seen.set(value, value);
   let out = value;
-  for (const [key, item] of Object.entries(value)) {
-    const next = redactValue(item, counts, depth + 1);
-    if (next !== item) { if (out === value) out = { ...value }; out[key] = next; }
+  if (Array.isArray(value)) {
+    const items = value.map(item => redactValue(item, counts, depth + 1, seen));
+    if (items.some((item, i) => item !== value[i])) out = items;
+  } else {
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) return value;
+    for (const [key, item] of Object.entries(value)) {
+      let next;
+      if (key === REFRESH_KEY && typeof item === 'string' && item.length >= 20 && !item.includes('"')) {
+        counts['oauth-refresh-json'] = (counts['oauth-refresh-json'] ?? 0) + 1;
+        next = '[REDACTED:oauth-refresh-json]';
+      } else next = redactValue(item, counts, depth + 1, seen);
+      if (next !== item) { if (out === value) out = { ...value }; out[key] = next; }
+    }
   }
+  seen.set(value, out);
   return out;
+}
+/**
+ * tool_execution_update handler: masks a running tool's live partial result (text parts and details) in place. Pi
+ * awaits extension handlers on the same partialResult object before it forwards the update to its client (Paseo), so
+ * the client never gets the raw text. Tools build a fresh partial object per update, so the tool itself is untouched.
+ * No evidence row per update; the final result's tool_result row counts the masks.
+ */
+export function redactUpdateHandler() {
+  return event => {
+    try {
+      const partial = event?.partialResult;
+      if (!partial || typeof partial !== 'object') return;
+      const counts = {};
+      if (Array.isArray(partial.content)) partial.content = partial.content.map(part =>
+        part?.type === 'text' && typeof part.text === 'string' ? { ...part, text: redactText(part.text, counts) } : part);
+      if (partial.details !== undefined) partial.details = redactValue(partial.details, counts);
+    } catch {}
+  };
 }
 /**
  * tool_result handler: masks every text part of every tool result (a codemode script's nested calls get their own
@@ -721,6 +755,7 @@ export default function(pi) {
   pi.on('tool_call', serviceGuardHandler(record));
   pi.on('tool_call', writeBackGuard(record));
   pi.on('tool_result', redactHandler(record));
+  pi.on('tool_execution_update', redactUpdateHandler());
   pi.on('turn_start', (_event, ctx) => credential.turnStart(ctx));
   pi.on('agent_end', () => credential.runEnd());
   // The thinking level each running fleet compaction used, by reason, for its evidence row.

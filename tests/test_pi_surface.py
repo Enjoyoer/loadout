@@ -677,10 +677,28 @@ assert.equal(h({toolName:'bash',content:[{type:'text',text:b64+' '+tokens['cloud
 // A handler error leaves the result unmasked and writes one row.
 const before=rows.length;const bad={toolName:'bash',get content(){throw Error('boom '+tokens.github);}};
 assert.equal(h(bad),undefined);assert.equal(rows.length,before+1);assert.deepEqual(rows.at(-1),{event:'redact',tool:'bash',status:'failed',error:'Error'});
-// Text over 1 MB is masked in under 50 ms.
-const big=('lorem ipsum dolor sit amet '+r('Zq9',20)+'\n').repeat(12000)+tokens.github;assert.ok(big.length>1_000_000);
-const t0=performance.now();const counts={};const masked=m.redactText(big,counts);const ms=performance.now()-t0;
-assert.ok(masked.endsWith(R('github')));assert.deepEqual(counts,{github:1});assert.ok(ms<50,ms+' ms');
+// 1 MB of back-to-back matches of each kind is masked in under 50 ms (best of 3), leaving no token.
+const MB=1<<20;
+for(const [kind,token] of [...Object.entries(tokens),['oauth-refresh-json',json]]){
+  const unit=token+' ';const big=unit.repeat(Math.ceil(MB/unit.length)+1);
+  let ms=Infinity,counts,masked;
+  for(let i=0;i<3;i++){counts={};const t0=performance.now();masked=m.redactText(big,counts);ms=Math.min(ms,performance.now()-t0);}
+  assert.ok(counts[kind]>=Math.floor(MB/unit.length),kind);assert.ok(!masked.includes(token.slice(0,-1)),kind);
+  assert.ok(ms<50,kind+' '+ms.toFixed(1)+' ms');
+}
+// A refresh_token key in details or structuredContent is masked; a short or quoted value is not.
+const rt=h({toolName:'mcp',content:[],structuredContent:{auth:{['refresh'+'_token']:r('n',24),access:'x'}},details:{['refresh'+'_token']:'short'}});
+assert.deepEqual(rt.structuredContent,{auth:{['refresh'+'_token']:R('oauth-refresh-json'),access:'x'}});assert.equal(rt.details,undefined);
+assert.equal(h({toolName:'mcp',content:[],details:{['refresh'+'_token']:r('n',24)+'"'}}),undefined);
+// Cyclic and shared objects are walked once: linear, and a cycle keeps its shape.
+const cyc={};let node=cyc;for(let i=0;i<60;i++){const next={};node.a=next;node.b=next;node.self=cyc;node=next;}node.v=tokens.github;
+const t1=performance.now();const cout=m.redactValue(cyc,{});assert.ok(performance.now()-t1<50);
+let walk=cout;for(let i=0;i<60;i++)walk=walk.a;assert.equal(walk.v,R('github'));
+// Live partial results are masked in place, with no evidence row.
+const upd=hooksOf().tool_execution_update[0];const partial={content:[{type:'text',text:'x '+tokens.github},image],details:{out:tokens.aws}};
+const rowsBefore=rows.length;upd({type:'tool_execution_update',partialResult:partial});
+assert.deepEqual(partial.content,[{type:'text',text:'x '+R('github')},image]);assert.deepEqual(partial.details,{out:R('aws')});assert.equal(rows.length,rowsBefore);
+upd({type:'tool_execution_update'});upd({type:'tool_execution_update',partialResult:{content:'raw'}});
 // The write and edit guard refuses a mask and passes normal text.
 const gate=[];const g=m.writeBackGuard(row=>gate.push(row));const mask=R('github');
 for(const input of [{path:'a',content:'k='+mask},{path:'a',newText:mask,oldText:'x'},{path:'a',edits:[{oldText:'x',newText:'y'},{oldText:'z',newText:'k='+mask}]}]){
@@ -692,10 +710,35 @@ assert.match(m.REDACT_REFUSAL,/^This text contains a \[REDACTED:\.\.\.\] mask fr
 assert.equal(g({toolName:'write',input:{path:'a',content:'plain text with [REDACTED:<kind>] as prose'}}),undefined);
 assert.equal(g({toolName:'edit',input:{path:'a',edits:[{oldText:'x',newText:'y'}]}}),undefined);
 assert.equal(g({toolName:'bash',input:{command:'echo '+mask}}),undefined);
-// Both handlers are registered.
-const hooks={};m.default({on:(e,f)=>(hooks[e]??=[]).push(f)});assert.equal(hooks.tool_result.length,1);assert.equal(hooks.tool_call.length,2);
+// All handlers are registered.
+const hooks=hooksOf();assert.equal(hooks.tool_result.length,1);assert.equal(hooks.tool_call.length,2);assert.equal(hooks.tool_execution_update.length,1);
+function hooksOf(){const hooks={};m.default({on:(e,f)=>(hooks[e]??=[]).push(f)});return hooks;}
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_pi_forwards_the_partial_result_object_extensions_masked(self):
+        # Pins what the tool_execution_update mask relies on: Pi hands extensions the same partialResult object it then
+        # forwards to its client. Needs an installed Pi (LOADOUT_PI_APP, else the default fleet root); skipped without.
+        app = Path(os.environ.get('LOADOUT_PI_APP') or Path.home()/'.local/share/loadout-pi-1.0.0/app')/'node_modules/@earendil-works/pi-coding-agent'
+        if not (app/'dist/bundle/index.js').is_file():
+            self.skipTest('no installed Pi package')
+        script=r"""
+import assert from 'node:assert/strict';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const pi=await import(process.argv[1]);const m=await import(process.argv[2]);
+const dir=mkdtempSync(join(tmpdir(),'pin-'));process.env.PI_CODING_AGENT_DIR=dir;
+const token='gh'+'p_'+'Q'.repeat(36);
+const loader=new pi.DefaultResourceLoader({cwd:dir,agentDir:dir,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true,
+  extensionFactories:[p=>p.on('tool_execution_update',m.redactUpdateHandler())]});
+await loader.reload();
+const {session}=await pi.createAgentSession({cwd:dir,agentDir:dir,sessionManager:pi.SessionManager.inMemory(),settingsManager:pi.SettingsManager.inMemory(),resourceLoader:loader});
+const out=[];session.subscribe(e=>{if(e.type==='tool_execution_update')out.push(e.partialResult);});
+const partial={content:[{type:'text',text:token+'\n'}],details:{}};
+await session._handleAgentEvent({type:'tool_execution_update',toolCallId:'c1',toolName:'bash',args:{},partialResult:partial});
+assert.equal(out.length,1);assert.equal(out[0],partial);assert.equal(out[0].content[0].text,'[REDACTED'+':github]\n');
+session.dispose();rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (app/'dist/bundle/index.js').as_uri(), (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_service_guard_refuses_shared_service_stops_and_allows_the_rest(self):
