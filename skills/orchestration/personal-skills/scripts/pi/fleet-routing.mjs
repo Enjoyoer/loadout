@@ -193,32 +193,39 @@ const REFRESH_KEY = 'refresh_token';
 /**
  * Every string in plain JSON-like data (details, structuredContent), rebuilt only where something was masked. A string
  * of 20 or more characters with no '"' under a refresh_token key is masked whole, as the JSON pattern would mask it in
- * text. seen maps each object already walked to its result, so shared and cyclic objects are walked once.
+ * text. The walk stops below MAX_DEPTH, so deep data cannot overflow the stack. seen maps each object walked to its
+ * result: a complete result is reused anywhere, so shared and cyclic objects are walked once; a result the depth cap cut
+ * short is reused only where the object is met as deep or deeper, never nearer the top, where a walk reaches further.
  */
-export function redactValue(value, counts, depth = 0, seen = new Map()) {
-  if (typeof value === 'string') return redactText(value, counts);
-  if (!value || typeof value !== 'object' || depth > 64) return value;
-  if (seen.has(value)) return seen.get(value);
-  // An object still being walked (a cycle) resolves to itself.
-  seen.set(value, value);
-  let out = value;
+export function redactValue(value, counts) { return walkValue(value, counts, 0, new Map()).out; }
+const MAX_DEPTH = 64;
+const OAUTH_MASK = PASSES.find(([kind]) => kind === 'oauth-refresh-json')[2].slice(2, -1);
+function walkValue(value, counts, depth, seen) {
+  if (typeof value === 'string') return { out: redactText(value, counts), cut: false };
+  if (!value || typeof value !== 'object') return { out: value, cut: false };
+  const known = seen.get(value);
+  // An object still being walked (a cycle) resolves to itself; a complete result is reused past the cap too.
+  if (known && (!known.cut || depth >= known.depth)) return { out: known.out, cut: known.cut };
+  if (depth > MAX_DEPTH) return { out: value, cut: true };
+  seen.set(value, { out: value, cut: false, depth });
+  let out = value, cut = false;
+  const step = item => { const next = walkValue(item, counts, depth + 1, seen); cut ||= next.cut; return next.out; };
   if (Array.isArray(value)) {
-    const items = value.map(item => redactValue(item, counts, depth + 1, seen));
+    const items = value.map(step);
     if (items.some((item, i) => item !== value[i])) out = items;
   } else {
     const proto = Object.getPrototypeOf(value);
-    if (proto !== Object.prototype && proto !== null) return value;
-    for (const [key, item] of Object.entries(value)) {
+    if (proto === Object.prototype || proto === null) for (const [key, item] of Object.entries(value)) {
       let next;
       if (key === REFRESH_KEY && typeof item === 'string' && item.length >= 20 && !item.includes('"')) {
         counts['oauth-refresh-json'] = (counts['oauth-refresh-json'] ?? 0) + 1;
-        next = '[REDACTED:oauth-refresh-json]';
-      } else next = redactValue(item, counts, depth + 1, seen);
+        next = OAUTH_MASK;
+      } else next = step(item);
       if (next !== item) { if (out === value) out = { ...value }; out[key] = next; }
     }
   }
-  seen.set(value, out);
-  return out;
+  seen.set(value, { out, cut, depth });
+  return { out, cut };
 }
 /**
  * tool_execution_update handler: masks a running tool's live partial result (text parts and details) in place. Pi

@@ -641,7 +641,7 @@ rmSync(dir,{recursive:true,force:true});
     def test_tool_results_are_masked_and_masks_are_never_written_back(self):
         # PM-specified cases (brief pi-redact). Tokens are joined at run time so no token-shaped literal is in the repo.
         script=r"""
-import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';
 const m=await import(process.argv[1]);
 const r=(c,n)=>c.repeat(n);const R=k=>'[REDACTED'+':'+k+']';
 const tokens={anthropic:'sk-'+'ant-api03-'+r('a',24),openai:'sk-'+'proj-'+r('b',24),github:'gh'+'p_'+r('C',36),
@@ -710,11 +710,24 @@ assert.match(m.REDACT_REFUSAL,/^This text contains a \[REDACTED:\.\.\.\] mask fr
 assert.equal(g({toolName:'write',input:{path:'a',content:'plain text with [REDACTED:<kind>] as prose'}}),undefined);
 assert.equal(g({toolName:'edit',input:{path:'a',edits:[{oldText:'x',newText:'y'}]}}),undefined);
 assert.equal(g({toolName:'bash',input:{command:'echo '+mask}}),undefined);
+// A shared object met first just below the depth cap and again near the top is masked near the top (rev289 R2-B2).
+for(const wrappers of [62,63,64]){
+  const S={inner:{v:tokens.github}};let chain=S;for(let i=0;i<wrappers;i++)chain={c:chain};
+  const res=h({toolName:'t',content:[{type:'text',text:'x'}],details:{deep:chain,shallow:S}});
+  assert.ok(!JSON.stringify((res?.details??{}).shallow).includes(tokens.github),wrappers+' wrappers');
+}
+// The guard refuses none of this extension, the fleet README or this test file (rev289 R2-B1).
+for(const path of process.argv.slice(2)){
+  const text=readFileSync(path,'utf8');
+  assert.equal(g({toolName:'write',input:{path,content:text}}),undefined,path);
+  assert.equal(g({toolName:'edit',input:{path,edits:text.split('\n').map(line=>({oldText:'x',newText:line}))}}),undefined,path);
+}
 // All handlers are registered.
 const hooks=hooksOf();assert.equal(hooks.tool_result.length,1);assert.equal(hooks.tool_call.length,2);assert.equal(hooks.tool_execution_update.length,1);
 function hooksOf(){const hooks={};m.default({on:(e,f)=>(hooks[e]??=[]).push(f)});return hooks;}
 """
-        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri(),
+            str(PI/'fleet-routing.mjs'), str(PI.parent.parent/'fleet/README.md'), __file__], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_pi_forwards_the_partial_result_object_extensions_masked(self):
