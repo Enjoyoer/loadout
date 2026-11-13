@@ -100,7 +100,7 @@ export type RetryInterruption = { turnId: string; at: string; lastUserMessageAt:
 export const RESTART_SETTLE_MS = 60_000;
 
 /** Paseo closed this agent (`agent.closed`): when, and which daemon run saw it (the plugin's parent process). */
-export type AgentClose = { agentId: string; at: string; daemon: string };
+export type AgentClose = { agentId: string; at: string; daemon: string; checkUntil?: string };
 
 // Paseo closes every agent when the daemon shuts down, with the same `agent.closed` event an explicit close or
 // kill sends, and stops plugins a few seconds later. A close this daemon run still outlives by this long was an
@@ -113,12 +113,14 @@ export const AGENT_CLOSE_GRACE_MS = 60_000;
  * - "go": no close, or the record's work is newer than it: the user message the work began with (originUserMessageAt)
  *   came after the close, so someone opened the agent again with that message.
  * - "stale": an earlier daemon run saw the close, which was that run's shutdown. It no longer applies.
- * - "hold": this daemon run saw the close less than AGENT_CLOSE_GRACE_MS ago. Nothing is sent or read for the record.
+ * - "hold": this daemon run saw the close less than AGENT_CLOSE_GRACE_MS ago, or the close is still being checked for
+ *   a park (checkUntil set), however old it is. Nothing is sent or read for the record.
  * - "end": this daemon run has outlived the close, so it was a kill or close by a user or an agent. The record ends.
  */
 export function closeDecision(close: AgentClose | null, record: Pick<ResumeRecord, "originUserMessageAt">, daemon: string, now = Date.now()): "go" | "stale" | "hold" | "end" {
   if (!close) return "go";
   if (!sameDaemonRun(close.daemon, daemon)) return "stale";
+  if (close.checkUntil) return "hold";
   if (record.originUserMessageAt && Date.parse(record.originUserMessageAt) > Date.parse(close.at)) return "go";
   return Date.parse(close.at) + AGENT_CLOSE_GRACE_MS <= now ? "end" : "hold";
 }

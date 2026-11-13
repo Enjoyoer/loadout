@@ -87,7 +87,9 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // (reverifyTransient). The read loads a closed agent, and while it stays closed it gives the same answer again.
   const closedReads = new Map<string, string>();
   // Closes seen but not yet told a park or a close (checkClose). Any of them holds all the agent's work.
-  const unchecked = new Map<AgentClose, { claimTurn: boolean; checking: boolean; deferred: boolean }>();
+  // Each is stored at once with its mark (checkUntil), so a plugin reload during the check keeps holding it, and the
+  // plugin's start checks this run's marked closes again.
+  const unchecked = new Map<AgentClose, { claimTurn: boolean; checking: boolean; deferred: boolean; checkUntil: string }>();
   const hasUnchecked = (agentId: string) => [...unchecked.keys()].some((close) => close.agentId === agentId);
   const heldByClose = (record: ResumeRecord) => {
     if (hasUnchecked(record.agentId)) return true;
@@ -319,16 +321,18 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // created. True when the record may go on.
   async function closeGate(record: ResumeRecord, currentConfig: Config): Promise<boolean> {
     const run = daemon();
-    let close = await store.closeOf(record.agentId);
-    if (close && !sameDaemonRun(close.daemon, run)) {
-      await store.clearClose(close);
-      log(`agent-close-cleared agentId=${record.agentId} reason=daemon-restarted closedAt=${close.at}`);
-      close = null;
+    const stored: AgentClose[] = [];
+    for (const each of await store.closesOf(record.agentId)) {
+      if (sameDaemonRun(each.daemon, run)) { stored.push(each); continue; }
+      await store.clearClose(each);
+      log(`agent-close-cleared agentId=${record.agentId} reason=daemon-restarted closedAt=${each.at}`);
     }
+    let close = stored.filter((each) => !each.checkUntil).sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0] ?? null;
     if (!(await restartGate(record, currentConfig, run))) return false;
-    // A close still being told a park or a close holds the record, however old it is.
-    if (hasUnchecked(record.agentId)) {
-      logOnce(record, "agent-closed", `send-held agentId=${record.agentId} recordId=${record.recordId} reason=agent-close-unchecked`);
+    // A close still being told a park or a close, here or stored by an earlier start of the plugin in this daemon run,
+    // holds the record, however old it is.
+    if (hasUnchecked(record.agentId) || stored.some((each) => each.checkUntil)) {
+      logOnce(record, "agent-close-unchecked", `send-held agentId=${record.agentId} recordId=${record.recordId} reason=agent-close-unchecked`);
       return false;
     }
     // A close this process saw whose store write has not landed yet.
@@ -1392,7 +1396,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
     entry.checking = true;
     track((async () => {
       const verdict = await parkOf(close, entry.claimTurn);
-      if (!verdict && Date.now() < Date.parse(close.at) + PARK_CHECK_WINDOW_MS) {
+      if (!verdict && Date.now() < Date.parse(entry.checkUntil)) {
         entry.checking = false;
         if (!entry.deferred) log(`park-check-deferred agentId=${close.agentId} closedAt=${close.at}`);
         entry.deferred = true;
@@ -1401,9 +1405,11 @@ export default function contribute(server: PluginServerContext, openClient: () =
       try {
         if (verdict?.idleSince) {
           if (closes.get(close.agentId) === close) closes.delete(close.agentId);
+          await store.clearClose(close);
           log(`agent-parked agentId=${close.agentId} closedAt=${close.at} idleSince=${verdict.idleSince}`);
           return;
         }
+        // Stored again without its mark: the 60-second rule (closeDecision) now ends the agent's records as before.
         await store.markClosed(close);
         log(`agent-closed agentId=${close.agentId} closedAt=${close.at}${verdict ? "" : " reason=park-check-unanswered"}`);
       } finally {
@@ -1422,7 +1428,10 @@ export default function contribute(server: PluginServerContext, openClient: () =
     closes.set(close.agentId, close);
     // A send not started yet goes back to waiting; one already started is delivered, since Paseo loads the agent for it.
     cancelInFlight(event.agent.id, { state: "parked", reason: "agent-closed", hold: true });
-    unchecked.set(close, { claimTurn: !!inFlight.get(event.agent.id)?.turnId, checking: false, deferred: false });
+    const checkUntil = new Date(Date.parse(close.at) + PARK_CHECK_WINDOW_MS).toISOString();
+    unchecked.set(close, { claimTurn: !!inFlight.get(event.agent.id)?.turnId, checking: false, deferred: false, checkUntil });
+    // Stored before the check's own store write, which the store's queue keeps in order.
+    track(store.markClosed({ ...close, checkUntil }).catch((error) => failed("close-store-failed", error)));
     checkClose(close);
   });
 
@@ -1453,6 +1462,21 @@ export default function contribute(server: PluginServerContext, openClient: () =
 
   // Poll even when settings are invalid or unreadable at startup; every sweep reads them again. A cleanup that runs
   // before the first settings read resolves leaves no interval behind.
+  // Closes this daemon run saw that an earlier start of the plugin had not yet told a park or a close: checked again.
+  async function resumeCloseChecks(): Promise<void> {
+    const run = daemon();
+    for (const stored of await store.allCloses()) {
+      if (!stored.checkUntil || !sameDaemonRun(stored.daemon, run)) continue;
+      const close: AgentClose = { agentId: stored.agentId, at: stored.at, daemon: stored.daemon };
+      const current = closes.get(close.agentId);
+      if (!current || Date.parse(current.at) < Date.parse(close.at)) closes.set(close.agentId, close);
+      unchecked.set(close, { claimTurn: false, checking: false, deferred: true, checkUntil: stored.checkUntil });
+      checkClose(close);
+    }
+  }
+
+  // closeGate holds a record on a stored marked close by itself, so these checks need not finish before the first sweep.
+  track(resumeCloseChecks().catch((error) => failed("close-recheck-failed", error)));
   track(config().catch(() => null).then((currentConfig) => {
     if (stopped) return;
     log(`started version=${VERSION} armed=${currentConfig?.armed ?? "unknown"} pmFallback=${currentConfig?.pmFallback ?? "unknown"}`);
