@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "35a42c58f40cf02ce0f10f7e04c53b78d48702d5",
+  "source_commit": "cc6ceea11e597609bf77d50673c6f9a0edbf106d",
   "skill_count": 24,
   "file_count": 135,
   "files": [
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 93305,
-      "sha256": "850a796a4ccaf2b63aff2c87ae92c1859675fa2c4b30f3599691a46a5c1a38a3"
+      "bytes": 93564,
+      "sha256": "a6252deb0849a3825d1dd8c52e5e9f1fbe5efe66312502592f625e5eccdeee03"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -597,8 +597,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 91088,
-      "sha256": "4078e7a0100ec9b8ee074a1f43fa213a802903666aeaa9f30fa6c585323dd38c"
+      "bytes": 91544,
+      "sha256": "d5daf685c883378809e9eff16a31dc559f066998a309831961af9e50828e76d1"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
@@ -1611,26 +1611,26 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 37913,
-      "sha256": "b804d58ec52d53bab926745be83c2b399454b2ee2a12fae0becb12d99afb4d4e"
+      "bytes": 42521,
+      "sha256": "f4866634701491a2cef8d9056a8a675f39fcfc5bbc88a7ff587be48856147a20"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
       "plugin": "usage-limit-auto-resume",
       "bytes": 103323,
-      "sha256": "8d79c82fdffd72ef7c0eab2c4a4634f78d637593c3b1180246488e6e74022507"
+      "sha256": "e4c88ebd86011f20d88416de82a999311f1f3e8bb0bc98eb7f3f077bd4d91056"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 23597,
-      "sha256": "e30e5f1aa76de7a52250fa499b0fd92cc0c0355a5a6f710037d32ddfdad23bf2"
+      "sha256": "83b3ae1228fceb127e17aca821c50ba4dcb01c57261d67e3c4bfd26999802dc6"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 890,
-      "sha256": "8f0312f4c9f78f4d200929efa883bd3d6b886ea6a1521f263e3c61cdec599cb9"
+      "sha256": "24e03f08d9aa4c0f141f250535ed6c6f2e2f67d9ecf773017be7e3a1e948c940"
     },
     {
       "path": "plugins/usage-limit-auto-resume/paseo-plugin.json",
@@ -1641,8 +1641,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/config.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 2375,
-      "sha256": "d5d01d6ff2cceb678e35649484d984af03a33e823243d903a6d235539e22140e"
+      "bytes": 2893,
+      "sha256": "e3ee1f28325b8ca6422b21b3979578a4086c02527a4b87f8943b7ba681856fca"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/daemon-run.ts",
@@ -1659,14 +1659,14 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/fallback-runner.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 23400,
-      "sha256": "59f3c0227133fac046221c2e6dbbb27c98cbe8ccaafd371fec979a780f441711"
+      "bytes": 32187,
+      "sha256": "720863ea7445f0f2dad9a2875859a8a80290d4a9bd805fd1f87d0396a65c1048"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/fallback.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 15911,
-      "sha256": "5c51931cf73beed22c5abfc07f763c080fe091c3e902d3539701d21e744208fa"
+      "bytes": 20099,
+      "sha256": "4735e7869273642cfec24234c21e8ad4497dac45ca95d5ed7304d578810f774e"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/model.ts",
@@ -1677,8 +1677,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/quota.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 11788,
-      "sha256": "cae02a8b375c784468f4d43c31f2c6c8d413386ee02daab98fd670f34a36a06e"
+      "bytes": 13085,
+      "sha256": "fd77caf4c39cfd980762e64ff0e4da2c38bf8da05a6221b526d70658d18f89f5"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/store.ts",
