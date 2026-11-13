@@ -40,6 +40,11 @@ export type ReturnObligation = {
    */
   stages?: { first: Profile; last: Profile } | null;
   stage?: "first" | "last" | null;
+  /**
+   * Set when the original was refused while a fresh pq reading showed its model-scoped window (Fable) with quota left:
+   * pq and the provider disagree, so pq proof no longer returns this PM; only a same-model success does. Absent: false.
+   */
+  pqFableDistrusted?: boolean;
   attempts: number;
   lastAttemptAt: string | null;
   lastError: string | null;
@@ -235,7 +240,7 @@ export function profileChanged(obligation: ReturnObligation, live: Profile): boo
   return !(obligation.restoreReadback && sameProfile(live, obligation.restoreReadback));
 }
 
-export function newObligation(agentId: string, original: Profile, fallback: Profile, source: ReturnObligation["source"], phase: ReturnObligation["phase"], now = Date.now(), chain: { stages: { first: Profile; last: Profile }; stage: "first" | "last" } | null = null): ReturnObligation {
+export function newObligation(agentId: string, original: Profile, fallback: Profile, source: ReturnObligation["source"], phase: ReturnObligation["phase"], now = Date.now(), chain: { stages: { first: Profile; last: Profile }; stage: "first" | "last"; pqFableDistrusted?: boolean } | null = null): ReturnObligation {
   const at = new Date(now).toISOString();
   return {
     version: 1, obligationId: `pm-return:${createHash("sha256").update([agentId, at, randomUUID()].join("\u0000")).digest("hex").slice(0, 24)}`,
@@ -266,6 +271,7 @@ function isObligation(value: unknown): value is ReturnObligation {
     (o.restoreReadback === undefined || o.restoreReadback === null || isProfile(o.restoreReadback)) &&
     (o.stages === undefined || o.stages === null || typeof o.stages === "object" && isProfile((o.stages as Record<string, unknown>).first) && isProfile((o.stages as Record<string, unknown>).last)) &&
     (o.stage === undefined || o.stage === null || ((o.stage === "first" || o.stage === "last") && !!o.stages)) &&
+    (o.pqFableDistrusted === undefined || typeof o.pqFableDistrusted === "boolean") &&
     Number.isSafeInteger(o.attempts) && (o.lastAttemptAt === null || isTime(o.lastAttemptAt)) && isNullableString(o.lastError) &&
     isTime(o.createdAt) && isTime(o.updatedAt);
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -26,59 +26,73 @@ const agent: AgentSnapshot = {
   persistence: { provider: "claude", sessionId: "session-1", nativeHandle: "native-1" },
 };
 
+// A fresh directory under the OS temp dir (never a literal /tmp, which is C:\tmp on Windows), removed afterwards.
+async function inTempDir(run: (dir: string) => Promise<void>) {
+  const dir = await mkdtemp(path.join(tmpdir(), "usage-limit-auto-resume-"));
+  try { await run(dir); } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
 describe("ResumeStore", () => {
   it("round-trips records through the durable file", async () => {
-    const store = new ResumeStore(`/tmp/usage-limit-auto-resume-test-${process.pid}.json`);
-    const record = buildRecord(agent, "out of credits", undefined, config, Date.now(), "turn-1");
-    assert.ok(record);
-    await store.upsert(record);
-    const records = await store.read();
-    assert.equal(records.length, 1);
-    assert.equal(records[0]?.recordId, record.recordId);
-    await store.remove(record.recordId);
-    assert.deepEqual(await store.read(), []);
+    await inTempDir(async (dir) => {
+      const store = new ResumeStore(path.join(dir, "test.json"));
+      const record = buildRecord(agent, "out of credits", undefined, config, Date.now(), "turn-1");
+      assert.ok(record);
+      await store.upsert(record);
+      const records = await store.read();
+      assert.equal(records.length, 1);
+      assert.equal(records[0]?.recordId, record.recordId);
+      await store.remove(record.recordId);
+      assert.deepEqual(await store.read(), []);
+    });
   });
 
   it("keeps both changes when two updates to one record run concurrently", async () => {
-    // A resumed turn's start (resumeTurnId) and the send receipt (state) land together.
-    const store = new ResumeStore(`/tmp/usage-limit-auto-resume-race-${process.pid}.json`);
-    const record = buildRecord(agent, "out of credits", undefined, config, Date.now(), "turn-1");
-    assert.ok(record);
-    await store.upsert(record);
-    await Promise.all([
-      store.update(record.recordId, (value) => ({ ...value, resumeTurnId: "turn-2" })),
-      store.update(record.recordId, (value) => ({ ...value, state: "verifying" })),
-    ]);
-    const [stored] = await store.read();
-    assert.equal(stored?.resumeTurnId, "turn-2");
-    assert.equal(stored?.state, "verifying");
-    await store.remove(record.recordId);
+    await inTempDir(async (dir) => {
+      // A resumed turn's start (resumeTurnId) and the send receipt (state) land together.
+      const store = new ResumeStore(path.join(dir, "race.json"));
+      const record = buildRecord(agent, "out of credits", undefined, config, Date.now(), "turn-1");
+      assert.ok(record);
+      await store.upsert(record);
+      await Promise.all([
+        store.update(record.recordId, (value) => ({ ...value, resumeTurnId: "turn-2" })),
+        store.update(record.recordId, (value) => ({ ...value, state: "verifying" })),
+      ]);
+      const [stored] = await store.read();
+      assert.equal(stored?.resumeTurnId, "turn-2");
+      assert.equal(stored?.state, "verifying");
+      await store.remove(record.recordId);
+    });
   });
 
   it("keeps every record when upserts for different agents run concurrently", async () => {
-    const store = new ResumeStore(`/tmp/usage-limit-auto-resume-upsert-${process.pid}.json`);
-    const records = ["agent-a", "agent-b", "agent-c"].map((id) => buildRecord({ ...agent, id }, "out of credits", undefined, config, Date.now(), `turn-${id}`)!);
-    await Promise.all(records.map((record) => store.upsert(record)));
-    assert.deepEqual((await store.read()).map((record) => record.agentId).sort(), ["agent-a", "agent-b", "agent-c"]);
-    for (const record of records) await store.remove(record.recordId);
+    await inTempDir(async (dir) => {
+      const store = new ResumeStore(path.join(dir, "upsert.json"));
+      const records = ["agent-a", "agent-b", "agent-c"].map((id) => buildRecord({ ...agent, id }, "out of credits", undefined, config, Date.now(), `turn-${id}`)!);
+      await Promise.all(records.map((record) => store.upsert(record)));
+      assert.deepEqual((await store.read()).map((record) => record.agentId).sort(), ["agent-a", "agent-b", "agent-c"]);
+      for (const record of records) await store.remove(record.recordId);
+    });
   });
 
   it("throws on a malformed record instead of acting on it, and leaves the file alone", async () => {
-    const filePath = `/tmp/usage-limit-auto-resume-malformed-${process.pid}.json`;
-    const record = buildRecord(agent, "out of credits", undefined, config, Date.now(), "turn-1")!;
-    const malformed = [null, { ...record, notBefore: "not-a-date" }, { ...record, state: "paused" }, { ...record, attempts: [{ at: record.createdAt }] }, { ...record, agentId: undefined }];
-    try {
-      for (const bad of malformed) {
-        const text = JSON.stringify({ version: 2, records: [bad, record] });
-        await writeFile(filePath, text);
-        const store = new ResumeStore(filePath);
-        await assert.rejects(store.read(), (error) => error instanceof StateUnreadableError);
-        await assert.rejects(store.upsert(record), (error) => error instanceof StateUnreadableError);
-        assert.equal(await readFile(filePath, "utf8"), text);
+    await inTempDir(async (dir) => {
+      const filePath = path.join(dir, "malformed.json");
+      const record = buildRecord(agent, "out of credits", undefined, config, Date.now(), "turn-1")!;
+      const malformed = [null, { ...record, notBefore: "not-a-date" }, { ...record, state: "paused" }, { ...record, attempts: [{ at: record.createdAt }] }, { ...record, agentId: undefined }];
+      try {
+        for (const bad of malformed) {
+          const text = JSON.stringify({ version: 2, records: [bad, record] });
+          await writeFile(filePath, text);
+          const store = new ResumeStore(filePath);
+          await assert.rejects(store.read(), (error) => error instanceof StateUnreadableError);
+          await assert.rejects(store.upsert(record), (error) => error instanceof StateUnreadableError);
+          assert.equal(await readFile(filePath, "utf8"), text);
+        }
+      } finally {
+        await rm(filePath, { force: true });
       }
-    } finally {
-      await rm(filePath, { force: true });
-    }
+    });
   });
 
   it("never prunes an actionable or uncertain record, and leaves a guard for each pruned settled one", async () => {
@@ -109,12 +123,14 @@ describe("ResumeStore", () => {
   });
 
   it("throws on a corrupt state file instead of reading it as empty", async () => {
-    const filePath = `/tmp/usage-limit-auto-resume-corrupt-${process.pid}.json`;
-    await writeFile(filePath, "{\"version\":2,\"records\":[");
-    try {
-      await assert.rejects(new ResumeStore(filePath).read(), /cannot read/);
-    } finally {
-      await rm(filePath, { force: true });
-    }
+    await inTempDir(async (dir) => {
+      const filePath = path.join(dir, "corrupt.json");
+      await writeFile(filePath, "{\"version\":2,\"records\":[");
+      try {
+        await assert.rejects(new ResumeStore(filePath).read(), /cannot read/);
+      } finally {
+        await rm(filePath, { force: true });
+      }
+    });
   });
 });
