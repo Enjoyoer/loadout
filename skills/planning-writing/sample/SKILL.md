@@ -19,6 +19,8 @@ Use writing samples supplied in the current conversation to infer the user's ton
 
 Match the user's examples without carrying over typos, private frustration, or profanity unless they are clearly intended for the recipient. For a neutral fallback, start with the status or action, use ordinary words, and keep routine messages to one to three short sentences. A multi-item update may use separate short lines.
 
+Keep drafts to people short. Never put blame on the user or the recipient; state the facts and the next step.
+
 Choose the message shape that fits the request:
 
 - Status: answer first, then add context that changes the next action.

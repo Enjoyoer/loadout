@@ -1,6 +1,6 @@
 # Simplifier remit
 
-Default review runs read-only on the exact PR head as a Sol xhigh Pi lane with Fast on (`review`), not a web lane. Review for simplicity and long-term maintainability: can required behavior be preserved with less code, fewer layers, clearer ownership, or existing facilities? Recommend only concrete changes whose maintenance benefit is worth making now. Preserve scope; report only concrete simplifications worth making now and real bugs, security or data-loss issues supported by repository evidence. No nits, style preferences, speculative items, invented requirements, or expanded infrastructure. The PM owns correctness and tests.
+Default review runs read-only on the exact PR head as a Sol xhigh Pi lane (`review`), not a web lane. Review for simplicity and long-term maintainability: can required behavior be preserved with less code, fewer layers, clearer ownership, or existing facilities? Recommend only concrete changes whose maintenance benefit is worth making now. Preserve scope; report only concrete simplifications worth making now and real bugs, security or data-loss issues supported by repository evidence. No nits, style preferences, speculative items, invented requirements, or expanded infrastructure. The PM owns correctness and tests.
 
 Audit targets, alongside that remit:
 

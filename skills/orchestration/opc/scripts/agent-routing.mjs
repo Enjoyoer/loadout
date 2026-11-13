@@ -12,26 +12,27 @@ export function isValidModelId(value) {
 }
 
 export const FIXED_ROLE_ROUTES = Object.freeze({
-  scout: Object.freeze({ label: 'Sol', fallbackProvider: 'codex', effort: 'xhigh', fastMode: true }),
+  scout: Object.freeze({ label: 'Sol', fallbackProvider: 'codex', effort: 'xhigh', fastMode: false }),
   reviewer: Object.freeze({ label: 'Web Pro', fallbackProvider: 'codex', effort: null, fastMode: false }),
 });
 
 // Worker task classes when the owner names no model. Labels resolve through the target Pi catalog. range is the
 // [floor, ceiling] the quota pace may move the default within (medium < high < xhigh); null means fixed.
-const workerClass = (label, effort, range, fastMode = false) =>
-  Object.freeze({ label, effort, range: range && Object.freeze(range), fastMode });
+const workerClass = (label, effort, range) =>
+  Object.freeze({ label, effort, range: range && Object.freeze(range), fastMode: false });
 // Local code lanes default to Opus medium (owner rule); ui-design and ui-check stay Fable high. Routes are the minimum
-// (owner rule): every range starts at its default, so the pace can raise a level but never lower one.
+// (owner rule): every range starts at its default, so the pace can raise a level but never lower one. Every class runs
+// Fast off (owner 2026-11-07); Fast is an owner-named exception per task.
 export const WORKER_DEFAULT_ROUTES = Object.freeze({
   code: workerClass('Opus', 'medium', ['medium', 'xhigh']),
-  review: workerClass('Sol', 'xhigh', null, true),
+  review: workerClass('Sol', 'xhigh', null),
   // Security, credential and data-loss reviews run on Opus, never GPT (owner rule): GPT trips the cyber-safety filter.
   'review-security': workerClass('Opus', 'xhigh', null),
-  plan: workerClass('Sol', 'xhigh', null, true),
-  browser: workerClass('Sol', 'medium', ['medium', 'high'], true),
-  'browser-hard': workerClass('Astra', 'medium', ['medium', 'high'], true),
-  smoke: workerClass('Luna', 'low', null, true),
-  watcher: workerClass('Luna', 'xhigh', null, true),
+  plan: workerClass('Sol', 'xhigh', null),
+  browser: workerClass('Sol', 'medium', ['medium', 'high']),
+  'browser-hard': workerClass('Astra', 'medium', ['medium', 'high']),
+  smoke: workerClass('Luna', 'low', null),
+  watcher: workerClass('Luna', 'xhigh', null),
 });
 export const WORKER_CLASS_ALIASES = Object.freeze({
   'code-bounded': 'code', 'test-fix': 'code', automation: 'code', mechanical: 'code',
@@ -230,15 +231,16 @@ function validateWorkerRoute(route) {
 
 // A recorded route rebuilds (repair, restart) only inside the owner's hard rules for the lane's class, whatever its source.
 // A task default must also still be today's class: the class's catalog label (never a GPT or web model for a Claude
-// class), the class's Fast, and, as the one allowance for levels a class-table change left behind, any effort from the
-// class minimum up to its ceiling, which the Pi catalog must still serve.
+// class), the class's Fast, and, as the allowances for what a class-table change left behind, Fast on for a GPT class
+// (recorded before GPT defaults went Fast off) and any effort from the class minimum up to its ceiling, which the Pi
+// catalog must still serve.
 function validateRebuild(route, taskClass, rows) {
   taskClass = canonicalWorkerClass(taskClass);
   const valid = validateRecordedWorkerRoute(route);
   const rule = WORKER_DEFAULT_ROUTES[taskClass];
   const ceiling = rule && (rule.range?.[1] ?? rule.effort);
   const problem = laneProblem(route, taskClass, rows) ?? (route.source !== 'task-default' ? null
-    : route.fastMode !== rule.fastMode ? `Fast ${route.fastMode ? 'on' : 'off'} does not match the ${taskClass} class`
+    : route.fastMode !== rule.fastMode && !(route.fastMode && GPT_WEB_LABELS.includes(rule.label)) ? `Fast ${route.fastMode ? 'on' : 'off'} does not match the ${taskClass} class`
       : effortOrder.indexOf(route.effort) > effortOrder.indexOf(ceiling) ? `effort ${route.effort} is above the ${taskClass} ceiling ${ceiling}`
         : claudeClassOnGptModel(rule, route) ? `${route.model} is a GPT or web model and the ${taskClass} class runs ${rule.label}`
           : null);
