@@ -202,10 +202,11 @@ class ProviderSyncTest(unittest.TestCase):
         proposal, data['pi'] = data['pi'], None
         win_config = self.root / 'win-config.json'
         data['config_path'] = str(win_config)
-        program = self.root / 'merge.js'
-        program.write_text(fleet.COMMON_JS.read_text() + '\n' + (SCRIPTS / 'paseo_providers_merge.js').read_text())
+        # The payload travels over stdin, as the providers step sends it: as one argument it can pass the per-argument
+        # limit on Linux.
         packed = base64.b64encode(gzip.compress(json.dumps(data).encode())).decode()
-        merge = lambda: paseo_providers.parse_result(subprocess.run(['node', str(program), packed], env=self.env,
+        raw, boot = paseo_providers.staged_payload(paseo_providers.merge_program(), packed)
+        merge = lambda: paseo_providers.parse_result(subprocess.run(['node', '-e', boot], input=raw, env=self.env,
                                                                     capture_output=True, text=True).stdout)
         win_pi = lambda: json.loads(win_config.read_text())['agents']['providers']['pi']['command']
         win_config.write_text('{"agents":{"providers":{}}}')

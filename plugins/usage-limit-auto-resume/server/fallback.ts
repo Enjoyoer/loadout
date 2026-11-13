@@ -45,6 +45,8 @@ export type ReturnObligation = {
    * pq and the provider disagree, so pq proof no longer returns this PM; only a same-model success does. Absent: false.
    */
   pqFableDistrusted?: boolean;
+  /** When a pq reading last made a distrusted obligation's return due (a probe), or absent. */
+  pqProbeAt?: string | null;
   attempts: number;
   lastAttemptAt: string | null;
   lastError: string | null;
@@ -223,6 +225,17 @@ export function isSubscriptionClaude(provider: string, model: string | null | un
 export const fallbackSinceMs = (obligation: ReturnObligation) => Date.parse(obligation.fallbackSince ?? obligation.createdAt);
 
 /**
+ * A distrusted obligation (pq showed the original's window left while the provider refused it) may still return on pq
+ * proof, at most once per this interval, counted from when its stage began or its last pq-driven return, whichever is
+ * later: at most one refused turn of the original per interval while pq and the provider disagree. 60 minutes; the
+ * environment variable only shortens it for a scratch proof.
+ */
+export const PQ_PROBE_INTERVAL_MS = (Number(process.env.LOADOUT_ULR_PQ_PROBE_SECONDS) > 0 ? Number(process.env.LOADOUT_ULR_PQ_PROBE_SECONDS) : 3600) * 1000;
+
+/** When a distrusted obligation's next pq probe may run. */
+export const pqProbeOpensAt = (obligation: ReturnObligation) => Math.max(fallbackSinceMs(obligation), obligation.pqProbeAt ? Date.parse(obligation.pqProbeAt) : 0) + PQ_PROBE_INTERVAL_MS;
+
+/**
  * Already back on the original: its model and thinking, with the original's tier or the fallback's (a restore by hand
  * that left the plugin's own Fast label). The restore then settles and writes the original's tier.
  */
@@ -272,6 +285,7 @@ function isObligation(value: unknown): value is ReturnObligation {
     (o.stages === undefined || o.stages === null || typeof o.stages === "object" && isProfile((o.stages as Record<string, unknown>).first) && isProfile((o.stages as Record<string, unknown>).last)) &&
     (o.stage === undefined || o.stage === null || ((o.stage === "first" || o.stage === "last") && !!o.stages)) &&
     (o.pqFableDistrusted === undefined || typeof o.pqFableDistrusted === "boolean") &&
+    (o.pqProbeAt === undefined || o.pqProbeAt === null || (typeof o.pqProbeAt === "string" && Number.isFinite(Date.parse(o.pqProbeAt)))) &&
     Number.isSafeInteger(o.attempts) && (o.lastAttemptAt === null || isTime(o.lastAttemptAt)) && isNullableString(o.lastError) &&
     isTime(o.createdAt) && isTime(o.updatedAt);
 }

@@ -3,7 +3,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config.ts";
 import type { AgentSettingsPort } from "./daemon.ts";
-import { chainDecision, chainRefusal, enrollmentKey, fallbackIneligible, fallbackSinceMs, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
+import { chainDecision, chainRefusal, enrollmentKey, fallbackIneligible, fallbackSinceMs, pqProbeOpensAt, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
 import { agentPool, type PoolQuota, type QuotaPool } from "./quota.ts";
 import { isActive, rebindRecord, type AgentSnapshot } from "./model.ts";
 import type { ResumeStore } from "./store.ts";
@@ -175,7 +175,15 @@ export function createFallbackRunner(deps: FallbackDeps) {
     // skipped to, by every Claude account out, which can.
     if (!reason && obligation.stage === "last") {
       const decision = chainDecision(...await fresh());
-      if (decision.stage !== "last") reason = decision.stage === "first" ? "claude-pool-not-exhausted" : decision.reason;
+      // No longer every Claude account out: the refusal of the original still stands, so the swap goes to the first
+      // stage instead of being dropped.
+      if (decision.stage === "first") {
+        const restaged = await returns.update(obligation.obligationId, (o) => o.phase === "switching" && o.stage === "last"
+          ? { ...o, stage: "first", fallback: o.stages!.first, updatedAt: nowIso() } : o);
+        if (restaged?.stage === "first") log(`pm-swap-restaged agentId=${agent.id} obligationId=${obligation.obligationId} stage=first reason=claude-pool-not-exhausted profile=${show(restaged.fallback)}`);
+        return restaged;
+      }
+      if (decision.stage !== "last") reason = decision.reason;
     } else if (!reason && !obligation.stages) {
       const decision = swapDecision(...await fresh());
       if (!decision.swap) reason = decision.reason;
@@ -222,8 +230,12 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // A chained original (Fable) needs its own model-scoped window proven too; any other original, both account windows.
       const window = obligation.stages ? scopedWindow(obligation.original.model) : null;
       // pq that showed the window left while the provider refused it proves nothing for this obligation.
+      // It may still probe the original on pq proof once per PQ_PROBE_INTERVAL_MS; a restore already due by a probe
+      // stays due until it lands.
       const distrusted = !!window && obligation.pqFableDistrusted === true;
-      const proven = (quota: PoolQuota) => window ? !distrusted && scopedCapacity(quota, window) : restoreDue(quota);
+      const probeOpensAt = pqProbeOpensAt(obligation);
+      const probing = distrusted && (Date.now() >= probeOpensAt || obligation.restoreDueAt !== null && obligation.pqProbeAt === obligation.restoreDueAt);
+      const proven = (quota: PoolQuota) => window ? (!distrusted || probing) && scopedCapacity(quota, window) : restoreDue(quota);
       const stepping = !!obligation.stages && obligation.stage === "last";
       // Due, which holds resume sends, follows the latest reading. Applying the restore needs capacity proven by a
       // reading taken now, or a Claude subscription turn of the original model this daemon saw succeed since the stage
@@ -236,7 +248,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
       };
       const successText = (seen: { agentId: string; at: number }, model: string) => `claude-success agent=${seen.agentId.slice(0, 8)} model=${model} at=${new Date(seen.at).toISOString()}`;
       const success = successOf(obligation.original.model);
-      const reason = proven(reading) ? `pq-capacity quota=${quotaText(reading)}` : success ? successText(success, obligation.original.model) : null;
+      const reason = success && (distrusted || !proven(reading)) ? successText(success, obligation.original.model)
+        : proven(reading) ? `${distrusted ? "pq-fable-probe" : "pq-capacity"} quota=${quotaText(reading)}` : null;
       // Back on the original by hand: settled as a restore, which also writes the original's tier label.
       const due = reason !== null || onOriginal(obligation, live);
       // On the chain's last stage without proof for the original: proof for the first stage's model (the account windows
@@ -252,12 +265,13 @@ export function createFallbackRunner(deps: FallbackDeps) {
         }
       }
       if (due !== (obligation.restoreDueAt !== null)) {
-        obligation = await returns.update(obligation.obligationId, (o) => ({ ...o, restoreDueAt: due ? nowIso() : null, updatedAt: nowIso() }));
+        const at = nowIso(), probe = due && reason?.startsWith("pq-fable-probe");
+        obligation = await returns.update(obligation.obligationId, (o) => ({ ...o, restoreDueAt: due ? at : null, ...(probe ? { pqProbeAt: at } : {}), updatedAt: at }));
         if (!obligation) return;
         log(`pm-restore-${due ? "due" : "deferred"} agentId=${agentId} obligationId=${obligation.obligationId} ${due ? `reason=${reason ?? "already-on-original"}` : `quota=${quotaText(reading)}`}`);
       }
       if (due) goal = "restore";
-      else once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=${distrusted && scopedCapacity(reading, window!) ? "pq-fable-contradicted" : "no-claude-proof"}${obligation.stage ? ` stage=${obligation.stage}` : ""} pq=${quotaText(reading)}`);
+      else once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=${distrusted && scopedCapacity(reading, window!) ? `pq-fable-contradicted next-probe=${new Date(probeOpensAt).toISOString()}` : "no-claude-proof"}${obligation.stage ? ` stage=${obligation.stage}` : ""} pq=${quotaText(reading)}`);
     }
     if (!goal) return;
     const target = goal === "swap" ? obligation.fallback : obligation.original;
