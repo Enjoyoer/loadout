@@ -1,7 +1,7 @@
 // Router protocol metadata and an explicit, catalog-checked service tier (Fast/Standard/Ultrafast).
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, lstatSync, readdirSync, readFileSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -1013,8 +1013,8 @@ export function sessionPrivacy(record, platform = process.platform) {
 // - for an unattended agent (accountAttendance) waits, then asks agent_before_settle for one more request, with the
 //   failed answer omitted from the context; Pi's own retry never runs. The wait is one try per accountNextTry: a
 //   reset the 429 response named (Retry-After, retry-after-ms or an anthropic-ratelimit-*-reset header, read by
-//   observeRateLimitHeaders) plus 30 to 210 s of jitter, never sooner than 2 minutes, else every 2 to 5 minutes at
-//   random. A Paseo interrupt, a compaction (Pi aborts the run first) or a session shutdown ends the wait at once, and
+//   observeRateLimitHeaders), taken as at least 2 minutes away, plus 30 to 210 s of jitter, else every 2 to 5 minutes
+//   at random. A Paseo interrupt, a compaction (Pi aborts the run first) or a session shutdown ends the wait at once, and
 //   so does a queued message, which then runs. A try later than ACCOUNT_LIMIT.capMs (90 minutes) after the first 429
 //   of the run is not made: the turn fails as before. New inputs within the run keep that deadline; only a successful
 //   answer or the end of the run clears it;
@@ -1154,15 +1154,27 @@ export function localClock(at, now = Date.now()) {
 // Paseo wraps a human message that looks like an envelope in a kind="user-message" one, so only Paseo makes these.
 const AGENT_ENVELOPE = /^<paseo-system((?:\s+[a-z-]+="[^"<>]*")+)>\n([\s\S]*)\n<\/paseo-system>$/;
 const SYSTEM_ENVELOPE = /^<paseo-system>\n[\s\S]*\n<\/paseo-system>$/;
+// Paseo's unescapeXml check: a raw < or >, or an & that starts no known entity, makes the envelope invalid.
+const badXml = value => /[<>]|&(?!amp;|lt;|gt;|quot;|apos;)/.test(value);
+const NOTIFICATION_EVENTS = ['finished', 'errored', 'permission-required', 'closed'];
+/** The kind of one envelope as Paseo's parseAgentMessage accepts it, else null. */
 function envelopeKind(part) {
   const match = AGENT_ENVELOPE.exec(part);
-  if (!match) return null;
+  if (!match || badXml(match[2])) return null;
   const attributes = new Map();
   for (const [, name, value] of match[1].matchAll(/\s+([a-z-]+)="([^"<>]*)"/g)) {
-    if (attributes.has(name)) return null;
+    if (badXml(value) || attributes.has(name)) return null;
     attributes.set(name, value);
   }
-  return attributes.get('version') === '1' && attributes.get('message-id') ? attributes.get('kind') ?? null : null;
+  if (attributes.get('version') !== '1' || !attributes.get('message-id')) return null;
+  const kind = attributes.get('kind');
+  if (kind === 'user-message') return attributes.has('source-agent-id') || attributes.has('event') ? null : kind;
+  if (kind !== 'agent-message' && kind !== 'agent-notification') return null;
+  if (!attributes.get('source-agent-id')) return null;
+  // Optional attributes Paseo accepts only when non-empty.
+  if (['source-server-id', 'source-agent-title'].some(name => attributes.get(name) === '')) return null;
+  if (kind === 'agent-notification' && !NOTIFICATION_EVENTS.includes(attributes.get('event'))) return null;
+  return kind;
 }
 /** The kind of input that started or steered a run: Paseo's schedule, agent-message or agent-notification, else user. */
 export function inputKind(text) {
@@ -1177,7 +1189,8 @@ export function inputKind(text) {
  * Attended or unattended, and why. Unattended: a headless run (print or json mode); a run whose newest input is a
  * Paseo agent message, agent notification, heartbeat or schedule; or a user message to an agent with a parent label
  * (paseo.parent-agent-id or parent) and no role=pm label, which is how a worker started without a Paseo caller gets its
- * prompt. Attended: a user message to a PM or to an agent with no parent. An unknown input is attended too: it fails at
+ * prompt, or to an agent a new-agent schedule made (paseo.schedule-id label), which gets each run as a user message.
+ * Attended: a user message to a PM or to an agent with no parent. An unknown input is attended too: it fails at
  * once, as before, only faster.
  */
 export function accountAttendance({ mode, labels, input }) {
@@ -1187,14 +1200,15 @@ export function accountAttendance({ mode, labels, input }) {
   const label = name => typeof labels?.[name] === 'string' && labels[name].trim() !== '';
   const pm = typeof labels?.role === 'string' && labels.role.trim().toLowerCase() === 'pm';
   if (pm) return { unattended: false, reason: 'pm-user-message' };
+  if (label('paseo.schedule-id')) return { unattended: true, reason: 'schedule-run' };
   if (label('paseo.parent-agent-id') || label('parent')) return { unattended: true, reason: 'worker-user-message' };
   return { unattended: false, reason: 'user-message' };
 }
 const between = (min, max, random) => min + Math.floor(random() * (max - min + 1));
-/** When the next try goes: a known reset plus jitter but at least 2 minutes away, else a random 2 to 5 minute gap. */
+/** When the next try goes: a known reset, but at least 2 minutes away, plus jitter, else a random 2 to 5 minute gap. */
 export function accountNextTry({ now = Date.now(), resetAt = null, deadline, random = Math.random }) {
   const at = resetAt && resetAt > now
-    ? Math.max(resetAt + between(ACCOUNT_LIMIT.resetJitterMinMs, ACCOUNT_LIMIT.resetJitterMaxMs, random), now + ACCOUNT_LIMIT.gapMinMs)
+    ? Math.max(resetAt, now + ACCOUNT_LIMIT.gapMinMs) + between(ACCOUNT_LIMIT.resetJitterMinMs, ACCOUNT_LIMIT.resetJitterMaxMs, random)
     : now + between(ACCOUNT_LIMIT.gapMinMs, ACCOUNT_LIMIT.gapMaxMs, random);
   return { at, source: resetAt && resetAt > now ? 'reset-header' : 'poll', late: at > deadline };
 }
@@ -1219,7 +1233,7 @@ function accountLimit(pi, record) {
   const notify = (ctx, text) => {
     try {
       if (ctx?.hasUI) ctx.ui.notify(text, 'warning');
-      else if (ctx?.mode === 'print' || ctx?.mode === 'json') process.stderr.write(text + '\n');
+      else if (ctx?.mode === 'print' || ctx?.mode === 'json') { try { writeSync(2, text + '\n'); } catch {} }
     } catch {}
   };
   // Waits until `at`; ends early on an abort, a session shutdown or a queued message.
