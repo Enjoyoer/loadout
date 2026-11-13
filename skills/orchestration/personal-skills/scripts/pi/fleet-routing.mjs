@@ -1,7 +1,7 @@
 // Router protocol metadata and an explicit, catalog-checked service tier (Fast/Standard/Ultrafast).
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, lstatSync, readdirSync, readFileSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -633,8 +633,9 @@ export function readCredential(argv, { timeoutMs = CREDENTIAL.timeoutMs, signal,
   });
 }
 const pause = (ms, signal) => new Promise(done => {
-  const timer = setTimeout(done, ms);
-  signal?.addEventListener('abort', () => { clearTimeout(timer); done(); }, { once: true });
+  const stop = () => { clearTimeout(timer); done(); };
+  const timer = setTimeout(() => { signal?.removeEventListener('abort', stop); done(); }, ms);
+  signal?.addEventListener('abort', stop, { once: true });
 });
 function fleetCredential(pi, record) {
   let found, held = null, lent = null, expiry = null;
@@ -1002,6 +1003,318 @@ export function sessionPrivacy(record, platform = process.platform) {
     },
   };
 }
+// Claude account limit. When every Claude account has hit its 5-hour window, the router answers each request with
+// 429 rate_limit_error "This request would exceed your account's rate limit". Pi retries that like any 429 (2 to 30 s
+// apart, retry.maxRetries times), so a turn dies within minutes of a wall that lasts up to an hour, and every quick
+// retry is one more upstream 429. Pi 1.0 has no retry hook, but it runs the message_end handlers before it reads the
+// finalized message for its retry check (core/agent-session.js _handleAgentEvent, then _handlePostAgentRun), and a
+// provider limit phrase in the error text makes the error non-retryable (pi-ai utils/retry.js). So this extension
+// matches only that account-level text and, in message_end:
+// - for an unattended agent (accountAttendance) waits, then asks agent_before_settle for one more request, with the
+//   failed answer omitted from the context; Pi's own retry never runs. The wait is one try per accountNextTry: a
+//   reset the 429 response named (Retry-After, retry-after-ms or an anthropic-ratelimit-*-reset header, read by
+//   observeRateLimitHeaders), taken as at least 2 minutes away, plus 30 to 210 s of jitter, else every 2 to 5 minutes
+//   at random. A Paseo interrupt, a compaction (Pi aborts the run first) or a session shutdown ends the wait at once, and
+//   so does a queued message, which then runs. A try later than ACCOUNT_LIMIT.capMs (90 minutes) after the first 429
+//   of the run is not made: the turn fails as before. New inputs within the run keep that deadline; only a successful
+//   answer or the end of the run clears it;
+// - for an attended agent fails at once.
+// A turn that fails this way leads its error with "Claude 5h limit; retry after HH:MM <zone>" when the response's reset
+// header or Paceline's pq gives the time, else "Claude account limit; retry time unknown", and keeps the original error
+// after it, so the usage-limit resume plugin and log readers classify it as before. Every other error (529, per-minute
+// 429s, 5xx, stream drops) keeps Pi's retry.
+export const ACCOUNT_LIMIT = {
+  capMs: 90 * 60_000, gapMinMs: 120_000, gapMaxMs: 300_000, resetJitterMinMs: 30_000, resetJitterMaxMs: 210_000,
+  // A reset header counts only for the error that follows its response.
+  hintMaxAgeMs: 60_000, pqTimeoutMs: 5_000, pqCacheMs: 60_000,
+  // Pi's own non-retryable phrase (pi-ai NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN): the marked error is final.
+  tag: 'account quota exceeded',
+};
+const ACCOUNT_LIMIT_TEXT = /would exceed your account(?:'|\u2019)s rate limit/i;
+/** A Claude account-level 429 that this extension has not marked yet. */
+export const isAccountLimit = message => message?.role === 'assistant' && message.stopReason === 'error'
+  && typeof message.errorMessage === 'string' && message.errorMessage.includes('rate_limit_error')
+  && ACCOUNT_LIMIT_TEXT.test(message.errorMessage) && !message.errorMessage.includes(`(${ACCOUNT_LIMIT.tag}`);
+// The scratch proof shortens the cap; anything else keeps 90 minutes.
+export function accountCapMs(env = process.env) {
+  const value = Number(env.LOADOUT_PI_ACCOUNT_WAIT_CAP_MS);
+  return Number.isSafeInteger(value) && value >= 60_000 && value <= ACCOUNT_LIMIT.capMs ? value : ACCOUNT_LIMIT.capMs;
+}
+// A header time: epoch seconds or milliseconds, else an HTTP or ISO date.
+function headerTime(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  if (/^\d+(?:\.\d+)?$/.test(text)) { const n = Number(text); return n > 1e12 ? n : n > 1e9 ? n * 1000 : null; }
+  const at = Date.parse(text);
+  return Number.isFinite(at) ? at : null;
+}
+/**
+ * The reset a 429 response names, as epoch ms, or null: retry-after-ms, Retry-After (seconds or a date), then the
+ * unified 5-hour and unified resets, then the latest other anthropic-ratelimit-*-reset. Only a time ahead counts.
+ */
+export function resetFromHeaders(headers, now = Date.now()) {
+  const get = name => typeof headers?.get === 'function' ? headers.get(name) : headers?.[name];
+  const ahead = at => Number.isFinite(at) && at > now ? at : null;
+  const ms = Number(get('retry-after-ms'));
+  if (get('retry-after-ms') != null && Number.isFinite(ms) && ms > 0) return now + ms;
+  const after = get('retry-after');
+  if (after != null && String(after).trim()) {
+    const seconds = Number(String(after).trim());
+    const at = Number.isFinite(seconds) ? (seconds > 0 ? now + seconds * 1000 : null) : ahead(Date.parse(after));
+    if (at) return at;
+  }
+  for (const name of ['anthropic-ratelimit-unified-5h-reset', 'anthropic-ratelimit-unified-reset']) {
+    const at = ahead(headerTime(get(name)));
+    if (at) return at;
+  }
+  let latest = null;
+  try {
+    const names = typeof headers?.keys === 'function' ? [...headers.keys()] : Object.keys(headers ?? {});
+    for (const name of names) if (/^anthropic-ratelimit-.+-reset$/i.test(name)) {
+      const at = ahead(headerTime(get(name)));
+      if (at && (!latest || at > latest)) latest = at;
+    }
+  } catch {}
+  return latest;
+}
+const SINK = Symbol.for('loadout.fleet-routing.rateLimitSink');
+/**
+ * Pi passes no 429 headers to extensions: the Anthropic SDK throws on a 429 before Pi's after_provider_response, and
+ * the error text has none. The SDK builds its client per request with the global fetch, so this wraps that fetch to read
+ * the reset of each 429 from a /v1/messages response whose URL matches(url), for onHint(resetAt or null). It changes no
+ * request or response. The wrapper is made once per process; a later call (an extension instance after /reload or a
+ * session replacement) only points its sink at the new instance.
+ */
+export function observeRateLimitHeaders(onHint, target = globalThis, matches = () => true) {
+  const original = target.fetch;
+  if (typeof original !== 'function') return false;
+  if (original[SINK]) { original[SINK].onHint = onHint; original[SINK].matches = matches; return true; }
+  const sink = { onHint, matches };
+  const wrapped = async function (input, init) {
+    const response = await original.call(this, input, init);
+    try {
+      const url = typeof input === 'string' ? input : input?.url ?? String(input?.href ?? '');
+      if (response?.status === 429 && /\/v1\/messages(?:\?|$)/.test(url) && sink.matches(url)) sink.onHint(resetFromHeaders(response.headers));
+    } catch {}
+    return response;
+  };
+  wrapped[SINK] = sink;
+  target.fetch = wrapped;
+  return true;
+}
+// The pq argv, as the usage-limit resume plugin reads it (plugins/usage-limit-auto-resume/server/quota.ts pqArgv).
+function pqArgv(home = process.env.HOME || '') {
+  let argv = ['~/.local/bin/pq', '--json'];
+  try {
+    const value = JSON.parse(readFileSync(join(home, '.config', 'opc', 'routing.json'), 'utf8'))?.pq;
+    if (Array.isArray(value) && value.length && value.every(arg => typeof arg === 'string' && arg)) argv = value;
+  } catch {}
+  const [command, ...args] = argv;
+  return [command === '~' || command.startsWith('~/') ? join(home, command.slice(1)) : command, ...args];
+}
+function runPq(argv, timeoutMs) {
+  return new Promise(done => {
+    let out = '', settled = false, child;
+    const finish = value => { if (settled) return; settled = true; clearTimeout(timer); try { child?.kill(); } catch {} done(value); };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    try { child = spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }); }
+    catch { finish(null); return; }
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => { out += chunk; if (out.length > 16 << 20) finish(null); else try { finish(JSON.parse(out)); } catch {} });
+    child.on('error', () => finish(null));
+    child.on('close', () => finish(null));
+  });
+}
+/**
+ * When the Claude pool frees, from a pq document (schemaVersion 1), as the usage-limit resume plugin reads it after a
+ * quota refusal (quota.ts poolQuota and poolOut with refused): only when no Claude account shows quota left, the
+ * earliest time an out account's out windows (five_hour, seven_day) have all reset. Null when unknown.
+ */
+export function pqClaudeReset(document, now = Date.now()) {
+  const num = value => typeof value === 'number' && Number.isFinite(value);
+  if (!document || document.schemaVersion !== 1 || document.snapshotStale !== false || !Array.isArray(document.accounts)) return null;
+  const accounts = document.accounts.filter(account => account?.provider === 'claude');
+  let available = 0;
+  const frees = [];
+  for (const account of accounts) {
+    const windows = (Array.isArray(account.windows) ? account.windows : []).filter(w => w && ['five_hour', 'seven_day'].includes(w.id));
+    const out = windows.filter(w => ((num(w.leftPct) && w.leftPct <= 0) || w.state === 'blocking') && num(w.resetAt) && w.resetAt * 1000 > now);
+    if (out.length) frees.push(Math.max(...out.map(w => w.resetAt * 1000)));
+    else if (account.fresh === true && windows.length && windows.every(w => w.fresh !== false && num(w.leftPct) && w.leftPct > 0)) available++;
+  }
+  return available === 0 && frees.length ? Math.min(...frees) : null;
+}
+/** A time as the host's local HH:MM with its zone, with the date when it is not within the next 20 hours. */
+export function localClock(at, now = Date.now()) {
+  const date = new Date(at);
+  const clock = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short' });
+  return at - now > 20 * 3_600_000 ? `${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${clock}` : clock;
+}
+// Paseo's envelope grammar (agent-messages/envelope.js parseAgentMessage, parseAgentMessages, SYSTEM_ENVELOPE_PATTERN).
+// Paseo wraps a human message that looks like an envelope in a kind="user-message" one, so only Paseo makes these.
+const AGENT_ENVELOPE = /^<paseo-system((?:\s+[a-z-]+="[^"<>]*")+)>\n([\s\S]*)\n<\/paseo-system>$/;
+const SYSTEM_ENVELOPE = /^<paseo-system>\n[\s\S]*\n<\/paseo-system>$/;
+// Paseo's unescapeXml check: a raw < or >, or an & that starts no known entity, makes the envelope invalid.
+const badXml = value => /[<>]|&(?!amp;|lt;|gt;|quot;|apos;)/.test(value);
+const NOTIFICATION_EVENTS = ['finished', 'errored', 'permission-required', 'closed'];
+/** The kind of one envelope as Paseo's parseAgentMessage accepts it, else null. */
+function envelopeKind(part) {
+  const match = AGENT_ENVELOPE.exec(part);
+  if (!match || badXml(match[2])) return null;
+  const attributes = new Map();
+  for (const [, name, value] of match[1].matchAll(/\s+([a-z-]+)="([^"<>]*)"/g)) {
+    if (badXml(value) || attributes.has(name)) return null;
+    attributes.set(name, value);
+  }
+  if (attributes.get('version') !== '1' || !attributes.get('message-id')) return null;
+  const kind = attributes.get('kind');
+  if (kind === 'user-message') return attributes.has('source-agent-id') || attributes.has('event') ? null : kind;
+  if (kind !== 'agent-message' && kind !== 'agent-notification') return null;
+  if (!attributes.get('source-agent-id')) return null;
+  // Optional attributes Paseo accepts only when non-empty.
+  if (['source-server-id', 'source-agent-title'].some(name => attributes.get(name) === '')) return null;
+  if (kind === 'agent-notification' && !NOTIFICATION_EVENTS.includes(attributes.get('event'))) return null;
+  return kind;
+}
+/** The kind of input that started or steered a run: Paseo's schedule, agent-message or agent-notification, else user. */
+export function inputKind(text) {
+  if (typeof text !== 'string') return 'unknown';
+  if (SYSTEM_ENVELOPE.test(text)) return 'schedule';
+  const kinds = text.split(/(?<=<\/paseo-system>)\n+(?=<paseo-system )/).map(envelopeKind);
+  if (kinds.some(kind => kind === null)) return 'user';
+  const kind = kinds.at(-1);
+  return kind === 'agent-message' || kind === 'agent-notification' ? kind : 'user';
+}
+/**
+ * Attended or unattended, and why. Unattended: a headless run (print or json mode); a run whose newest input is a
+ * Paseo agent message, agent notification, heartbeat or schedule; or a user message to an agent with a parent label
+ * (paseo.parent-agent-id or parent) and no role=pm label, which is how a worker started without a Paseo caller gets its
+ * prompt, or to an agent a new-agent schedule made (paseo.schedule-id label), which gets each run as a user message.
+ * Attended: a user message to a PM or to an agent with no parent. An unknown input is attended too: it fails at
+ * once, as before, only faster.
+ */
+export function accountAttendance({ mode, labels, input }) {
+  if (mode === 'print' || mode === 'json') return { unattended: true, reason: 'headless' };
+  if (['agent-message', 'agent-notification', 'schedule'].includes(input)) return { unattended: true, reason: input };
+  if (input !== 'user') return { unattended: false, reason: 'unknown' };
+  const label = name => typeof labels?.[name] === 'string' && labels[name].trim() !== '';
+  const pm = typeof labels?.role === 'string' && labels.role.trim().toLowerCase() === 'pm';
+  if (pm) return { unattended: false, reason: 'pm-user-message' };
+  if (label('paseo.schedule-id')) return { unattended: true, reason: 'schedule-run' };
+  if (label('paseo.parent-agent-id') || label('parent')) return { unattended: true, reason: 'worker-user-message' };
+  return { unattended: false, reason: 'user-message' };
+}
+const between = (min, max, random) => min + Math.floor(random() * (max - min + 1));
+/** When the next try goes: a known reset, but at least 2 minutes away, plus jitter, else a random 2 to 5 minute gap. */
+export function accountNextTry({ now = Date.now(), resetAt = null, deadline, random = Math.random }) {
+  const at = resetAt && resetAt > now
+    ? Math.max(resetAt, now + ACCOUNT_LIMIT.gapMinMs) + between(ACCOUNT_LIMIT.resetJitterMinMs, ACCOUNT_LIMIT.resetJitterMaxMs, random)
+    : now + between(ACCOUNT_LIMIT.gapMinMs, ACCOUNT_LIMIT.gapMaxMs, random);
+  return { at, source: resetAt && resetAt > now ? 'reset-header' : 'poll', late: at > deadline };
+}
+const withError = (message, errorMessage) => ({ ...message, errorMessage });
+function accountLimit(pi, record) {
+  let hint = null, labels = null, input = 'unknown', wait = null, stopped = false, settle = null, pq = null;
+  const controllers = new Set();
+  const freshHint = () => hint && Date.now() - hint.at <= ACCOUNT_LIMIT.hintMaxAgeMs ? hint.resetAt : null;
+  const pqReset = async () => {
+    if (!pq || Date.now() - pq.at > ACCOUNT_LIMIT.pqCacheMs) pq = { at: Date.now(), result: runPq(pqArgv(), ACCOUNT_LIMIT.pqTimeoutMs).catch(() => null) };
+    return pqClaudeReset(await pq.result);
+  };
+  // The final error: the retry time and the original text after it.
+  const fail = async (message, note = '') => {
+    let at = freshHint(), source = at ? 'reset-header' : null;
+    if (!at) { at = await pqReset(); source = at ? 'pq' : null; }
+    const lead = at ? `Claude 5h limit; retry after ${localClock(at)}` : 'Claude account limit; retry time unknown';
+    return { message: withError(message, `${lead} (${ACCOUNT_LIMIT.tag}${note}). ${message.errorMessage}`), retryAt: at, source };
+  };
+  const sessionId = ctx => { let id = null; try { id = ctx?.sessionManager?.getSessionId() ?? null; } catch {} return id; };
+  // Paseo shows a notification on the timeline; a headless run gets one stderr line instead.
+  const notify = (ctx, text) => {
+    try {
+      if (ctx?.hasUI) ctx.ui.notify(text, 'warning');
+      else if (ctx?.mode === 'print' || ctx?.mode === 'json') { try { writeSync(2, text + '\n'); } catch {} }
+    } catch {}
+  };
+  // Waits until `at`; ends early on an abort, a session shutdown or a queued message.
+  const sleepUntil = async (at, ctx) => {
+    const controller = new AbortController();
+    controllers.add(controller);
+    const signal = ctx?.signal;
+    const stop = () => controller.abort();
+    signal?.addEventListener('abort', stop, { once: true });
+    try {
+      for (;;) {
+        if (signal?.aborted) return 'aborted';
+        if (stopped || controller.signal.aborted) return 'shutdown';
+        if (ctx?.hasPendingMessages?.()) return 'message';
+        const left = at - Date.now();
+        if (left <= 0) return 'elapsed';
+        await pause(Math.min(1_000, left), controller.signal);
+      }
+    } finally { signal?.removeEventListener('abort', stop); controllers.delete(controller); }
+  };
+  // One more request after a wait: agent_before_settle omits the failed answer and continues. The handler is on only
+  // for that settle, because Pi builds a boundary context for every settle once any handler is on.
+  const continueOnce = () => {
+    settle?.();
+    settle = pi.on('agent_before_settle', event => {
+      settle?.(); settle = null;
+      const entry = [...(event?.context?.contextEntries ?? [])].reverse().find(item => item?.sourceEntry?.type === 'message'
+        && item.sourceEntry.message?.role === 'assistant');
+      const failed = entry?.sourceEntry?.message;
+      if (!failed || failed.stopReason !== 'error' || !String(failed.errorMessage ?? '').includes(`(${ACCOUNT_LIMIT.tag}; waiting`)) return undefined;
+      return { entries: [...(event.entries ?? []), { type: 'context_edit', targetId: entry.sourceEntry.id, replacement: null }], continue: true };
+    });
+  };
+  return {
+    hint: resetAt => { hint = { at: Date.now(), resetAt }; },
+    labels: value => { labels = value; },
+    input: text => { input = inputKind(text); },
+    // The end of a run ends its wait episode.
+    settled: () => { wait = null; },
+    shutdown: () => { stopped = true; for (const controller of controllers) controller.abort(); settle?.(); settle = null; },
+    async messageEnd(event, ctx) {
+      const message = event?.message;
+      if (message?.role !== 'assistant') return undefined;
+      if (message.stopReason !== 'error') {
+        if (wait && message.stopReason !== 'aborted') {
+          record({ event: 'account-limit', action: 'cleared', sessionId: sessionId(ctx), tries: wait.tries, waitedMs: Date.now() - wait.startedAt });
+          notify(ctx, `Claude account limit cleared after ${wait.tries} ${wait.tries === 1 ? 'try' : 'tries'}.`);
+          wait = null;
+        }
+        return undefined;
+      }
+      if (!isAccountLimit(message)) return undefined;
+      const who = accountAttendance({ mode: ctx?.mode, labels, input });
+      const row = { event: 'account-limit', sessionId: sessionId(ctx), model: message.model ?? ctx?.model?.id ?? null, attendance: who.unattended ? 'unattended' : 'attended', reason: who.reason };
+      if (!who.unattended) {
+        const done = await fail(message);
+        record({ ...row, action: 'failed', retryAt: done.retryAt, retrySource: done.source });
+        return { message: done.message };
+      }
+      const now = Date.now();
+      const current = wait ??= { startedAt: now, deadline: now + accountCapMs(), tries: 0 };
+      const next = accountNextTry({ now, resetAt: freshHint(), deadline: current.deadline });
+      if (next.late) {
+        const done = await fail(message, `; waited ${Math.round((now - current.startedAt) / 60_000)} min`);
+        record({ ...row, action: 'failed', tries: current.tries, waitedMs: now - current.startedAt, retryAt: done.retryAt, retrySource: done.source, cap: true });
+        if (wait === current) wait = null;
+        return { message: done.message };
+      }
+      current.tries++;
+      record({ ...row, action: 'wait', try: current.tries, nextTryAt: new Date(next.at).toISOString(), source: next.source });
+      notify(ctx, `Claude account limit; waiting, next try about ${localClock(next.at)} (try ${current.tries}; gives up after ${localClock(current.deadline)}).`);
+      const outcome = await sleepUntil(next.at, ctx);
+      if (outcome !== 'elapsed') {
+        record({ ...row, action: 'stopped', why: outcome, tries: current.tries });
+        return { message: withError(message, `Claude account limit; wait ended (${ACCOUNT_LIMIT.tag}; ${outcome}). ${message.errorMessage}`) };
+      }
+      continueOnce();
+      return { message: withError(message, `Claude account limit; trying again (${ACCOUNT_LIMIT.tag}; waiting, try ${current.tries}). ${message.errorMessage}`) };
+    },
+  };
+}
 export default function(pi) {
   let turnId=randomUUID();let intent={tier:'inherit',source:'fleet-default'};let tiers=null;
   // One request id shared by the payload and header hooks, whichever runs first.
@@ -1015,6 +1328,10 @@ export default function(pi) {
   };
   const credential = fleetCredential(pi, record);
   const privacy = sessionPrivacy(record);
+  const limit = accountLimit(pi, record);
+  pi.on('input', event => { limit.input(event?.text); });
+  pi.on('message_end', (event, ctx) => limit.messageEnd(event, ctx));
+  pi.on('agent_settled', () => { limit.settled(); });
   pi.on('turn_end', (_event, ctx) => { privacy.turnEnd(ctx); });
   pi.on('tool_call', serviceGuardHandler(record));
   pi.on('tool_call', writeBackGuard(record));
@@ -1065,20 +1382,24 @@ export default function(pi) {
   });
   pi.on('session_before_tree', (event, ctx) => credential.summaryStart(event, ctx));
   pi.on('session_tree', () => credential.summaryEnd());
-  pi.on('session_shutdown', () => credential.shutdown());
+  pi.on('session_shutdown', () => { credential.shutdown(); limit.shutdown(); });
   pi.on('session_start',(_event,ctx)=>{
     privacy.start(ctx);
     const check = enforceCodemode(pi);
     const evidence = { event: 'codemode-check', ...check, sessionId: ctx.sessionManager.getSessionId(), extensionSha256: EXTENSION_SHA256, guardSha256: GUARD_SHA256 };
     record(evidence);
     pi.appendEntry('loadout-codemode-check', evidence);
+    // Only 429s from a configured anthropic-messages base URL, read at each 429 so a registered provider counts.
+    observeRateLimitHeaders(limit.hint, globalThis, url => (ctx.modelRegistry?.getAll?.() ?? [])
+      .some(model => model?.api === 'anthropic-messages' && typeof model.baseUrl === 'string' && model.baseUrl
+        && url.startsWith(model.baseUrl.replace(/\/+$/, '') + '/')));
   });
   pi.on('before_agent_start',async(_event,ctx)=>{
     enforceCodemode(pi);turnId=randomUUID();
     // Fail closed for this turn until its own lookup succeeds; never keep the previous turn's tier.
     intent={tier:null,source:'opc labels',lookupFailed:true,error:'agent label lookup did not complete'};tiers=null;
-    try{intent=resolveTierIntent(await agentLabels());}
-    catch(error){intent={tier:null,source:'opc labels',lookupFailed:true,error:`agent label lookup failed: ${String(error?.message??error).slice(0,80)}`};}
+    try{const labels=await agentLabels();limit.labels(labels);intent=resolveTierIntent(labels);}
+    catch(error){limit.labels(null);intent={tier:null,source:'opc labels',lookupFailed:true,error:`agent label lookup failed: ${String(error?.message??error).slice(0,80)}`};}
     try{tiers=ctx?.model?await catalogTiers(ctx):null;}catch{tiers=null;}
   });
   pi.on('before_provider_request',(event,ctx)=>{
