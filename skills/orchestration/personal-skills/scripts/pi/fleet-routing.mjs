@@ -1051,7 +1051,7 @@ function headerTime(value) {
  * unified 5-hour and unified resets, then the latest other anthropic-ratelimit-*-reset. Only a time ahead counts.
  */
 export function resetFromHeaders(headers, now = Date.now()) {
-  const get = name => { try { return typeof headers?.get === 'function' ? headers.get(name) : headers?.[name]; } catch { return null; } };
+  const get = name => typeof headers?.get === 'function' ? headers.get(name) : headers?.[name];
   const ahead = at => Number.isFinite(at) && at > now ? at : null;
   const ms = Number(get('retry-after-ms'));
   if (get('retry-after-ms') != null && Number.isFinite(ms) && ms > 0) return now + ms;
@@ -1187,7 +1187,7 @@ function accountLimit(pi, record) {
     const when = at ? `retry after ${localClock(at)}` : 'retry time unknown';
     return { message: withError(message, `Claude 5h limit; ${when} (${ACCOUNT_LIMIT.tag}${note}). ${message.errorMessage}`), retryAt: at, source };
   };
-  const sessionId = ctx => { try { return ctx?.sessionManager?.getSessionId() ?? null; } catch { return null; } };
+  const sessionId = ctx => { let id = null; try { id = ctx?.sessionManager?.getSessionId() ?? null; } catch {} return id; };
   const notify = (ctx, text) => { try { if (ctx?.hasUI) ctx.ui.notify(text, 'warning'); } catch {} };
   // Waits until `at`; ends early on an abort, a session shutdown or a queued message.
   const sleepUntil = async (at, ctx) => {
