@@ -633,8 +633,9 @@ export function readCredential(argv, { timeoutMs = CREDENTIAL.timeoutMs, signal,
   });
 }
 const pause = (ms, signal) => new Promise(done => {
-  const timer = setTimeout(done, ms);
-  signal?.addEventListener('abort', () => { clearTimeout(timer); done(); }, { once: true });
+  const stop = () => { clearTimeout(timer); done(); };
+  const timer = setTimeout(() => { signal?.removeEventListener('abort', stop); done(); }, ms);
+  signal?.addEventListener('abort', stop, { once: true });
 });
 function fleetCredential(pi, record) {
   let found, held = null, lent = null, expiry = null;
@@ -1012,15 +1013,16 @@ export function sessionPrivacy(record, platform = process.platform) {
 // - for an unattended agent (accountAttendance) waits, then asks agent_before_settle for one more request, with the
 //   failed answer omitted from the context; Pi's own retry never runs. The wait is one try per accountNextTry: a
 //   reset the 429 response named (Retry-After, retry-after-ms or an anthropic-ratelimit-*-reset header, read by
-//   observeRateLimitHeaders) plus 30 to 210 s of jitter, else every 2 to 5 minutes at random. A Paseo interrupt, a
-//   compaction (Pi aborts the run first) or a session shutdown ends the wait at once, and so does a queued user
-//   message, which then runs. A try later than ACCOUNT_LIMIT.capMs (90 minutes) after the first 429 is not made: the
-//   turn fails as before;
+//   observeRateLimitHeaders) plus 30 to 210 s of jitter, never sooner than 2 minutes, else every 2 to 5 minutes at
+//   random. A Paseo interrupt, a compaction (Pi aborts the run first) or a session shutdown ends the wait at once, and
+//   so does a queued message, which then runs. A try later than ACCOUNT_LIMIT.capMs (90 minutes) after the first 429
+//   of the run is not made: the turn fails as before. New inputs within the run keep that deadline; only a successful
+//   answer or the end of the run clears it;
 // - for an attended agent fails at once.
-// A turn that fails this way leads its error with "Claude 5h limit; retry after HH:MM <zone>" (from the response's reset
-// header, else Paceline's pq, else "retry time unknown") and keeps the original error after it, so the usage-limit
-// resume plugin and log readers classify it as before. Every other error (529, per-minute 429s, 5xx, stream drops)
-// keeps Pi's retry.
+// A turn that fails this way leads its error with "Claude 5h limit; retry after HH:MM <zone>" when the response's reset
+// header or Paceline's pq gives the time, else "Claude account limit; retry time unknown", and keeps the original error
+// after it, so the usage-limit resume plugin and log readers classify it as before. Every other error (529, per-minute
+// 429s, 5xx, stream drops) keeps Pi's retry.
 export const ACCOUNT_LIMIT = {
   capMs: 90 * 60_000, gapMinMs: 120_000, gapMaxMs: 300_000, resetJitterMinMs: 30_000, resetJitterMaxMs: 210_000,
   // A reset header counts only for the error that follows its response.
@@ -1075,24 +1077,28 @@ export function resetFromHeaders(headers, now = Date.now()) {
   } catch {}
   return latest;
 }
-const OBSERVED = Symbol.for('loadout.fleet-routing.rateLimitObserver');
+const SINK = Symbol.for('loadout.fleet-routing.rateLimitSink');
 /**
  * Pi passes no 429 headers to extensions: the Anthropic SDK throws on a 429 before Pi's after_provider_response, and
  * the error text has none. The SDK builds its client per request with the global fetch, so this wraps that fetch to read
- * the reset of each 429 from a /v1/messages response, for onHint(resetAt or null). It changes no request or response.
+ * the reset of each 429 from a /v1/messages response whose URL matches(url), for onHint(resetAt or null). It changes no
+ * request or response. The wrapper is made once per process; a later call (an extension instance after /reload or a
+ * session replacement) only points its sink at the new instance.
  */
-export function observeRateLimitHeaders(onHint, target = globalThis) {
+export function observeRateLimitHeaders(onHint, target = globalThis, matches = () => true) {
   const original = target.fetch;
-  if (typeof original !== 'function' || original[OBSERVED]) return false;
+  if (typeof original !== 'function') return false;
+  if (original[SINK]) { original[SINK].onHint = onHint; original[SINK].matches = matches; return true; }
+  const sink = { onHint, matches };
   const wrapped = async function (input, init) {
     const response = await original.call(this, input, init);
     try {
       const url = typeof input === 'string' ? input : input?.url ?? String(input?.href ?? '');
-      if (response?.status === 429 && /\/v1\/messages(?:\?|$)/.test(url)) onHint(resetFromHeaders(response.headers));
+      if (response?.status === 429 && /\/v1\/messages(?:\?|$)/.test(url) && sink.matches(url)) sink.onHint(resetFromHeaders(response.headers));
     } catch {}
     return response;
   };
-  wrapped[OBSERVED] = true;
+  wrapped[SINK] = sink;
   target.fetch = wrapped;
   return true;
 }
@@ -1144,30 +1150,51 @@ export function localClock(at, now = Date.now()) {
   const clock = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short' });
   return at - now > 20 * 3_600_000 ? `${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${clock}` : clock;
 }
-/** The kind of input that started or steered a run, from Paseo's envelopes (agent-messages/envelope.js). */
+// Paseo's envelope grammar (agent-messages/envelope.js parseAgentMessage, parseAgentMessages, SYSTEM_ENVELOPE_PATTERN).
+// Paseo wraps a human message that looks like an envelope in a kind="user-message" one, so only Paseo makes these.
+const AGENT_ENVELOPE = /^<paseo-system((?:\s+[a-z-]+="[^"<>]*")+)>\n([\s\S]*)\n<\/paseo-system>$/;
+const SYSTEM_ENVELOPE = /^<paseo-system>\n[\s\S]*\n<\/paseo-system>$/;
+function envelopeKind(part) {
+  const match = AGENT_ENVELOPE.exec(part);
+  if (!match) return null;
+  const attributes = new Map();
+  for (const [, name, value] of match[1].matchAll(/\s+([a-z-]+)="([^"<>]*)"/g)) {
+    if (attributes.has(name)) return null;
+    attributes.set(name, value);
+  }
+  return attributes.get('version') === '1' && attributes.get('message-id') ? attributes.get('kind') ?? null : null;
+}
+/** The kind of input that started or steered a run: Paseo's schedule, agent-message or agent-notification, else user. */
 export function inputKind(text) {
   if (typeof text !== 'string') return 'unknown';
-  if (/^<paseo-system>\n/.test(text)) return 'schedule';
-  const kind = /^<paseo-system version="1" kind="([a-z-]+)"/.exec(text)?.[1];
+  if (SYSTEM_ENVELOPE.test(text)) return 'schedule';
+  const kinds = text.split(/(?<=<\/paseo-system>)\n+(?=<paseo-system )/).map(envelopeKind);
+  if (kinds.some(kind => kind === null)) return 'user';
+  const kind = kinds.at(-1);
   return kind === 'agent-message' || kind === 'agent-notification' ? kind : 'user';
 }
 /**
- * Attended or unattended, and why. Unattended: a headless run (print or json mode), an agent with a parent label
- * (paseo.parent-agent-id or parent), or a run whose newest input is a Paseo agent message, agent notification,
- * heartbeat or schedule. Everything else, unknown included, is attended: it fails at once, as before, only faster.
+ * Attended or unattended, and why. Unattended: a headless run (print or json mode); a run whose newest input is a
+ * Paseo agent message, agent notification, heartbeat or schedule; or a user message to an agent with a parent label
+ * (paseo.parent-agent-id or parent) and no role=pm label, which is how a worker started without a Paseo caller gets its
+ * prompt. Attended: a user message to a PM or to an agent with no parent. An unknown input is attended too: it fails at
+ * once, as before, only faster.
  */
 export function accountAttendance({ mode, labels, input }) {
   if (mode === 'print' || mode === 'json') return { unattended: true, reason: 'headless' };
-  const label = name => typeof labels?.[name] === 'string' && labels[name].trim() !== '';
-  if (label('paseo.parent-agent-id') || label('parent')) return { unattended: true, reason: 'parent-label' };
   if (['agent-message', 'agent-notification', 'schedule'].includes(input)) return { unattended: true, reason: input };
-  return { unattended: false, reason: input === 'user' ? 'user-message' : 'unknown' };
+  if (input !== 'user') return { unattended: false, reason: 'unknown' };
+  const label = name => typeof labels?.[name] === 'string' && labels[name].trim() !== '';
+  const pm = typeof labels?.role === 'string' && labels.role.trim().toLowerCase() === 'pm';
+  if (pm) return { unattended: false, reason: 'pm-user-message' };
+  if (label('paseo.parent-agent-id') || label('parent')) return { unattended: true, reason: 'worker-user-message' };
+  return { unattended: false, reason: 'user-message' };
 }
 const between = (min, max, random) => min + Math.floor(random() * (max - min + 1));
-/** When the next try goes: a known reset plus jitter, else a random 2 to 5 minute gap. Null past the deadline. */
+/** When the next try goes: a known reset plus jitter but at least 2 minutes away, else a random 2 to 5 minute gap. */
 export function accountNextTry({ now = Date.now(), resetAt = null, deadline, random = Math.random }) {
   const at = resetAt && resetAt > now
-    ? resetAt + between(ACCOUNT_LIMIT.resetJitterMinMs, ACCOUNT_LIMIT.resetJitterMaxMs, random)
+    ? Math.max(resetAt + between(ACCOUNT_LIMIT.resetJitterMinMs, ACCOUNT_LIMIT.resetJitterMaxMs, random), now + ACCOUNT_LIMIT.gapMinMs)
     : now + between(ACCOUNT_LIMIT.gapMinMs, ACCOUNT_LIMIT.gapMaxMs, random);
   return { at, source: resetAt && resetAt > now ? 'reset-header' : 'poll', late: at > deadline };
 }
@@ -1184,11 +1211,17 @@ function accountLimit(pi, record) {
   const fail = async (message, note = '') => {
     let at = freshHint(), source = at ? 'reset-header' : null;
     if (!at) { at = await pqReset(); source = at ? 'pq' : null; }
-    const when = at ? `retry after ${localClock(at)}` : 'retry time unknown';
-    return { message: withError(message, `Claude 5h limit; ${when} (${ACCOUNT_LIMIT.tag}${note}). ${message.errorMessage}`), retryAt: at, source };
+    const lead = at ? `Claude 5h limit; retry after ${localClock(at)}` : 'Claude account limit; retry time unknown';
+    return { message: withError(message, `${lead} (${ACCOUNT_LIMIT.tag}${note}). ${message.errorMessage}`), retryAt: at, source };
   };
   const sessionId = ctx => { let id = null; try { id = ctx?.sessionManager?.getSessionId() ?? null; } catch {} return id; };
-  const notify = (ctx, text) => { try { if (ctx?.hasUI) ctx.ui.notify(text, 'warning'); } catch {} };
+  // Paseo shows a notification on the timeline; a headless run gets one stderr line instead.
+  const notify = (ctx, text) => {
+    try {
+      if (ctx?.hasUI) ctx.ui.notify(text, 'warning');
+      else if (ctx?.mode === 'print' || ctx?.mode === 'json') process.stderr.write(text + '\n');
+    } catch {}
+  };
   // Waits until `at`; ends early on an abort, a session shutdown or a queued message.
   const sleepUntil = async (at, ctx) => {
     const controller = new AbortController();
@@ -1217,13 +1250,15 @@ function accountLimit(pi, record) {
         && item.sourceEntry.message?.role === 'assistant');
       const failed = entry?.sourceEntry?.message;
       if (!failed || failed.stopReason !== 'error' || !String(failed.errorMessage ?? '').includes(`(${ACCOUNT_LIMIT.tag}; waiting`)) return undefined;
-      return { entries: [{ type: 'context_edit', targetId: entry.sourceEntry.id, replacement: null }], continue: true };
+      return { entries: [...(event.entries ?? []), { type: 'context_edit', targetId: entry.sourceEntry.id, replacement: null }], continue: true };
     });
   };
   return {
     hint: resetAt => { hint = { at: Date.now(), resetAt }; },
     labels: value => { labels = value; },
-    input: text => { input = inputKind(text); wait = null; },
+    input: text => { input = inputKind(text); },
+    // The end of a run ends its wait episode.
+    settled: () => { wait = null; },
     shutdown: () => { stopped = true; for (const controller of controllers) controller.abort(); settle?.(); settle = null; },
     async messageEnd(event, ctx) {
       const message = event?.message;
@@ -1245,7 +1280,6 @@ function accountLimit(pi, record) {
         return { message: done.message };
       }
       const now = Date.now();
-      // A new input (a steered user message) clears `wait` meanwhile, so this try keeps its own reference.
       const current = wait ??= { startedAt: now, deadline: now + accountCapMs(), tries: 0 };
       const next = accountNextTry({ now, resetAt: freshHint(), deadline: current.deadline });
       if (next.late) {
@@ -1260,7 +1294,6 @@ function accountLimit(pi, record) {
       const outcome = await sleepUntil(next.at, ctx);
       if (outcome !== 'elapsed') {
         record({ ...row, action: 'stopped', why: outcome, tries: current.tries });
-        if (wait === current) wait = null;
         return { message: withError(message, `Claude account limit; wait ended (${ACCOUNT_LIMIT.tag}; ${outcome}). ${message.errorMessage}`) };
       }
       continueOnce();
@@ -1284,6 +1317,7 @@ export default function(pi) {
   const limit = accountLimit(pi, record);
   pi.on('input', event => { limit.input(event?.text); });
   pi.on('message_end', (event, ctx) => limit.messageEnd(event, ctx));
+  pi.on('agent_settled', () => { limit.settled(); });
   pi.on('turn_end', (_event, ctx) => { privacy.turnEnd(ctx); });
   pi.on('tool_call', serviceGuardHandler(record));
   pi.on('tool_call', writeBackGuard(record));
@@ -1337,11 +1371,14 @@ export default function(pi) {
   pi.on('session_shutdown', () => { credential.shutdown(); limit.shutdown(); });
   pi.on('session_start',(_event,ctx)=>{
     privacy.start(ctx);
-    observeRateLimitHeaders(limit.hint);
     const check = enforceCodemode(pi);
     const evidence = { event: 'codemode-check', ...check, sessionId: ctx.sessionManager.getSessionId(), extensionSha256: EXTENSION_SHA256, guardSha256: GUARD_SHA256 };
     record(evidence);
     pi.appendEntry('loadout-codemode-check', evidence);
+    // Only 429s from a configured anthropic-messages base URL, read at each 429 so a registered provider counts.
+    observeRateLimitHeaders(limit.hint, globalThis, url => (ctx.modelRegistry?.getAll?.() ?? [])
+      .some(model => model?.api === 'anthropic-messages' && typeof model.baseUrl === 'string' && model.baseUrl
+        && url.startsWith(model.baseUrl.replace(/\/+$/, '') + '/')));
   });
   pi.on('before_agent_start',async(_event,ctx)=>{
     enforceCodemode(pi);turnId=randomUUID();
