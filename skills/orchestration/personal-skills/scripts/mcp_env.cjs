@@ -207,6 +207,54 @@ function cmdLine(script, args) {
     : '"' + a.replace(/(\\*)"/g, (_m, s) => s + s + '\\"').replace(/\\+$/, s => s + s) + '"';
   return ['"' + script + '"', ...args.map(quote)].join(' ');
 }
+// POSIX resolves a bare harness name as execvp and spawn do: a name with a slash as given, else the first executable
+// regular file on the PATH of the env the harness gets (the system default when it has none), skipping an absent or
+// non-executable one as execvp does. Null when none.
+function posixExecutable(command, env) {
+  const runnable = file => {
+    try { fs.accessSync(file, fs.constants.X_OK); }
+    catch (e) { if (absent(e) || e.code === 'EACCES') return false; throw e; }
+    return isFile(file);
+  };
+  if (command.includes('/')) return runnable(command) ? command : null;
+  for (const dir of (env.PATH ?? '/usr/bin:/bin').split(':'))
+    if (runnable((dir || '.') + '/' + command)) return (dir || '.') + '/' + command;
+  return null;
+}
+// Whether process.execve can start file without killing this process. A failed execve aborts the process (SIGABRT) on
+// Node 22.15 to 26.0 and throws from 26.1, so on every Node only a file this OS's execve can start execs: a #! script,
+// and an ELF binary on Linux or a Mach-O binary (fat included) on macOS. Any other goes to spawn, which runs a file
+// without #! through /bin/sh on Linux as before. Still aborting before 26.1: a #! script whose interpreter is missing,
+// and a race (the file replaced or removed meanwhile, ETXTBSY, E2BIG); the abort prints no secret.
+const EXEC_MAGIC = process.platform === 'darwin'
+  ? ['feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe', 'bebafeca'] : ['7f454c46'];
+function execTarget(file) {
+  let fd;
+  try { fd = fs.openSync(file, 'r'); }
+  catch (e) { if (absent(e) || e.code === 'EACCES') return false; throw e; }
+  try {
+    const head = Buffer.alloc(4), hex = head.subarray(0, fs.readSync(fd, head, 0, 4, 0)).toString('hex');
+    return hex.startsWith('2321') || EXEC_MAGIC.includes(hex);
+  } finally { fs.closeSync(fd); }
+}
+// The env as spawn passes it: an undefined value is dropped and any other becomes its string.
+const spawnEnv = env => Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined).map(([k, v]) => [k, `${v}`]));
+// On POSIX the launcher becomes the harness (same PID), so the harness gets signals and its exit status reaches the
+// caller directly. Node ignores SIGPIPE and SIGXFSZ, and an ignored signal stays ignored across exec while a caught
+// one resets, so a listener gives the harness the default handling spawn gave it. Nothing on this path (token and env
+// file reads included) creates process.stdin, process.stdout or process.stderr, which would leave those fds
+// non-blocking for the harness. Returns only when the harness should be spawned instead: not found, not a file execve
+// can start, or a failed exec from Node 26.1. process.execve queues an ExperimentalWarning that a failed exec would
+// print on the next tick, creating process.stderr after the spawn; no warning listener means no print.
+function execHarness(command, args, env) {
+  const file = posixExecutable(command, env);
+  if (!file || !execTarget(file)) return;
+  for (const signal of ['SIGPIPE', 'SIGXFSZ']) process.on(signal, () => {});
+  process.removeAllListeners('warning');
+  try { process.execve(file, [command, ...args], spawnEnv(env)); } catch {}
+}
+// Windows has no exec, and a Node without process.execve (before 22.15, or 23.0 to 23.10) neither, so there the
+// launcher spawns the harness and waits, as it does when the exec is not taken.
 function launch(command, args, env) {
   const options = { env, stdio: 'inherit', windowsHide: true };
   if (!windows) return spawn(command, args, options);
@@ -235,7 +283,9 @@ if (require.main === module) {
         : { mcpTokens: (descriptor.unnamed || {}).mcpTokens === true };
       const env = loadEnv(descriptor.servers || [], process.env, provider);
       // Provider args go right after the executable, so they are global flags before any subcommand the caller adds.
-      const child = launch(args[0], [...(provider.args || []), ...args.slice(1)], env);
+      const argv = [...(provider.args || []), ...args.slice(1)];
+      if (!windows && typeof process.execve === 'function') execHarness(args[0], argv, env);
+      const child = launch(args[0], argv, env);
       for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
       child.on('error', () => { process.stderr.write('MCP harness launch failed\n'); process.exitCode = 1; });
       child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });
