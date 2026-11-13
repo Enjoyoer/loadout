@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "f970bf854c7d336aab4e7cc07fd4a5325b10a364",
+  "source_commit": "27a8204f47be2fe42f6c02f5a667b6cdae6884b7",
   "skill_count": 24,
   "file_count": 135,
   "files": [
@@ -198,8 +198,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5394,
-      "sha256": "c536dbb3f2056d5c91a839163c2b4c85ebdd0798a1a5faf3b472d768cf045f6f"
+      "bytes": 5314,
+      "sha256": "bab32f5b131abbae3421f2c96ba96600d469b5b70832dc8fcb96be1de743cf1b"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -219,8 +219,8 @@
       "path": "skills/orchestration/opc/references/exploration-swarm.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 993,
-      "sha256": "fc22982211246a2eef399f19cf18dfa1d5ad52fee7cfb60bc5efb8aa0a3bdd31"
+      "bytes": 1031,
+      "sha256": "bc7f40d0d8e78e552bcf0c2ae8b45105da91e791de28a501fd1246efa1f7125c"
     },
     {
       "path": "skills/orchestration/opc/references/imp-execution.md",
