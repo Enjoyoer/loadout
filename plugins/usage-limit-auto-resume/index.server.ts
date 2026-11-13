@@ -91,6 +91,10 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // plugin's start checks this run's marked closes again.
   const unchecked = new Map<AgentClose, { claimTurn: boolean; checking: boolean; deferred: boolean; checkUntil: string }>();
   const hasUnchecked = (agentId: string) => [...unchecked.keys()].some((close) => close.agentId === agentId);
+  // Closes this process has taken up (seen, or re-checked at start). For them `unchecked` is the truth, so a stored mark
+  // whose clearing write has not landed yet does not hold a record; a stored mark not taken up yet still does.
+  const closeKey = (close: AgentClose) => `${close.agentId}|${close.at}|${close.daemon}`;
+  const takenUp = new Set<string>();
   const heldByClose = (record: ResumeRecord) => {
     if (hasUnchecked(record.agentId)) return true;
     const seen = closes.get(record.agentId);
@@ -331,7 +335,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
     if (!(await restartGate(record, currentConfig, run))) return false;
     // A close still being told a park or a close, here or stored by an earlier start of the plugin in this daemon run,
     // holds the record, however old it is.
-    if (hasUnchecked(record.agentId) || stored.some((each) => each.checkUntil)) {
+    if (hasUnchecked(record.agentId) || stored.some((each) => each.checkUntil && !takenUp.has(closeKey(each)))) {
       logOnce(record, "agent-close-unchecked", `send-held agentId=${record.agentId} recordId=${record.recordId} reason=agent-close-unchecked`);
       return false;
     }
@@ -1402,19 +1406,17 @@ export default function contribute(server: PluginServerContext, openClient: () =
         entry.deferred = true;
         return;
       }
-      try {
-        if (verdict?.idleSince) {
-          if (closes.get(close.agentId) === close) closes.delete(close.agentId);
-          await store.clearClose(close);
-          log(`agent-parked agentId=${close.agentId} closedAt=${close.at} idleSince=${verdict.idleSince}`);
-          return;
-        }
-        // Stored again without its mark: the 60-second rule (closeDecision) now ends the agent's records as before.
-        await store.markClosed(close);
-        log(`agent-closed agentId=${close.agentId} closedAt=${close.at}${verdict ? "" : " reason=park-check-unanswered"}`);
-      } finally {
-        unchecked.delete(close);
+      // Decided: released at once. A close goes on holding through `closes` (closeGate), as before this check existed.
+      unchecked.delete(close);
+      if (verdict?.idleSince) {
+        if (closes.get(close.agentId) === close) closes.delete(close.agentId);
+        log(`agent-parked agentId=${close.agentId} closedAt=${close.at} idleSince=${verdict.idleSince}`);
+        await store.clearClose(close);
+        return;
       }
+      // Stored again without its mark: the 60-second rule (closeDecision) now ends the agent's records as before.
+      await store.markClosed(close);
+      log(`agent-closed agentId=${close.agentId} closedAt=${close.at}${verdict ? "" : " reason=park-check-unanswered"}`);
     })().catch((error) => failed("close-handler-failed", error)));
   }
 
@@ -1429,6 +1431,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
     // A send not started yet goes back to waiting; one already started is delivered, since Paseo loads the agent for it.
     cancelInFlight(event.agent.id, { state: "parked", reason: "agent-closed", hold: true });
     const checkUntil = new Date(Date.parse(close.at) + PARK_CHECK_WINDOW_MS).toISOString();
+    takenUp.add(closeKey(close));
     unchecked.set(close, { claimTurn: !!inFlight.get(event.agent.id)?.turnId, checking: false, deferred: false, checkUntil });
     // Stored before the check's own store write, which the store's queue keeps in order.
     track(store.markClosed({ ...close, checkUntil }).catch((error) => failed("close-store-failed", error)));
@@ -1470,6 +1473,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
       const close: AgentClose = { agentId: stored.agentId, at: stored.at, daemon: stored.daemon };
       const current = closes.get(close.agentId);
       if (!current || Date.parse(current.at) < Date.parse(close.at)) closes.set(close.agentId, close);
+      if (takenUp.has(closeKey(close))) continue;
+      takenUp.add(closeKey(close));
       unchecked.set(close, { claimTurn: false, checking: false, deferred: true, checkUntil: stored.checkUntil });
       checkClose(close);
     }
