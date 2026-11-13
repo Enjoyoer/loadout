@@ -309,6 +309,8 @@ it("owner enrollment registers an already-fallen-back PM once and returns it on 
 // Review of f244965: a restore acknowledged in memory whose stored record still holds Sol (Paseo's background persist
 // failed) is not settled; the obligation stays and the return is written again on later triggers until it is stored.
 it("a restore that is not persisted keeps the obligation across a restart and is written again until stored", () => scenario(async (f, logs) => {
+  // The fallback tier is set to the original's (the default is standard since 0.4.2).
+  f.setConfig({ pmFallbackServiceTier: "fast" });
   f.add("pm", "pm", { labels: { role: "pm", "opc.service-tier": "fast" } });
   await f.endTurn("pm", { kind: "failed", error: { message: USAGE } }, "pm-turn-1");
   assert.equal(f.agents.get("pm")!.model, SOL);
