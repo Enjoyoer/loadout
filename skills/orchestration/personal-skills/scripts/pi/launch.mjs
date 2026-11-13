@@ -1,6 +1,6 @@
 // Stock Paseo 0.10.3 interim: each real agent gets a private, scoped mcp.json.
-import { spawn, execFileSync } from 'node:child_process';
-import { readFileSync, mkdirSync, writeFileSync, writeSync, existsSync, statSync, rmSync, lstatSync, accessSync, constants, realpathSync,
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { readFileSync, readSync, mkdirSync, writeFileSync, writeSync, existsSync, statSync, rmSync, lstatSync, accessSync, constants, realpathSync,
   openSync, closeSync, fstatSync, fchmodSync } from 'node:fs';
 import { homedir, userInfo, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, isAbsolute, sep } from 'node:path';
@@ -11,6 +11,38 @@ function refuse(message) {
   process.stderr.write(`Pi launch refused: ${message}\n`);
   process.exit(1);
 }
+// On macOS and Linux with process.execve (not before Node 22.15, nor 23.0 to 23.10) this process becomes Pi at the end.
+// Nothing on a path that reaches that exec may create process.stdin, process.stdout or process.stderr: libuv sets
+// O_NONBLOCK on the shared file description, and Pi would start with it, where a spawned Pi got it cleared. So a
+// warning there goes straight to fd 2, and the credential helper runs through spawnSync, whose pipe is no net.Socket
+// (destroying one reads process.stderr). Windows and the spawn fallback keep process.stderr.write.
+const execs = process.platform !== 'win32' && typeof process.execve === 'function';
+const warn = text => execs ? writeSync(2, text) : process.stderr.write(text);
+// One run of the credential helper, as fleet-routing.mjs's readCredential: its one stdout line, or null on any failure
+// (a nonzero exit, a timeout, more than 64 KiB, no line), but synchronous, so it creates no stream.
+function readCredentialSync(argv, { timeoutMs, env }) {
+  const run = spawnSync(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: timeoutMs,
+    env, encoding: 'utf8', maxBuffer: 65_536 });
+  const value = run.status === 0 && !run.error && typeof run.stdout === 'string' ? run.stdout.trim() : '';
+  return value && !/[\r\n]/.test(value) ? value : null;
+}
+// Whether process.execve can start file without killing this process. Node 26 throws when execve fails, and the launch
+// then spawns. Node 22.15 to 25 aborts instead (SIGABRT), so there only a file execve can start, a #! script, an ELF or a
+// Mach-O binary, execs; any other spawns. A race there (the file replaced or removed meanwhile, ETXTBSY, E2BIG) still
+// aborts: the abort prints no secret.
+const EXEC_MAGIC = ['7f454c46', 'feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe', 'bebafeca'];
+function execTarget(file) {
+  if (Number(process.versions.node.split('.')[0]) >= 26) return true;
+  let fd;
+  try { fd = openSync(file, 'r'); }
+  catch (error) { if (['ENOENT', 'ENOTDIR', 'EACCES'].includes(error.code)) return false; throw error; }
+  try {
+    const head = Buffer.alloc(4), hex = head.subarray(0, readSync(fd, head, 0, 4, 0)).toString('hex');
+    return hex.startsWith('2321') || EXEC_MAGIC.includes(hex);
+  } finally { closeSync(fd); }
+}
+// The env as spawn passes it: an undefined value is dropped and any other becomes its string.
+const spawnEnv = env => Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined).map(([k, v]) => [k, `${v}`]));
 
 // Read an overlay from an agent home, which the agent itself may write: opened without following a link (a symbolic
 // link refuses, so the launcher never reads another file through it), and only a regular file. Null when missing.
@@ -79,8 +111,7 @@ function counts(value, keys, where) {
       throw Error(`${where}.${key} must be a positive integer`);
 }
 // A model the shared models.json lacks gets this one stderr line and is skipped; its shared values stay.
-// Written straight to fd 2: opening process.stderr would leave it non-blocking for Pi, which this process becomes.
-const skipModel = key => writeSync(2, `Pi launch: model override "${key}" not in models.json, using default\n`);
+const skipModel = key => warn(`Pi launch: model override "${key}" not in models.json, using default\n`);
 function overlayModels(models, overlay) {
   const providers = only(only(overlay, ['providers'], 'the overlay').providers, Object.keys(overlay.providers ?? {}), 'providers');
   for (const [name, provider] of Object.entries(providers)) {
@@ -119,7 +150,7 @@ function overlaySettings(settings, overlay, models, home) {
       const found = roots.map(dir => join(dir, name))
         .filter(dir => statSync(join(dir, 'SKILL.md'), { throwIfNoEntry: false })?.isFile());
       if (found.length > 1) throw Error(`skillsExclude "${name}" is ambiguous: ${found.join(' and ')}`);
-      if (!found.length) writeSync(2, `Pi launch: skillsExclude skips "${name}": no such skill is installed\n`);
+      if (!found.length) warn(`Pi launch: skillsExclude skips "${name}": no such skill is installed\n`);
       return found;
     });
     settings = { ...settings, skills: [...settings.skills, ...dirs.map(dir => '-' + dir)] };
@@ -469,7 +500,7 @@ if (caller && !probe) {
     // shell. Pi gets the value only in its env, and the agent's models.json names that variable instead of the command.
     // No value, no launch.
     const models = JSON.parse(files['models.json']);
-    const { credentialHelper, readCredential, CREDENTIAL } = await import(new URL('./fleet-routing.mjs', import.meta.url));
+    const { credentialHelper, CREDENTIAL } = await import(new URL('./fleet-routing.mjs', import.meta.url));
     const found = credentialHelper(models, root);
     if (!found) refuse('a sandboxed isolated Pi needs the router credential helper in models.json');
     if (!isAbsolute(found.argv[0]))
@@ -486,7 +517,7 @@ if (caller && !probe) {
     let value = null;
     for (const delay of [0, ...CREDENTIAL.retryDelaysMs]) {
       if (delay) await new Promise(done => setTimeout(done, delay));
-      if ((value = await readCredential(helperArgv, { timeoutMs: CREDENTIAL.timeoutMs, env: helperEnv }))) break;
+      if ((value = readCredentialSync(helperArgv, { timeoutMs: CREDENTIAL.timeoutMs, env: helperEnv }))) break;
     }
     if (!value) refuse('the router credential helper failed, and a sandboxed Pi cannot read the key itself');
     const row = models.providers[found.provider];
@@ -556,13 +587,11 @@ if (sandboxed) {
 }
 // On macOS and Linux this process becomes Pi or sandbox-exec (same PID), so Paseo's signals and Pi's exit status reach
 // each other directly. Node ignores SIGPIPE and SIGXFSZ, and an ignored signal stays ignored across exec while a caught
-// one resets, so a listener gives Pi the default handling spawn gave it. Windows has no exec, and Node before 22.15 has no
-// process.execve, so there it spawns and waits.
-if (process.platform !== 'win32' && typeof process.execve === 'function') {
+// one resets, so a listener gives Pi the default handling spawn gave it. Otherwise (Windows, no process.execve, a target
+// execTarget refuses, or a failed exec on Node 26) it spawns and waits.
+if (execs && execTarget(command)) {
   for (const signal of ['SIGPIPE', 'SIGXFSZ']) process.on(signal, () => {});
-  try { process.execve(command, [command, ...argv], env); } catch {}
-  writeSync(2, 'Pi launch failed\n');
-  process.exit(1);
+  try { process.execve(command, [command, ...argv], spawnEnv(env)); } catch {}
 }
 const child = spawn(command, argv, { env, stdio: 'inherit' });
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
