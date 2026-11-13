@@ -1406,17 +1406,22 @@ export default function contribute(server: PluginServerContext, openClient: () =
         entry.deferred = true;
         return;
       }
-      // Decided: released at once. A close goes on holding through `closes` (closeGate), as before this check existed.
-      unchecked.delete(close);
+      // A park is released at once; its stored mark no longer holds anything this process took up (takenUp).
       if (verdict?.idleSince) {
+        unchecked.delete(close);
         if (closes.get(close.agentId) === close) closes.delete(close.agentId);
         log(`agent-parked agentId=${close.agentId} closedAt=${close.at} idleSince=${verdict.idleSince}`);
         await store.clearClose(close);
         return;
       }
-      // Stored again without its mark: the 60-second rule (closeDecision) now ends the agent's records as before.
-      await store.markClosed(close);
-      log(`agent-closed agentId=${close.agentId} closedAt=${close.at}${verdict ? "" : " reason=park-check-unanswered"}`);
+      // A close holds until it is stored again without its mark: the 60-second rule (closeDecision) then ends the
+      // agent's records as before.
+      try {
+        await store.markClosed(close);
+        log(`agent-closed agentId=${close.agentId} closedAt=${close.at}${verdict ? "" : " reason=park-check-unanswered"}`);
+      } finally {
+        unchecked.delete(close);
+      }
     })().catch((error) => failed("close-handler-failed", error)));
   }
 
