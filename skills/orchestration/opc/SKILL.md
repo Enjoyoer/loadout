@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.60.0"
+  version: "7.61.0"
 ---
 
 # OPC
@@ -25,13 +25,13 @@ Enable browser review only when the initial request explicitly asks; the choice 
 
 ## 2. Optional scouting
 
-Choose minimal useful scouting topology, splitting only independent questions. Trivial, localized, or inherently sequential work skips scouting and planning. For useful independent questions, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify a read-only `plan` Worker.
+Default to one scout; add another only for an independent question expected to take 30+ minutes. Trivial, localized, or inherently sequential work skips scouting and planning. When scouting, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify a read-only `plan` Worker.
 
 ## 3. Worker
 
 Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted.
 
-Implement one feature (one user-visible outcome whose spec, diff and checks fit one context) in one implementer lane: its server, UI, docs and tests together. Never split it across parallel workers by work type (frontend, backend, tests) or file. Use parallel lanes only for separable outcomes, or for work too large for one context (a port or rewrite) (provisional), cut by layer or crate with one owner per file; the PM writes any shared contract (flags, schemas, shared docs) before those lanes start. Use fresh agents only where fresh context helps: a reviewer given only the spec and diff, a verifier given only the user flows, and research needing no project context. One Worker lineage per lane; shared live resources serialize only live checks.
+Default to one implementer Worker for the whole task, building its items in sequence: server, UI, docs and tests together. Never split by work type (frontend, backend, tests) or file. Use parallel lanes only when the pieces are independent (no shared files or ordering) and each is expected to take 30+ minutes; one owner per file, and the PM writes any shared contract (flags, schemas, shared docs) before those lanes start. Use fresh agents only where fresh context helps: a reviewer given only the spec and diff, a verifier given only the user flows, and research needing no project context. One Worker lineage per lane; shared live resources serialize only live checks.
 
 Visual design (new screen, layout, component) gets one read-only Fable `high` `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`.
 
