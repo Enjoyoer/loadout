@@ -3,7 +3,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config.ts";
 import type { AgentSettingsPort } from "./daemon.ts";
-import { enrollmentKey, fallbackIneligible, isSwapEvidence, recordSwapEvidence, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
+import { enrollmentKey, fallbackIneligible, fallbackSinceMs, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameProfile, recordSwapEvidence, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
 import { agentPool, type PoolQuota, type QuotaPool } from "./quota.ts";
 import { isActive, rebindRecord, type AgentSnapshot } from "./model.ts";
 import type { ResumeStore } from "./store.ts";
@@ -35,6 +35,15 @@ export function createFallbackRunner(deps: FallbackDeps) {
   const busy = new Set<string>();
   const quiet = new Map<string, string>();
   const once = (agentId: string, line: string) => { if (quiet.get(agentId) !== line) { quiet.set(agentId, line); log(line); } };
+  // Per Claude subscription model, the latest turn this daemon saw a Pi agent finish with a normal reply, stamped with
+  // the turn's end. Real traffic succeeding proves that model usable when pq cannot (stale or unproven accounts), so it
+  // makes the return of a PM whose original is that same model due. Limits can be per model (a Fable weekly window),
+  // so another Claude model proves nothing for it.
+  const claudeSuccess = new Map<string, { agentId: string; at: number }>();
+  // PMs whose return was dropped because their profile was changed by hand, with that profile: no new swap while they
+  // stay on it.
+  const dropped = new Map<string, Profile>();
+  const nowIso = () => new Date().toISOString();
 
   async function fetchAgent(api: FallbackApi, agentId: string): Promise<AgentSnapshot | null> {
     const result = await api.agents.ref(agentId).refresh();
@@ -77,7 +86,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       if (rebound && rebound.model !== active.model) log(`pm-record-rebound agentId=${agent.id} recordId=${active.recordId} model=${rebound.model}`);
     }
     if (goal === "swap") {
-      await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", lastError: null, updatedAt: new Date().toISOString() }));
+      await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), lastError: null, updatedAt: nowIso() }));
       log(`pm-swap-verified agentId=${agent.id} obligationId=${obligation.obligationId} profile=${show(obligation.fallback)}`);
     } else {
       await returns.remove(obligation.obligationId);
@@ -106,7 +115,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       return false;
     }
     if (obligation.phase === "switching" || obligation.restoreDueAt !== null) {
-      await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", restoreDueAt: null, updatedAt: new Date().toISOString() }));
+      await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), restoreDueAt: null, updatedAt: nowIso() }));
     }
     once(agent.id, `pm-return-waiting agentId=${agent.id} obligationId=${obligation.obligationId} reason=${blocked}`);
     return false;
@@ -123,7 +132,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       const ineligible = fallbackIneligible(agent, obligation.original.model);
       if (!ineligible) return obligation;
       log(`pm-swap-not-completed agentId=${agent.id} obligationId=${obligation.obligationId} reason=${ineligible} return=kept`);
-      return returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", updatedAt: new Date().toISOString() }));
+      return returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), updatedAt: nowIso() }));
     }
     let reason = agent.model !== obligation.original.model ? "model-changed" : fallbackIneligible(agent, obligation.original.model);
     if (!reason && !config.pmFallback) reason = "pmFallback-off";
@@ -152,18 +161,34 @@ export function createFallbackRunner(deps: FallbackDeps) {
     }
     let goal: "swap" | "restore" | null = obligation.phase === "switching" ? "swap" : null;
     if (obligation.phase === "fallback") {
+      // An explicit model change (owner or another agent) ends the return: nothing is written over it. A PM already
+      // back on its original profile settles below as a restore.
+      const live = profileOf(agent);
+      if (!live) return once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=profile-unknown`);
+      if (profileChanged(obligation, live)) {
+        if (!await returns.remove(obligation.obligationId)) return;
+        dropped.set(agentId, live);
+        log(`pm-return-dropped agentId=${agentId} obligationId=${obligation.obligationId} reason=profile-changed live=${show(live)} original=${show(obligation.original)}`);
+        return;
+      }
       const pool = agentPool("pi", obligation.original.model) ?? "claude";
       // Due, which holds resume sends, follows the latest reading. Applying the restore needs capacity in both windows
-      // proven by a reading taken now; a stale, unknown or partial reading only waits.
+      // proven by a reading taken now, or a Claude subscription turn this daemon saw succeed since the swap.
       let reading = await deps.quota(pool, config);
       if (hasCapacity(reading)) reading = await deps.quota(pool, config, { fresh: true });
-      const due = restoreDue(reading);
+      const seenSuccess = claudeSuccess.get(obligation.original.model);
+      const success = seenSuccess && seenSuccess.at > fallbackSinceMs(obligation) ? seenSuccess : null;
+      const reason = restoreDue(reading) ? `pq-capacity quota=${quotaText(reading)}`
+        : success ? `claude-success agent=${success.agentId.slice(0, 8)} model=${obligation.original.model} at=${new Date(success.at).toISOString()}` : null;
+      // Back on the original by hand: settled as a restore, which also writes the original's tier label.
+      const due = reason !== null || onOriginal(obligation, live);
       if (due !== (obligation.restoreDueAt !== null)) {
-        obligation = await returns.update(obligation.obligationId, (o) => ({ ...o, restoreDueAt: due ? new Date().toISOString() : null, updatedAt: new Date().toISOString() }));
+        obligation = await returns.update(obligation.obligationId, (o) => ({ ...o, restoreDueAt: due ? nowIso() : null, updatedAt: nowIso() }));
         if (!obligation) return;
-        log(`pm-restore-${due ? "due" : "deferred"} agentId=${agentId} obligationId=${obligation.obligationId} quota=${quotaText(reading)}`);
+        log(`pm-restore-${due ? "due" : "deferred"} agentId=${agentId} obligationId=${obligation.obligationId} ${due ? `reason=${reason ?? "already-on-original"}` : `quota=${quotaText(reading)}`}`);
       }
       if (due) goal = "restore";
+      else once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=no-claude-proof pq=${quotaText(reading)}`);
     }
     if (!goal) return;
     const target = goal === "swap" ? obligation.fallback : obligation.original;
@@ -180,7 +205,9 @@ export function createFallbackRunner(deps: FallbackDeps) {
       await api.agentSettings.apply(agentId, { modelId: target.model, thinkingOptionId: target.thinkingOptionId });
       await api.agentSettings.setLabels(agentId, { [SERVICE_TIER_LABEL]: target.serviceTier ?? "" });
     } catch (error) {
-      await returns.update(obligation.obligationId, (o) => ({ ...o, lastError: errorText(error), updatedAt: new Date().toISOString() }));
+      // What a failed restore left in place is ours, not an owner change: kept so the next trigger retries over it.
+      const left = goal === "restore" ? await fetchAgent(api, agentId).then((a) => a ? profileOf(a) : null).catch(() => null) : null;
+      await returns.update(obligation.obligationId, (o) => ({ ...o, ...(left ? { restoreReadback: left } : {}), lastError: errorText(error), updatedAt: new Date().toISOString() }));
       log(`pm-${goal}-failed agentId=${agentId} obligationId=${obligation.obligationId} reason=${JSON.stringify(errorText(error))} retry=next-trigger`);
       return;
     }
@@ -189,7 +216,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
     if (inMemory && await persisted(agentId, target)) return settle(attempt, after!, goal);
     const seen = inMemory ? { stored: await deps.stored(agentId) } : { live: after ? profileOf(after) : null };
     const kind = inMemory ? "unpersisted" : "mismatch";
-    await returns.update(obligation.obligationId, (o) => ({ ...o, lastError: `readback-${kind} ${JSON.stringify(seen)}`, updatedAt: new Date().toISOString() }));
+    const readback = goal === "restore" && after ? profileOf(after) : null;
+    await returns.update(obligation.obligationId, (o) => ({ ...o, ...(readback ? { restoreReadback: readback } : {}), lastError: `readback-${kind} ${JSON.stringify(seen)}`, updatedAt: new Date().toISOString() }));
     log(`pm-${goal}-${kind} agentId=${agentId} obligationId=${obligation.obligationId} readback=${JSON.stringify(seen)} retry=next-trigger`);
   }
 
@@ -201,6 +229,9 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const api = await deps.acquire();
     const agent = await fetchAgent(api, agentId);
     if (!agent) return;
+    const wasDropped = dropped.get(agentId);
+    if (wasDropped && sameProfile(profileOf(agent), wasDropped)) return once(agentId, `pm-fallback-skipped agentId=${agentId} reason=return-dropped profile=${show(wasDropped)}`);
+    dropped.delete(agentId);
     const ineligible = fallbackIneligible(agent);
     if (ineligible) {
       if (agent.labels?.role === "pm") once(agentId, `pm-fallback-skipped agentId=${agentId} reason=${ineligible}`);
@@ -255,8 +286,20 @@ export function createFallbackRunner(deps: FallbackDeps) {
     },
 
     /** Returns true when the agent has an obligation afterwards, so the caller sweeps its waiting record. */
-    async afterTurnEnded(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], config: Config): Promise<boolean> {
+    async afterTurnEnded(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], config: Config, normalReply = false, endedAt = new Date().toISOString()): Promise<boolean> {
       const evidence = turnSwapEvidence(outcome);
+      // A normal reply on a Claude subscription model, from an agent with no return of its own, while some PM waits on
+      // the fallback profile: proof for the return. The agent is read only then.
+      if (outcome.kind === "completed" && normalReply && !await returns.get(agentId)) {
+        const waiting = (await returns.read()).obligations.some((o) => o.phase === "fallback");
+        const agent = waiting ? await fetchAgent(await deps.acquire(), agentId).catch(() => null) : null;
+        const model = agent?.model ?? agent?.runtimeInfo?.model;
+        if (agent && model && isSubscriptionClaude(agent.provider, model)) {
+          const at = Date.parse(endedAt);
+          const previous = claudeSuccess.get(model);
+          if (!previous || previous.at < at) claudeSuccess.set(model, { agentId, at });
+        }
+      }
       if (await returns.get(agentId)) await locked(agentId, () => reconcileLocked(agentId, config));
       else if (config.pmFallback && isSwapEvidence(evidence)) await locked(agentId, () => swapLocked(agentId, config, "usage-limit-turn", evidence));
       else return false;

@@ -152,7 +152,7 @@ it("PM fallback swaps exactly and resumes the same session on Sol; a worker on t
   await f.endTurn("worker", { kind: "failed", error: { message: USAGE } }, "worker-turn-1");
   await swapPm(f);
   assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }]);
-  assert.deepEqual(f.calls.labels, [{ "opc.service-tier": "fast" }]);
+  assert.deepEqual(f.calls.labels, [{ "opc.service-tier": "standard" }]);
   assert.equal(f.agents.get("worker")!.model, OPUS);
   const [obligation] = (await f.returns.read()).obligations;
   assert.deepEqual(obligation!.original, { model: OPUS, thinkingOptionId: "high", serviceTier: null });
@@ -244,19 +244,25 @@ it("a weekly-exhausted Claude pool is not restored when only its five-hour windo
   assert.equal(f.agents.get("pm")!.model, OPUS);
 }));
 
-it("only an explicit owner cancel ends the return; manual drift and role loss do not", () => scenario(async (f, logs) => {
+it("an owner cancel or an explicit model change ends the return; role loss does not", () => scenario(async (f, logs) => {
   await swapPm(f);
   const [obligation] = (await f.returns.read()).obligations;
-  Object.assign(f.agents.get("pm")!, { model: "fleet/claude-fable-5-1", labels: { project: "fixture" } });
+  Object.assign(f.agents.get("pm")!, { labels: { ...f.agents.get("pm")!.labels, role: "worker" } });
   await f.tick();
-  assert.equal((await f.returns.read()).obligations.length, 1);
+  assert.equal((await f.returns.read()).obligations.length, 1, "a lost role keeps the return");
   f.setConfig({ pmFallbackCancel: [obligation!.obligationId] });
   await f.tick();
   assert.deepEqual((await f.returns.read()).obligations, []);
   assert.ok(logs.some((l) => l.includes(`pm-return-cancelled agentId=pm obligationId=${obligation!.obligationId} by=owner-setting`)));
+  f.setConfig({ pmFallbackCancel: [] });
+  await swapPm(f, "pm2");
+  Object.assign(f.agents.get("pm2")!, { model: "fleet/claude-fable-5-1" });
+  await f.tick();
+  assert.deepEqual((await f.returns.read()).obligations, []);
+  assert.ok(logs.some((l) => l.includes("pm-return-dropped agentId=pm2") && l.includes("reason=profile-changed")));
   f.pq.claude = { five: "ok", week: "ok" };
   await f.tick();
-  assert.equal(f.agents.get("pm")!.model, "fleet/claude-fable-5-1");
+  assert.equal(f.agents.get("pm2")!.model, "fleet/claude-fable-5-1");
 }));
 
 it("a crash after a settings update but before its acknowledgement is finished, not repeated or lost", () => scenario(async (f) => {
@@ -303,6 +309,8 @@ it("owner enrollment registers an already-fallen-back PM once and returns it on 
 // Review of f244965: a restore acknowledged in memory whose stored record still holds Sol (Paseo's background persist
 // failed) is not settled; the obligation stays and the return is written again on later triggers until it is stored.
 it("a restore that is not persisted keeps the obligation across a restart and is written again until stored", () => scenario(async (f, logs) => {
+  // The fallback tier is set to the original's (the default is standard since 0.4.2).
+  f.setConfig({ pmFallbackServiceTier: "fast" });
   f.add("pm", "pm", { labels: { role: "pm", "opc.service-tier": "fast" } });
   await f.endTurn("pm", { kind: "failed", error: { message: USAGE } }, "pm-turn-1");
   assert.equal(f.agents.get("pm")!.model, SOL);

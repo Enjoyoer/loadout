@@ -16,8 +16,9 @@ export type Profile = { model: string; thinkingOptionId: string | null; serviceT
 
 /**
  * One PM's duty to return. `switching` is the persisted intent to move to the fallback profile, written before the
- * settings change so a crash in between is finished, not forgotten. `fallback` holds until pq shows the original pool
- * usable again (`restoreDueAt`), and only a verified restore or an explicit owner cancel removes the obligation.
+ * settings change so a crash in between is finished, not forgotten. `fallback` holds until the original pool is shown
+ * usable again (`restoreDueAt`): by pq, or by a Claude subscription turn this daemon saw succeed after `fallbackSince`.
+ * A verified restore, an explicit owner cancel or an explicit model change of the PM removes the obligation.
  */
 export type ReturnObligation = {
   version: 1;
@@ -28,6 +29,10 @@ export type ReturnObligation = {
   original: Profile;
   fallback: Profile;
   restoreDueAt: string | null;
+  /** When the PM was verified on the fallback profile; absent on obligations written before 0.4.2 (createdAt then). */
+  fallbackSince?: string | null;
+  /** The profile read back after our last restore attempt that did not verify (a clamp, a partial write). */
+  restoreReadback?: Profile | null;
   attempts: number;
   lastAttemptAt: string | null;
   lastError: string | null;
@@ -136,11 +141,40 @@ export function restoreDue(claude: PoolQuota): boolean {
   return hasCapacity(claude);
 }
 
+/**
+ * A model whose successful turn proves a Claude subscription account usable: a Pi model in the Claude pool that is not
+ * billed to API credits (`fleet/api/...`).
+ */
+export function isSubscriptionClaude(provider: string, model: string | null | undefined): boolean {
+  return provider === "pi" && typeof model === "string" && agentPool(provider, model) === "claude" && !/(?:^|\/)api\//i.test(model);
+}
+
+/** Since when a Claude success counts as proof for this obligation: the verified swap. */
+export const fallbackSinceMs = (obligation: ReturnObligation) => Date.parse(obligation.fallbackSince ?? obligation.createdAt);
+
+/**
+ * Already back on the original: its model and thinking, with the original's tier or the fallback's (a restore by hand
+ * that left the plugin's own Fast label). The restore then settles and writes the original's tier.
+ */
+export function onOriginal(obligation: ReturnObligation, live: Profile): boolean {
+  return live.model === obligation.original.model && live.thinkingOptionId === obligation.original.thinkingOptionId &&
+    (tier(live.serviceTier) === tier(obligation.original.serviceTier) || tier(live.serviceTier) === tier(obligation.fallback.serviceTier));
+}
+
+/**
+ * In `fallback`, whether the live profile is an explicit change by someone else: it is not the fallback, not (back on)
+ * the original, and not exactly what our own last unverified restore read back (that restore keeps being retried).
+ */
+export function profileChanged(obligation: ReturnObligation, live: Profile): boolean {
+  if (onOriginal(obligation, live) || sameProfile(live, obligation.fallback)) return false;
+  return !(obligation.restoreReadback && sameProfile(live, obligation.restoreReadback));
+}
+
 export function newObligation(agentId: string, original: Profile, fallback: Profile, source: ReturnObligation["source"], phase: ReturnObligation["phase"], now = Date.now()): ReturnObligation {
   const at = new Date(now).toISOString();
   return {
     version: 1, obligationId: `pm-return:${createHash("sha256").update([agentId, at, randomUUID()].join("\u0000")).digest("hex").slice(0, 24)}`,
-    agentId, source, phase, original, fallback, restoreDueAt: null, attempts: 0, lastAttemptAt: null, lastError: null, createdAt: at, updatedAt: at,
+    agentId, source, phase, original, fallback, restoreDueAt: null, fallbackSince: phase === "fallback" ? at : null, attempts: 0, lastAttemptAt: null, lastError: null, createdAt: at, updatedAt: at,
   };
 }
 
@@ -163,6 +197,8 @@ function isObligation(value: unknown): value is ReturnObligation {
   return o.version === 1 && typeof o.obligationId === "string" && o.obligationId !== "" && typeof o.agentId === "string" && o.agentId !== "" &&
     (o.source === "auto" || o.source === "enrolled") && (o.phase === "switching" || o.phase === "fallback") &&
     isProfile(o.original) && isProfile(o.fallback) && (o.restoreDueAt === null || isTime(o.restoreDueAt)) &&
+    (o.fallbackSince === undefined || o.fallbackSince === null || isTime(o.fallbackSince)) &&
+    (o.restoreReadback === undefined || o.restoreReadback === null || isProfile(o.restoreReadback)) &&
     Number.isSafeInteger(o.attempts) && (o.lastAttemptAt === null || isTime(o.lastAttemptAt)) && isNullableString(o.lastError) &&
     isTime(o.createdAt) && isTime(o.updatedAt);
 }

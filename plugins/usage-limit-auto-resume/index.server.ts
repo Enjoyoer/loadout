@@ -15,6 +15,8 @@ import { ResumeStore, StateUnreadableError, TurnLedger, TurnsUnreadableError, ty
 import { endedReads, killAgent } from "./server/vendor/ended-read.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
+// Logged once at startup so a deploy can confirm what is running. Keep equal to package.json "version".
+const VERSION = "0.4.2";
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 // Thrown before anything reaches the socket, so the message was never delivered.
 const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/.test(errorMessage(error));
@@ -1275,7 +1277,11 @@ export default function contribute(server: PluginServerContext, openClient: () =
       const currentConfig = await config();
       if (!currentConfig) return;
       // The runner decides from the outcome itself (turnSwapEvidence): only a failed turn refused for quota can swap.
-      if (await fallback.afterTurnEnded(event.agent.id, event.outcome, currentConfig)) await sweep();
+      // A completed turn whose final reply is neither a provider error nor a usage-limit text is a normal reply: on a
+      // Claude subscription model it proves Claude usable for a waiting PM return.
+      const reply = event.outcome.kind === "completed" ? turnText((await timeline) ?? []).assistant : null;
+      const normalReply = !!reply && !/^\s*(?:API Error:|\[System Error\])/.test(reply) && !isTransientAssistantText(reply) && !isUsageLimitAssistantText(reply);
+      if (await fallback.afterTurnEnded(event.agent.id, event.outcome, currentConfig, normalReply, endedAt)) await sweep();
     }).catch((error) => failed("pm-fallback-turn-failed", error)));
   });
 
@@ -1376,6 +1382,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // before the first settings read resolves leaves no interval behind.
   track(config().catch(() => null).then((currentConfig) => {
     if (stopped) return;
+    log(`started version=${VERSION} armed=${currentConfig?.armed ?? "unknown"} pmFallback=${currentConfig?.pmFallback ?? "unknown"}`);
     track(inspectDaemonAtStartup());
     timer = setInterval(() => { if (!stopped) track(sweep()); }, (currentConfig ?? ConfigSchema.parse({})).pollIntervalSeconds * 1000);
     timer.unref?.();
