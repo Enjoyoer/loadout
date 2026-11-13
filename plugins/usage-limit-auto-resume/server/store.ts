@@ -164,11 +164,14 @@ export class ResumeStore {
 
   /**
    * Stores a close of the agent, replacing any earlier one: Paseo sends one agent.closed per close, so a later event is
-   * a later close of an agent that was open again. Closes another daemon run saw are dropped; they no longer apply.
+   * a later close of an agent that was open again. Closes are checked before they are stored, so they can arrive out of
+   * order: a stored close newer than this one is kept. Closes another daemon run saw are dropped; they no longer apply.
    */
   async markClosed(close: AgentClose): Promise<void> {
     await this.exclusive(async () => {
       const state = await this.load();
+      const newer = (state.closes ?? []).some((other) => other.agentId === close.agentId && sameDaemonRun(other.daemon, close.daemon) && Date.parse(other.at) > Date.parse(close.at));
+      if (newer) return;
       const kept = (state.closes ?? []).filter((other) => other.agentId !== close.agentId && sameDaemonRun(other.daemon, close.daemon));
       await this.persist(state.records, state.guards, [...kept, close].slice(-MAX_AGENT_CLOSES));
     });

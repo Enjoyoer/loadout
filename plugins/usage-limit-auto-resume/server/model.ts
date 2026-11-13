@@ -132,11 +132,12 @@ export const IDLE_PARK_MS = 60 * 60_000;
  * same agent.closed for it as for a kill, so it is told apart by what the collector requires:
  * - the daemon's effective idleRuntimeCleanup was on when the close was seen (null when it could not be read);
  * - no turn the plugin sent is still running on the agent (`ownTurn`);
- * - the agent's stored updatedAt, read after the close (a fetch never loads an agent), is IDLE_PARK_MS or more before it.
- * Anything else, including a close the plugin could not check, is a close as before.
+ * - the agent's stored updatedAt, read after the close, is IDLE_PARK_MS or more before it. Its status is not required to
+ *   be closed: a read by anyone loads the agent again without moving updatedAt, while a message that reopens it does.
+ * Anything else is a close as before.
  */
-export function isPark(close: AgentClose, cleanup: boolean | null, ownTurn: boolean, agent: Pick<AgentSnapshot, "status" | "archivedAt" | "updatedAt"> | null): boolean {
-  if (cleanup !== true || ownTurn || !agent || agent.archivedAt || agent.status !== "closed" || !agent.updatedAt) return false;
+export function isPark(close: AgentClose, cleanup: boolean | null, ownTurn: boolean, agent: Pick<AgentSnapshot, "archivedAt" | "updatedAt"> | null): boolean {
+  if (cleanup !== true || ownTurn || !agent || agent.archivedAt || !agent.updatedAt) return false;
   const idleFor = Date.parse(close.at) - Date.parse(agent.updatedAt);
   return Number.isFinite(idleFor) && idleFor >= IDLE_PARK_MS;
 }

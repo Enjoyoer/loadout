@@ -37,9 +37,12 @@ const isDaemonReply = (error: unknown) => error instanceof Error && (error.name 
 // How long the plugin waits for the daemon to answer before it takes it for stopping (daemonProbe). Paseo gives a stopping
 // plugin 2 seconds before it terminates it, and the record must be written within them.
 const DAEMON_PROBE_TIMEOUT_MS = 1_000;
-// How long a close waits for the reads that tell a park from a kill (parkOf). One that gets no answer is a close as
-// before: a stopping daemon answers none, and a close it stores late is that run's shutdown anyway.
+// How long one check of a close waits for the reads that tell a park from a kill (parkOf). A check that gets no answer
+// is tried again on later sweeps while the close holds the agent's work, for PARK_CHECK_WINDOW_MS after the close; a
+// close still unanswered then is a close as before. A stopping daemon answers none, and its close is that run's
+// shutdown anyway.
 const PARK_CHECK_TIMEOUT_MS = 10_000;
+const PARK_CHECK_WINDOW_MS = 10 * 60_000;
 // After a turn end the daemon did not answer, the next sweep comes this soon: a daemon that was only slow then answers it,
 // and the turn ends as it always did, instead of waiting a whole poll interval for a restart (restartGate, reviewTurns).
 const REPROBE_SWEEP_MS = 3_000;
@@ -83,7 +86,11 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // Per record, the versions of the record and of its closed agent at the last completed timeline read of that agent
   // (reverifyTransient). The read loads a closed agent, and while it stays closed it gives the same answer again.
   const closedReads = new Map<string, string>();
+  // Closes seen but not yet told a park or a close (checkClose). Any of them holds all the agent's work.
+  const unchecked = new Map<AgentClose, { claimTurn: boolean; checking: boolean; deferred: boolean }>();
+  const hasUnchecked = (agentId: string) => [...unchecked.keys()].some((close) => close.agentId === agentId);
   const heldByClose = (record: ResumeRecord) => {
+    if (hasUnchecked(record.agentId)) return true;
     const seen = closes.get(record.agentId);
     const decision = seen ? closeDecision(seen, record, daemon()) : "go";
     return decision === "hold" || decision === "end";
@@ -319,6 +326,11 @@ export default function contribute(server: PluginServerContext, openClient: () =
       close = null;
     }
     if (!(await restartGate(record, currentConfig, run))) return false;
+    // A close still being told a park or a close holds the record, however old it is.
+    if (hasUnchecked(record.agentId)) {
+      logOnce(record, "agent-closed", `send-held agentId=${record.agentId} recordId=${record.recordId} reason=agent-close-unchecked`);
+      return false;
+    }
     // A close this process saw whose store write has not landed yet.
     const seen = closes.get(record.agentId);
     if (seen && (!close || Date.parse(seen.at) > Date.parse(close.at))) close = seen;
@@ -887,6 +899,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
     try {
       const currentConfig = await config();
       if (!currentConfig) return;
+      // Closes whose park check got no answer yet are checked again.
+      for (const close of unchecked.keys()) checkClose(close);
       // PM fallback first, so a record acts on the profile its agent has after this pass.
       await fallback.sweep(currentConfig).catch((error) => failed("pm-fallback-sweep-failed", error));
       // Turns a stop or a crash cut off, before any record acts: such a turn may be a record's own send.
@@ -894,6 +908,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
       // One snapshot per sweep. A terminal record never acts again, so only an actionable one is read afresh: work on
       // an earlier record may have changed it.
       for (const record of await store.read()) {
+        if (!isActive(record)) closedReads.delete(record.recordId);
         if (!isActive(record) || fallback.isBusy(record.agentId)) continue;
         if (record.state === "detected") {
           await store.update(record.recordId, (value) => value.state === "detected" ? { ...value, state: "parked", updatedAt: new Date().toISOString() } : value);
@@ -1343,9 +1358,10 @@ export default function contribute(server: PluginServerContext, openClient: () =
     })().catch((error) => failed("permission-handler-failed", error)));
   });
 
-  // The agent's updatedAt when this close is a park (isPark), else null. Read within PARK_CHECK_TIMEOUT_MS; a fetch never
-  // loads an agent. `claimTurn`: a send in flight had its turn start when the close was seen.
-  async function parkOf(close: AgentClose, claimTurn: boolean): Promise<string | null> {
+  // The agent's updatedAt when this close is a park (isPark), idleSince null when it is not, and null when the check got
+  // no answer within PARK_CHECK_TIMEOUT_MS. A fetch never loads an agent. `claimTurn`: a send in flight had its turn
+  // start when the close was seen.
+  async function parkOf(close: AgentClose, claimTurn: boolean): Promise<{ idleSince: string | null } | null> {
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), PARK_CHECK_TIMEOUT_MS); });
     const checked = (async () => {
@@ -1353,8 +1369,9 @@ export default function contribute(server: PluginServerContext, openClient: () =
       const [{ config: daemonConfig }, agent, records] = await Promise.all([api.config.get(), fetchAgent(api, close.agentId), store.read()]);
       // Paseo resolves an absent persisted key to true, as its collector does.
       const cleanup = typeof daemonConfig?.idleRuntimeCleanup === "boolean" ? daemonConfig.idleRuntimeCleanup : daemonConfig ? true : null;
+      if (cleanup === null) return null;
       const ownTurn = claimTurn || records.some((record) => record.agentId === close.agentId && runsOwnTurn(record));
-      return isPark(close, cleanup, ownTurn, agent) ? agent!.updatedAt! : null;
+      return { idleSince: isPark(close, cleanup, ownTurn, agent) ? agent!.updatedAt! : null };
     })().catch(() => null);
     try {
       return await Promise.race([checked, timeout]);
@@ -1368,7 +1385,33 @@ export default function contribute(server: PluginServerContext, openClient: () =
   // one's close: the agent's records go on with their own schedule, and the send that falls due loads it again. Any
   // other close is stored for the agent, with this daemon run, whether or not it has a record yet, and closeGate decides
   // on every later sweep: work of this agent is held, and ended once this run outlives the close, while a new daemon run
-  // clears it. The close holds the agent's work while it is checked.
+  // clears it. The close holds the agent's work while it is checked, and while any earlier close of the agent is.
+  function checkClose(close: AgentClose): void {
+    const entry = unchecked.get(close);
+    if (!entry || entry.checking || stopped) return;
+    entry.checking = true;
+    track((async () => {
+      const verdict = await parkOf(close, entry.claimTurn);
+      if (!verdict && Date.now() < Date.parse(close.at) + PARK_CHECK_WINDOW_MS) {
+        entry.checking = false;
+        if (!entry.deferred) log(`park-check-deferred agentId=${close.agentId} closedAt=${close.at}`);
+        entry.deferred = true;
+        return;
+      }
+      try {
+        if (verdict?.idleSince) {
+          if (closes.get(close.agentId) === close) closes.delete(close.agentId);
+          log(`agent-parked agentId=${close.agentId} closedAt=${close.at} idleSince=${verdict.idleSince}`);
+          return;
+        }
+        await store.markClosed(close);
+        log(`agent-closed agentId=${close.agentId} closedAt=${close.at}${verdict ? "" : " reason=park-check-unanswered"}`);
+      } finally {
+        unchecked.delete(close);
+      }
+    })().catch((error) => failed("close-handler-failed", error)));
+  }
+
   const removeClosed = server.on("agent.closed", (event) => {
     // Any close, the swap's too, stops a turn-end read, since that read would load the agent again.
     endLifecycle(event.agent.id);
@@ -1379,17 +1422,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
     closes.set(close.agentId, close);
     // A send not started yet goes back to waiting; one already started is delivered, since Paseo loads the agent for it.
     cancelInFlight(event.agent.id, { state: "parked", reason: "agent-closed", hold: true });
-    const claimTurn = !!inFlight.get(event.agent.id)?.turnId;
-    track((async () => {
-      const idleSince = await parkOf(close, claimTurn);
-      if (idleSince) {
-        if (closes.get(close.agentId) === close) closes.delete(close.agentId);
-        log(`agent-parked agentId=${close.agentId} closedAt=${close.at} idleSince=${idleSince}`);
-        return;
-      }
-      await store.markClosed(close);
-      log(`agent-closed agentId=${close.agentId} closedAt=${close.at}`);
-    })().catch((error) => failed("close-handler-failed", error)));
+    unchecked.set(close, { claimTurn: !!inFlight.get(event.agent.id)?.turnId, checking: false, deferred: false });
+    checkClose(close);
   });
 
   async function inspectDaemonAtStartup(): Promise<void> {
