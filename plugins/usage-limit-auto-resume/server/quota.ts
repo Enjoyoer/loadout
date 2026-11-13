@@ -9,7 +9,8 @@ import path from "node:path";
 export type QuotaPool = "claude" | "codex";
 export type QuotaWindow = "five_hour" | "seven_day";
 
-// The windows that free an account. Model-scoped windows (for example seven_day_fable) are not read.
+// The windows that free an account. Model-scoped windows (for example seven_day_fable) never decide whether an account
+// or the pool is out; they are only summarized per window id in `scoped`.
 const WINDOWS: readonly QuotaWindow[] = ["five_hour", "seven_day"];
 export const DEFAULT_PQ_ARGV: readonly string[] = ["~/.local/bin/pq", "--json"];
 
@@ -30,6 +31,10 @@ export type PoolQuota =
     weekly: boolean;
     // Accounts with fresh five_hour AND seven_day readings that both show quota left. A missing window is no evidence.
     capacity: number;
+    // Per model-scoped window id (seven_day_fable): `capacity` counts accounts that are capacity above and whose fresh
+    // reading of this window shows quota left too; `out` counts accounts where this window is out (0% left or blocking,
+    // reset still ahead), whatever their other windows read.
+    scoped?: Record<string, { capacity: number; out: number }>;
   };
 
 // Claude routes (Opus, Sonnet, Fable, Haiku) read the claude accounts, GPT routes (Sol, Luna, Astra) the codex accounts,
@@ -64,7 +69,14 @@ export function poolQuota(document: unknown, pool: QuotaPool | null, now = Date.
   if (!accounts.length) return unknown(`pq shows no ${pool} accounts`);
   let available = 0, unknownCount = 0, weeklyOut = 0, capacity = 0;
   const frees: Array<{ at: number; window: QuotaWindow }> = [];
+  const scoped: Record<string, { capacity: number; out: number }> = {};
   for (const account of accounts) {
+    const all = (Array.isArray(account.windows) ? account.windows : []).filter((window): window is Record<string, unknown> =>
+      !!window && typeof window === "object" && typeof (window as Record<string, unknown>).id === "string" && !WINDOWS.includes((window as Record<string, unknown>).id as QuotaWindow));
+    for (const window of all) {
+      const entry = scoped[window.id as string] ??= { capacity: 0, out: 0 };
+      if ((num(window.leftPct) && window.leftPct <= 0 || window.state === "blocking") && num(window.resetAt) && window.resetAt * 1000 + bufferMs > now) entry.out++;
+    }
     const windows = (Array.isArray(account.windows) ? account.windows : [])
       .filter((window): window is Record<string, unknown> => !!window && typeof window === "object" && WINDOWS.includes((window as Record<string, unknown>).id as QuotaWindow));
     const out = windows.filter((window) => (num(window.leftPct) && window.leftPct <= 0 || window.state === "blocking") &&
@@ -75,14 +87,17 @@ export function poolQuota(document: unknown, pool: QuotaPool | null, now = Date.
       if (out.some((window) => window.id === "seven_day")) weeklyOut++;
     } else if (account.fresh === true && windows.length > 0 && windows.every((window) => window.fresh !== false && num(window.leftPct) && window.leftPct > 0)) {
       available++;
-      if (WINDOWS.every((id) => windows.some((window) => window.id === id))) capacity++;
+      if (WINDOWS.every((id) => windows.some((window) => window.id === id))) {
+        capacity++;
+        for (const window of all) if (window.fresh !== false && num(window.leftPct) && window.leftPct > 0) scoped[window.id as string]!.capacity++;
+      }
     } else {
       unknownCount++;
     }
   }
   const earliestReset = frees.length ? frees.reduce((a, b) => b.at < a.at ? b : a) : null;
   const exhausted = available === 0 && unknownCount === 0 && earliestReset !== null;
-  return { status: "known", pool, accounts: accounts.length, available, unknown: unknownCount, exhausted, earliestReset, weekly: exhausted && weeklyOut === accounts.length, capacity };
+  return { status: "known", pool, accounts: accounts.length, available, unknown: unknownCount, exhausted, earliestReset, weekly: exhausted && weeklyOut === accounts.length, capacity, scoped };
 }
 
 /**

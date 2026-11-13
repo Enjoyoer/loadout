@@ -33,6 +33,20 @@ export type ReturnObligation = {
   fallbackSince?: string | null;
   /** The profile read back after our last restore attempt that did not verify (a clamp, a partial write). */
   restoreReadback?: Profile | null;
+  /**
+   * Since 0.6.0, a PM whose original model has a `pmFallbackFirst` entry: both profiles of its chain, fixed at the swap,
+   * and the one `fallback` is (`stage`). Absent (an obligation written by 0.5.0 or earlier, an Opus PM, an enrollment):
+   * a single-stage return to the original.
+   */
+  stages?: { first: Profile; last: Profile } | null;
+  stage?: "first" | "last" | null;
+  /**
+   * Set when the original was refused while a fresh pq reading showed its model-scoped window (Fable) with quota left:
+   * pq and the provider disagree, so pq proof no longer returns this PM; only a same-model success does. Absent: false.
+   */
+  pqFableDistrusted?: boolean;
+  /** When a pq reading last made a distrusted obligation's return due (a probe), or absent. */
+  pqProbeAt?: string | null;
   attempts: number;
   lastAttemptAt: string | null;
   lastError: string | null;
@@ -81,8 +95,16 @@ export function fallbackIneligible(agent: AgentSnapshot, originalModel = agent.m
  * a 402 credit balance). A completed reply never swaps, whatever its text says. Every swap path builds its evidence with
  * one of the two functions below and the swap itself checks it; swapDecision then needs pq to show the pool out.
  */
-export type SwapEvidence = { failedOutcome: boolean; usageLimit: boolean };
+export type SwapEvidence = {
+  failedOutcome: boolean; usageLimit: boolean;
+  /** Account-level: a usage-limit hit, or Claude's "would exceed your account's rate limit" (never a per-minute 429). */
+  accountLimit: boolean;
+  /** The model the error names, when it names one. */
+  named: string | null;
+};
 export const isSwapEvidence = (evidence: SwapEvidence) => evidence.failedOutcome && evidence.usageLimit;
+
+const ACCOUNT_LIMIT_TEXT = /would exceed your account(?:'|\u2019)s rate limit/i;
 
 export function turnSwapEvidence(outcome: { kind: string; error?: { message?: string; code?: string } }): SwapEvidence {
   const failed = outcome.kind === "failed" && typeof outcome.error?.message === "string";
@@ -90,7 +112,9 @@ export function turnSwapEvidence(outcome: { kind: string; error?: { message?: st
   // A refusal whose error names a model outside the Claude pool (a turn that still ran on the fallback) is not Claude's.
   const named = failed ? namedModel(message!) : null;
   const claude = !named || agentPool("pi", named) === "claude";
-  return { failedOutcome: failed, usageLimit: failed && claude && (failureSignature(message!, code) !== null || isQuotaError(message!, code)) };
+  const usage = failed && claude && failureSignature(message!, code) !== null;
+  const quota = failed && claude && isQuotaError(message!, code);
+  return { failedOutcome: failed, usageLimit: usage || quota, accountLimit: usage || quota && ACCOUNT_LIMIT_TEXT.test(message!), named };
 }
 
 /**
@@ -100,7 +124,55 @@ export function turnSwapEvidence(outcome: { kind: string; error?: { message?: st
 export function recordSwapEvidence(record: ResumeRecord): SwapEvidence {
   const usage = record.kind !== "transient" && record.usageFailedOutcome === true && !!record.failureSignature;
   const quota = record.kind === "transient" && record.failedOutcome === true && quotaRefused(record);
-  return { failedOutcome: isActive(record) && (record.usageFailedOutcome === true || record.failedOutcome === true), usageLimit: usage || quota };
+  return { failedOutcome: isActive(record) && (record.usageFailedOutcome === true || record.failedOutcome === true), usageLimit: usage || quota, accountLimit: usage, named: null };
+}
+
+/** The same model, written with or without its provider prefix (`fleet/claude-opus-5-5` and `claude-opus-5-5`). */
+export const sameModel = (a: string, b: string) => a === b || a.split("/").at(-1) === b.split("/").at(-1);
+
+/** The pq window scoped to a chained original's model family (`seven_day_fable`), or null for a model with none. */
+export function scopedWindow(model: string): string | null {
+  const family = ["fable", "opus", "sonnet", "haiku"].find((name) => new RegExp(`(?:^|[/._-])${name}(?:$|[/._\\[-])`, "i").test(model));
+  return family ? `seven_day_${family}` : null;
+}
+
+/** A fresh reading with an account whose five-hour, weekly and this model-scoped window all show quota left. */
+export function scopedCapacity(claude: PoolQuota, window: string): boolean {
+  return known(claude) && (claude.scoped?.[window]?.capacity ?? 0) > 0;
+}
+
+/** pq shows the model-scoped window out on some account and left on none. */
+export function scopedOut(claude: PoolQuota, window: string): boolean {
+  const entry = known(claude) ? claude.scoped?.[window] : undefined;
+  return !!entry && entry.out > 0 && entry.capacity === 0;
+}
+
+/**
+ * Whether a quota refusal of a chained original (Fable) moves its PM: an account-level refusal (a usage limit, or the
+ * account rate-limit text), or any quota refusal while pq shows that model's own window out. A per-minute or other
+ * transient 429 does not. The account windows need not read out: a model-scoped limit refuses while they have quota.
+ */
+export function chainRefusal(evidence: SwapEvidence, claude: PoolQuota, window: string | null): boolean {
+  return isSwapEvidence(evidence) && (evidence.accountLimit || (!!window && scopedOut(claude, window)));
+}
+
+/**
+ * Where a refused chained original goes: the first stage, unless pq proves every Claude account out (strict: no account
+ * unknown or stale), which skips it for the last stage under the usual fallback-pool check. An unproven account never
+ * skips the first stage.
+ */
+export function chainDecision(claude: PoolQuota, fallback: PoolQuota): { stage: "first" } | { stage: "last"; reason: string } | { stage: null; reason: string } {
+  if (!(known(claude) && claude.exhausted)) return { stage: "first" };
+  if (known(fallback) && fallback.exhausted) return { stage: null, reason: "claude-pool-exhausted fallback-pool-exhausted" };
+  return { stage: "last", reason: "claude-pool-exhausted" };
+}
+
+/** Which stage of the obligation's chain this live profile is exactly, or null. */
+export function stageOf(obligation: ReturnObligation, live: Profile | null): "first" | "last" | null {
+  if (!obligation.stages || !live) return null;
+  if (sameProfile(live, obligation.stages.first)) return "first";
+  if (sameProfile(live, obligation.stages.last)) return "last";
+  return null;
 }
 
 /**
@@ -153,12 +225,23 @@ export function isSubscriptionClaude(provider: string, model: string | null | un
 export const fallbackSinceMs = (obligation: ReturnObligation) => Date.parse(obligation.fallbackSince ?? obligation.createdAt);
 
 /**
+ * A distrusted obligation (pq showed the original's window left while the provider refused it) may still return on pq
+ * proof, at most once per this interval, counted from when its stage began or its last pq-driven return, whichever is
+ * later: at most one refused turn of the original per interval while pq and the provider disagree. 60 minutes; the
+ * environment variable only shortens it for a scratch proof.
+ */
+export const PQ_PROBE_INTERVAL_MS = (Number(process.env.LOADOUT_ULR_PQ_PROBE_SECONDS) > 0 ? Number(process.env.LOADOUT_ULR_PQ_PROBE_SECONDS) : 3600) * 1000;
+
+/** When a distrusted obligation's next pq probe may run. */
+export const pqProbeOpensAt = (obligation: ReturnObligation) => Math.max(fallbackSinceMs(obligation), obligation.pqProbeAt ? Date.parse(obligation.pqProbeAt) : 0) + PQ_PROBE_INTERVAL_MS;
+
+/**
  * Already back on the original: its model and thinking, with the original's tier or the fallback's (a restore by hand
  * that left the plugin's own Fast label). The restore then settles and writes the original's tier.
  */
 export function onOriginal(obligation: ReturnObligation, live: Profile): boolean {
-  return live.model === obligation.original.model && live.thinkingOptionId === obligation.original.thinkingOptionId &&
-    (tier(live.serviceTier) === tier(obligation.original.serviceTier) || tier(live.serviceTier) === tier(obligation.fallback.serviceTier));
+  const tiers = [obligation.original, obligation.fallback, ...(obligation.stages ? [obligation.stages.first, obligation.stages.last] : [])].map((p) => tier(p.serviceTier));
+  return live.model === obligation.original.model && live.thinkingOptionId === obligation.original.thinkingOptionId && tiers.includes(tier(live.serviceTier));
 }
 
 /**
@@ -166,15 +249,15 @@ export function onOriginal(obligation: ReturnObligation, live: Profile): boolean
  * the original, and not exactly what our own last unverified restore read back (that restore keeps being retried).
  */
 export function profileChanged(obligation: ReturnObligation, live: Profile): boolean {
-  if (onOriginal(obligation, live) || sameProfile(live, obligation.fallback)) return false;
+  if (onOriginal(obligation, live) || sameProfile(live, obligation.fallback) || stageOf(obligation, live)) return false;
   return !(obligation.restoreReadback && sameProfile(live, obligation.restoreReadback));
 }
 
-export function newObligation(agentId: string, original: Profile, fallback: Profile, source: ReturnObligation["source"], phase: ReturnObligation["phase"], now = Date.now()): ReturnObligation {
+export function newObligation(agentId: string, original: Profile, fallback: Profile, source: ReturnObligation["source"], phase: ReturnObligation["phase"], now = Date.now(), chain: { stages: { first: Profile; last: Profile }; stage: "first" | "last"; pqFableDistrusted?: boolean } | null = null): ReturnObligation {
   const at = new Date(now).toISOString();
   return {
     version: 1, obligationId: `pm-return:${createHash("sha256").update([agentId, at, randomUUID()].join("\u0000")).digest("hex").slice(0, 24)}`,
-    agentId, source, phase, original, fallback, restoreDueAt: null, fallbackSince: phase === "fallback" ? at : null, attempts: 0, lastAttemptAt: null, lastError: null, createdAt: at, updatedAt: at,
+    agentId, source, phase, original, fallback, ...(chain ?? {}), restoreDueAt: null, fallbackSince: phase === "fallback" ? at : null, attempts: 0, lastAttemptAt: null, lastError: null, createdAt: at, updatedAt: at,
   };
 }
 
@@ -199,6 +282,10 @@ function isObligation(value: unknown): value is ReturnObligation {
     isProfile(o.original) && isProfile(o.fallback) && (o.restoreDueAt === null || isTime(o.restoreDueAt)) &&
     (o.fallbackSince === undefined || o.fallbackSince === null || isTime(o.fallbackSince)) &&
     (o.restoreReadback === undefined || o.restoreReadback === null || isProfile(o.restoreReadback)) &&
+    (o.stages === undefined || o.stages === null || typeof o.stages === "object" && isProfile((o.stages as Record<string, unknown>).first) && isProfile((o.stages as Record<string, unknown>).last)) &&
+    (o.stage === undefined || o.stage === null || ((o.stage === "first" || o.stage === "last") && !!o.stages)) &&
+    (o.pqFableDistrusted === undefined || typeof o.pqFableDistrusted === "boolean") &&
+    (o.pqProbeAt === undefined || o.pqProbeAt === null || (typeof o.pqProbeAt === "string" && Number.isFinite(Date.parse(o.pqProbeAt)))) &&
     Number.isSafeInteger(o.attempts) && (o.lastAttemptAt === null || isTime(o.lastAttemptAt)) && isNullableString(o.lastError) &&
     isTime(o.createdAt) && isTime(o.updatedAt);
 }
