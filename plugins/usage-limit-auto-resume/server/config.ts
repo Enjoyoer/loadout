@@ -23,7 +23,7 @@ const ConfigObjectSchema = z.object({
   pmFallback: z.boolean().default(false),
   pmFallbackModel: z.string().min(1).default("fleet/gpt-6.1-sol"),
   pmFallbackThinking: z.string().min(1).default("medium"),
-  pmFallbackServiceTier: z.string().min(1).default("fast"),
+  pmFallbackServiceTier: z.string().min(1).default("standard"),
   // Owner surface: register the original profile of a PM that is already elsewhere, or cancel one return by its id.
   pmFallbackEnroll: z.array(z.object({
     agentId: z.string().min(1),

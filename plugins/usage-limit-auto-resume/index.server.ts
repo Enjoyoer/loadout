@@ -1281,7 +1281,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
       // Claude subscription model it proves Claude usable for a waiting PM return.
       const reply = event.outcome.kind === "completed" ? turnText((await timeline) ?? []).assistant : null;
       const normalReply = !!reply && !/^\s*(?:API Error:|\[System Error\])/.test(reply) && !isTransientAssistantText(reply) && !isUsageLimitAssistantText(reply);
-      if (await fallback.afterTurnEnded(event.agent.id, event.outcome, currentConfig, normalReply)) await sweep();
+      if (await fallback.afterTurnEnded(event.agent.id, event.outcome, currentConfig, normalReply, endedAt)) await sweep();
     }).catch((error) => failed("pm-fallback-turn-failed", error)));
   });
 

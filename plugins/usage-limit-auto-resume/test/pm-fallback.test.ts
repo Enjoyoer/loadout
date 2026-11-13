@@ -152,7 +152,7 @@ it("PM fallback swaps exactly and resumes the same session on Sol; a worker on t
   await f.endTurn("worker", { kind: "failed", error: { message: USAGE } }, "worker-turn-1");
   await swapPm(f);
   assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }]);
-  assert.deepEqual(f.calls.labels, [{ "opc.service-tier": "fast" }]);
+  assert.deepEqual(f.calls.labels, [{ "opc.service-tier": "standard" }]);
   assert.equal(f.agents.get("worker")!.model, OPUS);
   const [obligation] = (await f.returns.read()).obligations;
   assert.deepEqual(obligation!.original, { model: OPUS, thinkingOptionId: "high", serviceTier: null });

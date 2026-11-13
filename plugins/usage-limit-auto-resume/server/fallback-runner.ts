@@ -3,7 +3,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config.ts";
 import type { AgentSettingsPort } from "./daemon.ts";
-import { enrollmentKey, fallbackIneligible, fallbackSinceMs, isSubscriptionClaude, isSwapEvidence, profileChanged, sameProfile, recordSwapEvidence, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
+import { enrollmentKey, fallbackIneligible, fallbackSinceMs, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameProfile, recordSwapEvidence, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
 import { agentPool, type PoolQuota, type QuotaPool } from "./quota.ts";
 import { isActive, rebindRecord, type AgentSnapshot } from "./model.ts";
 import type { ResumeStore } from "./store.ts";
@@ -35,9 +35,11 @@ export function createFallbackRunner(deps: FallbackDeps) {
   const busy = new Set<string>();
   const quiet = new Map<string, string>();
   const once = (agentId: string, line: string) => { if (quiet.get(agentId) !== line) { quiet.set(agentId, line); log(line); } };
-  // The latest turn this daemon saw a Pi agent finish with a normal reply on a Claude subscription model. Real traffic
-  // succeeding proves the pool usable when pq cannot (stale or unproven accounts), so it makes a return due too.
-  let claudeSuccess: { agentId: string; at: number } | null = null;
+  // Per Claude subscription model, the latest turn this daemon saw a Pi agent finish with a normal reply, stamped with
+  // the turn's end. Real traffic succeeding proves that model usable when pq cannot (stale or unproven accounts), so it
+  // makes the return of a PM whose original is that same model due. Limits can be per model (a Fable weekly window),
+  // so another Claude model proves nothing for it.
+  const claudeSuccess = new Map<string, { agentId: string; at: number }>();
   // PMs whose return was dropped because their profile was changed by hand, with that profile: no new swap while they
   // stay on it.
   const dropped = new Map<string, Profile>();
@@ -174,10 +176,12 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // proven by a reading taken now, or a Claude subscription turn this daemon saw succeed since the swap.
       let reading = await deps.quota(pool, config);
       if (hasCapacity(reading)) reading = await deps.quota(pool, config, { fresh: true });
-      const success = claudeSuccess && claudeSuccess.at > fallbackSinceMs(obligation) ? claudeSuccess : null;
+      const seenSuccess = claudeSuccess.get(obligation.original.model);
+      const success = seenSuccess && seenSuccess.at > fallbackSinceMs(obligation) ? seenSuccess : null;
       const reason = restoreDue(reading) ? `pq-capacity quota=${quotaText(reading)}`
-        : success ? `claude-success agent=${success.agentId.slice(0, 8)} at=${new Date(success.at).toISOString()}` : null;
-      const due = reason !== null || sameProfile(live, obligation.original);
+        : success ? `claude-success agent=${success.agentId.slice(0, 8)} model=${obligation.original.model} at=${new Date(success.at).toISOString()}` : null;
+      // Back on the original by hand: settled as a restore, which also writes the original's tier label.
+      const due = reason !== null || onOriginal(obligation, live);
       if (due !== (obligation.restoreDueAt !== null)) {
         obligation = await returns.update(obligation.obligationId, (o) => ({ ...o, restoreDueAt: due ? nowIso() : null, updatedAt: nowIso() }));
         if (!obligation) return;
@@ -201,7 +205,9 @@ export function createFallbackRunner(deps: FallbackDeps) {
       await api.agentSettings.apply(agentId, { modelId: target.model, thinkingOptionId: target.thinkingOptionId });
       await api.agentSettings.setLabels(agentId, { [SERVICE_TIER_LABEL]: target.serviceTier ?? "" });
     } catch (error) {
-      await returns.update(obligation.obligationId, (o) => ({ ...o, lastError: errorText(error), updatedAt: new Date().toISOString() }));
+      // What a failed restore left in place is ours, not an owner change: kept so the next trigger retries over it.
+      const left = goal === "restore" ? await fetchAgent(api, agentId).then((a) => a ? profileOf(a) : null).catch(() => null) : null;
+      await returns.update(obligation.obligationId, (o) => ({ ...o, ...(left ? { restoreReadback: left } : {}), lastError: errorText(error), updatedAt: new Date().toISOString() }));
       log(`pm-${goal}-failed agentId=${agentId} obligationId=${obligation.obligationId} reason=${JSON.stringify(errorText(error))} retry=next-trigger`);
       return;
     }
@@ -210,7 +216,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
     if (inMemory && await persisted(agentId, target)) return settle(attempt, after!, goal);
     const seen = inMemory ? { stored: await deps.stored(agentId) } : { live: after ? profileOf(after) : null };
     const kind = inMemory ? "unpersisted" : "mismatch";
-    await returns.update(obligation.obligationId, (o) => ({ ...o, lastError: `readback-${kind} ${JSON.stringify(seen)}`, updatedAt: new Date().toISOString() }));
+    const readback = goal === "restore" && after ? profileOf(after) : null;
+    await returns.update(obligation.obligationId, (o) => ({ ...o, ...(readback ? { restoreReadback: readback } : {}), lastError: `readback-${kind} ${JSON.stringify(seen)}`, updatedAt: new Date().toISOString() }));
     log(`pm-${goal}-${kind} agentId=${agentId} obligationId=${obligation.obligationId} readback=${JSON.stringify(seen)} retry=next-trigger`);
   }
 
@@ -279,14 +286,19 @@ export function createFallbackRunner(deps: FallbackDeps) {
     },
 
     /** Returns true when the agent has an obligation afterwards, so the caller sweeps its waiting record. */
-    async afterTurnEnded(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], config: Config, normalReply = false): Promise<boolean> {
+    async afterTurnEnded(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], config: Config, normalReply = false, endedAt = new Date().toISOString()): Promise<boolean> {
       const evidence = turnSwapEvidence(outcome);
       // A normal reply on a Claude subscription model, from an agent with no return of its own, while some PM waits on
       // the fallback profile: proof for the return. The agent is read only then.
       if (outcome.kind === "completed" && normalReply && !await returns.get(agentId)) {
         const waiting = (await returns.read()).obligations.some((o) => o.phase === "fallback");
         const agent = waiting ? await fetchAgent(await deps.acquire(), agentId).catch(() => null) : null;
-        if (agent && isSubscriptionClaude(agent.provider, agent.model ?? agent.runtimeInfo?.model)) claudeSuccess = { agentId, at: Date.now() };
+        const model = agent?.model ?? agent?.runtimeInfo?.model;
+        if (agent && model && isSubscriptionClaude(agent.provider, model)) {
+          const at = Date.parse(endedAt);
+          const previous = claudeSuccess.get(model);
+          if (!previous || previous.at < at) claudeSuccess.set(model, { agentId, at });
+        }
       }
       if (await returns.get(agentId)) await locked(agentId, () => reconcileLocked(agentId, config));
       else if (config.pmFallback && isSwapEvidence(evidence)) await locked(agentId, () => swapLocked(agentId, config, "usage-limit-turn", evidence));

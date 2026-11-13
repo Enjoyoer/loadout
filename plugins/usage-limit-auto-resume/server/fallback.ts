@@ -31,6 +31,8 @@ export type ReturnObligation = {
   restoreDueAt: string | null;
   /** When the PM was verified on the fallback profile; absent on obligations written before 0.4.2 (createdAt then). */
   fallbackSince?: string | null;
+  /** The profile read back after our last restore attempt that did not verify (a clamp, a partial write). */
+  restoreReadback?: Profile | null;
   attempts: number;
   lastAttemptAt: string | null;
   lastError: string | null;
@@ -151,14 +153,21 @@ export function isSubscriptionClaude(provider: string, model: string | null | un
 export const fallbackSinceMs = (obligation: ReturnObligation) => Date.parse(obligation.fallbackSince ?? obligation.createdAt);
 
 /**
- * In `fallback`, whether the live profile is an explicit change by someone else: it matches neither stored profile, and
- * is not a restore of ours that landed only partly or read back different (the original model after a restore attempt;
- * that restore keeps being retried, as before).
+ * Already back on the original: its model and thinking, with the original's tier or the fallback's (a restore by hand
+ * that left the plugin's own Fast label). The restore then settles and writes the original's tier.
+ */
+export function onOriginal(obligation: ReturnObligation, live: Profile): boolean {
+  return live.model === obligation.original.model && live.thinkingOptionId === obligation.original.thinkingOptionId &&
+    (tier(live.serviceTier) === tier(obligation.original.serviceTier) || tier(live.serviceTier) === tier(obligation.fallback.serviceTier));
+}
+
+/**
+ * In `fallback`, whether the live profile is an explicit change by someone else: it is not the fallback, not (back on)
+ * the original, and not exactly what our own last unverified restore read back (that restore keeps being retried).
  */
 export function profileChanged(obligation: ReturnObligation, live: Profile): boolean {
-  if (sameProfile(live, obligation.original) || sameProfile(live, obligation.fallback)) return false;
-  const restoreTried = obligation.lastAttemptAt !== null && Date.parse(obligation.lastAttemptAt) > fallbackSinceMs(obligation);
-  return !(restoreTried && live.model === obligation.original.model);
+  if (onOriginal(obligation, live) || sameProfile(live, obligation.fallback)) return false;
+  return !(obligation.restoreReadback && sameProfile(live, obligation.restoreReadback));
 }
 
 export function newObligation(agentId: string, original: Profile, fallback: Profile, source: ReturnObligation["source"], phase: ReturnObligation["phase"], now = Date.now()): ReturnObligation {
@@ -189,6 +198,7 @@ function isObligation(value: unknown): value is ReturnObligation {
     (o.source === "auto" || o.source === "enrolled") && (o.phase === "switching" || o.phase === "fallback") &&
     isProfile(o.original) && isProfile(o.fallback) && (o.restoreDueAt === null || isTime(o.restoreDueAt)) &&
     (o.fallbackSince === undefined || o.fallbackSince === null || isTime(o.fallbackSince)) &&
+    (o.restoreReadback === undefined || o.restoreReadback === null || isProfile(o.restoreReadback)) &&
     Number.isSafeInteger(o.attempts) && (o.lastAttemptAt === null || isTime(o.lastAttemptAt)) && isNullableString(o.lastError) &&
     isTime(o.createdAt) && isTime(o.updatedAt);
 }
