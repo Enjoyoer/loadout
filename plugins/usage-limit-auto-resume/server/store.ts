@@ -8,8 +8,8 @@ import { paseoHome } from "./vendor/daemon-target.ts";
 /** What a pruned record leaves behind: its source turn, so a repeated event for that turn still reads as a duplicate. */
 export type TurnGuard = { agentId: string; sourceTurnId: string; persistenceSessionId: string };
 
-// closes: the agents Paseo closed (agent.closed), one entry per agent, kept apart from records so a record created
-// after the close is held by it too.
+// closes: the agents Paseo closed (agent.closed), one decided entry per agent plus any still being checked for a park,
+// kept apart from records so a record created after the close is held by it too.
 type State = { version: 2; records: ResumeRecord[]; guards?: TurnGuard[]; closes?: AgentClose[] };
 
 // Settled records (done, exhausted, opted out, superseded) only answer repeated turn events and keep recent evidence, so
@@ -76,7 +76,8 @@ const isInterruption = (value: unknown) => {
 };
 
 const isClose = (value: unknown): value is AgentClose => typeof value === "object" && value !== null &&
-  isId((value as Record<string, unknown>).agentId) && isTime((value as Record<string, unknown>).at) && isId((value as Record<string, unknown>).daemon);
+  isId((value as Record<string, unknown>).agentId) && isTime((value as Record<string, unknown>).at) && isId((value as Record<string, unknown>).daemon) &&
+  ((value as Record<string, unknown>).checkUntil === undefined || isTime((value as Record<string, unknown>).checkUntil));
 
 // Each field a sweep or a send relies on; nullable fields may be null or absent.
 function isRecord(value: unknown): value is ResumeRecord {
@@ -157,20 +158,43 @@ export class ResumeStore {
     });
   }
 
-  /** The agent's stored close, if any. */
+  /** The agent's stored close that decides its records: its newest decided close, else a close still being checked. */
   async closeOf(agentId: string): Promise<AgentClose | null> {
-    return (await this.load()).closes?.find((close) => close.agentId === agentId) ?? null;
+    const closes = await this.closesOf(agentId);
+    const decided = closes.filter((close) => !close.checkUntil).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    return decided[0] ?? closes[0] ?? null;
+  }
+
+  /** Every stored close of the agent: at most one decided close, and any closes still being checked (checkUntil). */
+  async closesOf(agentId: string): Promise<AgentClose[]> {
+    return ((await this.load()).closes ?? []).filter((close) => close.agentId === agentId);
+  }
+
+  /** Every stored close, of all agents. */
+  async allCloses(): Promise<AgentClose[]> {
+    return (await this.load()).closes ?? [];
   }
 
   /**
-   * Stores a close of the agent, replacing any earlier one: Paseo sends one agent.closed per close, so a later event is
-   * a later close of an agent that was open again. Closes another daemon run saw are dropped; they no longer apply.
+   * Stores a close of the agent. A close is stored when it is seen, marked as still being checked (checkUntil), and
+   * stored again without the mark once it is decided a close; the stored copy of the same close is replaced. An agent
+   * keeps one decided close: Paseo sends one agent.closed per close, so a later one is a later close of an agent that
+   * was open again. Checks can finish out of order, so a decided close newer than this one is kept. Closes still being
+   * checked are kept until they are decided or cleared. Closes another daemon run saw are dropped; they no longer apply.
    */
   async markClosed(close: AgentClose): Promise<void> {
     await this.exclusive(async () => {
       const state = await this.load();
-      const kept = (state.closes ?? []).filter((other) => other.agentId !== close.agentId && sameDaemonRun(other.daemon, close.daemon));
-      await this.persist(state.records, state.guards, [...kept, close].slice(-MAX_AGENT_CLOSES));
+      const same = (other: AgentClose) => other.agentId === close.agentId && other.at === close.at && other.daemon === close.daemon;
+      const others = (state.closes ?? []).filter((other) => sameDaemonRun(other.daemon, close.daemon) && !same(other));
+      let kept = others;
+      let add: AgentClose[] = [close];
+      if (!close.checkUntil) {
+        const decided = others.filter((other) => other.agentId === close.agentId && !other.checkUntil);
+        if (decided.some((other) => Date.parse(other.at) > Date.parse(close.at))) add = [];
+        else kept = others.filter((other) => !(other.agentId === close.agentId && !other.checkUntil));
+      }
+      await this.persist(state.records, state.guards, [...kept, ...add].slice(-MAX_AGENT_CLOSES));
     });
   }
 

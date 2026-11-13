@@ -93,6 +93,9 @@ async function setup(input: AgentTimelineItem = { type: "user_message", text: "F
   const api = {
     getConnectionState: () => ({ status: "connected" }),
     close: async () => undefined,
+    // A close is checked for a park before it is stored, and an unanswered check is retried; these lanes run with idle
+    // runtime cleanup off, so every close is a close.
+    config: { get: async () => ({ config: { idleRuntimeCleanup: false } }) },
     agents: { ref: () => ({
       refresh: async () => {
         const taken = { ...snapshot };
