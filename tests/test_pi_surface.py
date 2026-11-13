@@ -1226,7 +1226,7 @@ server.close();
 import assert from 'node:assert/strict';
 const after=await import(process.argv[1]);
 // Owner-approved fixed roles follow catalog labels.
-const baseline={scout:{model:'gpt-6.1-sol',effort:'xhigh',fastMode:true,label:'Sol'},reviewer:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'}};
+const baseline={scout:{model:'gpt-6.1-sol',effort:'xhigh',fastMode:false,label:'Sol'},reviewer:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'}};
 const source=[['gpt-6-astra','Astra'],['gpt-6.1-sol','Sol'],['gpt-6-luna','Luna'],['chatgpt-web/extra-high','Web Extra'],['chatgpt-web/pro','Web Pro'],['claude-fable-5-1[1m]','Fable'],['claude-opus-5-5[1m]','Opus']].map(([id,label])=>({id,label,thinkingOptions:['low','medium','high','xhigh','max'].map(id=>({id}))}));
 const catalog=source.map(row=>({...row,id:'route/'+row.id}));
 let count=0;
@@ -1279,9 +1279,9 @@ const workspace={workspaceId:'wks-example',cwd:'/tmp/example-worktree'};
 const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:'lane',title:'Worker',initialPrompt:'Do it',workspace,capabilities:piCaps,...extra});
 const plain=value=>JSON.parse(JSON.stringify(value));
 const unread=pool=>({pool,step:0,weekly:null,stale:'no quota reading supplied',gapPct:null,fiveHourUsedPct:null,resetSoon:null,accounts:null,staleAccounts:null,ageSeconds:null});
-// Owner-approved task routes, including all GPT lanes with Fast on.
+// Owner-approved task routes, every class Fast off by default.
 assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','review','review-security','smoke','ui-check','ui-design','watcher']);
-for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','xhigh',true],['review','Sol','xhigh',true],['review-security','Opus','xhigh',false],['smoke','Luna','low',true],['browser','Sol','medium',true],['browser-hard','Astra','medium',true],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Luna','xhigh',true]]){
+for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','xhigh',false],['review','Sol','xhigh',false],['review-security','Opus','xhigh',false],['smoke','Luna','low',false],['browser','Sol','medium',false],['browser-hard','Astra','medium',false],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Luna','xhigh',false]]){
  const route=r.selectWorkerRoute({taskKind:kind,catalog});
  assert.equal(route.model,['browser','browser-hard'].includes(kind)?r.resolveCatalogLabel(catalog,label).id.slice(6):r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
 }
@@ -1305,11 +1305,11 @@ assert.equal(codeReq.request.labels['opc.route-source'],'task-default');
 for(const key of ['opc.service-tier','opc.fast-requested'])assert.equal(key in codeReq.request.labels,false);
 assert.equal(r.resolveAgentSurface('worker',{taskKind:'code'},catalog).provider,'pi/fleet/claude-opus-5-5');
 assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/claude-opus-5-5; effort=medium; Fast=off/);
-// Browser default: Sol at medium, Fast on.
+// Browser default: Sol at medium, Fast off.
 const browser=r.selectWorkerRoute({taskKind:'browser',catalog:{pi:catalog}});
-assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'gpt-6.1-sol',effort:'medium',fastMode:true,pace:unread('codex'),reason:'browser default medium, no adjustment, no quota reading supplied, native Codex authorized by owner 2026-10-14'});
+assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'gpt-6.1-sol',effort:'medium',fastMode:false,pace:unread('codex'),reason:'browser default medium, no adjustment, no quota reading supplied, native Codex authorized by owner 2026-10-14'});
 const browserReq=build({route:browser,capabilities:nativeCaps});
-assert.equal(browserReq.request.provider,'codex/gpt-6.1-sol');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'medium',features:{fast_mode:true},modeId:'full-access'});
+assert.equal(browserReq.request.provider,'codex/gpt-6.1-sol');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'medium',features:{fast_mode:false},modeId:'full-access'});
 assert.equal(r.resolveAgentSurface('worker',{taskKind:'browser'},catalog).effort,'medium');
 // An owner-named route wins; its Fast is the Pi Fast toggle label, never native fast_mode.
 const owner={role:'worker',source:'owner-explicit',model:'gpt-6.1-sol',effort:'high',fastMode:true};
