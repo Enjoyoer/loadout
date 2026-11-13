@@ -556,8 +556,9 @@ if (sandboxed) {
 }
 // On macOS and Linux this process becomes Pi or sandbox-exec (same PID), so Paseo's signals and Pi's exit status reach
 // each other directly. Node ignores SIGPIPE and SIGXFSZ, and an ignored signal stays ignored across exec while a caught
-// one resets, so a listener gives Pi the default handling spawn gave it. Windows has no exec and spawns.
-if (process.platform !== 'win32') {
+// one resets, so a listener gives Pi the default handling spawn gave it. Windows has no exec, and Node before 22.15 has no
+// process.execve, so there it spawns and waits.
+if (process.platform !== 'win32' && typeof process.execve === 'function') {
   for (const signal of ['SIGPIPE', 'SIGXFSZ']) process.on(signal, () => {});
   try { process.execve(command, [command, ...argv], env); } catch {}
   writeSync(2, 'Pi launch failed\n');

@@ -232,9 +232,10 @@ function execHarness(command, args, env) {
   for (const signal of ['SIGPIPE', 'SIGXFSZ']) process.on(signal, () => {});
   try { process.execve(file, [command, ...args], env); } catch {}
 }
-// Windows has no exec, so the launcher spawns the harness and waits.
+// Windows has no exec, and Node before 22.15 has no process.execve, so there the launcher spawns the harness and waits.
 function launch(command, args, env) {
   const options = { env, stdio: 'inherit', windowsHide: true };
+  if (!windows) return spawn(command, args, options);
   const resolved = windowsExecutable(command, env);
   if (!resolved) throw Error('harness not found on PATH: ' + command);
   if (!/\.(cmd|bat)$/i.test(resolved)) return spawn(resolved, args, options);
@@ -261,7 +262,7 @@ if (require.main === module) {
       const env = loadEnv(descriptor.servers || [], process.env, provider);
       // Provider args go right after the executable, so they are global flags before any subcommand the caller adds.
       const argv = [...(provider.args || []), ...args.slice(1)];
-      if (!windows) { execHarness(args[0], argv, env); throw Error('MCP harness launch failed'); }
+      if (!windows && typeof process.execve === 'function') { execHarness(args[0], argv, env); throw Error('MCP harness launch failed'); }
       const child = launch(args[0], argv, env);
       for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
       child.on('error', () => { process.stderr.write('MCP harness launch failed\n'); process.exitCode = 1; });
