@@ -152,12 +152,13 @@ export const fallbackSinceMs = (obligation: ReturnObligation) => Date.parse(obli
 
 /**
  * In `fallback`, whether the live profile is an explicit change by someone else: it matches neither stored profile, and
- * is not a restore of ours that landed only partly (the original model and thinking after a restore attempt).
+ * is not a restore of ours that landed only partly or read back different (the original model after a restore attempt;
+ * that restore keeps being retried, as before).
  */
 export function profileChanged(obligation: ReturnObligation, live: Profile): boolean {
   if (sameProfile(live, obligation.original) || sameProfile(live, obligation.fallback)) return false;
   const restoreTried = obligation.lastAttemptAt !== null && Date.parse(obligation.lastAttemptAt) > fallbackSinceMs(obligation);
-  return !(restoreTried && live.model === obligation.original.model && live.thinkingOptionId === obligation.original.thinkingOptionId);
+  return !(restoreTried && live.model === obligation.original.model);
 }
 
 export function newObligation(agentId: string, original: Profile, fallback: Profile, source: ReturnObligation["source"], phase: ReturnObligation["phase"], now = Date.now()): ReturnObligation {
