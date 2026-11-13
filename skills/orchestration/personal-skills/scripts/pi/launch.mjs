@@ -19,20 +19,22 @@ function refuse(message) {
 const execs = process.platform !== 'win32' && typeof process.execve === 'function';
 const warn = text => execs ? writeSync(2, text) : process.stderr.write(text);
 // One run of the credential helper, as fleet-routing.mjs's readCredential: its one stdout line, or null on any failure
-// (a nonzero exit, a timeout, more than 64 KiB, no line), but synchronous, so it creates no stream.
+// (a nonzero exit, a timeout, more than 64 KiB, no line), but synchronous, so it creates no stream. A timeout kills with
+// SIGKILL, so a helper that ignores SIGTERM cannot hang the launch.
 function readCredentialSync(argv, { timeoutMs, env }) {
   const run = spawnSync(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: timeoutMs,
-    env, encoding: 'utf8', maxBuffer: 65_536 });
+    killSignal: 'SIGKILL', env, encoding: 'utf8', maxBuffer: 65_536 });
   const value = run.status === 0 && !run.error && typeof run.stdout === 'string' ? run.stdout.trim() : '';
   return value && !/[\r\n]/.test(value) ? value : null;
 }
-// Whether process.execve can start file without killing this process. Node 26 throws when execve fails, and the launch
-// then spawns. Node 22.15 to 25 aborts instead (SIGABRT), so there only a file execve can start, a #! script, an ELF or a
-// Mach-O binary, execs; any other spawns. A race there (the file replaced or removed meanwhile, ETXTBSY, E2BIG) still
-// aborts: the abort prints no secret.
-const EXEC_MAGIC = ['7f454c46', 'feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe', 'bebafeca'];
+// Whether process.execve can start file without killing this process. A failed execve aborts the process (SIGABRT) on
+// Node 22.15 to 26.0 and throws from 26.1, so on every Node only a file this OS's execve can start execs: a #! script,
+// and an ELF binary on Linux or a Mach-O binary (fat included, as /usr/bin/sandbox-exec) on macOS. Any other spawns.
+// Still aborting before 26.1: a #! script whose interpreter is missing, and a race (the file replaced or removed
+// meanwhile, ETXTBSY, E2BIG); the abort prints no secret.
+const EXEC_MAGIC = process.platform === 'darwin'
+  ? ['feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe', 'bebafeca'] : ['7f454c46'];
 function execTarget(file) {
-  if (Number(process.versions.node.split('.')[0]) >= 26) return true;
   let fd;
   try { fd = openSync(file, 'r'); }
   catch (error) { if (['ENOENT', 'ENOTDIR', 'EACCES'].includes(error.code)) return false; throw error; }
@@ -384,7 +386,8 @@ function paseoTemp() {
   let dir = null;
   if (testPlatform !== null) dir = tmpdir();
   else try {
-    dir = execFileSync('/usr/bin/getconf', ['DARWIN_USER_TEMP_DIR'], { env: {}, encoding: 'utf8', timeout: 5000 }).trim();
+    dir = execFileSync('/usr/bin/getconf', ['DARWIN_USER_TEMP_DIR'], { env: {}, encoding: 'utf8', timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch { dir = null; }
   return (trustedTemp = dir && isAbsolute(dir) ? realPath(dir) : null);
 }
@@ -588,9 +591,12 @@ if (sandboxed) {
 // On macOS and Linux this process becomes Pi or sandbox-exec (same PID), so Paseo's signals and Pi's exit status reach
 // each other directly. Node ignores SIGPIPE and SIGXFSZ, and an ignored signal stays ignored across exec while a caught
 // one resets, so a listener gives Pi the default handling spawn gave it. Otherwise (Windows, no process.execve, a target
-// execTarget refuses, or a failed exec on Node 26) it spawns and waits.
+// execTarget refuses, or a failed exec from Node 26.1) it spawns and waits. process.execve queues an
+// ExperimentalWarning that a failed exec would print on the next tick, creating process.stderr after the spawn; no
+// warning listener means no print.
 if (execs && execTarget(command)) {
   for (const signal of ['SIGPIPE', 'SIGXFSZ']) process.on(signal, () => {});
+  process.removeAllListeners('warning');
   try { process.execve(command, [command, ...argv], spawnEnv(env)); } catch {}
 }
 const child = spawn(command, argv, { env, stdio: 'inherit' });
