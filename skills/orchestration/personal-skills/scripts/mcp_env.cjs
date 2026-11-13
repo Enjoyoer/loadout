@@ -207,9 +207,34 @@ function cmdLine(script, args) {
     : '"' + a.replace(/(\\*)"/g, (_m, s) => s + s + '\\"').replace(/\\+$/, s => s + s) + '"';
   return ['"' + script + '"', ...args.map(quote)].join(' ');
 }
+// POSIX resolves a bare harness name as execvp and spawn do: a name with a slash as given, else the first executable
+// regular file on the PATH of the env the harness gets (the system default when it has none), skipping an absent or
+// non-executable one as execvp does. Null when none.
+function posixExecutable(command, env) {
+  const runnable = file => {
+    try { fs.accessSync(file, fs.constants.X_OK); }
+    catch (e) { if (absent(e) || e.code === 'EACCES') return false; throw e; }
+    return isFile(file);
+  };
+  if (command.includes('/')) return runnable(command) ? command : null;
+  for (const dir of (env.PATH ?? '/usr/bin:/bin').split(':'))
+    if (runnable((dir || '.') + '/' + command)) return (dir || '.') + '/' + command;
+  return null;
+}
+// On POSIX the launcher becomes the harness (same PID), so the harness gets signals and its exit status reaches the
+// caller directly. Node ignores SIGPIPE and SIGXFSZ, and an ignored signal stays ignored across exec while a caught
+// one resets, so a listener gives the harness the default handling spawn gave it. Nothing on this path opens
+// process.stdout or process.stderr, which would leave fds 1 and 2 non-blocking for the harness. Returns only when the
+// harness cannot start.
+function execHarness(command, args, env) {
+  const file = posixExecutable(command, env);
+  if (!file) return;
+  for (const signal of ['SIGPIPE', 'SIGXFSZ']) process.on(signal, () => {});
+  try { process.execve(file, [command, ...args], env); } catch {}
+}
+// Windows has no exec, so the launcher spawns the harness and waits.
 function launch(command, args, env) {
   const options = { env, stdio: 'inherit', windowsHide: true };
-  if (!windows) return spawn(command, args, options);
   const resolved = windowsExecutable(command, env);
   if (!resolved) throw Error('harness not found on PATH: ' + command);
   if (!/\.(cmd|bat)$/i.test(resolved)) return spawn(resolved, args, options);
@@ -235,7 +260,9 @@ if (require.main === module) {
         : { mcpTokens: (descriptor.unnamed || {}).mcpTokens === true };
       const env = loadEnv(descriptor.servers || [], process.env, provider);
       // Provider args go right after the executable, so they are global flags before any subcommand the caller adds.
-      const child = launch(args[0], [...(provider.args || []), ...args.slice(1)], env);
+      const argv = [...(provider.args || []), ...args.slice(1)];
+      if (!windows) { execHarness(args[0], argv, env); throw Error('MCP harness launch failed'); }
+      const child = launch(args[0], argv, env);
       for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
       child.on('error', () => { process.stderr.write('MCP harness launch failed\n'); process.exitCode = 1; });
       child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });

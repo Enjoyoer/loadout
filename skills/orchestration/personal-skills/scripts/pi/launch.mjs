@@ -1,6 +1,6 @@
 // Stock Paseo 0.10.3 interim: each real agent gets a private, scoped mcp.json.
 import { spawn, execFileSync } from 'node:child_process';
-import { readFileSync, mkdirSync, writeFileSync, existsSync, statSync, rmSync, lstatSync, accessSync, constants, realpathSync,
+import { readFileSync, mkdirSync, writeFileSync, writeSync, existsSync, statSync, rmSync, lstatSync, accessSync, constants, realpathSync,
   openSync, closeSync, fstatSync, fchmodSync } from 'node:fs';
 import { homedir, userInfo, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, isAbsolute, sep } from 'node:path';
@@ -79,7 +79,8 @@ function counts(value, keys, where) {
       throw Error(`${where}.${key} must be a positive integer`);
 }
 // A model the shared models.json lacks gets this one stderr line and is skipped; its shared values stay.
-const skipModel = key => process.stderr.write(`Pi launch: model override "${key}" not in models.json, using default\n`);
+// Written straight to fd 2: opening process.stderr would leave it non-blocking for Pi, which this process becomes.
+const skipModel = key => writeSync(2, `Pi launch: model override "${key}" not in models.json, using default\n`);
 function overlayModels(models, overlay) {
   const providers = only(only(overlay, ['providers'], 'the overlay').providers, Object.keys(overlay.providers ?? {}), 'providers');
   for (const [name, provider] of Object.entries(providers)) {
@@ -118,7 +119,7 @@ function overlaySettings(settings, overlay, models, home) {
       const found = roots.map(dir => join(dir, name))
         .filter(dir => statSync(join(dir, 'SKILL.md'), { throwIfNoEntry: false })?.isFile());
       if (found.length > 1) throw Error(`skillsExclude "${name}" is ambiguous: ${found.join(' and ')}`);
-      if (!found.length) process.stderr.write(`Pi launch: skillsExclude skips "${name}": no such skill is installed\n`);
+      if (!found.length) writeSync(2, `Pi launch: skillsExclude skips "${name}": no such skill is installed\n`);
       return found;
     });
     settings = { ...settings, skills: [...settings.skills, ...dirs.map(dir => '-' + dir)] };
@@ -552,6 +553,15 @@ if (sandboxed) {
   argv = [...(probeProfile ? ['-p', PROBE_PROFILE] : ['-f', sandboxProfile]), '-D', `CWD=${resolve(process.cwd())}`,
     '-D', `PI_HOME=${env.PI_CODING_AGENT_DIR}`, '-D', `PI_ROOT=${root}`, ...params, process.execPath, ...argv];
   command = sandboxExec;
+}
+// On macOS and Linux this process becomes Pi or sandbox-exec (same PID), so Paseo's signals and Pi's exit status reach
+// each other directly. Node ignores SIGPIPE and SIGXFSZ, and an ignored signal stays ignored across exec while a caught
+// one resets, so a listener gives Pi the default handling spawn gave it. Windows has no exec and spawns.
+if (process.platform !== 'win32') {
+  for (const signal of ['SIGPIPE', 'SIGXFSZ']) process.on(signal, () => {});
+  try { process.execve(command, [command, ...argv], env); } catch {}
+  writeSync(2, 'Pi launch failed\n');
+  process.exit(1);
 }
 const child = spawn(command, argv, { env, stdio: 'inherit' });
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
