@@ -123,6 +123,29 @@ export function closeDecision(close: AgentClose | null, record: Pick<ResumeRecor
   return Date.parse(close.at) + AGENT_CLOSE_GRACE_MS <= now ? "end" : "hold";
 }
 
+// Paseo's idle runtime collector (agents.idleRuntimeCleanup) closes a loaded agent once it has been idle this long
+// since its updatedAt (IDLE_PERIOD_MS in agent/idle-runtime-cleanup). The period is fixed.
+export const IDLE_PARK_MS = 60 * 60_000;
+
+/**
+ * Whether a close is a park: the collector unloading an idle agent, which any later send loads again. Paseo emits the
+ * same agent.closed for it as for a kill, so it is told apart by what the collector requires:
+ * - the daemon's effective idleRuntimeCleanup was on when the close was seen (null when it could not be read);
+ * - no turn the plugin sent is still running on the agent (`ownTurn`);
+ * - the agent's stored updatedAt, read after the close (a fetch never loads an agent), is IDLE_PARK_MS or more before it.
+ * Anything else, including a close the plugin could not check, is a close as before.
+ */
+export function isPark(close: AgentClose, cleanup: boolean | null, ownTurn: boolean, agent: Pick<AgentSnapshot, "status" | "archivedAt" | "updatedAt"> | null): boolean {
+  if (cleanup !== true || ownTurn || !agent || agent.archivedAt || agent.status !== "closed" || !agent.updatedAt) return false;
+  const idleFor = Date.parse(close.at) - Date.parse(agent.updatedAt);
+  return Number.isFinite(idleFor) && idleFor >= IDLE_PARK_MS;
+}
+
+/** A turn this record sent has started and not been seen to end: the plugin takes the agent for running it. */
+export function runsOwnTurn(record: ResumeRecord): boolean {
+  return isActive(record) && record.state === "verifying" && !!record.resumeTurnId && !record.resumeFinishedAt;
+}
+
 /**
  * The input a failed turn ran on, by identity: the latest turn input (a user row, or an agent message) of its own
  * timeline, else the predecessor record's own last send. Null when neither has an ID.
