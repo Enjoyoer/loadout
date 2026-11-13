@@ -244,19 +244,25 @@ it("a weekly-exhausted Claude pool is not restored when only its five-hour windo
   assert.equal(f.agents.get("pm")!.model, OPUS);
 }));
 
-it("only an explicit owner cancel ends the return; manual drift and role loss do not", () => scenario(async (f, logs) => {
+it("an owner cancel or an explicit model change ends the return; role loss does not", () => scenario(async (f, logs) => {
   await swapPm(f);
   const [obligation] = (await f.returns.read()).obligations;
-  Object.assign(f.agents.get("pm")!, { model: "fleet/claude-fable-5-1", labels: { project: "fixture" } });
+  Object.assign(f.agents.get("pm")!, { labels: { ...f.agents.get("pm")!.labels, role: "worker" } });
   await f.tick();
-  assert.equal((await f.returns.read()).obligations.length, 1);
+  assert.equal((await f.returns.read()).obligations.length, 1, "a lost role keeps the return");
   f.setConfig({ pmFallbackCancel: [obligation!.obligationId] });
   await f.tick();
   assert.deepEqual((await f.returns.read()).obligations, []);
   assert.ok(logs.some((l) => l.includes(`pm-return-cancelled agentId=pm obligationId=${obligation!.obligationId} by=owner-setting`)));
+  f.setConfig({ pmFallbackCancel: [] });
+  await swapPm(f, "pm2");
+  Object.assign(f.agents.get("pm2")!, { model: "fleet/claude-fable-5-1" });
+  await f.tick();
+  assert.deepEqual((await f.returns.read()).obligations, []);
+  assert.ok(logs.some((l) => l.includes("pm-return-dropped agentId=pm2") && l.includes("reason=profile-changed")));
   f.pq.claude = { five: "ok", week: "ok" };
   await f.tick();
-  assert.equal(f.agents.get("pm")!.model, "fleet/claude-fable-5-1");
+  assert.equal(f.agents.get("pm2")!.model, "fleet/claude-fable-5-1");
 }));
 
 it("a crash after a settings update but before its acknowledgement is finished, not repeated or lost", () => scenario(async (f) => {

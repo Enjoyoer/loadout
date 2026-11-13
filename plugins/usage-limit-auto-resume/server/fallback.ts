@@ -16,8 +16,9 @@ export type Profile = { model: string; thinkingOptionId: string | null; serviceT
 
 /**
  * One PM's duty to return. `switching` is the persisted intent to move to the fallback profile, written before the
- * settings change so a crash in between is finished, not forgotten. `fallback` holds until pq shows the original pool
- * usable again (`restoreDueAt`), and only a verified restore or an explicit owner cancel removes the obligation.
+ * settings change so a crash in between is finished, not forgotten. `fallback` holds until the original pool is shown
+ * usable again (`restoreDueAt`): by pq, or by a Claude subscription turn this daemon saw succeed after `fallbackSince`.
+ * A verified restore, an explicit owner cancel or an explicit model change of the PM removes the obligation.
  */
 export type ReturnObligation = {
   version: 1;
@@ -28,6 +29,8 @@ export type ReturnObligation = {
   original: Profile;
   fallback: Profile;
   restoreDueAt: string | null;
+  /** When the PM was verified on the fallback profile; absent on obligations written before 0.4.2 (createdAt then). */
+  fallbackSince?: string | null;
   attempts: number;
   lastAttemptAt: string | null;
   lastError: string | null;
@@ -136,11 +139,32 @@ export function restoreDue(claude: PoolQuota): boolean {
   return hasCapacity(claude);
 }
 
+/**
+ * A model whose successful turn proves a Claude subscription account usable: a Pi model in the Claude pool that is not
+ * billed to API credits (`fleet/api/...`).
+ */
+export function isSubscriptionClaude(provider: string, model: string | null | undefined): boolean {
+  return provider === "pi" && typeof model === "string" && agentPool(provider, model) === "claude" && !/(?:^|\/)api\//i.test(model);
+}
+
+/** Since when a Claude success counts as proof for this obligation: the verified swap. */
+export const fallbackSinceMs = (obligation: ReturnObligation) => Date.parse(obligation.fallbackSince ?? obligation.createdAt);
+
+/**
+ * In `fallback`, whether the live profile is an explicit change by someone else: it matches neither stored profile, and
+ * is not a restore of ours that landed only partly (the original model and thinking after a restore attempt).
+ */
+export function profileChanged(obligation: ReturnObligation, live: Profile): boolean {
+  if (sameProfile(live, obligation.original) || sameProfile(live, obligation.fallback)) return false;
+  const restoreTried = obligation.lastAttemptAt !== null && Date.parse(obligation.lastAttemptAt) > fallbackSinceMs(obligation);
+  return !(restoreTried && live.model === obligation.original.model && live.thinkingOptionId === obligation.original.thinkingOptionId);
+}
+
 export function newObligation(agentId: string, original: Profile, fallback: Profile, source: ReturnObligation["source"], phase: ReturnObligation["phase"], now = Date.now()): ReturnObligation {
   const at = new Date(now).toISOString();
   return {
     version: 1, obligationId: `pm-return:${createHash("sha256").update([agentId, at, randomUUID()].join("\u0000")).digest("hex").slice(0, 24)}`,
-    agentId, source, phase, original, fallback, restoreDueAt: null, attempts: 0, lastAttemptAt: null, lastError: null, createdAt: at, updatedAt: at,
+    agentId, source, phase, original, fallback, restoreDueAt: null, fallbackSince: phase === "fallback" ? at : null, attempts: 0, lastAttemptAt: null, lastError: null, createdAt: at, updatedAt: at,
   };
 }
 
@@ -163,6 +187,7 @@ function isObligation(value: unknown): value is ReturnObligation {
   return o.version === 1 && typeof o.obligationId === "string" && o.obligationId !== "" && typeof o.agentId === "string" && o.agentId !== "" &&
     (o.source === "auto" || o.source === "enrolled") && (o.phase === "switching" || o.phase === "fallback") &&
     isProfile(o.original) && isProfile(o.fallback) && (o.restoreDueAt === null || isTime(o.restoreDueAt)) &&
+    (o.fallbackSince === undefined || o.fallbackSince === null || isTime(o.fallbackSince)) &&
     Number.isSafeInteger(o.attempts) && (o.lastAttemptAt === null || isTime(o.lastAttemptAt)) && isNullableString(o.lastError) &&
     isTime(o.createdAt) && isTime(o.updatedAt);
 }
