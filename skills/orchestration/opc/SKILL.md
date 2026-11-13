@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.59.2"
+  version: "7.60.0"
 ---
 
 # OPC
@@ -17,9 +17,9 @@ Follow this state machine, reading linked references only when their branch appl
 
 PMs run on Pi `fleet/claude-opus-5-5`, thinking `medium`, unless the owner names another model or effort. If self differs at first PM ownership, `update_agent` only self's model and thinking.
 
-Whenever you own a project with no custom icon that is not a scratch folder, use `$project-icon`.
+For an owned non-scratch project without a custom icon, use `$project-icon`.
 
-Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks: observable behaviors from the owner's intent, preferably end-to-end or live. Consult root `STATUS.html` and `LESSONS.md` when resuming. Escalate scope or authority changes to the owner.
+Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks: observable behaviors from the owner's intent, preferably end-to-end or live. Consult root `STATUS.html` and `LESSONS.md` when resuming. Before asking the owner, check their past answers, files, Bitwarden and owning PM; ask only what none settles, saying what you checked. Escalate scope or authority changes to the owner.
 
 Enable browser review only when the initial request explicitly asks; the choice is immutable through repairs, resumes, and reinvocation. Initialize the [execution mechanics](references/imp-execution.md "runtime") before launching lanes.
 
@@ -31,7 +31,7 @@ Choose minimal useful scouting topology, splitting only independent questions. T
 
 Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted.
 
-Implement one feature (one user-visible outcome whose spec, diff and checks fit one context) in one implementer lane: its server, UI, docs and tests together. Never split it across parallel workers by type of work (frontend, backend, tests) or by file. Use parallel lanes only for separable outcomes, or for work too large for one context (a port or rewrite) (provisional), cut by layer or crate with one owner per file; the PM writes any shared contract (flags, schemas, shared docs) before those lanes start. Use fresh agents only where a fresh context helps: a reviewer that gets only the spec and the diff, a verifier that gets only the user flows to check, and research questions that need no project context. One Worker lineage per lane; shared live resources serialize only live checks.
+Implement one feature (one user-visible outcome whose spec, diff and checks fit one context) in one implementer lane: its server, UI, docs and tests together. Never split it across parallel workers by work type (frontend, backend, tests) or file. Use parallel lanes only for separable outcomes, or for work too large for one context (a port or rewrite) (provisional), cut by layer or crate with one owner per file; the PM writes any shared contract (flags, schemas, shared docs) before those lanes start. Use fresh agents only where fresh context helps: a reviewer given only the spec and diff, a verifier given only the user flows, and research needing no project context. One Worker lineage per lane; shared live resources serialize only live checks.
 
 Visual design (new screen, layout, component) gets one read-only Fable `high` `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`.
 
@@ -39,7 +39,7 @@ All repository source and test edits, including small repairs, belong to Workers
 
 ## 4. Yield
 
-Launch every OPC agent and background follow-up through agent-scoped Paseo `create_agent` or `send_agent_prompt` MCP with `notifyOnFinish: true`; finish independent work, then end the PM turn. On completion, error, or permission notification, read `get_agent_status` and `get_agent_activity` once each. No polling, babysitting, sleeps, CLI waits, terminal inspection, status narration, retries, or replacements while running. Report terminal failures.
+Launch every OPC agent and background follow-up through agent-scoped Paseo `create_agent` or `send_agent_prompt` MCP with `notifyOnFinish: true`; finish independent work, then end the turn. On completion, error, or permission notification, read `get_agent_status` and `get_agent_activity` once each. No polling, babysitting, sleeps, CLI waits, terminal inspection, status narration, retries, or replacements while running. Report terminal failures.
 
 ## 5. Integrate
 
@@ -47,7 +47,7 @@ Verify returned agent/workspace identity, path, branch, commits, selected-base a
 
 ## 6. Verify
 
-Independently check required behavior and final committed deliverable bytes using the execution mechanics. Reuse a receipt only while head, bytes, command, and evidence remain unchanged; otherwise rerun. [Review rules](references/web-reviewer.md#review-rules "branch:review") bind every review; initially enabled review reads it at the published candidate head. Security-sensitive diffs review on `review-security`. Review never replaces PM correctness checks. Platform or browser checks not run remain unverified.
+Independently check required behavior and final committed deliverable bytes using the execution mechanics. Reuse a receipt only while head, bytes, command, and evidence remain unchanged; otherwise rerun. [Review rules](references/web-reviewer.md#review-rules "branch:review") bind every review; initially enabled review reads it at the published candidate head. Security-sensitive diffs review on `review-security`. Review never replaces PM correctness checks. Unrun platform or browser checks remain unverified.
 
 ## 7. Merge and cleanup
 
