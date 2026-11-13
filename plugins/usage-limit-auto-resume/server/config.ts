@@ -24,6 +24,14 @@ const ConfigObjectSchema = z.object({
   pmFallbackModel: z.string().min(1).default("fleet/gpt-6.1-sol"),
   pmFallbackThinking: z.string().min(1).default("medium"),
   pmFallbackServiceTier: z.string().min(1).default("standard"),
+  // The fallback chain: a PM whose original model has an entry first moves to that entry's exact catalog profile (no
+  // Fast label) when its model is refused, and to the profile above only if that one is refused too. Any other PM
+  // keeps the single step above.
+  pmFallbackFirst: z.array(z.object({
+    from: z.string().min(1),
+    model: z.string().min(1),
+    thinking: z.string().min(1),
+  }).strict()).max(20).default([{ from: "fleet/claude-fable-5-2", model: "fleet/claude-opus-5-5", thinking: "xhigh" }]),
   // Owner surface: register the original profile of a PM that is already elsewhere, or cancel one return by its id.
   pmFallbackEnroll: z.array(z.object({
     agentId: z.string().min(1),

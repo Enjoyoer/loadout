@@ -1191,14 +1191,17 @@ export function inputKind(text) {
  * (paseo.parent-agent-id or parent) and no role=pm label, which is how a worker started without a Paseo caller gets its
  * prompt, or to an agent a new-agent schedule made (paseo.schedule-id label), which gets each run as a user message.
  * Attended: a user message to a PM or to an agent with no parent. An unknown input is attended too: it fails at
- * once, as before, only faster.
+ * once, as before, only faster. A role=pm agent on a Fable model is attended for every input: the usage-limit resume
+ * plugin moves such a PM to its fallback chain (Opus, then Sol) on the failed turn, which a wait would delay by up
+ * to the cap while a Fable-only limit lasts. Every other agent, an Opus PM included, is as above.
  */
-export function accountAttendance({ mode, labels, input }) {
+export function accountAttendance({ mode, labels, input, model }) {
   if (mode === 'print' || mode === 'json') return { unattended: true, reason: 'headless' };
+  const pm = typeof labels?.role === 'string' && labels.role.trim().toLowerCase() === 'pm';
+  if (pm && /(?:^|[/._-])fable(?:$|[/._-])/i.test(String(model ?? ''))) return { unattended: false, reason: 'pm-fable' };
   if (['agent-message', 'agent-notification', 'schedule'].includes(input)) return { unattended: true, reason: input };
   if (input !== 'user') return { unattended: false, reason: 'unknown' };
   const label = name => typeof labels?.[name] === 'string' && labels[name].trim() !== '';
-  const pm = typeof labels?.role === 'string' && labels.role.trim().toLowerCase() === 'pm';
   if (pm) return { unattended: false, reason: 'pm-user-message' };
   if (label('paseo.schedule-id')) return { unattended: true, reason: 'schedule-run' };
   if (label('paseo.parent-agent-id') || label('parent')) return { unattended: true, reason: 'worker-user-message' };
@@ -1286,8 +1289,9 @@ function accountLimit(pi, record) {
         return undefined;
       }
       if (!isAccountLimit(message)) return undefined;
-      const who = accountAttendance({ mode: ctx?.mode, labels, input });
-      const row = { event: 'account-limit', sessionId: sessionId(ctx), model: message.model ?? ctx?.model?.id ?? null, attendance: who.unattended ? 'unattended' : 'attended', reason: who.reason };
+      const model = message.model ?? ctx?.model?.id ?? null;
+      const who = accountAttendance({ mode: ctx?.mode, labels, input, model });
+      const row = { event: 'account-limit', sessionId: sessionId(ctx), model, attendance: who.unattended ? 'unattended' : 'attended', reason: who.reason };
       if (!who.unattended) {
         const done = await fail(message);
         record({ ...row, action: 'failed', retryAt: done.retryAt, retrySource: done.source });

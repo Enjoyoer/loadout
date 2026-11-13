@@ -3,7 +3,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config.ts";
 import type { AgentSettingsPort } from "./daemon.ts";
-import { enrollmentKey, fallbackIneligible, fallbackSinceMs, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameProfile, recordSwapEvidence, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
+import { chainDecision, chainRefusal, enrollmentKey, fallbackIneligible, fallbackSinceMs, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
 import { agentPool, type PoolQuota, type QuotaPool } from "./quota.ts";
 import { isActive, rebindRecord, type AgentSnapshot } from "./model.ts";
 import type { ResumeStore } from "./store.ts";
@@ -87,14 +87,32 @@ export function createFallbackRunner(deps: FallbackDeps) {
     }
     if (goal === "swap") {
       await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), lastError: null, updatedAt: nowIso() }));
-      log(`pm-swap-verified agentId=${agent.id} obligationId=${obligation.obligationId} profile=${show(obligation.fallback)}`);
+      log(`pm-swap-verified agentId=${agent.id} obligationId=${obligation.obligationId}${obligation.stage ? ` stage=${obligation.stage}` : ""} profile=${show(obligation.fallback)}`);
     } else {
       await returns.remove(obligation.obligationId);
       log(`pm-restore-verified agentId=${agent.id} obligationId=${obligation.obligationId} profile=${show(obligation.original)}`);
     }
   }
 
-  const quotaText = (quota: PoolQuota) => JSON.stringify(quota.status === "known" ? { available: quota.available, capacity: quota.capacity, exhausted: quota.exhausted, weekly: quota.weekly } : quota.reason);
+  const quotaText = (quota: PoolQuota) => JSON.stringify(quota.status === "known" ? { available: quota.available, capacity: quota.capacity, exhausted: quota.exhausted, weekly: quota.weekly, ...(quota.scoped && Object.keys(quota.scoped).length ? { scoped: quota.scoped } : {}) } : quota.reason);
+
+  // A stage move that cannot go ahead leaves the PM where it is: the obligation goes back to the stage it is on, and
+  // the return to the original stands.
+  async function stayOnStage(obligation: ReturnObligation, stage: "first" | "last", reason: string) {
+    const kept = await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", stage, fallback: o.stages![stage], fallbackSince: o.fallbackSince ?? nowIso(), restoreDueAt: null, updatedAt: nowIso() }));
+    if (kept) log(`pm-stage-dropped agentId=${obligation.agentId} obligationId=${obligation.obligationId} reason=${JSON.stringify(reason)} stays=${stage} profile=${show(kept.fallback)}`);
+    return kept;
+  }
+
+  // Starts a move to another stage of the chain; the next pass applies it as a swap. The stage's proof clock restarts
+  // when the move is verified.
+  async function startStage(obligation: ReturnObligation, stage: "first" | "last", detail: string) {
+    const from = obligation.stage;
+    const moved = await returns.update(obligation.obligationId, (o) => o.phase === "fallback" && o.stage === from
+      ? { ...o, phase: "switching", stage, fallback: o.stages![stage], fallbackSince: null, restoreDueAt: null, restoreReadback: null, updatedAt: nowIso() } : o);
+    if (moved?.stage === stage && moved.phase === "switching") log(`pm-stage-start agentId=${obligation.agentId} obligationId=${obligation.obligationId} from=${from} to=${stage} ${detail} profile=${show(moved.fallback)}`);
+    return moved;
+  }
 
   async function cancel(obligationId: string) {
     const removed = await returns.remove(obligationId);
@@ -109,7 +127,9 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const blocked = writeBlocked(obligation, agent, config);
     if (!blocked) return true;
     if (blocked === "cancelled") { await cancel(obligation.obligationId); return false; }
-    if (obligation.phase === "switching" && agent.model !== obligation.fallback.model) {
+    const onStage = stageOf(obligation, profileOf(agent));
+    if (obligation.phase === "switching" && agent.model !== obligation.fallback.model && onStage) await stayOnStage(obligation, onStage, blocked);
+    else if (obligation.phase === "switching" && agent.model !== obligation.fallback.model) {
       await returns.remove(obligation.obligationId);
       log(`pm-swap-dropped agentId=${agent.id} obligationId=${obligation.obligationId} reason=${blocked} profile=${show(profileOf(agent) ?? obligation.original)}`);
       return false;
@@ -134,10 +154,30 @@ export function createFallbackRunner(deps: FallbackDeps) {
       log(`pm-swap-not-completed agentId=${agent.id} obligationId=${obligation.obligationId} reason=${ineligible} return=kept`);
       return returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), updatedAt: nowIso() }));
     }
+    const fresh = async () => [await deps.quota(agentPool("pi", obligation.original.model) ?? "claude", config, { fresh: true }), await deps.quota(agentPool("pi", obligation.fallback.model) ?? "codex", config, { fresh: true })] as const;
+    // A move between the chain's stages: back toward the original it needs no re-check; onward it is re-decided like a
+    // swap, and if it may not go ahead the PM stays on the stage it is on.
+    const onStage = stageOf(obligation, profileOf(agent));
+    if (onStage) {
+      if (onStage === "last" && obligation.stage === "first") return obligation;
+      let reason = fallbackIneligible(agent, obligation.original.model) ?? (config.pmFallback ? null : "pmFallback-off");
+      if (!reason) {
+        const decision = swapDecision(...await fresh());
+        if (!decision.swap) reason = decision.reason;
+      }
+      if (!reason) return obligation;
+      await stayOnStage(obligation, onStage, reason);
+      return null;
+    }
     let reason = agent.model !== obligation.original.model ? "model-changed" : fallbackIneligible(agent, obligation.original.model);
     if (!reason && !config.pmFallback) reason = "pmFallback-off";
-    if (!reason) {
-      const decision = swapDecision(await deps.quota(agentPool("pi", obligation.original.model) ?? "claude", config, { fresh: true }), await deps.quota(agentPool("pi", obligation.fallback.model) ?? "codex", config, { fresh: true }));
+    // A chain's first stage was chosen by a refusal of the original model that cannot be read again; the last stage,
+    // skipped to, by every Claude account out, which can.
+    if (!reason && obligation.stage === "last") {
+      const decision = chainDecision(...await fresh());
+      if (decision.stage !== "last") reason = decision.stage === "first" ? "claude-pool-not-exhausted" : decision.reason;
+    } else if (!reason && !obligation.stages) {
+      const decision = swapDecision(...await fresh());
       if (!decision.swap) reason = decision.reason;
     }
     if (!reason) return obligation;
@@ -171,24 +211,51 @@ export function createFallbackRunner(deps: FallbackDeps) {
         log(`pm-return-dropped agentId=${agentId} obligationId=${obligation.obligationId} reason=profile-changed live=${show(live)} original=${show(obligation.original)}`);
         return;
       }
+      // Put on the chain's other stage by hand: that stage is the one the return now waits on.
+      const onStage = stageOf(obligation, live);
+      if (onStage && onStage !== obligation.stage) {
+        obligation = await returns.update(obligation.obligationId, (o) => ({ ...o, stage: onStage, fallback: o.stages![onStage], fallbackSince: nowIso(), restoreDueAt: null, updatedAt: nowIso() }));
+        if (!obligation) return;
+        log(`pm-stage-adopted agentId=${agentId} obligationId=${obligation.obligationId} stage=${onStage} profile=${show(live)}`);
+      }
       const pool = agentPool("pi", obligation.original.model) ?? "claude";
-      // Due, which holds resume sends, follows the latest reading. Applying the restore needs capacity in both windows
-      // proven by a reading taken now, or a Claude subscription turn this daemon saw succeed since the swap.
+      // A chained original (Fable) needs its own model-scoped window proven too; any other original, both account windows.
+      const window = obligation.stages ? scopedWindow(obligation.original.model) : null;
+      const proven = (quota: PoolQuota) => window ? scopedCapacity(quota, window) : restoreDue(quota);
+      const stepping = !!obligation.stages && obligation.stage === "last";
+      // Due, which holds resume sends, follows the latest reading. Applying the restore needs capacity proven by a
+      // reading taken now, or a Claude subscription turn of the original model this daemon saw succeed since the stage
+      // began.
       let reading = await deps.quota(pool, config);
-      if (hasCapacity(reading)) reading = await deps.quota(pool, config, { fresh: true });
-      const seenSuccess = claudeSuccess.get(obligation.original.model);
-      const success = seenSuccess && seenSuccess.at > fallbackSinceMs(obligation) ? seenSuccess : null;
-      const reason = restoreDue(reading) ? `pq-capacity quota=${quotaText(reading)}`
-        : success ? `claude-success agent=${success.agentId.slice(0, 8)} model=${obligation.original.model} at=${new Date(success.at).toISOString()}` : null;
+      if (proven(reading) || stepping && hasCapacity(reading)) reading = await deps.quota(pool, config, { fresh: true });
+      const successOf = (model: string) => {
+        const seen = claudeSuccess.get(model);
+        return seen && seen.at > fallbackSinceMs(obligation!) ? seen : null;
+      };
+      const successText = (seen: { agentId: string; at: number }, model: string) => `claude-success agent=${seen.agentId.slice(0, 8)} model=${model} at=${new Date(seen.at).toISOString()}`;
+      const success = successOf(obligation.original.model);
+      const reason = proven(reading) ? `pq-capacity quota=${quotaText(reading)}` : success ? successText(success, obligation.original.model) : null;
       // Back on the original by hand: settled as a restore, which also writes the original's tier label.
       const due = reason !== null || onOriginal(obligation, live);
+      // On the chain's last stage without proof for the original: proof for the first stage's model (the account windows
+      // by pq, or a success of that model) steps the PM back to the first stage, from where the original's proof
+      // finishes the return.
+      if (!due && stepping) {
+        const first = obligation.stages!.first;
+        const firstSuccess = successOf(first.model);
+        const step = hasCapacity(reading) ? `pq-capacity quota=${quotaText(reading)}` : firstSuccess ? successText(firstSuccess, first.model) : null;
+        if (step) {
+          if (!await startStage(obligation, "first", `reason=${step}`)) return;
+          return reconcileLocked(agentId, config);
+        }
+      }
       if (due !== (obligation.restoreDueAt !== null)) {
         obligation = await returns.update(obligation.obligationId, (o) => ({ ...o, restoreDueAt: due ? nowIso() : null, updatedAt: nowIso() }));
         if (!obligation) return;
         log(`pm-restore-${due ? "due" : "deferred"} agentId=${agentId} obligationId=${obligation.obligationId} ${due ? `reason=${reason ?? "already-on-original"}` : `quota=${quotaText(reading)}`}`);
       }
       if (due) goal = "restore";
-      else once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=no-claude-proof pq=${quotaText(reading)}`);
+      else once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=no-claude-proof${obligation.stage ? ` stage=${obligation.stage}` : ""} pq=${quotaText(reading)}`);
     }
     if (!goal) return;
     const target = goal === "swap" ? obligation.fallback : obligation.original;
@@ -223,8 +290,33 @@ export function createFallbackRunner(deps: FallbackDeps) {
 
   // A live Pi PM on Claude whose pool pq confirms out moves to the fallback profile. The obligation, with the exact
   // original profile, is stored before any setting changes.
+  // A PM on the first stage of its chain whose turn there is refused for quota moves on to the last stage, by the same
+  // rule as a swap (swapDecision). Its original stays the profile it returns to. Anything else is a plain pass.
+  async function stepLocked(agentId: string, config: Config, why: string, evidence: SwapEvidence) {
+    const obligation = await returns.get(agentId);
+    if (!obligation) return;
+    const first = obligation.stages?.first;
+    // The refusal must be the first stage's own: an error naming another model (a turn still on the original) is not.
+    if (!first || obligation.phase !== "fallback" || obligation.stage !== "first" || !isSwapEvidence(evidence) ||
+      (evidence.named && !sameModel(evidence.named, first.model))) return reconcileLocked(agentId, config);
+    const api = await deps.acquire();
+    const agent = await fetchAgent(api, agentId);
+    if (!agent || stageOf(obligation, profileOf(agent)) !== "first" || writeBlocked(obligation, agent, config)) return reconcileLocked(agentId, config);
+    if (!config.pmFallback) {
+      once(agentId, `pm-stage-held agentId=${agentId} reason=pmFallback-off trigger=${why}`);
+      return reconcileLocked(agentId, config);
+    }
+    const decision = swapDecision(await deps.quota("claude", config), await deps.quota(agentPool("pi", obligation.stages!.last.model) ?? "codex", config));
+    if (!decision.swap) {
+      once(agentId, `pm-stage-held agentId=${agentId} reason=${JSON.stringify(decision.reason)} trigger=${why}`);
+      return reconcileLocked(agentId, config);
+    }
+    await startStage(obligation, "last", `trigger=${why}`);
+    await reconcileLocked(agentId, config);
+  }
+
   async function swapLocked(agentId: string, config: Config, why: string, evidence: SwapEvidence) {
-    if (await returns.get(agentId)) return reconcileLocked(agentId, config);
+    if (await returns.get(agentId)) return stepLocked(agentId, config, why, evidence);
     if (!config.pmFallback || !isSwapEvidence(evidence)) return;
     const api = await deps.acquire();
     const agent = await fetchAgent(api, agentId);
@@ -238,15 +330,36 @@ export function createFallbackRunner(deps: FallbackDeps) {
       return;
     }
     const configured: Profile = { model: config.pmFallbackModel, thinkingOptionId: config.pmFallbackThinking, serviceTier: config.pmFallbackServiceTier };
-    const decision = swapDecision(await deps.quota("claude", config), await deps.quota(agentPool("pi", configured.model) ?? "codex", config));
-    if (!decision.swap) return once(agentId, `pm-fallback-held agentId=${agentId} reason=${JSON.stringify(decision.reason)} trigger=${why}`);
-    const fallback = await inCatalog(api, configured);
-    if (!fallback) return once(agentId, `pm-fallback-skipped agentId=${agentId} reason=fallback-not-in-catalog profile=${show(configured)}`);
-    const original = await inCatalog(api, profileOf(agent)!);
-    if (!original) return once(agentId, `pm-fallback-skipped agentId=${agentId} reason=original-not-in-catalog profile=${show(profileOf(agent)!)}`);
-    const stored = await returns.add(newObligation(agentId, original, fallback, "auto", "switching"));
+    const live = profileOf(agent)!;
+    const claude = await deps.quota("claude", config);
+    const lastPool = await deps.quota(agentPool("pi", configured.model) ?? "codex", config);
+    // A chained original (Fable): an account-level refusal of it moves the PM to the chain's first stage (Opus), or
+    // straight to the last when pq proves every Claude account out. Any other original: the single step, as before.
+    const entry = config.pmFallbackFirst.find((item) => item.from === live.model);
+    let stage: "first" | "last" = "last", note = "";
+    if (entry) {
+      if (!chainRefusal(evidence, claude, scopedWindow(live.model))) return once(agentId, `pm-fallback-held agentId=${agentId} reason="not-account-level" trigger=${why}`);
+      const decision = chainDecision(claude, lastPool);
+      if (!decision.stage) return once(agentId, `pm-fallback-held agentId=${agentId} reason=${JSON.stringify(decision.reason)} trigger=${why}`);
+      stage = decision.stage;
+      if (decision.stage === "last") note = ` reason=${decision.reason}`;
+    } else {
+      const decision = swapDecision(claude, lastPool);
+      if (!decision.swap) return once(agentId, `pm-fallback-held agentId=${agentId} reason=${JSON.stringify(decision.reason)} trigger=${why}`);
+    }
+    const last = await inCatalog(api, configured);
+    if (!last) return once(agentId, `pm-fallback-skipped agentId=${agentId} reason=fallback-not-in-catalog profile=${show(configured)}`);
+    // The first stage writes no Fast label.
+    const firstWanted: Profile | null = entry ? { model: entry.model, thinkingOptionId: entry.thinking, serviceTier: null } : null;
+    const first = firstWanted ? await inCatalog(api, firstWanted) : null;
+    if (firstWanted && !first) return once(agentId, `pm-fallback-skipped agentId=${agentId} reason=first-stage-not-in-catalog profile=${show(firstWanted)}`);
+    const original = await inCatalog(api, live);
+    if (!original) return once(agentId, `pm-fallback-skipped agentId=${agentId} reason=original-not-in-catalog profile=${show(live)}`);
+    const chain = first ? { stages: { first, last }, stage } : null;
+    const fallback = chain ? chain.stages[stage] : last;
+    const stored = await returns.add(newObligation(agentId, original, fallback, "auto", "switching", Date.now(), chain));
     if (!stored) return reconcileLocked(agentId, config);
-    log(`pm-swap-start agentId=${agentId} obligationId=${stored.obligationId} trigger=${why} original=${show(original)} fallback=${show(fallback)}`);
+    log(`pm-swap-start agentId=${agentId} obligationId=${stored.obligationId} trigger=${why}${chain ? ` stage=${stage}${note}` : ""} original=${show(original)} fallback=${show(fallback)}`);
     await reconcileLocked(agentId, config);
   }
 
@@ -300,7 +413,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
           if (!previous || previous.at < at) claudeSuccess.set(model, { agentId, at });
         }
       }
-      if (await returns.get(agentId)) await locked(agentId, () => reconcileLocked(agentId, config));
+      if (await returns.get(agentId)) await locked(agentId, () => stepLocked(agentId, config, "usage-limit-turn", evidence));
       else if (config.pmFallback && isSwapEvidence(evidence)) await locked(agentId, () => swapLocked(agentId, config, "usage-limit-turn", evidence));
       else return false;
       return true;
@@ -316,7 +429,14 @@ export function createFallbackRunner(deps: FallbackDeps) {
       for (const record of await records.read()) {
         const evidence = recordSwapEvidence(record);
         if (!isSwapEvidence(evidence) || !record.quotaHold || record.provider !== "pi") continue;
-        if (await returns.get(record.agentId)) continue;
+        const obligation = await returns.get(record.agentId);
+        if (obligation) {
+          // A held refusal on the first stage of a chain moves the PM on to the last.
+          if (obligation.stages && obligation.phase === "fallback" && obligation.stage === "first" && sameModel(record.model, obligation.stages.first.model)) {
+            await locked(record.agentId, () => stepLocked(record.agentId, config, "usage-record-held", evidence));
+          }
+          continue;
+        }
         await locked(record.agentId, () => swapLocked(record.agentId, config, "usage-record-held", evidence));
       }
     },
