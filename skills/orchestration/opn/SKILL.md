@@ -2,7 +2,7 @@
 name: opn
 description: Run durable non-code work as its PM, with one outcome-scoped worker per outcome and fresh-readback proof. Use for explicit OPN workflows or when a PM owns a non-code workstream or folder.
 metadata:
-  version: "2.3.1"
+  version: "2.4.0"
 ---
 
 # OPN Non-Code PM
@@ -20,8 +20,8 @@ OPN is how a PM runs durable non-code work (operations, configuration, research,
 ## Workers
 
 - Start one child worker per desired outcome, in the PM's own workspace. Never create a new workspace; for work on another host, the worker reaches it over ssh. Launch and follow-ups use `notifyOnFinish`.
-- The worker uses the PM's model and thinking; do not ask the owner to pick one. Check the worker's reported model after creation. A named exception by task type is allowed when the project or the owner records it, such as a 3D-capable model for 3D work. Fable is the exception: it is only for a PM's planning and orchestration and for occasional deep audits, so workers never inherit it, and a PM on Fable starts its workers on Opus or on its usual GPT model.
-- At most 5 Fable agents run at once across the fleet, and the main PMs count toward it. Before starting one, count the running Fable agents on every host.
+- The worker uses the PM's model and thinking; do not ask the owner to pick one. Check the worker's reported model after creation. A named exception by task type is allowed when the project or the owner records it, such as a 3D-capable model for 3D work. Workers never inherit Fable: a PM on Fable starts its workers on Pi `fleet/claude-opus-5-5` thinking high, or on the model its recorded task-type exception names. If Opus high is not available (out of quota per pq, missing from the catalog, or the agent fails to start), start the worker on Pi `fleet/gpt-6.1-sol` thinking high.
+- An agent other than a main PM runs on Fable only when the owner names Fable for that task or a skill fixes it (the `$unstuck` review; OPC `ui-design` and `ui-check`). At most 5 Fable agents run at once across the fleet, and the main PMs count toward it. Before starting one, count the running Fable agents on every host.
 - The brief is the outcome, the acceptance checks and the rules, pointing to source paths. There is no acknowledgment round: dispatch and move on. Workers do not start workers of their own.
 - The worker reports to the PM in at most 5 lines, plus a `report.md` in its scratch folder.
 - When a worker's result changes a live system or goes to an outside party, the PM starts one separate reviewer agent on it, which may use a different model than the worker for independence. The PM sends the findings to the same worker and runs a second review only if the fixes were substantial, then archives the reviewer. Read-only research gets no reviewer.
