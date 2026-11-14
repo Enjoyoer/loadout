@@ -401,6 +401,9 @@ export function buildDelegatedBrief({ role, route, brief, reason = null, task = 
   const kind = canonicalWorkerClass((role === 'worker' ? uiTaskLaneClass(task, taskClass) : taskClass) ?? route?.kind);
   if (role === 'worker' && ['plan', 'review', 'review-security', ...UI_CLASSES].includes(kind)) {
     brief = `Read-only lane: do not edit, implement, or publish. ${READ_ONLY_BRIEFS[kind] ?? ''}\n\n${brief}`;
+  } else if (role === 'worker' && isFableModel(resolved?.model, Array.isArray(catalog) ? catalog : catalog?.pi)) {
+    // Anthropic's Fable 5.2 prompting guidance: an ownership sentence makes Fable merge duplicated code.
+    brief = `You are the owner and long-term maintainer of this codebase, and its design is up to you, within the permitted changes of this brief.\n\n${brief}`;
   }
   const line = role === 'worker' ? `${routeText(resolved)}; route: ${reason ?? routeReason(resolved)}` : routeText(resolved);
   return `Fixed route for this ${role} lane: ${line}. This route is not a suggestion. You cannot delegate, launch another agent, choose another route, or substitute a model or effort. If this route fails, stop this lane and report the failure to the PM.\n\n${role === 'worker' ? `${WORKER_TESTING_RULE}\n\n` : ''}${brief}`;

@@ -1305,6 +1305,12 @@ assert.equal(codeReq.request.labels['opc.route-source'],'task-default');
 for(const key of ['opc.service-tier','opc.fast-requested'])assert.equal(key in codeReq.request.labels,false);
 assert.equal(r.resolveAgentSurface('worker',{taskKind:'code'},catalog).provider,'pi/fleet/claude-opus-5-5');
 assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/claude-opus-5-5; effort=medium; Fast=off/);
+// A Fable code lane owns the codebase; an Opus code lane and a Fable ui-design lane do not get that line.
+const ownerLine='You are the owner and long-term maintainer of this codebase';
+const fableCode={role:'worker',source:'owner-explicit',model:'fleet/claude-fable-5-1',effort:'high',fastMode:false};
+assert(r.buildDelegatedBrief({role:'worker',route:fableCode,taskClass:'code',catalog,brief:'x'}).includes(ownerLine));
+assert(!r.buildDelegatedBrief({role:'worker',route:code,catalog,brief:'x'}).includes(ownerLine));
+assert(!r.buildDelegatedBrief({role:'worker',route:fableCode,taskClass:'ui-design',catalog,brief:'x'}).includes(ownerLine));
 // Browser default: Sol at medium, Fast off.
 const browser=r.selectWorkerRoute({taskKind:'browser',catalog:{pi:catalog}});
 assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'gpt-6.1-sol',effort:'medium',fastMode:false,pace:unread('codex'),reason:'browser default medium, no adjustment, no quota reading supplied, native Codex authorized by owner 2026-10-14'});
