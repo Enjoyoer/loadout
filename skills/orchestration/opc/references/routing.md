@@ -41,7 +41,7 @@ The `reviewer` fixed role is separate: it is the one ChatGPT web lane (Web Pro) 
 
 ## Fable
 
-Fable fits only the PM's planning and orchestration, deep-audit reviews, and the `ui-design` and `ui-check` lanes below. Implementers and routine reviewers use Opus or Sol, and no lane inherits Fable from its PM. At most 5 Fable agents run at once across the fleet, and the main PMs count toward it; before starting one, count the running Fable agents on every host. When the owner names Fable for a code lane, `buildDelegatedBrief` starts its brief with an ownership line (the owner and long-term maintainer of the codebase, its design up to it within the brief's permitted changes), per Anthropic's Fable 5.2 prompting guidance.
+Fable fits only a main PM's planning and orchestration, the `$unstuck` review, the `ui-design` and `ui-check` lanes below, and a task the owner names Fable for. Implementers and reviewers use Opus or Sol, and no lane inherits Fable from its PM. At most 5 Fable agents run at once across the fleet, and the main PMs count toward it; before starting one, count the running Fable agents on every host. When the owner names Fable for a code lane, `buildDelegatedBrief` starts its brief with an ownership line (the owner and long-term maintainer of the codebase, its design up to it within the brief's permitted changes), per Anthropic's Fable 5.2 prompting guidance.
 
 ## UI work
 
