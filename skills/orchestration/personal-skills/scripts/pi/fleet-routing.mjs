@@ -61,10 +61,10 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
   return result;
 }
 
-// Advisor. On the subscription route (provider fleet, a bare claude-* id on anthropic-messages; the API-key route's
-// api/... ids never qualify), each agent turn's request carries Anthropic's advisor server tool, backed by
-// ADVISOR.tool.model, while runtime.json holds "advisor": {"enabled": true}. The file is read again whenever it
-// changes, so an edit applies to the next request with no restart; a missing, unreadable or invalid value is off. Pi's
+// Advisor. On the subscription route (provider fleet, a bare claude-* id on anthropic-messages), each agent turn's
+// request carries Anthropic's advisor server tool, backed by ADVISOR.tool.model, while runtime.json holds "advisor":
+// {"enabled": true}. The file is read again whenever it changes, so an edit applies to the next request with no
+// restart; a missing, unreadable or invalid value is off. Pi's
 // Anthropic client sends payload.betas as the anthropic-beta header, so the tool and its beta are added together, in
 // the payload. Pi runs before_provider_request for agent turns only (its compaction and branch summary requests skip
 // it), and a request with no tools is left as it is too. The tool goes last in tools and the guidance at the end of the
