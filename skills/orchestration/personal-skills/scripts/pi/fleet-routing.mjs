@@ -61,14 +61,16 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
   return result;
 }
 
-// Advisor. On the subscription Opus route, each agent turn's request carries Anthropic's advisor server tool, backed
-// by ADVISOR.tool.model, while runtime.json holds "advisor": {"enabled": true}. The file is read again whenever it
-// changes, so an edit applies to the next request with no restart; a missing, unreadable or invalid value is off. Pi's
-// Anthropic client sends payload.betas as the anthropic-beta header, so the tool and its beta are added together, in
+// Advisor. On the subscription route (provider fleet, a bare claude-* id on anthropic-messages) for every Claude model
+// but Fable, each agent turn's request carries Anthropic's advisor server tool, backed by ADVISOR.tool.model, while
+// runtime.json holds "advisor": {"enabled": true}. The file is read again whenever it changes, so an edit applies to
+// the next request with no restart; a missing, unreadable or invalid value is off. Pi's Anthropic client sends
+// payload.betas as the anthropic-beta header, so the tool and its beta are added together, in
 // the payload. Pi runs before_provider_request for agent turns only (its compaction and branch summary requests skip
 // it), and a request with no tools is left as it is too. The tool goes last in tools and the guidance at the end of the
 // last system block (never a block of its own, see withSystemText), the same on every turn, so the prompt cache prefix
-// stays stable.
+// stays stable. Fable executors never get the tool: the router may serve plain Fable requests from API-credit keys,
+// and the advisor must never run on the API; those keys exclude the other Claude models.
 //
 // Pi 1.0 keeps only text, thinking and tool_use blocks of a response, so it drops each advisor call (a server_tool_use
 // block and its advisor_tool_result) from the session, and the model later takes its own mentions of advice for
@@ -77,7 +79,6 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
 // last in its system prompt (an Anthropic system array, or the leading item of a Responses input), whatever the model
 // or the switch: the system prompt changes once, at the first note.
 export const ADVISOR = {
-  routes: ['fleet/claude-opus-5-5'],
   beta: 'advisor-tool-2026-03-01',
   tool: { type: 'advisor_20260301', name: 'advisor', model: 'claude-fable-5-2' },
   guidance: 'You have an `advisor` tool: a stronger reviewer model that reads this whole conversation (it takes no '
@@ -171,7 +172,9 @@ export function advisorEnabled(root = dirname(fileURLToPath(import.meta.url))) {
     return false;
   }
 }
-export const advisorRoute = model => model?.api === 'anthropic-messages' && ADVISOR.routes.includes(`${model.provider}/${model.id}`);
+export const advisorRoute = model => model?.api === 'anthropic-messages' && model.provider === 'fleet'
+  && typeof model.id === 'string' && model.id.startsWith('claude-')
+  && !model.id.startsWith('claude-fable-');
 /** The payload with the advisor tool, its beta and its guidance, or the payload itself when it does not qualify. */
 export function withAdvisor(payload, model) {
   if (!advisorRoute(model) || !payload || typeof payload !== 'object' || payload.model !== model.id
