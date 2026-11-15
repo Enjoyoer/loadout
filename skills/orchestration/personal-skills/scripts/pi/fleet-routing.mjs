@@ -92,13 +92,25 @@ export const ADVISOR = {
 };
 const textParts = item => Array.isArray(item?.content) ? item.content.filter(part => typeof part?.text === 'string') : [];
 const mentions = (items, text) => Array.isArray(items) && items.some(item => textParts(item).some(part => part.text.includes(text)));
-/** Counts the advisor results of one streamed Anthropic response from its raw events. */
+/**
+ * What one advisor_tool_result block brought: 'advice', 'refusal' (the advisor declined), or the error code of a failed
+ * call. A failed call does not fail the request: the API answers 200 with an advisor_tool_result_error block (for
+ * example too_many_requests when the advisor model is rate-limited) and the model carries on without advice.
+ */
+export function advisorOutcome(block) {
+  const content = block?.content;
+  if (content?.type === 'advisor_tool_result_error') return typeof content.error_code === 'string' ? content.error_code : 'unknown';
+  if (content?.type !== 'advisor_result' && content?.type !== 'advisor_redacted_result') return 'unknown';
+  return content.stop_reason === 'refusal' ? 'refusal' : 'advice';
+}
+/** Counts the advisor results that carried advice in one streamed Anthropic response, from its raw events. */
 export function advisorResults() {
   let count = 0;
   return {
     event(data) {
       if (data?.type === 'message_start') count = 0;
-      else if (data?.type === 'content_block_start' && data.content_block?.type === 'advisor_tool_result') count++;
+      else if (data?.type === 'content_block_start' && data.content_block?.type === 'advisor_tool_result'
+        && advisorOutcome(data.content_block) === 'advice') count++;
     },
     take() { const done = count; count = 0; return done; },
   };
@@ -1437,6 +1449,8 @@ export default function(pi) {
   pi.on('message_end', event => {
     const message = event?.message;
     if (message?.role !== 'assistant') return undefined;
+    // Pi maps pause_turn to an ordinary stop, so a turn the API paused on a pending advisor call just ends.
+    if (message.rawStopReason === 'pause_turn') record({ event: 'advisor', model: message.model ?? null, outcome: 'pause_turn' });
     return advised.take() && message.stopReason !== 'error' ? { message: withAdvisorNote(message) } : undefined;
   });
   pi.on('agent_settled', () => { limit.settled(); });
@@ -1549,6 +1563,10 @@ export default function(pi) {
     const response=event.data?.response;
     if(event.data?.type==='response.completed') record({event:'response',model:event.model,service_tier:response?.service_tier,responseId:response?.id});
     advised.event(event.data);
+    // Each advisor call that brought no advice (an error code such as too_many_requests, or refusal).
+    const block=event.data?.type==='content_block_start'&&event.data.content_block?.type==='advisor_tool_result'?event.data.content_block:null;
+    const outcome=block?advisorOutcome(block):'advice';
+    if(outcome!=='advice') record({event:'advisor',model:event.model,outcome});
     // Each advisor call in an Anthropic response: its model and tokens, for quota tracking.
     const steps=event.data?.type==='message_delta'&&Array.isArray(event.data.usage?.iterations)?event.data.usage.iterations.filter(step=>step?.type==='advisor_message'):[];
     for(const step of steps) record({event:'advisor',model:event.model,advisorModel:step.model??null,inputTokens:step.input_tokens??null,outputTokens:step.output_tokens??null,cacheReadTokens:step.cache_read_input_tokens??null});
