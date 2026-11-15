@@ -109,7 +109,7 @@ def validate_compaction(value):
         raise ValueError("compaction maxFiles must be an integer from 0 to 100000")
 
 def validate_advisor(value):
-    """pi.runtime advisor: whether fleet-routing.mjs adds the advisor tool on the subscription Opus route."""
+    """pi.runtime advisor: whether fleet-routing.mjs adds the advisor tool to Claude models on the subscription route."""
     if not isinstance(value, dict) or set(value) != {"enabled"} or not isinstance(value["enabled"], bool):
         raise ValueError('advisor must be {"enabled": true} or {"enabled": false}')
 
