@@ -61,15 +61,16 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
   return result;
 }
 
-// Advisor. On the subscription route (provider fleet, a bare claude-* id on anthropic-messages), each agent turn's
-// request carries Anthropic's advisor server tool, backed by ADVISOR.tool.model, while runtime.json holds "advisor":
-// {"enabled": true}. The file is read again whenever it changes, so an edit applies to the next request with no
-// restart; a missing, unreadable or invalid value is off. Pi's
-// Anthropic client sends payload.betas as the anthropic-beta header, so the tool and its beta are added together, in
+// Advisor. On the subscription route (provider fleet, a bare claude-* id on anthropic-messages) for every Claude model
+// but Fable, each agent turn's request carries Anthropic's advisor server tool, backed by ADVISOR.tool.model, while
+// runtime.json holds "advisor": {"enabled": true}. The file is read again whenever it changes, so an edit applies to
+// the next request with no restart; a missing, unreadable or invalid value is off. Pi's Anthropic client sends
+// payload.betas as the anthropic-beta header, so the tool and its beta are added together, in
 // the payload. Pi runs before_provider_request for agent turns only (its compaction and branch summary requests skip
 // it), and a request with no tools is left as it is too. The tool goes last in tools and the guidance at the end of the
 // last system block (never a block of its own, see withSystemText), the same on every turn, so the prompt cache prefix
-// stays stable. A Fable executor gets ADVISOR.fableGuidance (call on request), any other Claude model ADVISOR.guidance.
+// stays stable. Fable executors never get the tool: the router may serve plain Fable requests from API-credit keys,
+// and the advisor must never run on the API; those keys exclude the other Claude models.
 //
 // Pi 1.0 keeps only text, thinking and tool_use blocks of a response, so it drops each advisor call (a server_tool_use
 // block and its advisor_tool_result) from the session, and the model later takes its own mentions of advice for
@@ -86,11 +87,6 @@ export const ADVISOR = {
     + 'after two failed attempts. Do not call it for a quick answer or a single-step task; otherwise use your judgment. '
     + 'Weigh its advice seriously; where evidence you checked yourself contradicts it, say so and follow the evidence. '
     + 'The history does not keep advisor calls, so after a call, state the advice you act on in a line or two.',
-  fableGuidance: 'You have an `advisor` tool: another Fable instance that reads this whole conversation (it takes no '
-    + 'input) and answers in one to three minutes. You are not required to call it before reports. Call it when the '
-    + 'owner, or a PM passing on his words, tells you to ask Fable or asks for a second opinion or a review, a blind '
-    + 'review included. Weigh its advice; where evidence you checked yourself contradicts it, say so and follow the '
-    + 'evidence. The history does not keep advisor calls, so after a call, state the advice you act on in a line or two.',
   note: '(Advisor consulted during this reply; the call and its advice are not kept in the history.)',
   history: 'Some replies in this conversation carry the note "(Advisor consulted during this reply; ...)". Those '
     + 'replies did consult the advisor tool; its advice is not kept in the history, only what the reply says about it.',
@@ -177,14 +173,14 @@ export function advisorEnabled(root = dirname(fileURLToPath(import.meta.url))) {
   }
 }
 export const advisorRoute = model => model?.api === 'anthropic-messages' && model.provider === 'fleet'
-  && typeof model.id === 'string' && model.id.startsWith('claude-');
-const advisorGuidance = model => model.id.startsWith('claude-fable-') ? ADVISOR.fableGuidance : ADVISOR.guidance;
+  && typeof model.id === 'string' && model.id.startsWith('claude-')
+  && !model.id.startsWith('claude-fable-');
 /** The payload with the advisor tool, its beta and its guidance, or the payload itself when it does not qualify. */
 export function withAdvisor(payload, model) {
   if (!advisorRoute(model) || !payload || typeof payload !== 'object' || payload.model !== model.id
     || !Array.isArray(payload.tools) || !payload.tools.length || payload.tools.some(tool => tool?.name === ADVISOR.tool.name)) return payload;
   const betas = Array.isArray(payload.betas) ? payload.betas : [];
-  return { ...payload, tools: [...payload.tools, { ...ADVISOR.tool }], system: withSystemText(payload.system, advisorGuidance(model)),
+  return { ...payload, tools: [...payload.tools, { ...ADVISOR.tool }], system: withSystemText(payload.system, ADVISOR.guidance),
     betas: betas.includes(ADVISOR.beta) ? betas : [...betas, ADVISOR.beta] };
 }
 
