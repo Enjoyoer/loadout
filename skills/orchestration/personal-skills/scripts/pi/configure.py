@@ -108,6 +108,11 @@ def validate_compaction(value):
     if type(cap) is not int or not 0 <= cap <= 100000:
         raise ValueError("compaction maxFiles must be an integer from 0 to 100000")
 
+def validate_advisor(value):
+    """pi.runtime advisor: whether fleet-routing.mjs adds the advisor tool on the subscription Opus route."""
+    if not isinstance(value, dict) or set(value) != {"enabled"} or not isinstance(value["enabled"], bool):
+        raise ValueError('advisor must be {"enabled": true} or {"enabled": false}')
+
 def validate_settings(settings):
     if settings.get('codemode') != {'mode': 'on'} or settings.get('defaultTools') != ['+codemode']:
         raise ValueError('Pi requires fixed Codemode on and defaultTools +codemode')
@@ -135,6 +140,7 @@ def build(spec, root):
         raise ValueError("route base URL must use https unless the host is loopback")
     helper = "!" + " ".join(quote(v) for v in [spec.get("python", sys.executable), str(root / "credential.py"), str(root / "runtime.json")])
     if "compaction" in spec: validate_compaction(spec["compaction"])
+    if "advisor" in spec: validate_advisor(spec["advisor"])
     if {'codemode', 'defaultTools', 'extensions', 'skills'} & spec.get('settings', {}).keys():
         raise ValueError('Codemode and its runtime check are fixed, not overridable settings')
     settings = {"codemode": {"mode": "on"}, "defaultTools": ["+codemode"], "enableInstallTelemetry": False,
