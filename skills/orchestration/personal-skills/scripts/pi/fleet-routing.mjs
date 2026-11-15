@@ -80,16 +80,15 @@ export const ADVISOR = {
   routes: ['fleet/claude-opus-5-5'],
   beta: 'advisor-tool-2026-03-01',
   tool: { type: 'advisor_20260301', name: 'advisor', model: 'claude-fable-5-2' },
-  guidance: 'You can call the `advisor` tool, a stronger reviewer model. It takes no input: it reads this whole '
-    + 'conversation, and a call can take half a minute. On non-trivial work, call it once you understand the task and '
-    + 'before you commit to an approach, when you are stuck or about to change approach, and before you report a '
-    + 'multi-step task done (save your work first). Skip it when the next step is obvious. Weigh its advice seriously; '
-    + 'where evidence you checked yourself contradicts it, say so and follow the evidence. The history does not keep '
-    + 'advisor calls, so after a call, state the advice you act on in a line or two.',
+  guidance: 'You have an `advisor` tool: a stronger reviewer model that reads this whole conversation (it takes no '
+    + 'input) and answers in one to three minutes. You must call it once before you deliver a final report or an '
+    + 'owner-facing decision on a task that took real work (several steps or tool calls), and once when you are stuck '
+    + 'after two failed attempts. Do not call it for a quick answer or a single-step task; otherwise use your judgment. '
+    + 'Weigh its advice seriously; where evidence you checked yourself contradicts it, say so and follow the evidence. '
+    + 'The history does not keep advisor calls, so after a call, state the advice you act on in a line or two.',
   note: '(Advisor consulted during this reply; the call and its advice are not kept in the history.)',
-  history: 'A reply in this conversation that carries the note "(Advisor consulted during this reply; ...)" did call '
-    + 'the advisor tool, a reviewer model: the system removed that call and its advice from the history, so only '
-    + 'what the reply says about the advice remains. Do not treat those mentions as invented.',
+  history: 'Some replies in this conversation carry the note "(Advisor consulted during this reply; ...)". Those '
+    + 'replies did consult the advisor tool; its advice is not kept in the history, only what the reply says about it.',
 };
 const textParts = item => Array.isArray(item?.content) ? item.content.filter(part => typeof part?.text === 'string') : [];
 const mentions = (items, text) => Array.isArray(items) && items.some(item => textParts(item).some(part => part.text.includes(text)));
