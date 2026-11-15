@@ -84,8 +84,8 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
 // it), message_end records one advisor row with outcome rejected and asks agent_before_settle (settleRetry, the path the
 // account limit uses) for one more request with the failed answer left out of the context. From then on this agent
 // process adds no advisor until runtime.json changes or the process restarts, so a retired beta costs one failed
-// request per agent, not one per turn. The retry carries no advisor, so it is never retried again: if it fails too, the
-// turn fails with that second error as before. Any other error, and any request without the advisor, is left alone.
+// request per agent, not one per turn. The marked error keeps no upstream text, so Pi's own retry never runs on it. The
+// retry carries no advisor, so it is never retried again: if it fails too, the turn fails with that second error as before. Any other error, and any request without the advisor, is left alone.
 export const ADVISOR = {
   beta: 'advisor-tool-2026-03-01',
   tool: { type: 'advisor_20260301', name: 'advisor', model: 'claude-fable-5-2' },
@@ -1512,7 +1512,9 @@ export default function(pi) {
       record({ event: 'advisor', outcome: 'rejected', reason, status: 400, requestId: request.requestId, turnId: request.turnId,
         sessionId, model: message.model ?? null });
       retry.once(ADVISOR_RETRY);
-      return { message: withError(message, `${ADVISOR_RETRY} (${reason}). ${message.errorMessage}`) };
+      // No upstream text: a tag list in it can hold Pi's retryable status digits (text_editor_20250429 holds 504), and
+      // Pi's own retry must not run on top of this one. The failed answer is left out of the context anyway.
+      return { message: withError(message, `${ADVISOR_RETRY} (${reason}; 400 invalid_request_error).`) };
     }
     // Pi maps pause_turn to an ordinary stop, so a turn the API paused on a pending advisor call just ends.
     if (message.rawStopReason === 'pause_turn') record({ event: 'advisor', model: message.model ?? null, outcome: 'pause_turn' });
