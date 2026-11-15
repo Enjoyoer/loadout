@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "c76dbbdc0eaecf9f1ba6221a79295fd533f325db",
+  "source_commit": "3a146a3267fb8b249db35029b7d26b668ff910f8",
   "skill_count": 24,
   "file_count": 135,
   "files": [
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 95430,
-      "sha256": "54a579e51b7e4e2cdb2d2a652963c4dbcc3b3b4405499c97992a77c958f5b08f"
+      "bytes": 95497,
+      "sha256": "a9dbb7c691bba40f7cfe7cb8f7ca398e9784a0d1b87d0c8fa26f3f4a9201399d"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
