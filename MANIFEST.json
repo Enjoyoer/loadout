@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "fea9fabb1f7826641404c98f72cd910f0eb240ea",
+  "source_commit": "b09feda097e5f2a0bb34c63a8edf79bf4e25f2ae",
   "skill_count": 24,
   "file_count": 135,
   "files": [
@@ -415,8 +415,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 93564,
-      "sha256": "a6252deb0849a3825d1dd8c52e5e9f1fbe5efe66312502592f625e5eccdeee03"
+      "bytes": 95125,
+      "sha256": "efa57e15e8466cc4f1bb62fc4b74bfead85ef78aae2ae615e11a11f83c5faf6b"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -527,8 +527,8 @@
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 42244,
-      "sha256": "aaa6cee57dd85e9c7ccc5e3773cfd2e436d2746b17e030fcaa6c2ceb172afcf4"
+      "bytes": 42949,
+      "sha256": "796f117a661ba156710cfafc471a31851df0851eef8ab58bf2af534ec393a75d"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/paseo_providers_merge.js",
@@ -576,8 +576,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/configure.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 16456,
-      "sha256": "631b1047f345bf166d9388e88bf1768007b333b4ac885b6648b5bc73a0a87d97"
+      "bytes": 16847,
+      "sha256": "05de22049c443ca5c25c7f95c9212138bd58e7fc8ee71e4ab35a4b20ca3b2ab0"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/credential.py",
@@ -597,8 +597,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 91544,
-      "sha256": "d5daf685c883378809e9eff16a31dc559f066998a309831961af9e50828e76d1"
+      "bytes": 101948,
+      "sha256": "297fdef79212f46879638d948af7bbdffcec25d348cfd0fc8fcb7ce0ac4ac255"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",

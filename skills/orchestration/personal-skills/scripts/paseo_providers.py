@@ -40,7 +40,7 @@ MERGE_JS = Path(__file__).resolve().parent / "paseo_providers_merge.js"
 RELOAD_JS = Path(__file__).resolve().parent / "paseo_reload_remote.js"
 pack = fleet.pack
 parse_result = fleet.parse_result
-CONFIG_KEYS = {"providers", "env", "hosts", "pi", "disabledProviders", "launch"}
+CONFIG_KEYS = {"providers", "env", "hosts", "pi", "disabledProviders", "launch", "advisor"}
 HOST_KEYS = {"env", "inherit_env", "required_env", "providers", "pi", "disabledProviders", "launch"}
 # Providers the launcher wraps; only these take launch settings.
 LAUNCH_PROVIDERS = {"claude", "codex", "pi"}
@@ -333,6 +333,13 @@ def _providers(providers, where):
                 raise fleet.FleetError(f"providers.{name}.{model_id}: label {label!r} must be a name only")
 
 
+def _advisor(value, where):
+    """advisor: the fleet-wide switch for the Pi advisor tool, {"enabled": true|false}."""
+    if not isinstance(value, dict) or set(value) != {"enabled"} or not isinstance(value["enabled"], bool):
+        raise fleet.FleetError(f'{where} must be {{"enabled": true}} or {{"enabled": false}}')
+    return value
+
+
 def _disabled(value, where):
     """disabledProviders: distinct non-empty provider ids, none of them protected."""
     fleet._strings(value, where)
@@ -439,6 +446,7 @@ def load_config(path: Path, fleet_doc: dict) -> dict:
         raise fleet.FleetError("providers must be a non-empty object")
     _providers(providers, "providers")
     if "pi" in data: _pi(data["pi"], "pi")
+    if "advisor" in data: _advisor(data["advisor"], "advisor")
     if "disabledProviders" in data: _disabled(data["disabledProviders"], "disabledProviders")
     _env_map(data.get("env", {}), "env")
     if "launch" in data: _launch(data["launch"], "launch")
@@ -484,6 +492,9 @@ def payload(config: dict, host: str, stamp: str, dry_run: bool, paseo_home: Opti
         env.setdefault(provider, {}).update(values)
     providers, disabled = effective(config, host)
     pi = settings.get("pi", config.get("pi"))
+    if pi and not pi.get('catalogOnly') and 'advisor' in config and 'advisor' not in pi['runtime']:
+        # The fleet-wide advisor switch goes into every Pi runtime.json; a host's own pi.runtime.advisor wins.
+        pi = {**pi, 'runtime': {**pi['runtime'], 'advisor': config['advisor']}}
     generated = None
     mcp_servers = config.get('_mcpHosts', {}).get(host, [])
     launch = launch_for(config, host)

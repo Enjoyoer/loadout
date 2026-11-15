@@ -1,7 +1,7 @@
 // Router protocol metadata and an explicit, catalog-checked service tier (Fast/Standard/Ultrafast).
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, lstatSync, readdirSync, readFileSync, writeSync } from 'node:fs';
+import { appendFileSync, chmodSync, lstatSync, readdirSync, readFileSync, statSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -59,6 +59,126 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
     else delete result.service_tier;
   }
   return result;
+}
+
+// Advisor. On the subscription Opus route, each agent turn's request carries Anthropic's advisor server tool, backed
+// by ADVISOR.tool.model, while runtime.json holds "advisor": {"enabled": true}. The file is read again whenever it
+// changes, so an edit applies to the next request with no restart; a missing, unreadable or invalid value is off. Pi's
+// Anthropic client sends payload.betas as the anthropic-beta header, so the tool and its beta are added together, in
+// the payload. Pi runs before_provider_request for agent turns only (its compaction and branch summary requests skip
+// it), and a request with no tools is left as it is too. The tool goes last in tools and the guidance at the end of the
+// last system block (never a block of its own, see withSystemText), the same on every turn, so the prompt cache prefix
+// stays stable.
+//
+// Pi 1.0 keeps only text, thinking and tool_use blocks of a response, so it drops each advisor call (a server_tool_use
+// block and its advisor_tool_result) from the session, and the model later takes its own mentions of advice for
+// invented ones. So a reply that got advice, seen in the raw stream events, gets ADVISOR.note as a text block (before
+// its first tool call, else at the end), and every later request whose history holds that note gets ADVISOR.history
+// last in its system prompt (an Anthropic system array, or the leading item of a Responses input), whatever the model
+// or the switch: the system prompt changes once, at the first note.
+export const ADVISOR = {
+  routes: ['fleet/claude-opus-5-5'],
+  beta: 'advisor-tool-2026-03-01',
+  tool: { type: 'advisor_20260301', name: 'advisor', model: 'claude-fable-5-2' },
+  guidance: 'You have an `advisor` tool: a stronger reviewer model that reads this whole conversation (it takes no '
+    + 'input) and answers in one to three minutes. You must call it once before you deliver a final report or an '
+    + 'owner-facing decision on a task that took real work (several steps or tool calls), and once when you are stuck '
+    + 'after two failed attempts. Do not call it for a quick answer or a single-step task; otherwise use your judgment. '
+    + 'Weigh its advice seriously; where evidence you checked yourself contradicts it, say so and follow the evidence. '
+    + 'The history does not keep advisor calls, so after a call, state the advice you act on in a line or two.',
+  note: '(Advisor consulted during this reply; the call and its advice are not kept in the history.)',
+  history: 'Some replies in this conversation carry the note "(Advisor consulted during this reply; ...)". Those '
+    + 'replies did consult the advisor tool; its advice is not kept in the history, only what the reply says about it.',
+};
+const textParts = item => Array.isArray(item?.content) ? item.content.filter(part => typeof part?.text === 'string') : [];
+const mentions = (items, text) => Array.isArray(items) && items.some(item => textParts(item).some(part => part.text.includes(text)));
+/**
+ * What one advisor_tool_result block brought: 'advice', 'refusal' (the advisor declined), or the error code of a failed
+ * call. A failed call does not fail the request: the API answers 200 with an advisor_tool_result_error block (for
+ * example too_many_requests when the advisor model is rate-limited) and the model carries on without advice.
+ */
+export function advisorOutcome(block) {
+  const content = block?.content;
+  if (content?.type === 'advisor_tool_result_error') return typeof content.error_code === 'string' ? content.error_code : 'unknown';
+  if (content?.type !== 'advisor_result' && content?.type !== 'advisor_redacted_result') return 'unknown';
+  return content.stop_reason === 'refusal' ? 'refusal' : 'advice';
+}
+/** Counts the advisor results that carried advice in one streamed Anthropic response, from its raw events. */
+export function advisorResults() {
+  let count = 0;
+  return {
+    event(data) {
+      if (data?.type === 'message_start') count = 0;
+      else if (data?.type === 'content_block_start' && data.content_block?.type === 'advisor_tool_result'
+        && advisorOutcome(data.content_block) === 'advice') count++;
+    },
+    take() { const done = count; count = 0; return done; },
+  };
+}
+/** The assistant message with ADVISOR.note before its first tool call, else at the end. */
+export function withAdvisorNote(message) {
+  const content = Array.isArray(message?.content) ? message.content : [];
+  const at = content.findIndex(block => block?.type === 'toolCall');
+  const note = { type: 'text', text: ADVISOR.note };
+  return { ...message, content: at < 0 ? [...content, note] : [...content.slice(0, at), note, ...content.slice(at)] };
+}
+/**
+ * An Anthropic system prompt with text added at the end of its last block, after a blank line. It never adds a block
+ * to a non-empty prompt: on some requests any second system block makes Opus answer stop_reason refusal with no output.
+ * A string stays one string; a missing or empty prompt becomes one block.
+ */
+export function withSystemText(system, text) {
+  if (typeof system === 'string' && system) return system + '\n\n' + text;
+  if (!Array.isArray(system) || !system.length) return [{ type: 'text', text }];
+  const last = system.at(-1);
+  if (last?.type !== 'text' || typeof last.text !== 'string') return [...system, { type: 'text', text }];
+  return [...system.slice(0, -1), { ...last, text: last.text ? last.text + '\n\n' + text : text }];
+}
+const systemHas = (system, text) => typeof system === 'string' ? system.includes(text)
+  : Array.isArray(system) && system.some(block => typeof block?.text === 'string' && block.text.includes(text));
+/** The payload with ADVISOR.history last in its system prompt when its history holds ADVISOR.note, else itself. */
+export function withAdvisorHistory(payload) {
+  if (!payload || typeof payload !== 'object') return payload;
+  // Anthropic Messages only: an OpenAI chat payload also has messages, but no system field.
+  if (Array.isArray(payload.messages) && (Array.isArray(payload.system) || typeof payload.system === 'string')) {
+    if (!mentions(payload.messages, ADVISOR.note) || systemHas(payload.system, ADVISOR.history)) return payload;
+    return { ...payload, system: withSystemText(payload.system, ADVISOR.history) };
+  }
+  // Pi sends a Responses system prompt as the leading item's content string.
+  const lead = Array.isArray(payload.input) ? payload.input[0] : null;
+  const string = typeof lead?.content === 'string';
+  if (!['developer', 'system'].includes(lead?.role) || !(string || Array.isArray(lead.content))
+    || (string ? lead.content.includes(ADVISOR.history) : textParts(lead).some(part => part.text === ADVISOR.history))
+    || !mentions(payload.input.slice(1), ADVISOR.note)) return payload;
+  const content = string ? lead.content + '\n\n' + ADVISOR.history : [...lead.content, { type: 'input_text', text: ADVISOR.history }];
+  return { ...payload, input: [{ ...lead, content }, ...payload.input.slice(1)] };
+}
+const advisorFiles = new Map();
+/** Whether <root>/runtime.json turns the advisor on, read again only when the file's identity, size or mtime changes. */
+export function advisorEnabled(root = dirname(fileURLToPath(import.meta.url))) {
+  const file = join(root, 'runtime.json');
+  try {
+    const st = statSync(file);
+    const key = `${st.ino}:${st.size}:${st.mtimeMs}`;
+    const known = advisorFiles.get(file);
+    if (known?.key === key) return known.on;
+    const on = JSON.parse(readFileSync(file, 'utf8'))?.advisor?.enabled === true;
+    advisorFiles.set(file, { key, on });
+    return on;
+  } catch {
+    // Not cached, so a file caught mid-edit is read again on the next request.
+    advisorFiles.delete(file);
+    return false;
+  }
+}
+export const advisorRoute = model => model?.api === 'anthropic-messages' && ADVISOR.routes.includes(`${model.provider}/${model.id}`);
+/** The payload with the advisor tool, its beta and its guidance, or the payload itself when it does not qualify. */
+export function withAdvisor(payload, model) {
+  if (!advisorRoute(model) || !payload || typeof payload !== 'object' || payload.model !== model.id
+    || !Array.isArray(payload.tools) || !payload.tools.length || payload.tools.some(tool => tool?.name === ADVISOR.tool.name)) return payload;
+  const betas = Array.isArray(payload.betas) ? payload.betas : [];
+  return { ...payload, tools: [...payload.tools, { ...ADVISOR.tool }], system: withSystemText(payload.system, ADVISOR.guidance),
+    betas: betas.includes(ADVISOR.beta) ? betas : [...betas, ADVISOR.beta] };
 }
 
 // Tier semantics. opc.service-tier (fast|standard|ultrafast|inherit, with priority/default
@@ -1335,6 +1455,16 @@ export default function(pi) {
   const limit = accountLimit(pi, record);
   pi.on('input', event => { limit.input(event?.text); });
   pi.on('message_end', (event, ctx) => limit.messageEnd(event, ctx));
+  // Advisor results in the response now streaming (Pi drops those blocks). A call the model starts after a client
+  // tool call gets no result in that response, so results are counted, not calls.
+  const advised = advisorResults();
+  pi.on('message_end', event => {
+    const message = event?.message;
+    if (message?.role !== 'assistant') return undefined;
+    // Pi maps pause_turn to an ordinary stop, so a turn the API paused on a pending advisor call just ends.
+    if (message.rawStopReason === 'pause_turn') record({ event: 'advisor', model: message.model ?? null, outcome: 'pause_turn' });
+    return advised.take() && message.stopReason !== 'error' ? { message: withAdvisorNote(message) } : undefined;
+  });
   pi.on('agent_settled', () => { limit.settled(); });
   pi.on('turn_end', (_event, ctx) => { privacy.turnEnd(ctx); });
   pi.on('tool_call', serviceGuardHandler(record));
@@ -1422,7 +1552,12 @@ export default function(pi) {
         record(row);try{pi.appendEntry('loadout-service-tier-refused',{requestId:id,error:tier.error});}catch{}
         return blocked;
       }
-      const prepared=preparePayload(event.payload,{model:ctx.model,sessionId:ctx.sessionManager.getSessionId(),turnId,cwd:ctx.cwd,tier,requestId:id});
+      let prepared=preparePayload(event.payload,{model:ctx.model,sessionId:ctx.sessionManager.getSessionId(),turnId,cwd:ctx.cwd,tier,requestId:id});
+      if(advisorRoute(ctx.model)){
+        const advised=advisorEnabled()?withAdvisor(prepared,ctx.model):prepared;
+        row.advisor=advised!==prepared;prepared=advised;
+      }
+      prepared=withAdvisorHistory(prepared);
       record(row);
       return prepared;
     }catch(error){
@@ -1439,5 +1574,13 @@ export default function(pi) {
   pi.on('provider_stream_event',event=>{
     const response=event.data?.response;
     if(event.data?.type==='response.completed') record({event:'response',model:event.model,service_tier:response?.service_tier,responseId:response?.id});
+    advised.event(event.data);
+    // Each advisor call that brought no advice (an error code such as too_many_requests, or refusal).
+    const block=event.data?.type==='content_block_start'&&event.data.content_block?.type==='advisor_tool_result'?event.data.content_block:null;
+    const outcome=block?advisorOutcome(block):'advice';
+    if(outcome!=='advice') record({event:'advisor',model:event.model,outcome});
+    // Each advisor call in an Anthropic response: its model and tokens, for quota tracking.
+    const steps=event.data?.type==='message_delta'&&Array.isArray(event.data.usage?.iterations)?event.data.usage.iterations.filter(step=>step?.type==='advisor_message'):[];
+    for(const step of steps) record({event:'advisor',model:event.model,advisorModel:step.model??null,inputTokens:step.input_tokens??null,outputTokens:step.output_tokens??null,cacheReadTokens:step.cache_read_input_tokens??null});
   });
 }
