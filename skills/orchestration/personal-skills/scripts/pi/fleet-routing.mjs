@@ -66,8 +66,9 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
 // changes, so an edit applies to the next request with no restart; a missing, unreadable or invalid value is off. Pi's
 // Anthropic client sends payload.betas as the anthropic-beta header, so the tool and its beta are added together, in
 // the payload. Pi runs before_provider_request for agent turns only (its compaction and branch summary requests skip
-// it), and a request with no tools is left as it is too. The tool goes last in tools and the guidance last in system,
-// the same on every turn, so the prompt cache prefix stays stable.
+// it), and a request with no tools is left as it is too. The tool goes last in tools and the guidance at the end of the
+// last system block (never a block of its own, see withSystemText), the same on every turn, so the prompt cache prefix
+// stays stable.
 //
 // Pi 1.0 keeps only text, thinking and tool_use blocks of a response, so it drops each advisor call (a server_tool_use
 // block and its advisor_tool_result) from the session, and the model later takes its own mentions of advice for
@@ -122,12 +123,27 @@ export function withAdvisorNote(message) {
   const note = { type: 'text', text: ADVISOR.note };
   return { ...message, content: at < 0 ? [...content, note] : [...content.slice(0, at), note, ...content.slice(at)] };
 }
+/**
+ * An Anthropic system prompt with text added at the end of its last block, after a blank line. It never adds a block
+ * to a non-empty prompt: on some requests any second system block makes Opus answer stop_reason refusal with no output.
+ * A string stays one string; a missing or empty prompt becomes one block.
+ */
+export function withSystemText(system, text) {
+  if (typeof system === 'string' && system) return system + '\n\n' + text;
+  if (!Array.isArray(system) || !system.length) return [{ type: 'text', text }];
+  const last = system.at(-1);
+  if (last?.type !== 'text' || typeof last.text !== 'string') return [...system, { type: 'text', text }];
+  return [...system.slice(0, -1), { ...last, text: last.text ? last.text + '\n\n' + text : text }];
+}
+const systemHas = (system, text) => typeof system === 'string' ? system.includes(text)
+  : Array.isArray(system) && system.some(block => typeof block?.text === 'string' && block.text.includes(text));
 /** The payload with ADVISOR.history last in its system prompt when its history holds ADVISOR.note, else itself. */
 export function withAdvisorHistory(payload) {
   if (!payload || typeof payload !== 'object') return payload;
-  if (Array.isArray(payload.messages) && Array.isArray(payload.system)) {
-    if (!mentions(payload.messages, ADVISOR.note) || payload.system.some(block => block?.text === ADVISOR.history)) return payload;
-    return { ...payload, system: [...payload.system, { type: 'text', text: ADVISOR.history }] };
+  // Anthropic Messages only: an OpenAI chat payload also has messages, but no system field.
+  if (Array.isArray(payload.messages) && (Array.isArray(payload.system) || typeof payload.system === 'string')) {
+    if (!mentions(payload.messages, ADVISOR.note) || systemHas(payload.system, ADVISOR.history)) return payload;
+    return { ...payload, system: withSystemText(payload.system, ADVISOR.history) };
   }
   // Pi sends a Responses system prompt as the leading item's content string.
   const lead = Array.isArray(payload.input) ? payload.input[0] : null;
@@ -162,10 +178,7 @@ export function withAdvisor(payload, model) {
   if (!advisorRoute(model) || !payload || typeof payload !== 'object' || payload.model !== model.id
     || !Array.isArray(payload.tools) || !payload.tools.length || payload.tools.some(tool => tool?.name === ADVISOR.tool.name)) return payload;
   const betas = Array.isArray(payload.betas) ? payload.betas : [];
-  const note = { type: 'text', text: ADVISOR.guidance };
-  const system = Array.isArray(payload.system) ? [...payload.system, note]
-    : typeof payload.system === 'string' && payload.system ? [{ type: 'text', text: payload.system }, note] : [note];
-  return { ...payload, tools: [...payload.tools, { ...ADVISOR.tool }], system,
+  return { ...payload, tools: [...payload.tools, { ...ADVISOR.tool }], system: withSystemText(payload.system, ADVISOR.guidance),
     betas: betas.includes(ADVISOR.beta) ? betas : [...betas, ADVISOR.beta] };
 }
 
