@@ -78,6 +78,14 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
 // its first tool call, else at the end), and every later request whose history holds that note gets ADVISOR.history
 // last in its system prompt (an Anthropic system array, or the leading item of a Responses input), whatever the model
 // or the switch: the system prompt changes once, at the first note.
+//
+// Rejection. When the API refuses an agent-turn request that carried the advisor with a 400 invalid_request_error that
+// names the advisor's beta or tool type (advisorRejection: a retired beta or tool type, or an account not entitled to
+// it), message_end records one advisor row with outcome rejected and asks agent_before_settle (settleRetry, the path the
+// account limit uses) for one more request with the failed answer left out of the context. From then on this agent
+// process adds no advisor until runtime.json changes or the process restarts, so a retired beta costs one failed
+// request per agent, not one per turn. The marked error keeps no upstream text, so Pi's own retry never runs on it. The
+// retry carries no advisor, so it is never retried again: if it fails too, the turn fails with that second error as before. Any other error, and any request without the advisor, is left alone.
 export const ADVISOR = {
   beta: 'advisor-tool-2026-03-01',
   tool: { type: 'advisor_20260301', name: 'advisor', model: 'claude-fable-5-2' },
@@ -172,6 +180,23 @@ export function advisorEnabled(root = dirname(fileURLToPath(import.meta.url))) {
     return false;
   }
 }
+/** The identity, size and mtime advisorEnabled last read <root>/runtime.json at, or null when it could not read it. */
+export const advisorRuntimeKey = (root = dirname(fileURLToPath(import.meta.url))) => advisorFiles.get(join(root, 'runtime.json'))?.key ?? null;
+/**
+ * Why the API refused a request that carried the advisor: 'beta' (the anthropic-beta value), 'tool' (the tool type),
+ * 'other' (another 400 invalid_request_error naming either), or null for any other error. A tool type error about
+ * another tool lists the advisor type among the expected tags, so it is not an advisor rejection.
+ */
+export function advisorRejection(message, sent = ADVISOR) {
+  if (message?.role !== 'assistant' || message.stopReason !== 'error' || typeof message.errorMessage !== 'string') return null;
+  const text = message.errorMessage;
+  if (!/\b400\b/.test(text) || !text.includes('invalid_request_error')) return null;
+  const tag = /Input tag '([^']*)' found using 'type'/.exec(text);
+  if (tag) return tag[1] === sent.tool.type ? 'tool' : null;
+  if (text.includes(sent.beta)) return text.includes('anthropic-beta') ? 'beta' : 'other';
+  return text.includes(sent.tool.type) ? 'other' : null;
+}
+export const ADVISOR_RETRY = 'Advisor rejected; trying again without it';
 export const advisorRoute = model => model?.api === 'anthropic-messages' && model.provider === 'fleet'
   && typeof model.id === 'string' && model.id.startsWith('claude-')
   && !model.id.startsWith('claude-fable-');
@@ -1339,8 +1364,31 @@ export function accountNextTry({ now = Date.now(), resetAt = null, deadline, ran
   return { at, source: resetAt && resetAt > now ? 'reset-header' : 'poll', late: at > deadline };
 }
 const withError = (message, errorMessage) => ({ ...message, errorMessage });
-function accountLimit(pi, record) {
-  let hint = null, labels = null, input = 'unknown', wait = null, stopped = false, settle = null, pq = null;
+/**
+ * One more request: at the next settle, agent_before_settle omits the failed answer, when its error text holds `marker`,
+ * and continues. The handler is on only for that settle, because Pi builds a boundary context for every settle once any
+ * handler is on. The account limit and the advisor rejection share it.
+ */
+function settleRetry(pi) {
+  let off = null;
+  const stop = () => { off?.(); off = null; };
+  return {
+    stop,
+    once(marker) {
+      stop();
+      off = pi.on('agent_before_settle', event => {
+        stop();
+        const entry = [...(event?.context?.contextEntries ?? [])].reverse().find(item => item?.sourceEntry?.type === 'message'
+          && item.sourceEntry.message?.role === 'assistant');
+        const failed = entry?.sourceEntry?.message;
+        if (!failed || failed.stopReason !== 'error' || !String(failed.errorMessage ?? '').includes(marker)) return undefined;
+        return { entries: [...(event.entries ?? []), { type: 'context_edit', targetId: entry.sourceEntry.id, replacement: null }], continue: true };
+      });
+    },
+  };
+}
+function accountLimit(pi, record, retry = settleRetry(pi)) {
+  let hint = null, labels = null, input = 'unknown', wait = null, stopped = false, pq = null;
   const controllers = new Set();
   const freshHint = () => hint && Date.now() - hint.at <= ACCOUNT_LIMIT.hintMaxAgeMs ? hint.resetAt : null;
   const pqReset = async () => {
@@ -1380,26 +1428,15 @@ function accountLimit(pi, record) {
       }
     } finally { signal?.removeEventListener('abort', stop); controllers.delete(controller); }
   };
-  // One more request after a wait: agent_before_settle omits the failed answer and continues. The handler is on only
-  // for that settle, because Pi builds a boundary context for every settle once any handler is on.
-  const continueOnce = () => {
-    settle?.();
-    settle = pi.on('agent_before_settle', event => {
-      settle?.(); settle = null;
-      const entry = [...(event?.context?.contextEntries ?? [])].reverse().find(item => item?.sourceEntry?.type === 'message'
-        && item.sourceEntry.message?.role === 'assistant');
-      const failed = entry?.sourceEntry?.message;
-      if (!failed || failed.stopReason !== 'error' || !String(failed.errorMessage ?? '').includes(`(${ACCOUNT_LIMIT.tag}; waiting`)) return undefined;
-      return { entries: [...(event.entries ?? []), { type: 'context_edit', targetId: entry.sourceEntry.id, replacement: null }], continue: true };
-    });
-  };
+  // One more request after a wait.
+  const continueOnce = () => retry.once(`(${ACCOUNT_LIMIT.tag}; waiting`);
   return {
     hint: resetAt => { hint = { at: Date.now(), resetAt }; },
     labels: value => { labels = value; },
     input: text => { input = inputKind(text); },
     // The end of a run ends its wait episode.
     settled: () => { wait = null; },
-    shutdown: () => { stopped = true; for (const controller of controllers) controller.abort(); settle?.(); settle = null; },
+    shutdown: () => { stopped = true; for (const controller of controllers) controller.abort(); retry.stop(); },
     async messageEnd(event, ctx) {
       const message = event?.message;
       if (message?.role !== 'assistant') return undefined;
@@ -1455,15 +1492,30 @@ export default function(pi) {
   };
   const credential = fleetCredential(pi, record);
   const privacy = sessionPrivacy(record);
-  const limit = accountLimit(pi, record);
+  const retry = settleRetry(pi);
+  const limit = accountLimit(pi, record, retry);
+  // The last request's advisor state, and the runtime.json key at the advisor's rejection (null: not rejected).
+  let sent = null, rejectedAt = null;
   pi.on('input', event => { limit.input(event?.text); });
   pi.on('message_end', (event, ctx) => limit.messageEnd(event, ctx));
   // Advisor results in the response now streaming (Pi drops those blocks). A call the model starts after a client
   // tool call gets no result in that response, so results are counted, not calls.
   const advised = advisorResults();
-  pi.on('message_end', event => {
+  pi.on('message_end', (event, ctx) => {
     const message = event?.message;
     if (message?.role !== 'assistant') return undefined;
+    const request = sent; sent = null;
+    const reason = request?.advisor ? advisorRejection(message) : null;
+    if (reason) {
+      rejectedAt = request.key;
+      let sessionId = null; try { sessionId = ctx?.sessionManager?.getSessionId() ?? null; } catch {}
+      record({ event: 'advisor', outcome: 'rejected', reason, status: 400, requestId: request.requestId, turnId: request.turnId,
+        sessionId, model: message.model ?? null });
+      retry.once(ADVISOR_RETRY);
+      // No upstream text: a tag list in it can hold Pi's retryable status digits (text_editor_20250429 holds 504), and
+      // Pi's own retry must not run on top of this one. The failed answer is left out of the context anyway.
+      return { message: withError(message, `${ADVISOR_RETRY} (${reason}; 400 invalid_request_error).`) };
+    }
     // Pi maps pause_turn to an ordinary stop, so a turn the API paused on a pending advisor call just ends.
     if (message.rawStopReason === 'pause_turn') record({ event: 'advisor', model: message.model ?? null, outcome: 'pause_turn' });
     return advised.take() && message.stopReason !== 'error' ? { message: withAdvisorNote(message) } : undefined;
@@ -1544,7 +1596,7 @@ export default function(pi) {
     // Pi swallows handler exceptions and would send the original payload, which then inherits
     // the fleet default: a silent mapping. Every refusal or failure below returns a model id the
     // proxy rejects, so the turn errors visibly and nothing reaches the provider.
-    let id=null;
+    let id=null;sent=null;
     try{
       id=requestId();settle('payload');
       const tier=tierDecision(intent,ctx.model,tiers);
@@ -1557,8 +1609,12 @@ export default function(pi) {
       }
       let prepared=preparePayload(event.payload,{model:ctx.model,sessionId:ctx.sessionManager.getSessionId(),turnId,cwd:ctx.cwd,tier,requestId:id});
       if(advisorRoute(ctx.model)){
-        const advised=advisorEnabled()?withAdvisor(prepared,ctx.model):prepared;
+        const on=advisorEnabled(),key=advisorRuntimeKey();
+        if(rejectedAt!==null&&rejectedAt!==key) rejectedAt=null;
+        const advised=on&&rejectedAt===null?withAdvisor(prepared,ctx.model):prepared;
         row.advisor=advised!==prepared;prepared=advised;
+        if(on&&rejectedAt!==null) row.advisorRejected=true;
+        sent={advisor:row.advisor,key,requestId:id,turnId};
       }
       prepared=withAdvisorHistory(prepared);
       record(row);
