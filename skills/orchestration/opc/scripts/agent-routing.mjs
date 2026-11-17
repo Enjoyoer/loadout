@@ -33,6 +33,8 @@ export const WORKER_DEFAULT_ROUTES = Object.freeze({
   'browser-hard': workerClass('Astra', 'medium', 'high'),
   smoke: workerClass('Luna', 'low', null, true),
   watcher: workerClass('Luna', 'xhigh', null, true),
+  // Hosted Codex Sites interaction: native Codex Luna xhigh, Fast on (owner 2026-11-17).
+  sites: workerClass('Luna', 'xhigh', null, true),
 });
 export const WORKER_CLASS_ALIASES = Object.freeze({
   'code-bounded': 'code', 'test-fix': 'code', automation: 'code', mechanical: 'code',
@@ -156,9 +158,11 @@ const classReason = (kind, rule) => `${kind} default ${rule.label} ${rule.effort
 // The one-line reason recorded with a Worker route and shown in its brief.
 export const routeReason = route => route.reason ?? 'owner-named, never adjusted';
 
-// Browser classes have standing native Codex authorization; other native Workers need a task owner decision.
+// Browser and Sites classes have standing native Codex authorization; other native Workers need a task owner decision.
 export const BROWSER_NATIVE_AUTHORIZATION = 'owner 2026-10-14';
-const browserClass = kind => ['browser', 'browser-hard'].includes(canonicalWorkerClass(kind));
+export const NATIVE_CLASS_AUTHORIZATION = Object.freeze({ browser: BROWSER_NATIVE_AUTHORIZATION,
+  'browser-hard': BROWSER_NATIVE_AUTHORIZATION, sites: 'owner 2026-11-17' });
+const browserClass = kind => Object.hasOwn(NATIVE_CLASS_AUTHORIZATION, canonicalWorkerClass(kind) ?? '');
 const nativeModelId = id => id.slice(id.indexOf('/') + 1);
 const classModelId = (kind, id) => browserClass(kind) ? nativeModelId(id) : id;
 const routeClass = (route, taskClass) => taskClass ?? (route?.source === 'task-default' ? route.kind : null);
@@ -334,7 +338,7 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog 
   }
   return Object.freeze({ role: 'worker', source: 'task-default', kind: taskKind, model: classModelId(taskKind, row.id),
     effort, fastMode: rule.fastMode, reason: classReason(taskKind, rule) +
-      (browserClass(taskKind) ? `, native Codex authorized by ${BROWSER_NATIVE_AUTHORIZATION}` : '') });
+      (browserClass(taskKind) ? `, native Codex authorized by ${NATIVE_CLASS_AUTHORIZATION[canonicalWorkerClass(taskKind)]}` : '') });
 }
 
 function validateFixedRoute(role, route) {

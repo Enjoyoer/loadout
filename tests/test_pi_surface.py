@@ -1286,10 +1286,10 @@ const workspace={workspaceId:'wks-example',cwd:'/tmp/example-worktree'};
 const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:'lane',title:'Worker',initialPrompt:'Do it',workspace,capabilities:piCaps,...extra});
 const plain=value=>JSON.parse(JSON.stringify(value));
 // Owner-approved task routes: Fast off by default, on for the Luna classes (owner 2026-11-17).
-assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','review','review-security','smoke','ui-check','ui-design','watcher']);
-for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','high',false],['research','Sol','high',false],['review','Sol','high',false],['review-security','Opus','xhigh',false],['smoke','Luna','low',true],['browser','Sol','low',false],['browser-hard','Astra','medium',false],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Luna','xhigh',true]]){
+assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','review','review-security','sites','smoke','ui-check','ui-design','watcher']);
+for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','high',false],['research','Sol','high',false],['review','Sol','high',false],['review-security','Opus','xhigh',false],['smoke','Luna','low',true],['sites','Luna','xhigh',true],['browser','Sol','low',false],['browser-hard','Astra','medium',false],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Luna','xhigh',true]]){
  const route=r.selectWorkerRoute({taskKind:kind,catalog});
- assert.equal(route.model,['browser','browser-hard'].includes(kind)?r.resolveCatalogLabel(catalog,label).id.slice(6):r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
+ assert.equal(route.model,['browser','browser-hard','sites'].includes(kind)?r.resolveCatalogLabel(catalog,label).id.slice(6):r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
 }
 for(const [alias,kind] of Object.entries(r.WORKER_CLASS_ALIASES)){
  const route=r.selectWorkerRoute({taskKind:alias,catalog});

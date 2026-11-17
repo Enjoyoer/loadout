@@ -29,7 +29,7 @@ Default to one implementer Worker for the whole task, building its items in sequ
 
 Visual design (new screen, layout, component) gets one read-only Fable `high` `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`.
 
-When no Worker holds the checkout, the PM does work under about 20 tool calls itself. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
+When no Worker holds the checkout, the PM does work under about 20 tool calls itself. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work, read [Sites](references/codex-sites.md "branch:sites") and route it with `route.mjs --class sites`. For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
 ## 4. Yield
 
@@ -41,7 +41,7 @@ Verify returned agent/workspace identity, path, branch, commits, selected-base a
 
 ## 6. Verify
 
-Independently check required behavior and final committed deliverable bytes using the execution mechanics. Reuse a receipt only while head, bytes, command, and evidence remain unchanged; otherwise rerun. [Review rules](references/web-reviewer.md#review-rules "branch:review") bind every review; initially enabled review reads it at the published candidate head. Security-sensitive diffs review on `review-security`. A small PR (not security-sensitive, changing no live system, and under about 50 changed lines) gets no separate review agent unless the owner asks: the Worker's own checks and the PM's readback cover it. Review never replaces PM correctness checks. Unrun platform or browser checks remain unverified.
+Independently check required behavior and final committed deliverable bytes using the execution mechanics. Reuse a receipt only while head, bytes, command, and evidence remain unchanged; otherwise rerun. [Review rules](references/web-reviewer.md#review-rules "branch:review") bind every review; initially enabled review reads it at the published candidate head. Security-sensitive diffs review on `review-security`. A small PR (not security-sensitive, changing no live system, and under about 50 changed lines) gets no review agent unless the owner asks: the Worker's own checks and the PM's readback cover it. Review never replaces PM correctness checks. Unrun platform or browser checks remain unverified.
 
 ## 7. Merge and cleanup
 

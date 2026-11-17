@@ -27,7 +27,7 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
   if (!Object.hasOwn(WORKER_DEFAULT_ROUTES, taskClass ?? '')) throw workerRouteUnresolved();
   const route = selectWorkerRoute({ taskKind: taskClass, catalog });
   return Object.freeze({ route, reason: routeReason(route),
-    ...(['browser', 'browser-hard'].includes(taskClass) ? { provider: `codex/${route.model}` } : {}) });
+    ...(['browser', 'browser-hard', 'sites'].includes(taskClass) ? { provider: `codex/${route.model}` } : {}) });
 }
 
 // One route per lane. Repairs and resumes reuse the recorded entry; a different route for the lane is refused, as the
