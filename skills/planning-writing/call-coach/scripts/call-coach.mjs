@@ -25,7 +25,7 @@ Commands:
   page <source.md>        Write the prep page from a source file (see SKILL.md for the format).
   serve                   Serve the page on the tailnet address only, on a free port; print the URL.
   live - | live --clear   Set the one-line live bar from stdin (or live "<html>"), or clear it.
-  poll <share-url>        Start the transcript poller in the background.
+  poll -                  Read the live-share link from stdin and start the poller in the background.
       --wrap "<cmd>"      Start it through a wrapper command your fleet rules name.
       --playwright <dir>  playwright-core package folder (or CALL_COACH_PLAYWRIGHT).
       --browser <x>       Chromium executable path or channel such as chrome (or CALL_COACH_BROWSER).
@@ -83,7 +83,7 @@ function readJson(file, fallback) {
 
 function writeAtomic(file, data) {
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, data);
+  fs.writeFileSync(tmp, data, { mode: 0o600 });
   for (let i = 0; ; i++) {
     try { fs.renameSync(tmp, file); return; } catch (e) {
       // Windows refuses a rename over a file another process is reading; retry briefly.
@@ -101,16 +101,26 @@ function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
 }
 
-// A pid in state is only ours if its command line still names this script (guards pid reuse).
-function ours(pid) {
-  if (!alive(pid)) return false;
-  if (WIN) return true;
-  const ps = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
-  return ps.status === 0 && ps.stdout.includes("call-coach");
+// The command line of a live process, or null when it cannot be read.
+function commandLine(pid) {
+  const r = WIN
+    ? spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", `(Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}").CommandLine`], { encoding: "utf8", windowsHide: true })
+    : spawnSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+  return r.status === 0 && r.stdout.trim() ? r.stdout : null;
 }
 
-async function killTree(pid) {
-  if (!ours(pid)) return false;
+// A pid in state is ours only while its command line names this call's internal subcommand
+// (_server or _poller) and this call's folder; a reused pid never matches. "gone", "ours" or "other".
+function procState(pid, sub, dir) {
+  if (!alive(pid)) return "gone";
+  const cmd = commandLine(pid);
+  return cmd && cmd.includes(sub) && cmd.includes(dir) ? "ours" : "other";
+}
+const ours = (pid, sub, dir) => procState(pid, sub, dir) === "ours";
+
+async function killTree(pid, sub, dir) {
+  const found = procState(pid, sub, dir);
+  if (found !== "ours") return found;
   if (WIN) {
     spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
   } else {
@@ -120,11 +130,11 @@ async function killTree(pid) {
     if (alive(pid)) signal("SIGKILL");
   }
   for (let i = 0; i < 30 && alive(pid); i++) await sleep(100);
-  return true;
+  return "killed";
 }
 
 function spawnDetached(argv, logFile) {
-  const out = fs.openSync(logFile, "a");
+  const out = fs.openSync(logFile, "a", 0o600);
   const child = spawn(argv[0], argv.slice(1), { detached: true, stdio: ["ignore", out, out], windowsHide: true });
   child.unref();
   fs.closeSync(out);
@@ -165,14 +175,37 @@ function resolveDir(values) {
   if (values.dir) return path.resolve(values.dir);
   if (values.call) {
     if (!/^[\w.-]+$/.test(values.call) || values.call.startsWith(".")) die("--call takes a plain name (letters, digits, . _ -)");
-    return path.join(process.env.FLEET_SCRATCH || os.tmpdir(), "call-coach", values.call);
+    // Under the user's own home, never the shared temp folder: the folder holds the share link and transcript.
+    return path.join(process.env.FLEET_SCRATCH || path.join(os.homedir(), ".cache"), "call-coach", values.call);
   }
   die("name the call folder with --call <name> or --dir <folder>");
 }
 
+function mkdirPrivate(dir) {
+  try { fs.mkdirSync(dir, { mode: 0o700 }); } catch (e) { if (e.code !== "EEXIST") throw e; }
+}
+
+// Use a folder only if it is a real folder (not a symlink) owned by this user and not writable by
+// group or others; then make it owner-only. Windows has no POSIX owner or mode bits to check.
+function checkPrivate(dir, label) {
+  const st = fs.lstatSync(dir);
+  if (st.isSymbolicLink()) die(`${label} ${dir} is a symlink; refusing to use it`);
+  if (!st.isDirectory()) die(`${label} ${dir} is not a folder`);
+  if (WIN) return;
+  if (st.uid !== process.getuid()) die(`${label} ${dir} belongs to another user; refusing to use it`);
+  if (st.mode & 0o022) die(`${label} ${dir} is writable by group or others; refusing to use it (chmod 700 it first)`);
+  if (st.mode & 0o077) fs.chmodSync(dir, 0o700);
+}
+
 function openCall(values) {
-  const p = callPaths(resolveDir(values));
-  fs.mkdirSync(p.site, { recursive: true });
+  const dir = resolveDir(values);
+  fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
+  if (!values.dir) checkPrivate(path.dirname(dir), "call root");
+  mkdirPrivate(dir);
+  checkPrivate(dir, "call folder");
+  const p = callPaths(dir);
+  mkdirPrivate(p.site);
+  checkPrivate(p.site, "page folder");
   const state = readJson(p.state, null) ?? { created: new Date().toISOString() };
   if (!fs.existsSync(p.state)) writeJson(p.state, state);
   return { p, state, save: (s) => writeJson(p.state, s) };
@@ -227,14 +260,18 @@ h2{font-size:14px;text-transform:uppercase;letter-spacing:.5px;color:#fff;backgr
 .stop{color:#8a2d0f;font-weight:700}
 li{margin:3px 0}
 #live{display:none;position:fixed;left:0;right:0;bottom:0;background:#8a2d0f;color:#fff;padding:12px 18px;font-size:17px;z-index:9}
+#live.off{background:#4a4a4a}
 </style></head><body><div class="w">
 ${body}
 </div>
 <div id="live"></div>
 <script>
 const REV=${JSON.stringify(rev)};
+let last='';
 async function tick(){
-  try{const r=await fetch('live.txt?'+Date.now(),{cache:'no-store'});if(r.ok){const t=(await r.text()).trim();const e=document.getElementById('live');e.style.display=t?'block':'none';e.innerHTML='<b>LIVE:</b> '+t;}}catch(e){}
+  const e=document.getElementById('live');
+  try{const r=await fetch('live.txt?'+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);last=(await r.text()).trim();e.classList.remove('off');e.style.display=last?'block':'none';e.innerHTML='<b>LIVE:</b> '+last;}
+  catch(x){e.classList.add('off');e.style.display='block';e.innerHTML='<b>OFFLINE:</b> the coach page is not answering; this line may be stale.'+(last?' Last: '+last:'');}
   try{const r=await fetch('rev.txt?'+Date.now(),{cache:'no-store'});if(r.ok&&(await r.text()).trim()!==REV)location.reload();}catch(e){}
 }
 tick();setInterval(tick,4000);
@@ -251,7 +288,7 @@ function cmdPage(values, positionals) {
   writeAtomic(p.rev, rev + "\n");
   if (!fs.existsSync(p.live)) writeAtomic(p.live, "");
   console.log(`page written: ${p.page}`);
-  if (state.url && ours(state.serverPid)) console.log(`open pages reload within 4 s: ${state.url}`);
+  if (state.url && ours(state.serverPid, "_server", p.dir)) console.log(`open pages reload within 4 s: ${state.url}`);
 }
 
 // ---------- live bar ----------
@@ -268,7 +305,7 @@ function cmdLive(values, positionals) {
 // ---------- server ----------
 async function cmdServe(values) {
   const { p, state, save } = openCall(values);
-  if (state.url && ours(state.serverPid)) { console.log(state.url); return; }
+  if (state.url && ours(state.serverPid, "_server", p.dir)) { console.log(state.url); return; }
   const host = tailnetAddress();
   if (!fs.existsSync(p.page)) console.error("call-coach: no page yet; run `page` before giving out the URL");
   if (!fs.existsSync(p.live)) writeAtomic(p.live, "");
@@ -292,18 +329,25 @@ function runServer(values) {
   const p = callPaths(path.resolve(values.dir));
   const root = path.resolve(p.site);
   const types = { ".html": "text/html; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".css": "text/css", ".js": "text/javascript", ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml" };
+  const fail = (res, code) => { if (!res.headersSent) res.writeHead(code, { "Cache-Control": "no-store" }); res.end(); };
+  // No request may stop the server: every error becomes a 4xx or 5xx answer.
   const server = http.createServer((req, res) => {
-    if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405).end(); return; }
-    let rel;
-    try { rel = decodeURIComponent(new URL(req.url, "http://x").pathname); } catch { res.writeHead(400).end(); return; }
-    if (rel.endsWith("/")) rel += "index.html";
-    const file = path.resolve(root, "." + rel);
-    if (!file.startsWith(root + path.sep)) { res.writeHead(404).end(); return; }
-    fs.readFile(file, (err, data) => {
-      if (err) { res.writeHead(404, { "Cache-Control": "no-store" }).end("not found\n"); return; }
-      res.writeHead(200, { "Content-Type": types[path.extname(file)] || "application/octet-stream", "Cache-Control": "no-store" });
-      res.end(req.method === "HEAD" ? undefined : data);
-    });
+    try {
+      if (req.method !== "GET" && req.method !== "HEAD") return fail(res, 405);
+      let rel;
+      try { rel = decodeURIComponent(new URL(req.url, "http://x").pathname); } catch { return fail(res, 400); }
+      if (rel.includes("\0")) return fail(res, 400);
+      if (rel.endsWith("/")) rel += "index.html";
+      const file = path.resolve(root, "." + rel);
+      if (!file.startsWith(root + path.sep)) return fail(res, 404);
+      fs.readFile(file, (err, data) => {
+        if (err) return fail(res, ["ENOENT", "ENOTDIR", "EISDIR"].includes(err.code) ? 404 : 500);
+        res.writeHead(200, { "Content-Type": types[path.extname(file)] || "application/octet-stream", "Cache-Control": "no-store" });
+        res.end(req.method === "HEAD" ? undefined : data);
+      });
+    } catch {
+      fail(res, 500);
+    }
   });
   server.listen(0, values.host, () => {
     writeJson(p.server, { pid: process.pid, host: values.host, port: server.address().port });
@@ -377,7 +421,7 @@ function makeSink(p) {
     add(segments) {
       const fresh = segments.filter((s) => s.text && known.get(s.id) !== s.text);
       if (!fresh.length) return 0;
-      fs.appendFileSync(p.lines, fresh.map((s) => JSON.stringify(s) + "\n").join(""));
+      fs.appendFileSync(p.lines, fresh.map((s) => JSON.stringify(s) + "\n").join(""), { mode: 0o600 });
       for (const s of fresh) known.set(s.id, s.text);
       return fresh.length;
     },
@@ -401,11 +445,13 @@ async function cmdPoll(values, positionals) {
     console.log(`replayed ${segs.length} segments through ${sourceName}, ${added} new or changed`);
     return;
   }
-  const url = positionals[0];
-  if (!url) die("poll needs the live-share link: poll <share-url>");
+  // The link comes on stdin only: an argument would show in the process list, which other users can read.
+  if (positionals[0] !== "-") die("pass the live-share link on stdin, never as an argument: poll - <<'EOF' (link) EOF");
+  const url = fs.readFileSync(0, "utf8").trim();
+  if (!url) die("poll - read no link on stdin");
   const named = Object.entries(SOURCES).find(([, s]) => s.match(url));
   if (!named) die(`no transcript source reads this link; known: ${Object.keys(SOURCES).join(", ")}`);
-  if (ours(state.pollerPid)) die(`a poller is already running (pid ${state.pollerPid}); run stop first`);
+  if (ours(state.pollerPid, "_poller", p.dir)) die(`a poller is already running (pid ${state.pollerPid}); run stop first`);
   const pwDir = findPlaywright(values.playwright);
   save({ ...state, shareUrl: url, source: named[0] });
   fs.rmSync(p.poll, { force: true });
@@ -446,7 +492,7 @@ async function runPoller(values) {
   process.on("SIGTERM", () => finish(0));
   process.on("SIGINT", () => finish(0));
   try {
-    if (!state.shareUrl || !source) throw new Error("no share link in state; run poll <share-url>");
+    if (!state.shareUrl || !source) throw new Error("no share link in state; run poll -");
     const { chromium } = createRequire(SCRIPT)(values.playwright);
     const launched = await launchBrowser(chromium, values.browser);
     browser = launched.browser;
@@ -523,7 +569,7 @@ async function cmdNext(values) {
   }
   const s = readJson(p.poll, null);
   if (s && (s.state === "revoked" || s.state === "error")) die(`poller ${s.state}: ${s.message}`, 3);
-  if (state.pollerPid && !alive(state.pollerPid)) die("the poller is not running; see poll.log, then run poll again", 3);
+  if (state.pollerPid && !ours(state.pollerPid, "_poller", p.dir)) die("the poller is not running; see poll.log, then run poll again", 3);
 }
 
 // ---------- stop ----------
@@ -539,8 +585,13 @@ async function cmdStop(values) {
   if (!values.project) die("stop needs --project <dir>: the transcript goes to <dir>/calls/<date>/transcript.txt");
   const { p, state, save } = openCall(values);
   const notes = [];
-  if (await killTree(state.pollerPid)) notes.push(`poller stopped (pid ${state.pollerPid})`);
-  if (await killTree(state.serverPid)) notes.push(`server stopped (${state.url})`);
+  for (const [label, pid, sub] of [["poller", state.pollerPid, "_poller"], ["server", state.serverPid, "_server"]]) {
+    if (!pid) continue;
+    const done = await killTree(pid, sub, p.dir);
+    if (done === "killed") notes.push(`${label} stopped (pid ${pid}${label === "server" ? `, ${state.url}` : ""})`);
+    else if (done === "other") notes.push(`${label} pid ${pid} now belongs to another process (its command line does not name ${sub} and this call folder); not killed`);
+    else notes.push(`${label} had already exited (pid ${pid})`);
+  }
   // Windows releases the port a moment after the process is gone.
   let open = Boolean(state.host && state.port);
   for (let i = 0; open && i < 30; i++) { open = await portOpen(state.host, state.port); if (open) await sleep(100); }
