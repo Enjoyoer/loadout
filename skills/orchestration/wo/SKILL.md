@@ -23,8 +23,8 @@ description: Ask the owner questions and read his answers in his preferred forma
 - A line ending in "?" is a question about that item. Answer it, then re-ask only that item.
 - Fewer lines than items: the rest stay open.
 - For a batch of 4 or more answer lines, or a voice answer, start your reply with the mapping: "Read as: 36 yes, 112 hold, 113 ?". Act only on the clear items; ask about a line that could belong to two items, never guess.
-- A held item leaves the list until its check date. "drop" or "stop mentioning" removes it for good.
+- A held item never leaves the list. Only "drop" or "stop mentioning" removes an item.
 
 ## /wo
 
-When the owner types `/wo` or asks what's open, reply with only the numbered list of decisions you are still waiting on him for, in your own scope, oldest first, with your recommendation each. Include deadlines. If nothing is open, say "Nothing open." Do not repeat status or finished work.
+When the owner types `/wo` or asks what's open, reply with only the numbered list of decisions you are still waiting on him for, in your own scope, oldest first, with your recommendation each. Include deadlines. Then append every held item at the bottom under a "Held" label: same stable number, one line, with its check date when it has one. If nothing is open or held, say "Nothing open." Do not repeat status or finished work.

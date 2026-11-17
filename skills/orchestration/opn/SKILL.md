@@ -2,7 +2,7 @@
 name: opn
 description: Run durable non-code work as its PM, with one outcome-scoped worker per outcome and fresh-readback proof. Use for explicit OPN workflows or when a PM owns a non-code workstream or folder.
 metadata:
-  version: "2.6.1"
+  version: "2.7.0"
 ---
 
 # OPN Non-Code PM
@@ -19,7 +19,9 @@ OPN is how a PM runs durable non-code work (operations, configuration, research,
 ## Workers
 
 - Start one child worker per desired outcome, in the PM's own workspace. Never create a new workspace; for work on another host, the worker reaches it over ssh. Launch and follow-ups use `notifyOnFinish`.
-- The worker uses the PM's model and thinking; do not ask the owner to pick one. A named exception by task type is allowed when the project or the owner records it, such as a 3D-capable model for 3D work. Workers never inherit Fable: a PM on Fable starts its workers on Pi `fleet/claude-opus-5-5` thinking high, or on the model its recorded task-type exception names. If Opus high is not available (out of quota per pq, missing from the catalog, or the agent fails to start), start the worker on Pi `fleet/gpt-6.1-sol` thinking high.
+- The worker uses the PM's model and thinking; do not ask the owner to pick one. A named exception by task type is allowed when the project or the owner records it, such as a 3D-capable model for 3D work. Workers never inherit Fable: a PM on Fable starts its workers on Pi `fleet/claude-opus-5-5` thinking high, or on the model its recorded task-type exception names. Opus high counts as unavailable only when it is missing from the catalog, or the agent fails to start or returns a quota error; then start the worker on Pi `fleet/gpt-6.1-sol` thinking high.
+- Pace and quota information lives only with Config PM. Other PMs and workers keep no pace or quota notes, never read `pq` or usage to pick a model, and ask Config PM in one line when they think quota matters.
+- A browser task of more than a few clicks goes to one worker started in the PM's own workspace, so it shares the Paseo browser and its signed-in tabs, on Pi `fleet/gpt-6.1-sol` thinking `low`. This is a recorded task-type exception (owner, 11/17); the owner does not have to name the model. The PM keeps single clicks and read-only looks.
 - An agent other than a main PM runs on Fable only in OPC's `ui-design` and `ui-check` lanes. At most 5 Fable agents run at once across the fleet, and the main PMs count toward it. Before starting one, count the running Fable agents on every host.
 - The brief is the outcome, the acceptance checks and the rules, pointing to source paths. There is no acknowledgment round: dispatch and move on. Workers do not start workers of their own.
 - The worker reports to the PM in at most 5 lines, plus a `report.md` in its scratch folder.
