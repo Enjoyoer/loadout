@@ -45,13 +45,14 @@
     {
       "name": "loadout-writing",
       "source": "./",
-      "description": "Draft messages in a style learned from your own samples.",
+      "description": "Draft messages in a style learned from your own samples, and coach the owner live during a call.",
       "version": "0.1.0",
       "license": "MIT",
       "category": "productivity",
       "repository": "https://github.com/Enjoyoer/loadout",
       "strict": false,
       "skills": [
+        "./skills/planning-writing/call-coach",
         "./skills/planning-writing/sample"
       ]
     },
