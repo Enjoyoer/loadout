@@ -6,7 +6,7 @@ For the entrypoint's review branch, read [web lane](web-lane.md "runtime") and [
 
 These rules bind every review of a candidate, browser or not, and other skills point here.
 
-- **R1 Review budget.** At most 3 review rounds per candidate. Extend to 5 only when the open finding is a security, permission or data-loss risk. Stop early when a round returns only nits. At the cap with blockers still open: stop, report NOT APPROVED and escalate to the owner; never self-fix and merge without a new independent verdict.
+- **R1 Review budget.** One review round per candidate, then one fix check of the accepted repairs on the repaired head. Only an open security, permission or data-loss blocker gets further rounds, up to 5 in total. A blocker still open at the end: stop, report NOT APPROVED and escalate to the owner; never self-fix and merge without a new independent verdict.
 - **R2 One reviewer.** One authoritative reviewer per candidate head at a time; reviewers never start their own reviewers. Exempt: owner-requested research panels and separately scoped audits.
 - **R3 Implicit state machines.** When the change owns a job, queue, call, retry, resume or rerun lifecycle, or reuses a state folder, the PM also asks the reviewer, in its brief (for a web reviewer, in `constraints`): "Find all of the implicit state machines in this code. For each, list states, transitions, and any missing or invalid transitions that are bugs." The reviewer reports only bugs, each with `file:line` and the steps that trigger it. It skips by-design behavior, does not report a count of state machines, and does not refactor.
 
