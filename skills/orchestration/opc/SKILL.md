@@ -2,7 +2,7 @@
 name: opc
 description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
 metadata:
-  version: "7.62.2"
+  version: "7.63.0"
 ---
 
 # OPC
@@ -15,17 +15,13 @@ Follow this state machine, reading linked references only when their branch appl
 
 ## 1. Scope
 
-PMs run on Pi `fleet/claude-opus-5-5`, thinking `medium`, unless the owner names another model or effort. If self differs at first PM ownership, `update_agent` only self's model and thinking.
-
-For an owned non-scratch project without a custom icon, use `$project-icon`.
-
-Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks: observable behaviors from the owner's intent, preferably end-to-end or live. Consult root `STATUS.html` and `LESSONS.md` when resuming. Before asking the owner, check their past answers, files, Bitwarden and owning PM; ask only what none settles, saying what you checked. Escalate scope or authority changes to the owner.
+Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks: observable behaviors from the owner's intent, preferably end-to-end or live. Escalate scope or authority changes to the owner.
 
 Enable browser review only when the initial request explicitly asks; the choice is immutable through repairs, resumes, and reinvocation. Initialize the [execution mechanics](references/imp-execution.md "runtime") before launching lanes.
 
 ## 2. Optional scouting
 
-Default to one scout; add another only for an independent question expected to take 30+ minutes. Trivial, localized, or inherently sequential work skips scouting and planning. When scouting, read [exploration](references/exploration-swarm.md "branch:scouting"). Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify a read-only `plan` Worker.
+Default to one scout; add another only for an independent question expected to take 30+ minutes. Trivial, localized, or inherently sequential work skips scouting and planning. Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify a read-only `plan` Worker.
 
 ## 3. Worker
 
@@ -39,7 +35,7 @@ All repository source and test edits, including small repairs, belong to Workers
 
 ## 4. Yield
 
-Launch every OPC agent and background follow-up through agent-scoped Paseo `create_agent` or `send_agent_prompt` MCP with `notifyOnFinish: true`; finish independent work, then end the turn. On completion, error, or permission notification, read `get_agent_status` and `get_agent_activity` once each. No polling, babysitting, sleeps, CLI waits, terminal inspection, status narration, retries, or replacements while running. Report terminal failures.
+Launch every OPC agent and background follow-up through agent-scoped Paseo `create_agent` or `send_agent_prompt` MCP with `notifyOnFinish: true`; finish independent work, then end the turn. On completion, error, or permission notification, read `get_agent_status` and `get_agent_activity` once each. No babysitting, CLI waits, terminal inspection, status narration, retries, or replacements while running. Report terminal failures.
 
 ## 5. Integrate
 
@@ -47,10 +43,8 @@ Verify returned agent/workspace identity, path, branch, commits, selected-base a
 
 ## 6. Verify
 
-Independently check required behavior and final committed deliverable bytes using the execution mechanics. Reuse a receipt only while head, bytes, command, and evidence remain unchanged; otherwise rerun. [Review rules](references/web-reviewer.md#review-rules "branch:review") bind every review; initially enabled review reads it at the published candidate head. Security-sensitive diffs review on `review-security`. Review never replaces PM correctness checks. Unrun platform or browser checks remain unverified.
+Independently check required behavior and final committed deliverable bytes using the execution mechanics. Reuse a receipt only while head, bytes, command, and evidence remain unchanged; otherwise rerun. [Review rules](references/web-reviewer.md#review-rules "branch:review") bind every review; initially enabled review reads it at the published candidate head. Security-sensitive diffs review on `review-security`. A small PR (not security-sensitive, changing no live system, and under about 50 changed lines) gets no separate review agent unless the owner asks: the Worker's own checks and the PM's readback cover it. Review never replaces PM correctness checks. Unrun platform or browser checks remain unverified.
 
 ## 7. Merge and cleanup
 
 PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. Report test, integration, and PR evidence, review verdict/head or unavailability, Worker usage, remaining issues, and cleanup gaps separately.
-
-For package maintenance only, use [maintenance](references/maintenance.md "branch:maintenance").

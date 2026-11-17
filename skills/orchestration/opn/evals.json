@@ -152,7 +152,7 @@
         "other_reporters": false
       },
       "expected": {
-        "reviewer": "one separate reviewer agent, findings sent to the same worker, a second review only after substantial fixes, reviewer archived when done",
+        "reviewer": "one separate reviewer agent, one review round, findings sent to the same worker, one fix check, reviewer archived when done",
         "pm_action": "fresh readback of each acceptance check",
         "owner_message": "plain-words relay citing the readback",
         "archive_worker": "after verification"

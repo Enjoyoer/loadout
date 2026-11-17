@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "89ddf598359860eb00c7a13bdb72caa41bea311d",
+  "source_commit": "1ebdfe67b683d7240835662d4a1a6abf0914a76a",
   "skill_count": 24,
-  "file_count": 135,
+  "file_count": 131,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -198,8 +198,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5314,
-      "sha256": "106e50be0cb7ae43ec629e15a2d1b5a37bc3e7c6929b4d98778c29410f531632"
+      "bytes": 4851,
+      "sha256": "f133c1e381f0a3a641b1b9e9a7917f1d1e30c7f27f1ff70a65d1242faa93b177"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -216,25 +216,11 @@
       "sha256": "02809cf8310cc6460c0f7047a34f2140572d69ac7db19d52cb307f559e3cf9d5"
     },
     {
-      "path": "skills/orchestration/opc/references/exploration-swarm.md",
-      "category": "orchestration",
-      "skill": "opc",
-      "bytes": 1031,
-      "sha256": "bc7f40d0d8e78e552bcf0c2ae8b45105da91e791de28a501fd1246efa1f7125c"
-    },
-    {
       "path": "skills/orchestration/opc/references/imp-execution.md",
       "category": "orchestration",
       "skill": "opc",
       "bytes": 4510,
       "sha256": "b4fd59e8dbd2a0ffca0718751d7e620cf551f012fe129608286e71459a322843"
-    },
-    {
-      "path": "skills/orchestration/opc/references/maintenance.md",
-      "category": "orchestration",
-      "skill": "opc",
-      "bytes": 279,
-      "sha256": "ce295937470ab699c6cbbd952d045ae91949d991aa29f39549218070c3d37fbf"
     },
     {
       "path": "skills/orchestration/opc/references/pr-evidence.md",
@@ -268,29 +254,15 @@
       "path": "skills/orchestration/opc/references/web-lane.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 1180,
-      "sha256": "0338a57266ef8b4bf3843c8ae7949f72ab1817979e2ffa0d1ea4994a46eab4c8"
-    },
-    {
-      "path": "skills/orchestration/opc/references/web-large-inputs.md",
-      "category": "orchestration",
-      "skill": "opc",
-      "bytes": 1806,
-      "sha256": "8557c9aafa6d62f2742fd82cb9a458563f6153a78055978b9dd5a8788f64be05"
-    },
-    {
-      "path": "skills/orchestration/opc/references/web-models-not-approved.md",
-      "category": "orchestration",
-      "skill": "opc",
-      "bytes": 3966,
-      "sha256": "95349913f95bcdcf5ef67fc566e294ad258240c373e06a90d521ac47bc343af3"
+      "bytes": 931,
+      "sha256": "b7512e33612a5248c796698e59d2e08aafb5ec70ea0b5bd5bc585ece17b6fe86"
     },
     {
       "path": "skills/orchestration/opc/references/web-reviewer.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4991,
-      "sha256": "611a2e8a4350a6cba6da8b747f9bee3ee25e1c331f60440e99be38030e19d64a"
+      "bytes": 5005,
+      "sha256": "2c152acb060c05917ee33c0ae11128b4bd330ec5747adc1e39406d138a89672e"
     },
     {
       "path": "skills/orchestration/opc/references/worktree-lifecycle.md",
@@ -359,8 +331,8 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 8896,
-      "sha256": "578e3b8aa10b443aa610bf20f3729e401be804287759512a6f81697c3bbe3154"
+      "bytes": 8224,
+      "sha256": "67ea1275534c230be5e8efc71ac0d5c8c72556f848c92ad1264274a9ea42467e"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
@@ -373,8 +345,8 @@
       "path": "skills/orchestration/opn/evals.json",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 13018,
-      "sha256": "efa30d30a3574f7cd8b1592b902ff1254fe6cb50b43d864336c01da88f23f2d7"
+      "bytes": 13005,
+      "sha256": "45f1f54d94d422f34bbc54bb4d45c894a9b042a4fd278e9105f88a887b101d2c"
     },
     {
       "path": "skills/orchestration/opn/references/host-adapters.md",
