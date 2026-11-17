@@ -21,7 +21,7 @@ const ConfigObjectSchema = z.object({
   // back once pq shows Claude usable. Off by default; turning it off stops new swaps, never a pending return. Every such
   // PM is eligible: no label opts it out.
   pmFallback: z.boolean().default(false),
-  pmFallbackModel: z.string().min(1).default("fleet/gpt-6.1-sol"),
+  pmFallbackModel: z.string().min(1).default("fleet/gpt-6.2-sol"),
   pmFallbackThinking: z.string().min(1).default("medium"),
   pmFallbackServiceTier: z.string().min(1).default("standard"),
   // The fallback chain: a PM whose original model has an entry first moves to that entry's exact catalog profile (no

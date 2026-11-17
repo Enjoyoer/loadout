@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "1220e7793552567f3ed9662fa9c5996bc7354e2d",
+  "source_commit": "5c91093ea1a2bce2c34ae94d16df6819cb0f1214",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -199,7 +199,7 @@
       "category": "orchestration",
       "skill": "opc",
       "bytes": 5080,
-      "sha256": "984f7b58f428151abcfb0c1274b203caef85da10a2a23a56b90d0b1658197b9f"
+      "sha256": "99179b3d80778dc564d99b84d5b611d0fe8f8e21b06c044096e87c46ad6a6337"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -240,8 +240,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 12778,
-      "sha256": "ab1bb436951330045f81c0734f60af2dab5ae6ab309856d6294edc1d66ff253d"
+      "bytes": 12780,
+      "sha256": "ace193d473879b8a95ae0bcc7e566eae2ca66a280099d9867bee5b74a4895c4f"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -325,7 +325,7 @@
       "category": "orchestration",
       "skill": "opn",
       "bytes": 8891,
-      "sha256": "c75088b0e7b64a2cb3fb5439df6b49731652013868a649b0716c25b8c7214060"
+      "sha256": "5f00486749a0b3b9593925f930bf9cc32fccb830725120ccdd5bf23da65fdb65"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
@@ -696,7 +696,7 @@
       "category": "orchestration",
       "skill": "unstuck",
       "bytes": 3893,
-      "sha256": "2c8dd13a5b447ab19ff7eb5b2176b0e9c5fbaeef03f0d12e6526a8ff06151d2f"
+      "sha256": "0ede3421fd8315d7a4606bfacec0e9531c36ddf36de624909f6906360bfa5beb"
     },
     {
       "path": "skills/orchestration/unstuck/agents/openai.yaml",
@@ -1598,7 +1598,7 @@
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
       "bytes": 43999,
-      "sha256": "bc99beb85bc47b09c3163de355102857aeaa8e5f0d918382e4b40630cfe2b222"
+      "sha256": "f789f07dcd560cc19dbefdd2138fcdb1fd2833097a754070311da8cf6199a04f"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
@@ -1610,13 +1610,13 @@
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 23597,
-      "sha256": "83b3ae1228fceb127e17aca821c50ba4dcb01c57261d67e3c4bfd26999802dc6"
+      "sha256": "b32c8f3d206bf1f663342a74a3937d37cbbb62a23570341c6293269de433a5f5"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 890,
-      "sha256": "24e03f08d9aa4c0f141f250535ed6c6f2e2f67d9ecf773017be7e3a1e948c940"
+      "sha256": "bbe6c01eb84127f8aa501f93f8ebb78c4314a7ee14479dd6c1e74043c5fbf0b7"
     },
     {
       "path": "plugins/usage-limit-auto-resume/paseo-plugin.json",
@@ -1628,7 +1628,7 @@
       "path": "plugins/usage-limit-auto-resume/server/config.ts",
       "plugin": "usage-limit-auto-resume",
       "bytes": 2893,
-      "sha256": "e3ee1f28325b8ca6422b21b3979578a4086c02527a4b87f8943b7ba681856fca"
+      "sha256": "38d9390b84c325599e359d1d9bb2c0513ab1009e96442e499ba3ef98a7138e8b"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/daemon-run.ts",
@@ -1736,7 +1736,7 @@
       "path": "plugins/usage-limit-auto-resume/test/pm-fallback.test.ts",
       "plugin": "usage-limit-auto-resume",
       "bytes": 41678,
-      "sha256": "faa293bc9569ec1adfbabe422f2a3399b33328797224378fd5c6ffa548ec9754"
+      "sha256": "2bc87d56e8634cbcc4c1057c2fefdb78fc6f7f27c6e17acb9556c6a0b6fd9ac3"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/rpc-timeout.test.ts",

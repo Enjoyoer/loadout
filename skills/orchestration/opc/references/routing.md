@@ -10,7 +10,7 @@ It prints one JSON object, `{route, reason}` (also `provider` for browser defaul
 
 ## Classes
 
-Labels resolve through the target Pi catalog; browser classes launch with native Codex catalog IDs (`gpt-6.1-sol`, `gpt-6-astra`). Routes are the minimum (owner rule): nothing lowers a route. Each class runs at its default; only an owner-named route changes it.
+Labels resolve through the target Pi catalog; browser classes launch with native Codex catalog IDs (`gpt-6.2-sol`, `gpt-6.2-astra`). Routes are the minimum (owner rule): nothing lowers a route. Each class runs at its default; only an owner-named route changes it.
 
 | Class | Use for | Default | Fast |
 |---|---|---|---|

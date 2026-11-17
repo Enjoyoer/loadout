@@ -14,7 +14,7 @@ import { QuotaReader } from "../server/quota.ts";
 import { ResumeStore } from "../server/store.ts";
 
 const OPUS = "fleet/claude-opus-5-5";
-const SOL = "fleet/gpt-6.1-sol";
+const SOL = "fleet/gpt-6.2-sol";
 const USAGE = "usage_limit_exceeded: fixture limit (stopReason=error, model=fleet/claude-opus-5-5)";
 // The provider errors of the 10/21 incident, as Pi reports them on a failed turn.
 const RATE_LIMIT = '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}} (stopReason=error, model=fleet/claude-opus-5-5)';
