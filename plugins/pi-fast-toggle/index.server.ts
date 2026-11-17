@@ -14,9 +14,14 @@ export default function contribute(server: PluginServerContext) {
       const cfg = await settings.read();
       if (cfg.status !== "ready") return { capable: false, ...state };
       const route = await runtime(cfg.values.runtimeRoot, agent.runtimeInfo?.model ?? agent.model ?? "");
-      const capable = tierCapable(route.model, await catalog(cfg.values.runtimeRoot, route));
-      // On Luna the routing sends Fast whatever the label says, so the pill is fixed on.
-      return capable && lunaModel(route.model) ? { capable, ...state, fast: true, fixed: true } : { capable, ...state };
+      const rows = await catalog(cfg.values.runtimeRoot, route);
+      const capable = tierCapable(route.model, rows);
+      if (!capable || !lunaModel(route.model)) return { capable, ...state };
+      // On Luna the routing sends Fast whatever the label says, so the pill is fixed on; it requests Ultrafast only for
+      // an ultrafast label on a model row that lists ultrafast.
+      const ultrafast = state.tier === "ultrafast" && !!rows.find(row => (row.slug ?? row.id) === route.model.id)
+        ?.service_tiers?.some(tier => tier.id === "ultrafast");
+      return { capable, ...state, fast: true, tier: ultrafast ? "ultrafast" : "fast", fixed: true };
     } catch { return { capable: false, ...state }; }
   });
   server.handle(toggle, async ({ agentId, fast }, { paseo }) => {
