@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { requestedState, tierCapable, LABEL } from "../shared/model";
+import { requestedState, tierCapable, lunaModel, LABEL } from "../shared/model";
 import { withDaemon } from "./daemon";
 const exec = promisify(execFile);
 export async function runtime(root: string, selection: string) {
@@ -57,4 +57,4 @@ export async function writeTier(agentId: string, fast: boolean) {
   try { await withDaemon(client => client.updateAgent(agentId, { labels: { [LABEL]: fast ? "fast" : "standard" } })); }
   catch { throw Error("Agent tier update failed"); }
 }
-export { requestedState, tierCapable };
+export { requestedState, tierCapable, lunaModel };

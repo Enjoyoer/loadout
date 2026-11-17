@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "133c26863221553ea18f0532eb13d16f22e38eaf",
+  "source_commit": "b71f0d0019360d85ae515469b926e9c1677707a0",
   "skill_count": 24,
-  "file_count": 131,
+  "file_count": 130,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -198,8 +198,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5050,
-      "sha256": "977a1cfc904aae1ab32efd0b168466382c1cc36111760fb3f707463fa4aaf5d2"
+      "bytes": 5080,
+      "sha256": "984f7b58f428151abcfb0c1274b203caef85da10a2a23a56b90d0b1658197b9f"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -212,8 +212,8 @@
       "path": "skills/orchestration/opc/references/codex-sites.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 3174,
-      "sha256": "02809cf8310cc6460c0f7047a34f2140572d69ac7db19d52cb307f559e3cf9d5"
+      "bytes": 3746,
+      "sha256": "ac0b6c87cab4aabc8bd93dd2c717aed7dba0b033f8b0b46b6e34f5956596fa35"
     },
     {
       "path": "skills/orchestration/opc/references/imp-execution.md",
@@ -240,8 +240,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 14492,
-      "sha256": "31304432c45a21f06d7a7e599973df1b2880e3b34c78be5a05181e889697e88c"
+      "bytes": 12778,
+      "sha256": "ab1bb436951330045f81c0734f60af2dab5ae6ab309856d6294edc1d66ff253d"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -275,8 +275,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 34847,
-      "sha256": "37f36ff8a57072d87cc6d0dcef8f38bf060bdc383c65fc44eddacddf64c27155"
+      "bytes": 35110,
+      "sha256": "5d27daf2973a28fcc23f77846f0de5be050cf61dc6db5df9da53d507c8b41709"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -293,18 +293,11 @@
       "sha256": "64bbe5cc2062ee63d64f3d8dd63a879c00f8f4189497287c5a9304418b3beb3a"
     },
     {
-      "path": "skills/orchestration/opc/scripts/quota-pace.mjs",
-      "category": "orchestration",
-      "skill": "opc",
-      "bytes": 10965,
-      "sha256": "3ae6fd3a587838b3406678996280d8dbf29016ed4a00b0b5e12483b10c8f9b00"
-    },
-    {
       "path": "skills/orchestration/opc/scripts/route.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 9080,
-      "sha256": "628cbe59bc80e9f5a8c85548d34754d543f0375908fe661f8ac7b5ebef49e743"
+      "bytes": 8201,
+      "sha256": "7fbfbb6b387ebdee208e82eb1aa8a20b5f6bebd97d08ef9ad65a0646f1a5ecf1"
     },
     {
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
@@ -317,8 +310,8 @@
       "path": "skills/orchestration/opc/scripts/validate-opc.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5709,
-      "sha256": "86140ef504a0d253e5c0e41758f4379ea0a39f4e3895237726ea20cfa3ca6599"
+      "bytes": 5597,
+      "sha256": "e9fc7819bc7124d766263d521f7a69139f9e440e3366b6ea2cb9e00f357456e6"
     },
     {
       "path": "skills/orchestration/opc/scripts/web-reviewer.mjs",
@@ -387,8 +380,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 96333,
-      "sha256": "98cbe4591c52a614f97d4d97f0d0bb38000800825045e2b411c166ca5fcead26"
+      "bytes": 96777,
+      "sha256": "ce3b0b22c42e08da17fabee7d30f75dd4ebbcc40b74b1e82d9ac2e12ad397e33"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -569,8 +562,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 106012,
-      "sha256": "134de82ef8e04369d9dd75c4a8e91b1d24e86e51f9fc6d4700ce60dba9be458d"
+      "bytes": 106546,
+      "sha256": "6827061a7a56b467c56785317d31bea79abae4a4fd8c7e8c6fdfba3be8c6e0ff"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
@@ -1457,8 +1450,8 @@
     {
       "path": "plugins/pi-fast-toggle/README.md",
       "plugin": "pi-fast-toggle",
-      "bytes": 13919,
-      "sha256": "544c685218508919e2ae888e4327c9a5707bc917c465769400de3998304601d5"
+      "bytes": 14279,
+      "sha256": "e02e10f71eecb1d483eb79c944b174be7a5808353a6bcfd2384f5f51c7ac0f28"
     },
     {
       "path": "plugins/pi-fast-toggle/client/effort.tsx",
@@ -1469,8 +1462,8 @@
     {
       "path": "plugins/pi-fast-toggle/client/pills.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 5558,
-      "sha256": "fb5b1c0641b28df4517f3e7dc4821927f00616b03325be3932deed0b92fd9a04"
+      "bytes": 5682,
+      "sha256": "5d16707450dfa5cb22ebfe25b5976174cd96818f773d724f6bbbcd105dcb33a9"
     },
     {
       "path": "plugins/pi-fast-toggle/client/tsconfig.json",
@@ -1493,20 +1486,20 @@
     {
       "path": "plugins/pi-fast-toggle/index.server.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 2568,
-      "sha256": "8e31481affb9a21f3c32df1667950c050fe0febe4acc507e739bb06cb4cf37d7"
+      "bytes": 3242,
+      "sha256": "78f463ac31f9417f6a807730173ebda10d7bb61dd334b9c1e2af98c44e88b3ba"
     },
     {
       "path": "plugins/pi-fast-toggle/package-lock.json",
       "plugin": "pi-fast-toggle",
       "bytes": 164461,
-      "sha256": "a9c86e06454642d477d962521fb288409bf1f1bfc98e1af1ab50d7c5ffd5dbc6"
+      "sha256": "4d4c0baa0c9874f3dc493f1bc981558226c80e1ac1f9ebe8a8b07b719b128c62"
     },
     {
       "path": "plugins/pi-fast-toggle/package.json",
       "plugin": "pi-fast-toggle",
       "bytes": 777,
-      "sha256": "ab93444309a22fc50e6f8a01abb37a4693d25d0428e0e99aa4c734e85fe0bb11"
+      "sha256": "8057a0e8dd1be6fcdc5fdf6b6a8db44cbfd3ff1f565f65fc9531a52ac0fbd540"
     },
     {
       "path": "plugins/pi-fast-toggle/paseo-plugin.json",
@@ -1529,8 +1522,8 @@
     {
       "path": "plugins/pi-fast-toggle/server/routing.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 3743,
-      "sha256": "986d885ad135034cd94802f4c4f501db990d51ee555eed8490e87a4c3a6b0ba9"
+      "bytes": 3765,
+      "sha256": "421ee80105245331fca6cbf4c0fe55bcdccf9050346c87eb3add1988034be72e"
     },
     {
       "path": "plugins/pi-fast-toggle/server/vendor/daemon-target.ts",
@@ -1541,14 +1534,14 @@
     {
       "path": "plugins/pi-fast-toggle/shared/contracts.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 1521,
-      "sha256": "2f8d4425cd1df7f5948aca6a5d2cfe4b776bf7eb029b2171c734b09952827455"
+      "bytes": 1541,
+      "sha256": "a757dbf6686efeeca2c0bfd8029dff0649351ca06a77495cf8b9784b54a3058f"
     },
     {
       "path": "plugins/pi-fast-toggle/shared/model.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 1067,
-      "sha256": "19bc7f0467f3bee64a05fb171792d963a06867c994b00940bf61d1cf151dc9e1"
+      "bytes": 1312,
+      "sha256": "ae35c7aae56fe8d6ab28520353337bba920233f65c798e72667718a841da2aae"
     },
     {
       "path": "plugins/pi-fast-toggle/test/model.test.ts",
@@ -1571,8 +1564,8 @@
     {
       "path": "plugins/pi-fast-toggle/test/server.test.ts",
       "plugin": "pi-fast-toggle",
-      "bytes": 3452,
-      "sha256": "46906ac00126ffd40fe2a238b9875a12f8c1123202faaab6eb1fe06cb723fe99"
+      "bytes": 3910,
+      "sha256": "61774b843d7f8c146797c46c8579aaf71565a3615f34dcb0a94ab3a5bb62595e"
     },
     {
       "path": "plugins/pi-fast-toggle/tsconfig.json",

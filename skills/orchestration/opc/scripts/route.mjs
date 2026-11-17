@@ -8,16 +8,14 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { canonicalWorkerClass, isUiRoute, OWNER_RULE_ROUTES, recordedLaneEntry, routeReason, selectWorkerRoute,
   uiTaskLaneClass, validateLaneClass, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
-import { defaultRoutingPath, readQuota, readRoutingSettings, ROUTING_DEFAULTS } from './quota-pace.mjs';
 import { readTask, updateTask } from './task-state.mjs';
 
-const usage = 'usage: route.mjs --class <class> [--pq-file FILE] [--catalog FILE] ' +
+const usage = 'usage: route.mjs --class <class> [--catalog FILE] ' +
   '[--owner-model ID --owner-effort LEVEL [--owner-fast on|off]] [--task TASK_JSON --lane SLUG]';
 
-// An owner route is returned unchanged; owner-rule classes (ui-design, ui-check) skip the pace; routing.json and quota are read only
-// for classes the pace may adjust, and a bad routing.json falls back to the defaults.
-export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, catalog, pqFile = null,
-  settings = null, home } = {}) {
+// An owner route is returned unchanged; owner-rule classes (ui-design, ui-check) carry their rule's reason, and every
+// other class runs at its table default.
+export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, catalog } = {}) {
   taskClass = canonicalWorkerClass(taskClass);
   if (ownerRoute) {
     const route = selectWorkerRoute({ ownerRoute, taskKind: taskClass, catalog });
@@ -26,20 +24,10 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
   if (Object.hasOwn(OWNER_RULE_ROUTES, taskClass ?? '')) {
     return Object.freeze({ route: selectWorkerRoute({ taskKind: taskClass, catalog }), reason: OWNER_RULE_ROUTES[taskClass].reason });
   }
-  const rule = Object.hasOwn(WORKER_DEFAULT_ROUTES, taskClass ?? '') ? WORKER_DEFAULT_ROUTES[taskClass] : null;
-  if (!rule) throw workerRouteUnresolved();
-  let routing = settings ?? ROUTING_DEFAULTS, invalid = '';
-  if (rule.range && !settings) {
-    const path = defaultRoutingPath();
-    try { routing = readRoutingSettings({ path }); } catch (error) {
-      const detail = error.message.replace(path, '').replace(/^:?\s*(?:is\s+)?/, '').replace(/ \(allowed: [^)]*\)$/, '');
-      invalid = `routing.json invalid (${detail.replace(/\s+/g, ' ')}), defaults used, `;
-    }
-  }
-  const quota = rule.range ? await readQuota({ settings: routing, pqFile, home }) : null;
-  const route = selectWorkerRoute({ taskKind: taskClass, catalog, quota, settings: routing });
-  return Object.freeze({ route, reason: `${invalid}${routeReason(route)}`,
-    ...(['browser', 'browser-hard'].includes(taskClass) ? { provider: `codex/${route.model}` } : {}) });
+  if (!Object.hasOwn(WORKER_DEFAULT_ROUTES, taskClass ?? '')) throw workerRouteUnresolved();
+  const route = selectWorkerRoute({ taskKind: taskClass, catalog });
+  return Object.freeze({ route, reason: routeReason(route),
+    ...(['browser', 'browser-hard', 'sites'].includes(taskClass) ? { provider: `codex/${route.model}` } : {}) });
 }
 
 // One route per lane. Repairs and resumes reuse the recorded entry; a different route for the lane is refused, as the
@@ -119,7 +107,7 @@ async function main(argv) {
     if (!argv[i].startsWith('--') || argv[i + 1] == null || argv[i + 1].startsWith('--')) throw Error(usage);
     flags[argv[i].slice(2)] = argv[++i];
   }
-  const known = ['class', 'pq-file', 'catalog', 'owner-model', 'owner-effort', 'owner-fast', 'task', 'lane'];
+  const known = ['class', 'catalog', 'owner-model', 'owner-effort', 'owner-fast', 'task', 'lane'];
   const unknown = Object.keys(flags).find(key => !known.includes(key));
   if (unknown) throw Error(`unknown option --${unknown}; ${usage}`);
   if (!!flags['owner-model'] !== !!flags['owner-effort'] || !!flags.task !== !!flags.lane ||
@@ -138,8 +126,7 @@ async function main(argv) {
   }
   if (!ownerRoute && !flags.class) throw Error(usage);
   const catalog = ownerRoute ? null : await readCatalog(flags.catalog);
-  const resolved = await resolveWorkerRoute({ taskClass: flags.class ?? null, ownerRoute, catalog,
-    pqFile: flags['pq-file'] ?? null });
+  const resolved = await resolveWorkerRoute({ taskClass: flags.class ?? null, ownerRoute, catalog });
   if (flags.task) recordWorkerRoute(resolve(flags.task), { lane: flags.lane, ...resolved, taskClass: flags.class ?? null, catalog });
   return resolved;
 }
