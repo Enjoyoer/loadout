@@ -20,7 +20,7 @@ Labels resolve through the target Pi catalog; browser classes launch with native
 | `plan` | read-only root cause, specs, implementation plans, research, scouting | Sol high | off |
 | `review` | read-only simplifier review | Sol high | off |
 | `review-security` | read-only correctness review of a security-sensitive diff: one touching auth, secrets or credentials, permissions or sandboxing, firewall or network exposure, backups, or deletion and archive paths | Opus xhigh, owner rule | off |
-| `browser` | routine website navigation, data entry, repetitive and high-volume browser automation, ordinary computer use | native Codex Sol medium | off |
+| `browser` | routine website navigation, data entry, repetitive and high-volume browser automation, ordinary computer use | native Codex Sol low (owner 2026-11-17) | off |
 | `browser-hard` | complex desktop application workflows; fragile, ambiguous or repeatedly failing browser workflows | native Codex Astra medium | off |
 | `smoke` | smokes, canaries | Luna low | on (owner 2026-11-17) |
 | `watcher` | watchers, heartbeats | Luna xhigh | on (owner 2026-11-17) |

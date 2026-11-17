@@ -28,7 +28,8 @@ export const WORKER_DEFAULT_ROUTES = Object.freeze({
   // Security, credential and data-loss reviews run on Opus, never GPT (owner rule): GPT trips the cyber-safety filter.
   'review-security': workerClass('Opus', 'xhigh'),
   plan: workerClass('Sol', 'high'),
-  browser: workerClass('Sol', 'medium', 'high'),
+  // Owner 2026-11-17: browser runs at Sol low; ceiling high keeps earlier medium lanes rebuildable.
+  browser: workerClass('Sol', 'low', 'high'),
   'browser-hard': workerClass('Astra', 'medium', 'high'),
   smoke: workerClass('Luna', 'low', null, true),
   watcher: workerClass('Luna', 'xhigh', null, true),

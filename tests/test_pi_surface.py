@@ -1287,7 +1287,7 @@ const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:
 const plain=value=>JSON.parse(JSON.stringify(value));
 // Owner-approved task routes: Fast off by default, on for the Luna classes (owner 2026-11-17).
 assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','review','review-security','smoke','ui-check','ui-design','watcher']);
-for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','high',false],['research','Sol','high',false],['review','Sol','high',false],['review-security','Opus','xhigh',false],['smoke','Luna','low',true],['browser','Sol','medium',false],['browser-hard','Astra','medium',false],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Luna','xhigh',true]]){
+for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','high',false],['research','Sol','high',false],['review','Sol','high',false],['review-security','Opus','xhigh',false],['smoke','Luna','low',true],['browser','Sol','low',false],['browser-hard','Astra','medium',false],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Luna','xhigh',true]]){
  const route=r.selectWorkerRoute({taskKind:kind,catalog});
  assert.equal(route.model,['browser','browser-hard'].includes(kind)?r.resolveCatalogLabel(catalog,label).id.slice(6):r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
 }
@@ -1319,10 +1319,10 @@ assert(!r.buildDelegatedBrief({role:'worker',route:code,catalog,brief:'x'}).incl
 assert(!r.buildDelegatedBrief({role:'worker',route:fableCode,taskClass:'ui-design',catalog,brief:'x'}).includes(ownerLine));
 // Browser default: Sol at medium, Fast off.
 const browser=r.selectWorkerRoute({taskKind:'browser',catalog:{pi:catalog}});
-assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'gpt-6.1-sol',effort:'medium',fastMode:false,reason:'browser default Sol medium, Fast off, native Codex authorized by owner 2026-10-14'});
+assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'gpt-6.1-sol',effort:'low',fastMode:false,reason:'browser default Sol low, Fast off, native Codex authorized by owner 2026-10-14'});
 const browserReq=build({route:browser,capabilities:nativeCaps});
-assert.equal(browserReq.request.provider,'codex/gpt-6.1-sol');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'medium',features:{fast_mode:false},modeId:'full-access'});
-assert.equal(r.resolveAgentSurface('worker',{taskKind:'browser'},catalog).effort,'medium');
+assert.equal(browserReq.request.provider,'codex/gpt-6.1-sol');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'low',features:{fast_mode:false},modeId:'full-access'});
+assert.equal(r.resolveAgentSurface('worker',{taskKind:'browser'},catalog).effort,'low');
 // An owner-named route wins; its Fast is the Pi Fast toggle label, never native fast_mode.
 const owner={role:'worker',source:'owner-explicit',model:'gpt-6.1-sol',effort:'high',fastMode:true};
 assert.deepEqual(plain(r.selectWorkerRoute({ownerRoute:owner,taskKind:'code',catalog})),owner);
@@ -1338,7 +1338,7 @@ assert.throws(()=>r.selectWorkerRoute({catalog}),/ask the owner/);
 assert.throws(()=>r.selectWorkerRoute({taskKind:'docs',catalog}),/ask the owner/);
 assert.throws(()=>r.resolveAgentRoute('worker'),/ask the owner/);
 assert.throws(()=>r.selectWorkerRoute({taskKind:'code',catalog:catalog.filter(row=>row.label!=='Opus')}),/catalog label Opus/);
-assert.throws(()=>r.selectWorkerRoute({taskKind:'browser',catalog:catalog.map(row=>row.label==='Sol'?{...row,thinkingOptions:levels(['high'])}:row)}),/does not serve required thinking medium/);
+assert.throws(()=>r.selectWorkerRoute({taskKind:'browser',catalog:catalog.map(row=>row.label==='Sol'?{...row,thinkingOptions:levels(['high'])}:row)}),/does not serve required thinking low/);
 assert.throws(()=>r.selectWorkerRoute({ownerRoute:code,catalog}),/source owner-explicit/);
 // A recorded default cannot be edited or replayed against another catalog row.
 assert.throws(()=>build({route:{...code,effort:'xhigh'}}),/task-default route/);
