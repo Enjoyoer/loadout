@@ -16,9 +16,9 @@ Everything runs through one script, `scripts/call-coach.mjs`, with Node. Run it 
 | `page <source.md>` | Writes the prep page. The live bar is part of the template, so a rewrite never drops it. Open pages reload within 4 s. |
 | `serve` | Serves the page on the host's tailnet address only (`tailscale ip -4`), on a free port, and prints the URL. It refuses to start without a tailnet address. |
 | `live -` / `live --clear` | Sets the bar from stdin, or clears it. The page checks it every 4 s and turns the bar grey with "OFFLINE" when the server stops answering. It prints the line back; check it before you move on. |
-| `poll -` | Reads the live-share link from stdin, starts the transcript poller in the background, and waits up to 60 s for the first lines. Never pass the link as an argument: other users can read process arguments. |
+| `poll` | Takes the live-share link from `link.txt` in the call folder, moves it into the private state, deletes `link.txt`, starts the transcript poller in the background, and waits up to 60 s for the first lines. |
 | `next` | Waits until new transcript lines exist or 20 s pass, then prints only the new lines as `m:ss text`. Empty output means nothing new. A line that grew prints as `m:ss ... added words`. |
-| `stop --project <dir>` | Stops the poller and the server, saves `<dir>/calls/<date>/transcript.txt`, and removes the share link from state. It kills only processes whose command line names this call's folder and says so when a saved process ID now belongs to something else. |
+| `stop --project <dir>` | Stops the poller and the server, saves `<dir>/calls/<date>/transcript.txt`, and removes the share link from state and any leftover `link.txt`. It kills only processes whose command line names this call's folder and says so when a saved process ID now belongs to something else. |
 
 ## Page source
 
@@ -33,7 +33,7 @@ A small text file, one item per line:
 ## Steps
 
 1. **Before the call.** Confirm with the owner the goal, his limits (price floor, what he will not agree to) and the facts. Write the source file and run `page`, then `serve`, and give him the URL. Run one full dry cycle: set a `live` test line, check it shows on the page, then `live --clear`. Tell him it worked. End your turn there and let his reply start the next one. That proves a turn completes on your current model route before the call depends on it.
-2. **Call started.** Ask for the live transcript link (an Otter live-share link). Run `poll -` with the link in a quoted heredoc, as for `live`. Confirm the first line arrived. If `poll` says the link went to a sign-in page, the share was revoked or is private: ask for a new link.
+2. **Call started.** Ask for the live transcript link (an Otter live-share link). Write the link with your file-write tool to `link.txt` in the call folder, then run `poll`. Never put the link in any shell command, heredoc or echo: the shell's own command line is visible to other users on the host. Confirm the first line arrived. If `poll` says the link went to a sign-in page, the share was revoked or is private: ask for a new link.
 3. **During the call.** Loop: run `next`, read the new lines, decide. Write a `live` line only when it changes what the owner should say or do in the next 30 seconds. Format: the trigger in bold, then the exact words in quotes, about 30 words at most. Pass the line on stdin through a quoted heredoc, so `$`, quotes and apostrophes arrive unchanged:
 
    ```bash
@@ -52,7 +52,7 @@ A small text file, one item per line:
 
 - `poll` reads the share page with a headless browser through `playwright-core`, found at run time: `--playwright <dir>` or `CALL_COACH_PLAYWRIGHT` first, then a normal `require` from the current folder, then the npm global root, then the newest copy in the npx cache. It is never bundled here. If none is found it says so and how to install it.
 - The browser: `--browser <path or channel>` or `CALL_COACH_BROWSER` first, then Playwright's own build, then installed Chrome, then Edge. The error names each one tried.
-- If your fleet rules send browser launches through a wrapper, pass it: `poll - --wrap "<wrapper command>"`. The poller holds that wrapper, and whatever lock or slot it takes, for the whole call, until `stop`.
+- If your fleet rules send browser launches through a wrapper, pass it: `poll --wrap "<wrapper command>"`. The poller holds that wrapper, and whatever lock or slot it takes, for the whole call, until `stop`.
 - The poller saves each transcript response from the share page and reloads the page after 45 quiet seconds (`--stale`), in case the page does not push live updates. `poll --status` shows its state. `next` exits with an error if the poller stopped or the link was revoked.
 - Test hook: `poll --replay <speech.json>` feeds one saved transcript response through the source without a browser.
 - The transcript source sits behind one small interface (`SOURCES` in the script). Otter is the only source.

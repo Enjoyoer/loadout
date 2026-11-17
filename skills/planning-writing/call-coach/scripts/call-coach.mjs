@@ -25,7 +25,8 @@ Commands:
   page <source.md>        Write the prep page from a source file (see SKILL.md for the format).
   serve                   Serve the page on the tailnet address only, on a free port; print the URL.
   live - | live --clear   Set the one-line live bar from stdin (or live "<html>"), or clear it.
-  poll -                  Read the live-share link from stdin and start the poller in the background.
+  poll                    Take the live-share link from <call folder>/link.txt (written with a file-write
+                          tool, never a shell command), delete that file, and start the poller.
       --wrap "<cmd>"      Start it through a wrapper command your fleet rules name.
       --playwright <dir>  playwright-core package folder (or CALL_COACH_PLAYWRIGHT).
       --browser <x>       Chromium executable path or channel such as chrome (or CALL_COACH_BROWSER).
@@ -114,7 +115,10 @@ function commandLine(pid) {
 function procState(pid, sub, dir) {
   if (!alive(pid)) return "gone";
   const cmd = commandLine(pid);
-  return cmd && cmd.includes(sub) && cmd.includes(dir) ? "ours" : "other";
+  const esc = dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // The exact folder after "<sub> --dir", ended by a space, a quote or the line end: "pre" never matches "pre2".
+  const re = new RegExp(`(^|\\s)${sub}\\s+--dir\\s+"?${esc}"?(\\s|$)`);
+  return cmd && re.test(cmd) ? "ours" : "other";
 }
 const ours = (pid, sub, dir) => procState(pid, sub, dir) === "ours";
 
@@ -163,6 +167,7 @@ function callPaths(dir) {
     server: path.join(dir, "server.json"),
     poll: path.join(dir, "poll.json"),
     lines: path.join(dir, "transcript.jsonl"),
+    link: path.join(dir, "link.txt"),
     cursor: path.join(dir, "next.json"),
     site: path.join(dir, "site"),
     page: path.join(dir, "site", "index.html"),
@@ -428,6 +433,23 @@ function makeSink(p) {
   };
 }
 
+// Read link.txt only if it is a regular file this user owns; make it owner-only first.
+function takeLink(p) {
+  let st;
+  try { st = fs.lstatSync(p.link); } catch (e) {
+    if (e.code === "ENOENT") die(`no link file: write the live-share link with your file-write tool to ${p.link}, never in a shell command`);
+    throw e;
+  }
+  if (st.isSymbolicLink() || !st.isFile()) die(`${p.link} is not a regular file; refusing it`);
+  if (!WIN) {
+    if (st.uid !== process.getuid()) die(`${p.link} belongs to another user; refusing it`);
+    if (st.mode & 0o077) fs.chmodSync(p.link, 0o600);
+  }
+  const url = fs.readFileSync(p.link, "utf8").trim();
+  if (!url) { fs.rmSync(p.link, { force: true }); die(`${p.link} was empty; write the link again`); }
+  return url;
+}
+
 async function cmdPoll(values, positionals) {
   const { p, state, save } = openCall(values);
   if (values.status) {
@@ -445,15 +467,16 @@ async function cmdPoll(values, positionals) {
     console.log(`replayed ${segs.length} segments through ${sourceName}, ${added} new or changed`);
     return;
   }
-  // The link comes on stdin only: an argument would show in the process list, which other users can read.
-  if (positionals[0] !== "-") die("pass the live-share link on stdin, never as an argument: poll - <<'EOF' (link) EOF");
-  const url = fs.readFileSync(0, "utf8").trim();
-  if (!url) die("poll - read no link on stdin");
-  const named = Object.entries(SOURCES).find(([, s]) => s.match(url));
-  if (!named) die(`no transcript source reads this link; known: ${Object.keys(SOURCES).join(", ")}`);
+  // The link never appears in a command line (the agent's shell command included), since other users
+  // can read process arguments. The agent writes it with its file-write tool to link.txt.
+  if (positionals.length) die(`never pass the live-share link in a command; write it with your file-write tool to ${p.link}, then run poll`);
   if (ours(state.pollerPid, "_poller", p.dir)) die(`a poller is already running (pid ${state.pollerPid}); run stop first`);
-  const pwDir = findPlaywright(values.playwright);
+  const url = takeLink(p);
+  const named = Object.entries(SOURCES).find(([, s]) => s.match(url));
+  if (!named) die(`no transcript source reads the link in ${p.link}; known: ${Object.keys(SOURCES).join(", ")}`);
   save({ ...state, shareUrl: url, source: named[0] });
+  fs.rmSync(p.link, { force: true });
+  const pwDir = findPlaywright(values.playwright);
   fs.rmSync(p.poll, { force: true });
   const wrap = (values.wrap || "").trim().split(/\s+/).filter(Boolean);
   const argv = [...wrap, process.execPath, SCRIPT, "_poller", "--dir", p.dir, "--playwright", pwDir, "--stale", String(values.stale || 45)];
@@ -492,7 +515,7 @@ async function runPoller(values) {
   process.on("SIGTERM", () => finish(0));
   process.on("SIGINT", () => finish(0));
   try {
-    if (!state.shareUrl || !source) throw new Error("no share link in state; run poll -");
+    if (!state.shareUrl || !source) throw new Error("no share link in state; write link.txt and run poll");
     const { chromium } = createRequire(SCRIPT)(values.playwright);
     const launched = await launchBrowser(chromium, values.browser);
     browser = launched.browser;
@@ -588,7 +611,7 @@ async function cmdStop(values) {
   for (const [label, pid, sub] of [["poller", state.pollerPid, "_poller"], ["server", state.serverPid, "_server"]]) {
     if (!pid) continue;
     const done = await killTree(pid, sub, p.dir);
-    if (done === "killed") notes.push(`${label} stopped (pid ${pid}${label === "server" ? `, ${state.url}` : ""})`);
+    if (done === "killed") notes.push(`${label} stopped (pid ${pid}${label === "server" && state.url ? `, ${state.url}` : ""})`);
     else if (done === "other") notes.push(`${label} pid ${pid} now belongs to another process (its command line does not name ${sub} and this call folder); not killed`);
     else notes.push(`${label} had already exited (pid ${pid})`);
   }
@@ -618,6 +641,9 @@ async function cmdStop(values) {
     }
   }
   if (shareUrl) notes.push("share link removed from state");
+  let linkLeft = true;
+  try { fs.rmSync(p.link); } catch (e) { if (e.code !== "ENOENT") throw e; linkLeft = false; }
+  if (linkLeft) notes.push("leftover link.txt deleted");
   console.log(notes.join("\n"));
 }
 
