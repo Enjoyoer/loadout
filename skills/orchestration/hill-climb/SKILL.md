@@ -1,6 +1,6 @@
 ---
 name: hill-climb
-description: Turn a task into a score agreed with the owner, then have builder agents raise it round by round, scored by separate judges, until a bar is met. Use when the owner asks to hill-climb, to make something measurably better or faster, to make a loop, build or UI flow faster, or asks where the time goes.
+description: Turn a task into an agreed score and raise it round by round with builders and separate judges. Use when the owner says hill-climb, wants something measurably better or faster, or asks where the time goes.
 ---
 
 # Hill climb

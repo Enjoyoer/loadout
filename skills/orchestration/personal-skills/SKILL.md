@@ -1,6 +1,6 @@
 ---
 name: personal-skills
-description: Sync selected skill packages, Paseo plugins, and optional Paseo provider pickers and client settings from this repository to local Codex, Claude Code, and Paseo daemon installations across a fleet, with committed-blob verification and local-edit protection.
+description: Sync skills, Paseo plugins and provider settings from the Loadout repo to Codex, Claude Code and Paseo installs across the fleet, with verification and local-edit protection.
 ---
 
 # Personal skills
