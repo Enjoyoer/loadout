@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "1ebdfe67b683d7240835662d4a1a6abf0914a76a",
+  "source_commit": "a7ca8c8f26146ea1abb077401047197633ec98c3",
   "skill_count": 24,
   "file_count": 131,
   "files": [
@@ -30,8 +30,8 @@
       "path": "skills/engineering/codebase-design/SKILL.md",
       "category": "engineering",
       "skill": "codebase-design",
-      "bytes": 6446,
-      "sha256": "2c20617f87ec8af6a434859f381b2f061a69b530444e74eb39e78bb016a6d1e2"
+      "bytes": 6336,
+      "sha256": "5b5725b582cf035a2e6e5f84546ab3e991d7e747f6d65b912586fb644d56fb4c"
     },
     {
       "path": "skills/engineering/codebase-design/agents/openai.yaml",
@@ -65,8 +65,8 @@
       "path": "skills/engineering/uv-python/SKILL.md",
       "category": "engineering",
       "skill": "uv-python",
-      "bytes": 2043,
-      "sha256": "4c2b489838fcadbfda12b22d40a6f2acd5f66fb699a1ddaff9384863a375db93"
+      "bytes": 1937,
+      "sha256": "6cfaaec68e426419bf73bba6577ca1a58450689f74dd01145a19c89bdf003c64"
     },
     {
       "path": "skills/engineering/uv-python/agents/openai.yaml",
@@ -128,8 +128,8 @@
       "path": "skills/operations-integrations/recover-mouse-input/SKILL.md",
       "category": "operations-integrations",
       "skill": "recover-mouse-input",
-      "bytes": 6495,
-      "sha256": "892057e30e6a46ebb3af8fbbb023396560c3d105411b086eb141e8e4ab95c8dd"
+      "bytes": 6363,
+      "sha256": "8b19ab088c4429c0d26db182c31bcf80bea9968e9475d065f78c6304c6c9f8c4"
     },
     {
       "path": "skills/operations-integrations/recover-mouse-input/agents/openai.yaml",
@@ -149,8 +149,8 @@
       "path": "skills/operations-integrations/wizard/SKILL.md",
       "category": "operations-integrations",
       "skill": "wizard",
-      "bytes": 6577,
-      "sha256": "47c4da40600bfdebca67ba63671cfd66e92fee91be53dbc76dc26e97e9f349ec"
+      "bytes": 6453,
+      "sha256": "1468bc00c425103b0da8c11ed7853b81bddcee4f6b83f46c910d925a192e0d82"
     },
     {
       "path": "skills/operations-integrations/wizard/agents/openai.yaml",
@@ -170,8 +170,8 @@
       "path": "skills/orchestration/handoff/SKILL.md",
       "category": "orchestration",
       "skill": "handoff",
-      "bytes": 3062,
-      "sha256": "eb9893b3a8e9d85cc656cdc250b4e1d67a5e57f6fb12e693a7abe3d8b1a68d73"
+      "bytes": 2912,
+      "sha256": "7791d663a3f406363732ad240c24231471d5804b2f710c099e67e8c151510049"
     },
     {
       "path": "skills/orchestration/handoff/agents/openai.yaml",
@@ -184,8 +184,8 @@
       "path": "skills/orchestration/hill-climb/SKILL.md",
       "category": "orchestration",
       "skill": "hill-climb",
-      "bytes": 6407,
-      "sha256": "159547a13856ee57dfc54d9de11f680f3592adbadb7744e96221ea219ff831df"
+      "bytes": 6312,
+      "sha256": "e855faf2f44510c1dcf3e4f98bd6bc302759c4db8be6bb27937fcbe0fc5121be"
     },
     {
       "path": "skills/orchestration/hill-climb/agents/openai.yaml",
@@ -198,8 +198,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4851,
-      "sha256": "f133c1e381f0a3a641b1b9e9a7917f1d1e30c7f27f1ff70a65d1242faa93b177"
+      "bytes": 5061,
+      "sha256": "bf3bbf3d72d724fc57a5ec48bcb382db8a25144458ebe79fa2ba216018ceed66"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -373,8 +373,8 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 21909,
-      "sha256": "50155790d3b30a210699daf913fcb6193d34038d30f8a67dbc48b7747a17217d"
+      "bytes": 21826,
+      "sha256": "302872dad9062ea974818173b54f62c97a7d3b2513ae2d308d287b939d5408cf"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
@@ -751,8 +751,8 @@
       "path": "skills/research-docs/find-docs/SKILL.md",
       "category": "research-docs",
       "skill": "find-docs",
-      "bytes": 6297,
-      "sha256": "c617305d356942daac0c342681d74ce9a6ca8ef5ef689dd1b58b1e87ac66605e"
+      "bytes": 6116,
+      "sha256": "19c84eb17247e22c343db2b5e22ddcc893e6607bbebc2455a6999cab04be958e"
     },
     {
       "path": "skills/research-docs/find-docs/agents/openai.yaml",
@@ -765,8 +765,8 @@
       "path": "skills/research-docs/liteparse/SKILL.md",
       "category": "research-docs",
       "skill": "liteparse",
-      "bytes": 2424,
-      "sha256": "5919c3d33db4a6f8159a91a0b2cec94882d5fcb04175cab4612b80d75dd527db"
+      "bytes": 2311,
+      "sha256": "31d0170b0f78e0a73ce29aea704f8b3f741016d4a1f223ceceff0707e2d39167"
     },
     {
       "path": "skills/research-docs/liteparse/agents/openai.yaml",
