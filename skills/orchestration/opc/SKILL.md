@@ -2,7 +2,7 @@
 name: opc
 description: "Run a code project as its PM: workers, review and verified delivery. Use when a PM owns a code repository or the owner names OPC."
 metadata:
-  version: "7.64.0"
+  version: "7.65.0"
 ---
 
 # OPC
