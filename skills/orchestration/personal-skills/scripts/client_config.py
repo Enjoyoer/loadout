@@ -53,6 +53,8 @@ def _layer(layer, where, base=False):
         raise fleet.FleetError(f"{where} must be an object")
     fleet._keys(layer, {"codex", "claude"} | ({"role"} if where.startswith("hosts.") else set()), where)
     codex = layer.get("codex", {})
+    if codex is False and where.startswith("hosts."):
+        codex = {}  # this host's Codex config.toml is host-owned: never read or written
     fleet._keys(codex, CODEX_KEYS if base else LAYER_CODEX_KEYS, f"{where}.codex")
     _toml_values(codex.get("top", {}), f"{where}.codex.top")
     sections = codex.get("sections", {})
@@ -118,7 +120,7 @@ def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
     role = role_of(catalog, fleet_doc, host)
     layers = [catalog, catalog.get("roles", {}).get(role, {}), catalog.get("hosts", {}).get(host, {})]
     for layer in layers:
-        c = layer.get("codex", {})
+        c = layer.get("codex") or {}
         codex["top"].update(c.get("top", {}))
         for name, keys in c.get("sections", {}).items():
             codex["sections"].setdefault(name, {}).update(keys)
@@ -148,6 +150,8 @@ def settings_for(catalog: dict, fleet_doc: dict, host: str) -> dict:
         if 'exclude' in policy:
             raise fleet.FleetError('shell_environment_policy.exclude is managed from mcpServers; remove it from codex.sections')
         policy['exclude'] = sorted({server['bearerTokenEnvVar'] for server in servers})
+    if catalog.get("hosts", {}).get(host, {}).get("codex") is False:
+        codex["skip"] = True
     return {"role": role, "codex": codex, "claude": claude, "mcpServers": servers}
 
 
@@ -156,6 +160,8 @@ def describe(name: str, result: dict) -> list:
     codex = result["codex"]
     if codex["status"] == "absent":
         lines.append(f"{name}: codex absent, skipped")
+    elif codex["status"] == "host-owned":
+        lines.append(f"{name}: codex host-owned, skipped")
     else:
         state = "CHANGED " + ",".join(codex["changes"]) if codex["changes"] else "unchanged"
         backup = f" (backup {codex['backup']})" if codex.get("backup") else ""
