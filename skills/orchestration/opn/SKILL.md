@@ -2,7 +2,7 @@
 name: opn
 description: Run durable non-code work as its PM, with one outcome-scoped worker per outcome and fresh-readback proof. Use for explicit OPN workflows or when a PM owns a non-code workstream or folder.
 metadata:
-  version: "2.6.0"
+  version: "2.6.1"
 ---
 
 # OPN Non-Code PM
@@ -64,7 +64,7 @@ A main PM, as the global routing rules name them:
 
 ## Validation
 
-After changing OPN, from this folder:
+After changing OPN, from the repository's `skills/orchestration/opn` folder (hosts get no copy of these scripts or `evals.json`):
 
 ```bash
 python3 scripts/validate-opn.py
