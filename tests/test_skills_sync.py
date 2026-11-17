@@ -246,6 +246,51 @@ class RemotePreflightTest(unittest.TestCase):
         self.assertEqual((got["status"], got["retired"], got["kept"]), ("same", [], []))
         self.assertTrue(self.skill("edited").exists() and self.skill("mine").exists())
 
+    def install_with_dropped_file(self):
+        self.run_remote({"demo/SKILL.md": entry(b"d"), "demo/refs/old.md": entry(b"o")}, keep=["demo"])
+        return {"demo/SKILL.md": entry(b"d")}
+
+    def recorded(self):
+        record = json.loads((self.home / ".config/loadout/global-sync.json").read_text())
+        return sorted(rel for owned in record["skills"].values() for rel in owned)
+
+    def test_retires_a_recorded_unedited_file_a_published_skill_dropped(self):
+        published = self.install_with_dropped_file()
+        got = self.run_remote(published, keep=["demo"], dry_run=True)
+        self.assertEqual((got["status"], got["retired_files"], got["kept_files"]), ("would update", ["claude:demo/refs/old.md"], []))
+        self.assertTrue(self.skill("demo/refs/old.md").exists())
+        got = self.run_remote(published, keep=["demo"])
+        self.assertEqual((got["status"], got["retired_files"], got["kept_files"]), ("updated", ["claude:demo/refs/old.md"], []))
+        self.assertFalse(self.skill("demo/refs").exists())
+        self.assertEqual(self.skill("demo/SKILL.md").read_bytes(), b"d")
+        self.assertEqual(self.recorded(), ["demo/SKILL.md"])
+
+    def test_keeps_an_edited_file_a_published_skill_dropped(self):
+        published = self.install_with_dropped_file()
+        self.skill("demo/refs/old.md").write_bytes(b"my edit")
+        got = self.run_remote(published, keep=["demo"])
+        self.assertEqual((got["status"], got["retired_files"], got["kept_files"]), ("updated", [], ["claude:demo/refs/old.md"]))
+        self.assertEqual(self.skill("demo/refs/old.md").read_bytes(), b"my edit")
+        self.assertEqual(self.recorded(), ["demo/SKILL.md"])
+
+    def test_narrowed_run_retires_no_dropped_file(self):
+        published = self.install_with_dropped_file()
+        got = self.run_remote(published, keep=None)
+        self.assertEqual((got["status"], got["retired_files"], got["kept_files"]), ("same", [], []))
+        self.assertEqual(self.skill("demo/refs/old.md").read_bytes(), b"o")
+        self.assertEqual(self.recorded(), ["demo/SKILL.md", "demo/refs/old.md"])
+
+    def test_maintainer_only_files_are_not_in_the_payload(self):
+        pub = skills_sync.publication.Publication(REPO)
+        files = skills_sync.payload_files(pub, {"opn", "opc"})
+        dest = lambda path: "/".join([path.split("/")[2], *path.split("/")[3:]])
+        self.assertEqual(len(skills_sync.MAINTAINER_ONLY), 4)
+        self.assertFalse({dest(p) for p in skills_sync.MAINTAINER_ONLY} & set(files))
+        rest = {dest(e["path"]) for e in pub.manifest["files"]
+                if e["skill"] in ("opn", "opc") and e["path"] not in skills_sync.MAINTAINER_ONLY}
+        self.assertEqual(set(files), rest)
+        self.assertTrue({"opn/SKILL.md", "opc/SKILL.md", "opc/scripts/route.mjs"} <= rest)
+
     def test_skill_edited_between_preflight_and_removal_is_kept(self):
         self.run_remote({"demo/SKILL.md": entry(b"d1"), "old/SKILL.md": entry(b"o")}, keep=["demo", "old"])
         # Preloaded into the host program: its first write (demo's update, after preflight) also edits old.

@@ -7,7 +7,8 @@ Code. Private skills come from the fleet directory's skills/<skill>/ overlay,
 which is never published. Each host is preflighted before any write; a changed
 file that matches no published or recorded overlay version is a conflict and
 stops that host. A skill the host's sync record shows the sync installed, and
-that is no longer published, is removed unless it was edited there. When
+that is no longer published, is removed unless it was edited there, and so is a
+recorded file a published skill no longer holds. When
 hosts.json sets skills_overlay and the overlay is missing or not a directory, no
 host retires anything, and each reports `blocked` with the reason.
 Package slash/<name>.md files also install to Codex and configured Pi prompt
@@ -52,13 +53,21 @@ OVERLAY_LOCK_SECONDS = 15
 # A path part a Windows host splits, drops or maps (backslash, colon, control character, trailing dot or
 # space, device name); hosts refuse such a path, so the overlay is refused here first.
 NON_PORTABLE = re.compile(r"[\\:\x00-\x1f]|[. ]$|^(con|prn|aux|nul|com\d|lpt\d)(\.|$)", re.I)
+# Published for CI and maintainers, never installed on a host; a host's earlier copies retire like any dropped file.
+MAINTAINER_ONLY = frozenset({
+    "skills/orchestration/opn/evals.json",
+    "skills/orchestration/opn/scripts/validate-opn.py",
+    "skills/orchestration/opn/scripts/test_validate_opn.py",
+    "skills/orchestration/opc/scripts/validate-opc.mjs",
+})
 
 
 def payload_files(pub: publication.Publication, only: Optional[set], exclude: set = frozenset()) -> dict:
     files = {}
     prior = pub.prior()
     for entry in pub.manifest["files"]:
-        if (only is not None and entry["skill"] not in only) or entry["skill"] in exclude:
+        if ((only is not None and entry["skill"] not in only) or entry["skill"] in exclude
+                or entry["path"] in MAINTAINER_ONLY):
             continue
         data = pub.blob(entry)
         dest = "/".join([entry["skill"], *entry["path"].split("/")[3:]])
@@ -218,8 +227,9 @@ def describe(result: dict) -> str:
     if status == "conflict":
         return f"conflict: local edits, nothing written: {listed(result['conflicts'])}{stopped}"
     retired, kept = result.get("retired", []), result.get("kept", [])
+    removed = len(retired) + len(result.get("retired_files", []))
     counts = [f"+{len(result['added'])}" if result["added"] else "", f"~{len(result['changed'])}" if result["changed"] else "",
-              f"-{len(retired)}" if retired else ""]
+              f"-{removed}" if removed else ""]
     counts = " ".join(c for c in counts if c)
     clients = ", ".join(f"{k} {v}" for k, v in result["clients"].items())
     elevation = f"; elevation: {listed(result['elevation'])}" if result.get("elevation") else ""
@@ -286,6 +296,16 @@ def run_host(state: dict, host: dict, emit: Callable[[str], None]) -> str:
         record_overlay(state["fleet_dir"], overlay)
     note = f"; excluded {', '.join(sorted(exclude))}" if exclude else ""
     emit(f"{name}: skills {describe(result)}{note}")
+    # Every file label, in full and per client root, so a dry run shows exactly what a full run removes.
+    dry = state["dry_run"]
+    for key, verb in (("retired_files", "would remove" if dry else "removed"),
+                      ("kept_files", "edited, would keep and stop managing" if dry else "edited, kept and stopped managing")):
+        by_client: dict = {}
+        for label in result.get(key, []) if result["status"] in ("updated", "would update") else []:
+            client, rel = label.split(":", 1)
+            by_client.setdefault(client, []).append(rel)
+        for client, rels in by_client.items():
+            emit(f"{name}: {client}: {verb} {len(rels)} files no longer published: {', '.join(rels)}")
     for error in result.get("prune_errors") or []:
         emit(f"{name}: {error}")
     if result.get("pi_excludes") and result["status"] in ("updated", "would update"):
