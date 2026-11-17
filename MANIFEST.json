@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "d592298ee1f3e4e224ca7e69f96259f21386e721",
+  "source_commit": "1ebdfe67b683d7240835662d4a1a6abf0914a76a",
   "skill_count": 24,
   "file_count": 131,
   "files": [
@@ -261,8 +261,8 @@
       "path": "skills/orchestration/opc/references/web-reviewer.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5012,
-      "sha256": "66d59b373913448121c2563e35798c50e6bc13fbdea54d36047309175f59da22"
+      "bytes": 5005,
+      "sha256": "2c152acb060c05917ee33c0ae11128b4bd330ec5747adc1e39406d138a89672e"
     },
     {
       "path": "skills/orchestration/opc/references/worktree-lifecycle.md",
