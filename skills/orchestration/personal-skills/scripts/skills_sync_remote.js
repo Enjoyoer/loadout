@@ -14,12 +14,15 @@
 // keep (null: retire nothing) names skills never retired. The record's skills section lists each
 // skill file the sync installed or found current; a recorded skill not in keep is removed while
 // every file in it is one of those, unedited, and otherwise kept, reported, and dropped from the record.
+// The same rule holds per file: with keep set, a recorded file of a skill this run installs that the payload no
+// longer holds is removed while unedited (directories it leaves empty go too), and otherwise kept and reported;
+// either way it leaves the record.
 // Private fleet bin files install flat in the user bin, independent of present clients. The bin record
 // accepts only the last installed or pending hash; retirement of recorded files needs a full run.
 // Helpers come from remote_common.js, which fleet.run_node ships ahead of this file.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib"), crypto = require("crypto");
 const { execFileSync } = require("child_process");
-const result = { status: null, clients: {}, added: [], changed: [], same: 0, conflicts: [], elevation: [], retired: [], kept: [], pi_excludes: [], prune_errors: [], error: null };
+const result = { status: null, clients: {}, added: [], changed: [], same: 0, conflicts: [], elevation: [], retired: [], kept: [], retired_files: [], kept_files: [], pi_excludes: [], prune_errors: [], error: null };
 function done(code) {
   process.stdout.write("\n@@LOADOUT-RESULT " + JSON.stringify(result) + " @@END\n");
   process.exit(code);
@@ -226,7 +229,7 @@ try {
     if (!/^[^/]+\/slash\/[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(rel)) throw new Error('invalid slash path: ' + rel);
   checkPaths(slash.map(([rel]) => rel.split('/')[2]));
   const record = fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, "utf8")) : {};
-  const owned = record.skills || {}, pending = record.pending || {}, roots = [], drops = [], settled = [];
+  const owned = record.skills || {}, pending = record.pending || {}, roots = [], drops = [], settled = [], fileDrops = [];
   const promptOwners = record.slash || {}, promptInstalls = [], promptDrops = [];
   const binRoot = path.join(home, '.local', 'bin'), binOwned = record.bin || {}, binDrops = [];
   const binFiles = p.bin || {};
@@ -292,6 +295,18 @@ try {
       // A skill renamed only in case is the kept skill itself on a macOS or Windows host, so it stays.
       for (const skill of p.keep ? new Set(Object.keys(owned[root] || {}).map(r => r.split("/")[0])) : [])
         if (!p.keep.some(k => foldPath(k) === foldPath(skill))) retire(root, skill, client + ":" + skill);
+      // A file this run's skills no longer hold. A path the payload holds in another case is the same file on a
+      // macOS or Windows host, so it stays.
+      const installing = new Set(Object.keys(p.files).map(rel => foldPath(rel.split("/")[0])));
+      const current = new Set(Object.keys(p.files).map(foldPath));
+      if (p.keep) for (const [rel, digest] of Object.entries(owned[root] || {})) {
+        if (!installing.has(foldPath(rel.split("/")[0])) || current.has(foldPath(rel))) continue;
+        checkPaths([rel]);
+        const file = path.join(root, ...rel.split("/")), label = client + ":" + rel;
+        const ours = plan(file, root, digest, [])[0] === "same";
+        if (probe(fs, file)) result[ours ? "retired_files" : "kept_files"].push(label);
+        fileDrops.push({ root, rel, file, label, ours, digest });
+      }
     }
     const promptRoot = PROMPT_ROOTS[client];
     if (root && promptRoot) {
@@ -356,7 +371,8 @@ try {
       if (hits.length) result.pi_excludes.push(`${agent} (${hits.join(', ')})`);
     }
   for (const w of writes) result[w.kind].push(w.label);
-  result.status = writes.length + result.retired.length + result.kept.length ? (p.dry_run ? "would update" : "updated") : "same";
+  result.status = writes.length + result.retired.length + result.kept.length + result.retired_files.length
+    + result.kept_files.length ? (p.dry_run ? "would update" : "updated") : "same";
   if (p.dry_run) done(0);
   // Elevation is checked before any write, and never prompts.
   for (const w of writes.filter(x => x.managed && x.managed.elevate)) {
@@ -419,6 +435,20 @@ try {
     if (d.dir && !why) fs.rmSync(d.dir, { recursive: true });
     else if (d.dir) { result.retired.splice(result.retired.indexOf(d.label), 1); result.kept.push(`${d.label} (${why})`); }
     for (const r of Object.keys(owned[d.root])) if (r.startsWith(d.skill + "/")) delete owned[d.root][r];
+  }
+  for (const d of fileDrops) {
+    if (d.ours) try {
+      checkAncestors(fs, path, d.root, d.file, baseFor(path, home, d.root));
+      removeFile(fs, d.file, [d.digest]);
+      // Directories the removal left empty go, up to the skill directory; rmdir refuses one holding anything.
+      const top = path.join(d.root, d.rel.split("/")[0]);
+      for (let dir = path.dirname(d.file); dir !== top; dir = path.dirname(dir))
+        try { fs.rmdirSync(dir); } catch { break; }
+    } catch (e) {
+      result.retired_files.splice(result.retired_files.indexOf(d.label), 1);
+      result.kept_files.push(`${d.label} (${e.message})`);
+    }
+    delete owned[d.root][d.rel];
   }
   for (const d of promptDrops) {
     if (d.ours) try {
