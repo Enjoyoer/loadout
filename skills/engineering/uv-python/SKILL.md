@@ -1,10 +1,6 @@
 ---
 name: uv-python
-description: >-
-  Manage Python dependencies while preserving the project's existing workflow.
-  Prefer uv for new projects and use it for an existing project when requested or
-  needed for the scoped task; do not migrate requirements.txt-only projects merely
-  because dependencies were touched.
+description: Manage Python dependencies in the project's existing workflow. Use uv for new projects or when asked; never migrate a requirements.txt project just because dependencies changed.
 ---
 
 # Python dependencies

@@ -1,6 +1,6 @@
 ---
 name: liteparse
-description: Use when a PDF is scanned or image-only and needs OCR, or when you need page screenshots, bounding boxes, or page coordinates. Ordinary text PDFs use `pdftotext -layout` instead, not LiteParse. Use the bundled type-specific artifact skills for Office files and native PDF authoring/editing.
+description: OCR scanned or image-only PDFs, and get page screenshots, bounding boxes or coordinates. Text PDFs use `pdftotext -layout`; Office files and PDF authoring have their own skills.
 ---
 
 # LiteParse

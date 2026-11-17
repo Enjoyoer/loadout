@@ -1,6 +1,6 @@
 ---
 name: find-docs
-description: Retrieve current non-OpenAI library, framework, SDK, CLI, and cloud API documentation through Context7. Use for exact API syntax, configuration, migrations, version-specific behavior, setup, or library-specific debugging. Use $openai-docs for OpenAI products and $agent-reach for general web discovery, opinions, news, social platforms, URLs, or repository/code search.
+description: Fetch current library, framework, SDK, CLI or cloud API docs through Context7. Use for exact API syntax, configuration, migrations, version-specific behavior or library-specific debugging.
 ---
 
 # Documentation Lookup

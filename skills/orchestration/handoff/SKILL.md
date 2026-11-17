@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Hand off current work by committing a comprehensive update of the root STATUS.html and LESSONS.md, creating the pair if missing. Use when the user asks for a handoff, resume note, continuation doc, or context packet, or before a PM or workstream owner migrates or is replaced. Works with or without $repo-lessons. Writes no separate handoff file.
+description: Update and commit the root STATUS.html and LESSONS.md so another agent can resume. Use when asked for a handoff, resume note or context packet, or before a PM is replaced. Writes no separate file.
 ---
 
 # Handoff

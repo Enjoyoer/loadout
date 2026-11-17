@@ -1,13 +1,11 @@
 ---
 name: opc
-description: Coding-focused multi-agent orchestration for exploration, implementation, review, and verified delivery.
+description: "Run a code project as its PM: workers, review and verified delivery. Use when a PM owns a code repository or the owner names OPC."
 metadata:
-  version: "7.63.0"
+  version: "7.64.0"
 ---
 
 # OPC
-
-Each OPC turn, read `version:` first; if changed, reread this file and needed references.
 
 The PM owns scope, topology, integration, verification, and publication. OPC implementation authorizes bounded Worker lanes, never subdelegation or route substitution. OPC ends with verified merge, required sync, and cleanup; earlier endpoints are ordinary scoped work. Local commits and PRs are internal stages.
 
@@ -27,11 +25,11 @@ Default to one scout; add another only for an independent question expected to t
 
 Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted.
 
-Default to one implementer Worker for the whole task, building its items in sequence: server, UI, docs and tests together. Never split by work type (frontend, backend, tests) or file. Use parallel lanes only when the pieces are independent (no shared files or ordering) and each is expected to take 30+ minutes; one owner per file, and the PM writes any shared contract (flags, schemas, shared docs) before those lanes start. Use fresh agents only where fresh context helps: a reviewer given only the spec and diff, a verifier given only the user flows, and research needing no project context. One Worker lineage per lane; shared live resources serialize only live checks.
+Default to one implementer Worker for the whole task, building its items in sequence: server, UI and docs together, with tests only when the owner or the PM names the cases. Never split by work type (frontend, backend, tests) or file. Use parallel lanes only when the pieces are independent (no shared files or ordering) and each is expected to take 30+ minutes; one owner per file, and the PM writes any shared contract (flags, schemas, shared docs) before those lanes start. Use fresh agents only where fresh context helps: a reviewer given only the spec and diff, a verifier given only the user flows, and research needing no project context. One Worker lineage per lane; shared live resources serialize only live checks.
 
 Visual design (new screen, layout, component) gets one read-only Fable `high` `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`.
 
-All repository source and test edits, including small repairs, belong to Workers. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
+When no Worker holds the checkout, the PM does work under about 20 tool calls itself. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work only, read [Sites](references/codex-sites.md "branch:sites"). For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
 ## 4. Yield
 
@@ -47,4 +45,4 @@ Independently check required behavior and final committed deliverable bytes usin
 
 ## 7. Merge and cleanup
 
-PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. Report test, integration, and PR evidence, review verdict/head or unavailability, Worker usage, remaining issues, and cleanup gaps separately.
+PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. After installing changed instructions, send the changed lines to each affected PM, and to each affected Codex app thread via `codex-send`; reload idle PMs. Unreachable agents get the change at their next session start. Report test, integration, and PR evidence, review verdict/head or unavailability, Worker usage, remaining issues, and cleanup gaps separately.

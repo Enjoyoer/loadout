@@ -1,6 +1,6 @@
 ---
 name: recover-mouse-input
-description: "Use when Windows mouse clicks stop working, taskbar clicks flash red without activating, Alt-Tab fails, clicks work only in one app, foreground activation fails, an invisible Task Switching overlay is suspected, or the mouse cursor is invisible after a computer-use agent or its helper process was stopped or killed."
+description: "Fix Windows mouse input after a computer-use agent was stopped: clicks ignored or working in one app only, Alt-Tab or taskbar dead, cursor invisible, or a stuck Task Switching overlay."
 ---
 
 # Recover Mouse Input
