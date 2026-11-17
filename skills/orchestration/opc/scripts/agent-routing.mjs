@@ -25,10 +25,10 @@ const workerClass = (label, effort, range) =>
 // Fast off (owner 2026-11-07); Fast is an owner-named exception per task.
 export const WORKER_DEFAULT_ROUTES = Object.freeze({
   code: workerClass('Opus', 'medium', ['medium', 'xhigh']),
-  review: workerClass('Sol', 'xhigh', null),
+  review: workerClass('Sol', 'high', null),
   // Security, credential and data-loss reviews run on Opus, never GPT (owner rule): GPT trips the cyber-safety filter.
   'review-security': workerClass('Opus', 'xhigh', null),
-  plan: workerClass('Sol', 'xhigh', null),
+  plan: workerClass('Sol', 'high', null),
   browser: workerClass('Sol', 'medium', ['medium', 'high']),
   'browser-hard': workerClass('Astra', 'medium', ['medium', 'high']),
   smoke: workerClass('Luna', 'low', null),
