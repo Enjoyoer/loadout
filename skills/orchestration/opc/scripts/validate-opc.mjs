@@ -78,7 +78,6 @@ export async function validatePackage(root = defaultRoot) {
     'delivery.mjs': ['runTests', 'verifyDelivery', 'mergeDelivery', 'reconcileMerge'],
     'task-state.mjs': ['createTask', 'readTask', 'updateTask'],
     'agent-routing.mjs': ['resolveAgentRoute', 'selectWorkerRoute', 'buildDelegatedBrief', 'selectTopology', 'isGptOrWebRoute'],
-    'quota-pace.mjs': ['readRoutingSettings', 'validateRoutingSettings', 'readQuota', 'poolPace', 'paceLevel'],
     'route.mjs': ['resolveWorkerRoute', 'recordWorkerRoute'],
     'web-reviewer.mjs': ['buildReviewPrompt', 'prepareReviewLaunch', 'bindReviewAgent',
       'recordReviewLaunchFailure', 'collectReview', 'requireReviewApproval', 'requireReviewDelivery'],

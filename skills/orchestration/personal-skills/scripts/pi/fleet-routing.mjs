@@ -214,10 +214,13 @@ export function withAdvisor(payload, model) {
 // absent means inherit the fleet default. Fast is off by default fleet-wide (owner decision
 // 2026-11-06): on a GPT route whose catalog lists the priority tier, no choice sends an explicit
 // Standard (tierDecision), so a Fast-capable route never depends on an upstream default; only an
-// explicit fast/priority/ultrafast label turns Fast on.
+// explicit fast/priority/ultrafast label turns Fast on. Luna is the exception (owner 2026-11-17): on a Luna model
+// whose catalog lists priority, every turn sends priority whatever the labels say (status luna-fast); an ultrafast
+// label still wins where the catalog lists ultrafast.
 const TIER_ALIASES = { fast: 'fast', priority: 'fast', standard: 'standard', default: 'standard', ultrafast: 'ultrafast', inherit: 'inherit' };
 export const TIER_WIRE = { fast: 'priority', standard: 'default', ultrafast: 'ultrafast' };
 const CATALOG_TIER = { fast: 'priority', ultrafast: 'ultrafast' };
+const LUNA_MODEL = /(?:^|\/)gpt-[0-9.]+-luna$/i;
 export function resolveTierIntent(labels = {}) {
   const raw = labels['opc.service-tier'];
   if (raw !== undefined && String(raw).trim() !== '') {
@@ -234,6 +237,9 @@ export function tierDecision(intent, model, catalogTiers) {
   const codexRoute = model?.api === 'openai-responses' && !model.id.startsWith('chatgpt-web/');
   // A failed or unfinished label lookup must never fall back to a stale or inherited tier.
   if (intent?.lookupFailed) return codexRoute ? { status: 'lookup-failed', error: intent.error } : { status: 'lookup-failed-untiered' };
+  if (codexRoute && LUNA_MODEL.test(model.id) && catalogTiers?.includes(CATALOG_TIER.fast) &&
+      !(intent?.tier === 'ultrafast' && catalogTiers.includes(CATALOG_TIER.ultrafast)))
+    return { status: 'luna-fast', wire: TIER_WIRE.fast, header: 'fast' };
   if (intent?.error) return { status: 'invalid', error: intent.error };
   // No choice (absent or inherit) is an explicit Standard where the catalog offers Fast, and inherits elsewhere.
   if (!intent || intent.tier === 'inherit') return codexRoute && catalogTiers?.includes(CATALOG_TIER.fast)

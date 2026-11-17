@@ -25,7 +25,8 @@ export function contributePills(client: PluginClientContext, extension?: Compose
         const current = await client.rpc(inspect, { agentId: id });
         if (stopped || !agents.has(id)) return;
         if (!current.capable) { removeFast(id); throw Error("Fast is unavailable for this model"); }
-        await client.rpc(toggle, { agentId: id, fast: !current.fast });
+        // Luna: Fast stays on, so a press writes nothing.
+        if (!current.fixed) await client.rpc(toggle, { agentId: id, fast: !current.fast });
       } catch {
         if (!stopped) pills.get(id)?.update({ label: "Fast: Retry", title: "Fast update unconfirmed. Retry to inspect current state before toggling." });
         throw Error("Fast unavailable or update unconfirmed. Check the model, connection and daemon MCP access before retrying.");
@@ -47,7 +48,7 @@ export function contributePills(client: PluginClientContext, extension?: Compose
     const state = await client.rpc(inspect, { agentId: agent.id }).catch(() => null);
     if (stopped || generation !== generations.get(agent.id) || !state?.capable) return;
     const pill = client.addComposerPill({ id: "fast", agentId: agent.id, workspaceId: agent.workspaceId,
-      button: { title: `Fast ${state.fast ? "on" : "off"}: request ${state.fast ? "Standard" : "Fast"} next turn`, icon: "Zap", label: pending.has(agent.id) ? "Fast: Applying..." : state.tier === "ultrafast" ? "Fast: Ultrafast" : `Fast: ${state.fast ? "On" : "Off"}`,
+      button: { title: state.fixed ? "Fast is always on for Luna" : `Fast ${state.fast ? "on" : "off"}: request ${state.fast ? "Standard" : "Fast"} next turn`, icon: "Zap", label: pending.has(agent.id) ? "Fast: Applying..." : state.tier === "ultrafast" ? "Fast: Ultrafast" : `Fast: ${state.fast ? "On" : "Off"}`,
         behavior: { kind: "action", onPress: () => toggleFast(agent.id) } } });
     pills.set(agent.id, pill);
   }

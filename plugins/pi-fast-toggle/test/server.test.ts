@@ -21,7 +21,7 @@ async function fixture(){
 test('backend validates catalog',async()=>{
  const f=await fixture();try{
   // No label on a priority route is the fleet default, Standard.
-  assert.deepEqual(await f.call('fast.inspect',{agentId:'a'}),{capable:true,fast:false,tier:'inherit'});
+  assert.deepEqual(await f.call('fast.inspect',{agentId:'a'}),{capable:true,fast:false,tier:'inherit',fixed:false});
  }finally{await f.cleanup()}
 });
 for(const mode of ['native','archived','unsupported','outage','unconfigured'])test('fails closed: '+mode,async()=>{

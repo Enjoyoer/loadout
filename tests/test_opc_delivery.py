@@ -21,7 +21,8 @@ def run(*args, cwd=None, env=None):
 CATALOG = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptionIds": ["medium", "high", "xhigh"]}]
 # A start time in the fixed format task-state.mjs records, which no live process has.
 OLD_START = "1970-01-01T00:00:00.0000000Z" if sys.platform == "win32" else "Thu Jan 1 00:00:00 1970"
-# The code route as recorded before OPC 7.30: Opus xhigh at pace step 0, a level today's class table no longer selects.
+# The code route as recorded before OPC 7.30, with the key OPC 7.66 retired: Opus xhigh, a level today's class table
+# no longer selects.
 PRE_730_CODE_ROUTE = {
     "role": "worker", "source": "task-default", "kind": "code", "model": "fleet/claude-opus-5-5", "effort": "xhigh",
     "fastMode": False, "reason": "code default xhigh, no adjustment, no quota reading supplied",
@@ -300,7 +301,7 @@ class OpcDeliveryTest(unittest.TestCase):
         root = Path(self.task).parent.parent
         (root / "catalog.json").write_text(json.dumps(CATALOG))
         recorded = run("node", str(SCRIPTS / "route.mjs"), "--class", "code", "--catalog", str(root / "catalog.json"),
-                       "--pq-file", str(root / "no-pq.json"), "--task", self.task, "--lane", "code-lane")
+                       "--task", self.task, "--lane", "code-lane")
         self.assertEqual(recorded.returncode, 0, recorded.stderr)
         # An alternate table: the same scripts with the code class fixed at a level the record does not carry.
         changed = root / "changed"
@@ -428,7 +429,7 @@ class OpcDeliveryTest(unittest.TestCase):
         ui = self.ui_task()
         for task, kind, lane in ((self.task, "code", "code-lane"), (ui, "ui", "ui-lane")):
             recorded = run("node", str(SCRIPTS / "route.mjs"), "--class", kind, "--catalog", str(root / "catalog.json"),
-                           "--pq-file", str(root / "no-pq.json"), "--task", task, "--lane", lane)
+                           "--task", task, "--lane", lane)
             self.assertEqual(recorded.returncode, 0, recorded.stderr)
         own = self.launch(ui, "ui-lane", "recorded['ui-lane'].route", catalog)
         self.assertEqual(own["request"].get("settings"), {"thinkingOptionId": "high"}, own["request"])
@@ -472,7 +473,7 @@ class OpcDeliveryTest(unittest.TestCase):
         root = Path(self.task).parent.parent
         (root / "catalog.json").write_text(json.dumps(catalog))
         recorded = run("node", str(SCRIPTS / "route.mjs"), "--class", "code", "--catalog", str(root / "catalog.json"),
-                       "--pq-file", str(root / "no-pq.json"), "--task", self.task, "--lane", "code-lane")
+                       "--task", self.task, "--lane", "code-lane")
         self.assertEqual(recorded.returncode, 0, recorded.stderr)
 
     def test_mismatched_task_id_and_task_record_is_refused(self):
@@ -621,7 +622,8 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(results["unknown"], {"error": "Paseo send_agent_prompt returned unknown deliveryStatus dispatched"})
 
     def test_task_default_code_route_with_non_opus_claude_model_is_refused_without_catalog(self):
-        sonnet = {**PRE_730_CODE_ROUTE, "model": "fleet/claude-sonnet-5-5", "effort": "medium"}
+        sonnet = {**{key: value for key, value in PRE_730_CODE_ROUTE.items() if key != "pace"},
+                  "model": "fleet/claude-sonnet-5-5", "effort": "medium"}
         fresh = self.launch(self.task, "sonnet-lane", json.dumps(sonnet), None, record_lane="sonnet-lane", task_class="code")
         for step in ("record", "brief"):
             self.assertEqual(fresh[step].get("error"), "code lane refuses this Worker route: fleet/claude-sonnet-5-5 does not "
@@ -635,7 +637,7 @@ class OpcDeliveryTest(unittest.TestCase):
         catalog = [{"id": "fleet/claude-opus-5-5", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}]
         self.record_code_lane(catalog)
         root = Path(self.task).parent.parent
-        route = ("node", str(SCRIPTS / "route.mjs"), "--catalog", str(root / "catalog.json"), "--pq-file", str(root / "no-pq.json"),
+        route = ("node", str(SCRIPTS / "route.mjs"), "--catalog", str(root / "catalog.json"),
                  "--task", self.task, "--lane", "code-lane")
         stored = json.loads(Path(self.task).read_text())["routes"]["code-lane"]["route"]
         other = run(*route, "--class", "research")

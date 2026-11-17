@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from 'node:util';
-import { describePace, paceLevel, POOL_NAMES, poolPace, ROUTING_DEFAULTS, validPace } from './quota-pace.mjs';
 
 const effortOrder = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const efforts = new Set(effortOrder);
@@ -16,23 +15,23 @@ export const FIXED_ROLE_ROUTES = Object.freeze({
   reviewer: Object.freeze({ label: 'Web Pro', fallbackProvider: 'codex', effort: null, fastMode: false }),
 });
 
-// Worker task classes when the owner names no model. Labels resolve through the target Pi catalog. range is the
-// [floor, ceiling] the quota pace may move the default within (medium < high < xhigh); null means fixed.
-const workerClass = (label, effort, range) =>
-  Object.freeze({ label, effort, range: range && Object.freeze(range), fastMode: false });
+// Worker task classes when the owner names no model. Labels resolve through the target Pi catalog. Each class runs at
+// its default effort. ceiling is the highest effort an already recorded lane of the class may rebuild at (lanes
+// recorded before OPC 7.66 could sit above the default); null means the default.
+const workerClass = (label, effort, ceiling = null, fastMode = false) => Object.freeze({ label, effort, ceiling, fastMode });
 // Local code lanes default to Opus medium (owner rule); ui-design and ui-check stay Fable high. Routes are the minimum
-// (owner rule): every range starts at its default, so the pace can raise a level but never lower one. Every class runs
-// Fast off (owner 2026-11-07); Fast is an owner-named exception per task.
+// (owner rule): nothing lowers a route. Every class runs Fast off (owner 2026-11-07) except the Luna classes, which run
+// Fast on (owner 2026-11-17); otherwise Fast is an owner-named exception per task.
 export const WORKER_DEFAULT_ROUTES = Object.freeze({
-  code: workerClass('Opus', 'medium', ['medium', 'xhigh']),
-  review: workerClass('Sol', 'high', null),
+  code: workerClass('Opus', 'medium', 'xhigh'),
+  review: workerClass('Sol', 'high'),
   // Security, credential and data-loss reviews run on Opus, never GPT (owner rule): GPT trips the cyber-safety filter.
-  'review-security': workerClass('Opus', 'xhigh', null),
-  plan: workerClass('Sol', 'high', null),
-  browser: workerClass('Sol', 'medium', ['medium', 'high']),
-  'browser-hard': workerClass('Astra', 'medium', ['medium', 'high']),
-  smoke: workerClass('Luna', 'low', null),
-  watcher: workerClass('Luna', 'xhigh', null),
+  'review-security': workerClass('Opus', 'xhigh'),
+  plan: workerClass('Sol', 'high'),
+  browser: workerClass('Sol', 'medium', 'high'),
+  'browser-hard': workerClass('Astra', 'medium', 'high'),
+  smoke: workerClass('Luna', 'low', null, true),
+  watcher: workerClass('Luna', 'xhigh', null, true),
 });
 export const WORKER_CLASS_ALIASES = Object.freeze({
   'code-bounded': 'code', 'test-fix': 'code', automation: 'code', mechanical: 'code',
@@ -45,7 +44,7 @@ export const canonicalWorkerClass = kind => Object.hasOwn(WORKER_CLASS_ALIASES, 
 const workerRule = kind => WORKER_DEFAULT_ROUTES[canonicalWorkerClass(kind)];
 // Each label draws on one provider's quota pool.
 export const LABEL_POOLS = Object.freeze({ Opus: 'claude', Sonnet: 'claude', Fable: 'claude', Sol: 'codex', Luna: 'codex', Astra: 'codex' });
-// Owner rules that hold whatever the quota says. They resolve to owner-explicit routes, so nothing adjusts them.
+// Owner rules for whole lanes. They resolve to owner-explicit routes, so nothing adjusts them.
 // ui-design (read-only spec and static mockup) and ui-check (read-only compare of after-screenshots to the mockup) are
 // the only Fable lanes; the build goes to a code lane (owner rule).
 const FABLE_RULE = Object.freeze({ label: 'Fable', effort: 'high', fastMode: false });
@@ -103,17 +102,21 @@ function requireFableRule(route, rows = null) {
   const problem = fableProblem(route, rows);
   if (problem) throw Error(`${problem} (owner rule)`);
 }
+// A class that runs Fast on (the Luna classes, owner 2026-11-17) takes no route with Fast off, owner-named or not.
+const classFastProblem = (route, taskClass) => WORKER_DEFAULT_ROUTES[canonicalWorkerClass(taskClass)]?.fastMode &&
+  route?.fastMode !== true ? `the ${canonicalWorkerClass(taskClass)} class runs Fast on (owner 2026-11-17)` : null;
 
 // The owner's hard rules for a lane class bind every route, whatever its source says: ui-design and ui-check are exactly
-// Fable high, Fast off, these classes never run a GPT or web model, Fable never runs at another level, and no route runs
-// below its class minimum. Inside them an owner-named route keeps its model and effort.
+// Fable high, Fast off, these classes never run a GPT or web model, Fable never runs at another level, a Fast-on class
+// never runs Fast off, and no route runs below its class minimum. Inside them an owner-named route keeps its model and
+// effort.
 const CLAUDE_ONLY_CLASSES = Object.freeze(['code', 'review-security']);
 function laneProblem(route, taskClass, rows) {
   taskClass = canonicalWorkerClass(taskClass);
   if (route.source === 'task-default' && canonicalWorkerClass(route.kind) !== taskClass) return `it is a ${route.kind} route`;
   if (uiClass(taskClass)) return isUiRoute(route, rows) ? null : `a ${taskClass} lane runs only Fable high, Fast off`;
-  const fable = fableProblem(route, rows);
-  if (fable) return fable;
+  const ownerRule = fableProblem(route, rows) ?? classFastProblem(route, taskClass);
+  if (ownerRule) return ownerRule;
   const rule = WORKER_DEFAULT_ROUTES[taskClass];
   if (CLAUDE_ONLY_CLASSES.includes(taskClass) && isGptOrWebModel(route.model, rows)) {
     return `${route.model} is a GPT or web model and the ${taskClass} class runs ${rule.label}`;
@@ -147,16 +150,7 @@ export function recordedLaneEntry(task, lane, route) {
   return entry;
 }
 
-const classLevel = (rule, pace) => (rule.range ? paceLevel(rule.effort, pace?.step ?? 0, rule.range) : rule.effort);
-
-// Every range starts at its default below its ceiling (WORKER_DEFAULT_ROUTES), so a step up always raises the level and
-// a step down always stays at the floor.
-function classReason(kind, rule, pace, effort) {
-  if (!rule.range) return `${kind} fixed at ${rule.label} ${rule.effort}`;
-  const outcome = pace.stale ? null : pace.step > 0 ? `up to ${effort}` : pace.step < 0 ? `already at floor ${effort}`
-    : pace.weekly > 0 ? 'no level up' : `kept ${effort}`;
-  return [`${kind} default ${rule.effort}`, describePace(pace), ...(outcome ? [outcome] : [])].join(', ');
-}
+const classReason = (kind, rule) => `${kind} default ${rule.label} ${rule.effort}, Fast ${rule.fastMode ? 'on' : 'off'}`;
 
 // The one-line reason recorded with a Worker route and shown in its brief.
 export const routeReason = route => route.reason ?? 'owner-named, never adjusted';
@@ -195,34 +189,35 @@ export function materializeFixedRoute(role, catalog, surface = 'pi') {
 
 const routeText = route => `model=${route.model ?? route.label}; effort=${route.effort ?? 'model-fixed'}; Fast=${route.fastMode ? 'on' : 'off'}`;
 
-// A recorded Worker route comes from the owner or from a task-class default with its pace inputs and reason.
-// A recorded route is checked for shape only, so a later class-table change never strands its task.
+// A recorded Worker route comes from the owner or from a task-class default with its reason.
+// A recorded route is checked for shape only, so a later class-table change never strands its task. A task default
+// recorded before OPC 7.66 also carries a retired key, which is read and ignored.
+const RETIRED_DEFAULT_KEY = 'pace';
 export function validateRecordedWorkerRoute(route) {
   requireWorkerModel(route?.model);
   const taskDefault = route?.source === 'task-default';
-  const keys = ['role', 'source', 'model', 'effort', 'fastMode', ...(taskDefault ? ['kind', 'pace', 'reason'] : [])];
+  const retired = taskDefault && Object.hasOwn(route, RETIRED_DEFAULT_KEY) ? [RETIRED_DEFAULT_KEY] : [];
+  const keys = ['role', 'source', 'model', 'effort', 'fastMode', ...(taskDefault ? ['kind', 'reason', ...retired] : [])];
   if (!route || typeof route !== 'object' || Array.isArray(route) || route.role !== 'worker' ||
       Object.keys(route).length !== keys.length || keys.some(key => !Object.hasOwn(route, key)) ||
       (route.source !== 'owner-explicit' && !taskDefault) || !isValidModelId(route.model) ||
       !efforts.has(route.effort) || typeof route.fastMode !== 'boolean' ||
       (taskDefault && (typeof route.kind !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(route.kind) ||
-        (route.pace !== null && !(Object.hasOwn(POOL_NAMES, route.pace?.pool ?? '') && validPace(route.pace, route.pace.pool))) ||
         typeof route.reason !== 'string' || !route.reason.trim() || /[\r\n]/.test(route.reason)))) {
     throw Error('recorded owner or task-default route required for worker');
   }
   return Object.freeze({ model: route.model, effort: route.effort, fastMode: route.fastMode, source: route.source,
-    ...(taskDefault ? { kind: route.kind, pace: route.pace, reason: route.reason } : {}) });
+    ...(taskDefault ? { kind: route.kind, reason: route.reason } : {}) });
 }
 
-// A route being recorded or launched must also match today's class table: class, Fast, pace pool, and level.
+// A route being recorded or launched must also match today's class table: class, Fast, and level, with no retired key.
 // Fable at high with Fast off is checked on every new and launched route, not on reads, so a record stays readable.
 function validateWorkerRoute(route) {
   const valid = validateRecordedWorkerRoute(route);
   requireFableRule(route);
   const rule = workerRule(route.kind);
   if (route.source === 'task-default' && (!rule || route.fastMode !== rule.fastMode ||
-      (rule.range ? route.pace?.pool !== LABEL_POOLS[rule.label] : route.pace !== null) ||
-      route.effort !== classLevel(rule, route.pace))) {
+      Object.hasOwn(route, RETIRED_DEFAULT_KEY) || route.effort !== rule.effort)) {
     throw Error('recorded owner or task-default route required for worker; a recorded lane rebuilds only with its ' +
       'destination task, lane, and class');
   }
@@ -233,12 +228,12 @@ function validateWorkerRoute(route) {
 // A task default must also still be today's class: the class's catalog label (never a GPT or web model for a Claude
 // class), the class's Fast, and, as the allowances for what a class-table change left behind, Fast on for a GPT class
 // (recorded before GPT defaults went Fast off) and any effort from the class minimum up to its ceiling, which the Pi
-// catalog must still serve.
+// catalog must still serve. A Luna class lane recorded with Fast off is refused (owner 2026-11-17).
 function validateRebuild(route, taskClass, rows) {
   taskClass = canonicalWorkerClass(taskClass);
   const valid = validateRecordedWorkerRoute(route);
   const rule = WORKER_DEFAULT_ROUTES[taskClass];
-  const ceiling = rule && (rule.range?.[1] ?? rule.effort);
+  const ceiling = rule && (rule.ceiling ?? rule.effort);
   const problem = laneProblem(route, taskClass, rows) ?? (route.source !== 'task-default' ? null
     : route.fastMode !== rule.fastMode && !(route.fastMode && GPT_WEB_LABELS.includes(rule.label)) ? `Fast ${route.fastMode ? 'on' : 'off'} does not match the ${taskClass} class`
       : effortOrder.indexOf(route.effort) > effortOrder.indexOf(ceiling) ? `effort ${route.effort} is above the ${taskClass} ceiling ${ceiling}`
@@ -301,10 +296,9 @@ export function uiTaskLaneClass(task, taskClass) {
 export const workerRouteUnresolved = () => Error('Worker route unresolved; ask the owner for the exact model and effort ' +
   `(task classes: ${[...Object.keys(WORKER_DEFAULT_ROUTES), ...Object.keys(OWNER_RULE_ROUTES)].join(', ')})`);
 
-// An owner-named model and effort always win unadjusted; otherwise the task class selects a catalog label,
-// and the class's quota pool pace may move its level within the class range. quota is a readQuota result.
-export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog, quota = null,
-  settings = ROUTING_DEFAULTS } = {}) {
+// An owner-named model and effort always win unadjusted; otherwise the task class selects a catalog label and runs it
+// at the class default.
+export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog } = {}) {
   taskKind = canonicalWorkerClass(taskKind);
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   if (ownerRoute) {
@@ -315,6 +309,8 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog,
     if (uiClass(taskKind) && isGptOrWebRoute(ownerRoute, rows)) {
       throw Error(`${taskKind} work never uses a GPT or web model (owner rule); name a Claude model or use the ${taskKind} class route`);
     }
+    const fast = classFastProblem(ownerRoute, taskKind);
+    if (fast) throw Error(`${fast}; name the route with Fast on or use the class route`);
     if (taskKind === 'review-security' && isGptOrWebRoute(ownerRoute, rows)) {
       throw Error('review-security never runs a GPT or web model (owner rule); name a Claude model or use the class route');
     }
@@ -331,13 +327,12 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog,
   if (!Object.hasOwn(WORKER_DEFAULT_ROUTES, taskKind ?? '')) throw workerRouteUnresolved();
   const rule = WORKER_DEFAULT_ROUTES[taskKind];
   const row = resolveCatalogLabel(rows, rule.label);
-  const pace = rule.range ? poolPace(quota, LABEL_POOLS[rule.label], settings) : null;
-  const effort = classLevel(rule, pace);
+  const effort = rule.effort;
   if (!row.thinkingOptions?.some(option => option.id === effort)) {
     throw Error(`${rule.label} does not serve required thinking ${effort}; the Worker lane stops`);
   }
   return Object.freeze({ role: 'worker', source: 'task-default', kind: taskKind, model: classModelId(taskKind, row.id),
-    effort, fastMode: rule.fastMode, pace, reason: classReason(taskKind, rule, pace, effort) +
+    effort, fastMode: rule.fastMode, reason: classReason(taskKind, rule) +
       (browserClass(taskKind) ? `, native Codex authorized by ${BROWSER_NATIVE_AUTHORIZATION}` : '') });
 }
 
