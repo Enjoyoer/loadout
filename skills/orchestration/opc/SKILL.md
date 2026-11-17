@@ -2,7 +2,7 @@
 name: opc
 description: "Run a code project as its PM: workers, review and verified delivery. Use when a PM owns a code repository or the owner names OPC."
 metadata:
-  version: "7.65.0"
+  version: "7.65.1"
 ---
 
 # OPC
@@ -45,4 +45,4 @@ Independently check required behavior and final committed deliverable bytes usin
 
 ## 7. Merge and cleanup
 
-PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. After installing changed instructions, send the changed lines to each affected PM, and to each affected Codex app thread via `codex-send`; reload idle PMs. Unreachable agents get the change at their next session start. Report test, integration, and PR evidence, review verdict/head or unavailability, Worker usage, remaining issues, and cleanup gaps separately.
+PRs with visible changes carry [before and after evidence](references/pr-evidence.md "branch:evidence"); other PRs say "No visible change". Use the execution mechanics to verify delivery and merge, then follow [workspace cleanup](references/worktree-lifecycle.md "runtime"). Confirm live GitHub merge state and reviewed-head ancestry. Follow repository sync requirements, distinguishing source publication from installation. After installing changed instructions, send the changed lines to each affected PM and reload idle PMs. Codex app threads pick the change up at their next read; unreachable agents at their next session start. Report test, integration, and PR evidence, review verdict/head or unavailability, Worker usage, remaining issues, and cleanup gaps separately.
