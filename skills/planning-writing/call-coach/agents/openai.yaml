@@ -1,0 +1,7 @@
+interface:
+  display_name: "Call Coach"
+  short_description: "Live prep page and one-line prompts during a call"
+  default_prompt: "Use $call-coach to coach me on this call."
+
+policy:
+  allow_implicit_invocation: true

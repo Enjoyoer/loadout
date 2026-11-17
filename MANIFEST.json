@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b71f0d0019360d85ae515469b926e9c1677707a0",
-  "skill_count": 24,
-  "file_count": 130,
+  "source_commit": "1220e7793552567f3ed9662fa9c5996bc7354e2d",
+  "skill_count": 25,
+  "file_count": 133,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -718,6 +718,27 @@
       "skill": "wo",
       "bytes": 233,
       "sha256": "6e97f641370362b0216ba3716ab4ef2230d494d6dbb10c72d8e681e45429aa20"
+    },
+    {
+      "path": "skills/planning-writing/call-coach/SKILL.md",
+      "category": "planning-writing",
+      "skill": "call-coach",
+      "bytes": 6827,
+      "sha256": "b63d6e2c01dc28549bd7b6eef54e44dfe347d9cade532805e9ac22cd7ce40969"
+    },
+    {
+      "path": "skills/planning-writing/call-coach/agents/openai.yaml",
+      "category": "planning-writing",
+      "skill": "call-coach",
+      "bytes": 218,
+      "sha256": "0314ef4019d0373c71f6a3d88ce14d136556febbe023142a65471419e0544800"
+    },
+    {
+      "path": "skills/planning-writing/call-coach/scripts/call-coach.mjs",
+      "category": "planning-writing",
+      "skill": "call-coach",
+      "bytes": 33015,
+      "sha256": "276809aaad8ec365307bdc65433d0e8e8e3de860b7bd74a4066b611bf62b35eb"
     },
     {
       "path": "skills/planning-writing/sample/SKILL.md",
