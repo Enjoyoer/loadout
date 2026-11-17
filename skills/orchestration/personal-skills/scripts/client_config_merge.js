@@ -404,8 +404,10 @@ try {
   }
 
   const codexFile = path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "config.toml");
-  checkConfigPath(fs, path, os, codexFile);
-  if (!fs.existsSync(codexFile)) result.codex = { status: "absent" };
+  // `"codex": false` on the host: its config.toml is never read or written.
+  if (!p.codex.skip) checkConfigPath(fs, path, os, codexFile);
+  if (p.codex.skip) result.codex = { status: "host-owned" };
+  else if (!fs.existsSync(codexFile)) result.codex = { status: "absent" };
   else result.codex = update(p, codexFile, bytes => {
     if (bytes === null) throw new Error("config.toml disappeared during the merge, so nothing was written");
     const before = bytes.toString("utf8");
