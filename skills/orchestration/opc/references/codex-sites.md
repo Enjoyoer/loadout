@@ -22,4 +22,6 @@ New Sites start limited to the owner and workspace admins. Audience can scale to
 
 Environment variables and secrets are managed only in the Site's settings in web or desktop, not in `.openai/hosting.json`, and take effect only after a redeploy of the approved saved version.
 
+A Codex app tool result enters the session rollout and Codex's thread history raw, with no filter. Never call `get_site`: its result carries the Site's bypass bearer tokens. Never call any other Sites tool whose result returns a token (such as `generate_siwc_bypass_token`) unless minting that token is the task. Read Site state with `list_site_versions`, `get_deployment_status` and `get_environment_variables` (names only).
+
 Editors cannot change audience, invite or remove people, manage settings or analytics, restore an earlier version, transfer ownership, or perform the first publish; editors can read live database data. Treat a first publish and any audience change as owner-only and therefore user-side when the acting account is an editor.
