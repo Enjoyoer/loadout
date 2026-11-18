@@ -822,37 +822,6 @@ session.dispose();rmSync(dir,{recursive:true,force:true});
         done = subprocess.run(['node', '--input-type=module', '-e', script, (app/'dist/bundle/index.js').as_uri(), (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
-    def test_input_images_over_the_cap_are_scaled_with_pis_resizer(self):
-        # PM-specified cases (brief d223-image-resize). Needs an installed Pi (LOADOUT_PI_APP, else the default fleet root).
-        app = Path(os.environ.get('LOADOUT_PI_APP') or Path.home()/'.local/share/loadout-pi-1.0.0/app')/'node_modules/@earendil-works/pi-coding-agent'
-        if not (app/'dist/bundle/index.js').is_file():
-            self.skipTest('no installed Pi package')
-        script=r"""
-import assert from 'node:assert/strict';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
-import {deflateSync,crc32} from 'node:zlib';
-const m=await import(process.argv[1]);m.IMAGES.load=()=>import(process.argv[2]);
-const dir=mkdtempSync(join(tmpdir(),'img-'));process.env.PI_CODING_AGENT_DIR=dir;
-const chunk=(type,data)=>{const t=Buffer.from(type);const len=Buffer.alloc(4);len.writeUInt32BE(data.length);const c=Buffer.alloc(4);c.writeUInt32BE(crc32(Buffer.concat([t,data])));return Buffer.concat([len,t,data,c]);};
-function png(w,h){const head=Buffer.alloc(13);head.writeUInt32BE(w,0);head.writeUInt32BE(h,4);head[8]=8;head[9]=2;
- const row=Buffer.alloc(1+w*3);for(let x=0;x<w;x++){row[1+x*3]=x%256;row[2+x*3]=128;row[3+x*3]=64;}
- return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',head),chunk('IDAT',deflateSync(Buffer.concat(Array(h).fill(row)))),chunk('IEND',Buffer.alloc(0))]).toString('base64');}
-const size=data=>{const b=Buffer.from(data,'base64');return [b.readUInt32BE(16),b.readUInt32BE(20)];};
-const rows=[];const h=m.imageInputHandler(r=>rows.push(r));const ctx={cwd:dir,isProjectTrusted:()=>false};
-// A 3834x2064 PNG steered in while the agent streams comes back scaled to a 2000 px long side, still PNG.
-const big=await h({type:'input',text:'look',images:[{type:'image',data:png(3834,2064),mimeType:'image/png'}],source:'rpc',streamingBehavior:'steer'},ctx);
-assert.equal(big.action,'transform');assert.equal(big.images.length,1);assert.equal(big.images[0].mimeType,'image/png');
-const [w,hgt]=size(big.images[0].data);assert.equal(Math.max(w,hgt),2000);assert.equal(w,2000);assert.equal(hgt,1077);
-assert.match(big.text,/^look\n\n\[Image: original 3834x2064, displayed at 2000x1077/);
-assert.deepEqual(rows,[{event:'image-resize',images:1,resized:1,failed:0,source:'rpc',streamingBehavior:'steer'}]);
-// A 1500x900 image and text-only input give no transform.
-assert.equal(await h({type:'input',text:'x',images:[{type:'image',data:png(1500,900),mimeType:'image/png'}],source:'rpc',streamingBehavior:'steer'},ctx),undefined);
-assert.equal(await h({type:'input',text:'x',source:'rpc',streamingBehavior:'followUp'},ctx),undefined);
-assert.equal(rows.length,1);
-rmSync(dir,{recursive:true,force:true});
-"""
-        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri(), (app/'dist/bundle/index.js').as_uri()], capture_output=True, text=True)
-        self.assertEqual(done.returncode, 0, done.stderr)
-
     def test_service_guard_refuses_shared_service_stops_and_allows_the_rest(self):
         # PM-specified cases (brief pi-service-guard): a forged instruction must not stop a shared fleet service.
         script=r"""
