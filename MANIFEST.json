@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "db212b0ce30a81e596c84000bd5434b0918a2799",
+  "source_commit": "86056e913d6ff2c0b94fed7fca9bab3eee36ad03",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -380,8 +380,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 98502,
-      "sha256": "2bddc34fb23390e579d0733198b8371c325473da9dab98dfa72da3d3163a9a3d"
+      "bytes": 98967,
+      "sha256": "c32f0c2d5787e87e00a9b89bb0bb2589656587e751a05fd7328e7c556b49ef7b"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -562,8 +562,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/fleet-routing.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 116662,
-      "sha256": "bd4ffede6507a1356731560e5302824b4ede759269007acd90ffff9587310c0e"
+      "bytes": 118766,
+      "sha256": "92dd2324b22363c5bcfa7e29442b064ba5c19109eed40cd8401e39e67def9360"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/launch.mjs",
@@ -1597,26 +1597,26 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 43999,
-      "sha256": "f789f07dcd560cc19dbefdd2138fcdb1fd2833097a754070311da8cf6199a04f"
+      "bytes": 47083,
+      "sha256": "5edcb8ed2b27c8ff6e81670207ebe7ab98afdd299a308b2893f7807cd06e14fb"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 103323,
-      "sha256": "e4c88ebd86011f20d88416de82a999311f1f3e8bb0bc98eb7f3f077bd4d91056"
+      "bytes": 104171,
+      "sha256": "b0232acce47d3ae7c41ea76dfc22e18728c68050983c56fc609e214cae675d70"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 23597,
-      "sha256": "b32c8f3d206bf1f663342a74a3937d37cbbb62a23570341c6293269de433a5f5"
+      "sha256": "5ba6ed65dd728e6d4e82d62175d3e074e9e83ed6f91c8963cc211ab5f890531d"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 890,
-      "sha256": "bbe6c01eb84127f8aa501f93f8ebb78c4314a7ee14479dd6c1e74043c5fbf0b7"
+      "sha256": "ba3252cdfc10cf860fbe4c4a1084cf825c30f73d1f7cc4581be9692edf81ab5a"
     },
     {
       "path": "plugins/usage-limit-auto-resume/paseo-plugin.json",
@@ -1645,14 +1645,14 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/fallback-runner.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 34179,
-      "sha256": "01ebfbd4cb25477d50c12da2f96d8d979419f86419fdf8fc39b8e9f59c022a5b"
+      "bytes": 45430,
+      "sha256": "27d1ffd5bc0a7ab1c912e737a39a52895f16e5d247e594539a943a4b441d37da"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/fallback.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 21595,
-      "sha256": "8837d82001acb93ee8448f4adf738f669be5665b714690a8fceb4618f53499dd"
+      "bytes": 27115,
+      "sha256": "da59670bd9e0d86b50dbf1a5aad30c76025c20270fd53eb40d62a62f8695a7cb"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/model.ts",
@@ -1735,8 +1735,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/test/pm-fallback.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 41678,
-      "sha256": "2bc87d56e8634cbcc4c1057c2fefdb78fc6f7f27c6e17acb9556c6a0b6fd9ac3"
+      "bytes": 60612,
+      "sha256": "69f5b2287659b7c0ba1f22897d5c80cf880432cf3e54fa9ef5884e838c15f0ce"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/rpc-timeout.test.ts",
