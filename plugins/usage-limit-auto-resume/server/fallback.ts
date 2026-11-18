@@ -52,6 +52,14 @@ export type ReturnObligation = {
    * return and stage steps back, as with pqFableDistrusted, whatever the original model. Absent: false.
    */
   cpa503?: boolean;
+  /**
+   * Set by a move on CPA's 503 evidence: one resend of the PM's latest unanswered input on the fallback skips the pq
+   * hold and is due at once, whichever record of the PM carries that input. Cleared when that resend has gone out, or
+   * when the PM answers on its own. Absent: false.
+   */
+  cpaResend?: boolean;
+  /** When a CPA obligation last stepped back from its last stage to its first: at most once per PQ_PROBE_INTERVAL_MS. */
+  steppedBackAt?: string | null;
   attempts: number;
   lastAttemptAt: string | null;
   lastError: string | null;
@@ -128,7 +136,7 @@ export function cpaSwapEvidence(message: string): SwapEvidence {
  * A PM's run of CPA 503 turns: the live profile they were counted on, how many in a row, the last one's end. A run on
  * another profile counts nothing: any model or profile change starts it again, and a move checks it against the live one.
  */
-export type CpaStreak = { model: string; count: number; at: string; turnId?: string | null; profile?: Profile };
+export type CpaStreak = { model: string; count: number; at: string; turnId?: string | null; profile?: Profile; run?: string };
 export const isSwapEvidence = (evidence: SwapEvidence) => evidence.failedOutcome && evidence.usageLimit;
 
 const ACCOUNT_LIMIT_TEXT = /would exceed your account(?:'|\u2019)s rate limit/i;
@@ -284,7 +292,7 @@ export function newObligation(agentId: string, original: Profile, fallback: Prof
   const at = new Date(now).toISOString();
   return {
     version: 1, obligationId: `pm-return:${createHash("sha256").update([agentId, at, randomUUID()].join("\u0000")).digest("hex").slice(0, 24)}`,
-    agentId, source, phase, original, fallback, ...(chain ?? {}), ...(cpa503 ? { cpa503: true } : {}), restoreDueAt: null, fallbackSince: phase === "fallback" ? at : null, attempts: 0, lastAttemptAt: null, lastError: null, createdAt: at, updatedAt: at,
+    agentId, source, phase, original, fallback, ...(chain ?? {}), ...(cpa503 ? { cpa503: true, cpaResend: true } : {}), restoreDueAt: null, fallbackSince: phase === "fallback" ? at : null, attempts: 0, lastAttemptAt: null, lastError: null, createdAt: at, updatedAt: at,
   };
 }
 
@@ -304,7 +312,8 @@ const isProfile = (value: unknown) => typeof value === "object" && value !== nul
 const isStreak = (value: unknown) => typeof value === "object" && value !== null && typeof (value as CpaStreak).model === "string" &&
   Number.isSafeInteger((value as CpaStreak).count) && isTime((value as CpaStreak).at) &&
   ((value as CpaStreak).turnId === undefined || (value as CpaStreak).turnId === null || typeof (value as CpaStreak).turnId === "string") &&
-  ((value as CpaStreak).profile === undefined || isProfile((value as CpaStreak).profile));
+  ((value as CpaStreak).profile === undefined || isProfile((value as CpaStreak).profile)) &&
+  ((value as CpaStreak).run === undefined || typeof (value as CpaStreak).run === "string");
 
 function isObligation(value: unknown): value is ReturnObligation {
   if (typeof value !== "object" || value === null) return false;
@@ -319,6 +328,8 @@ function isObligation(value: unknown): value is ReturnObligation {
     (o.pqFableDistrusted === undefined || typeof o.pqFableDistrusted === "boolean") &&
     (o.pqProbeAt === undefined || o.pqProbeAt === null || (typeof o.pqProbeAt === "string" && Number.isFinite(Date.parse(o.pqProbeAt)))) &&
     (o.cpa503 === undefined || typeof o.cpa503 === "boolean") &&
+    (o.cpaResend === undefined || typeof o.cpaResend === "boolean") &&
+    (o.steppedBackAt === undefined || o.steppedBackAt === null || isTime(o.steppedBackAt)) &&
     Number.isSafeInteger(o.attempts) && (o.lastAttemptAt === null || isTime(o.lastAttemptAt)) && isNullableString(o.lastError) &&
     isTime(o.createdAt) && isTime(o.updatedAt);
 }
@@ -408,17 +419,23 @@ export class ReturnStore {
       const prior = state.cpaStreaks?.[agentId];
       if (prior && turnId && prior.turnId === turnId) { seen = prior.count; return null; }
       const same = !!prior?.profile && sameProfile(prior.profile, profile);
-      const streak = { model: profile.model, count: same ? prior!.count + 1 : 1, at, turnId, profile };
+      // The run's identity: when its first failure was counted, made unique; a sweep drops only the run it read.
+      const run = same && prior!.run ? prior!.run : `${at}#${randomUUID().slice(0, 8)}`;
+      const streak = { model: profile.model, count: same ? prior!.count + 1 : 1, at, turnId, profile, run };
       return { state: { ...state, cpaStreaks: { ...state.cpaStreaks, [agentId]: streak } }, result: streak.count };
     });
     return next ?? seen;
   }
 
-  /** A successful turn, a failure of another kind, or the move it led to, ends the run. Writes only when one exists. */
-  clearCpa(agentId: string): Promise<true | null> {
+  /**
+   * A successful turn, a failure of another kind, or the move it led to, ends the run. Writes only when one exists.
+   * With `run`, only that run (compare-and-delete): a run started since it was read stands.
+   */
+  clearCpa(agentId: string, run?: string | null): Promise<true | null> {
     return this.change((state) => {
-      if (!state.cpaStreaks?.[agentId]) return null;
-      const { [agentId]: _gone, ...rest } = state.cpaStreaks;
+      const current = state.cpaStreaks?.[agentId];
+      if (!current || run !== undefined && current.run !== (run ?? undefined)) return null;
+      const { [agentId]: _gone, ...rest } = state.cpaStreaks!;
       return { state: { ...state, cpaStreaks: rest }, result: true as const };
     });
   }

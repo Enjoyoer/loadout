@@ -78,8 +78,6 @@ export type ResumeRecord = {
   // The daemon run that last delayed this record's first send after a restart (RESTART_SETTLE_MS). Set when a retry cut
   // off by a stop is parked again, cleared by its next send; each later run delays it again (restartSettle).
   settleRun?: string | null;
-  // The attempt whose send skips the pq hold after a PM's move on CPA's 503 (fallback-runner, sendUnheld); one send only.
-  cpaSend?: number | null;
 };
 
 export type RpcTimeoutWait = { giveUpAt: string; waiting: string | null };

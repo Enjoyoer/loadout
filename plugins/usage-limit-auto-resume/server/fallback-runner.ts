@@ -3,9 +3,9 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config.ts";
 import type { AgentSettingsPort } from "./daemon.ts";
-import { chainDecision, chainRefusal, CPA_STREAK, cpaSwapEvidence, cpaUnavailable, turnModel, enrollmentKey, fallbackIneligible, fallbackSinceMs, pqProbeOpensAt, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
+import { chainDecision, chainRefusal, CPA_STREAK, cpaSwapEvidence, cpaUnavailable, turnModel, enrollmentKey, fallbackIneligible, fallbackSinceMs, pqProbeOpensAt, PQ_PROBE_INTERVAL_MS, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type CpaStreak, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
 import { agentPool, type PoolQuota, type QuotaPool } from "./quota.ts";
-import { attemptCount, isActive, rebindRecord, transientDelaySeconds, type AgentSnapshot, type ResumeRecord } from "./model.ts";
+import { isActive, rebindRecord, transientDelaySeconds, type AgentSnapshot, type ResumeRecord } from "./model.ts";
 import type { ResumeStore } from "./store.ts";
 
 export type FallbackApi = PaseoApi & { agentSettings?: AgentSettingsPort };
@@ -108,32 +108,26 @@ export function createFallbackRunner(deps: FallbackDeps) {
 
   // Starts a move to another stage of the chain; the next pass applies it as a swap. The stage's proof clock restarts
   // when the move is verified.
-  async function startStage(obligation: ReturnObligation, stage: "first" | "last", detail: string, cpa = false) {
+  // A move on CPA evidence (`cpa`, the run it rests on) owes one pq-free resend on the new stage (cpaResend). A step back
+  // from the last stage to the first is noted (steppedBackAt) and owes none.
+  async function startStage(obligation: ReturnObligation, stage: "first" | "last", detail: string, cpa: CpaStreak | null = null) {
     const from = obligation.stage;
+    const back = from === "last" && stage === "first";
     const moved = await returns.update(obligation.obligationId, (o) => o.phase === "fallback" && o.stage === from
-      ? { ...o, phase: "switching", stage, fallback: o.stages![stage], fallbackSince: null, restoreDueAt: null, restoreReadback: null, ...(cpa ? { cpa503: true } : {}), updatedAt: nowIso() } : o);
-    if (cpa && moved?.stage === stage) { await returns.clearCpa(obligation.agentId); await freeResend(obligation.agentId); }
+      ? { ...o, phase: "switching", stage, fallback: o.stages![stage], fallbackSince: null, restoreDueAt: null, restoreReadback: null, ...(cpa ? { cpa503: true, cpaResend: true } : {}), ...(back ? { steppedBackAt: nowIso(), cpaResend: false } : {}), updatedAt: nowIso() } : o);
+    if (cpa && moved?.stage === stage) await returns.clearCpa(obligation.agentId, cpa.run ?? null);
     if (moved?.stage === stage && moved.phase === "switching") log(`pm-stage-start agentId=${obligation.agentId} obligationId=${obligation.obligationId} from=${from} to=${stage} ${detail} profile=${show(moved.fallback)}`);
     return moved;
   }
 
-  // A move CPA's 503 made: the agent's active record sends its next resend at once once the profile is in place, not
-  // held on pq (sendUnheld). Only that one send: the mark names the attempt it is for. A record whose failed resend is
-  // still being settled (a sweep made the move first) is marked too: its attempt count already holds that send, and the
-  // re-park keeps the mark; dueFreeResend then makes it due once the turn's end is handled.
-  async function freeResend(agentId: string) {
-    const active = await records.activeForAgent(agentId);
-    if (!active || !isActive(active)) return;
-    const waiting = (state: string) => state === "parked" || state === "detected";
-    await records.update(active.recordId, (value) => isActive(value) && value.recordId === active.recordId
-      ? { ...value, cpaSend: attemptCount(value), ...(waiting(value.state) ? { notBefore: new Date(Math.min(Date.parse(value.notBefore), Date.now())).toISOString() } : {}), updatedAt: nowIso() } : value);
-  }
-
-  // The marked resend of a CPA move, parked again after the move landed: due now. The record when it changed.
+  // A CPA move's owed resend (cpaResend) belongs to the obligation, not to a record: whichever record of the PM waits on
+  // the fallback profile, one that stood at the move or one written since (a newer user turn that superseded it), is due
+  // now, and its send skips the pq hold (sendUnheld). Called when the move is verified, when a turn's end was handled
+  // and when the engine re-arms a record. The record when it changed.
   async function dueFreeResend(agentId: string): Promise<ResumeRecord | null> {
     const obligation = await returns.get(agentId);
-    if (!obligation?.cpa503 || obligation.phase !== "fallback") return null;
-    const due = (value: ResumeRecord) => (value.state === "parked" || value.state === "detected") && value.cpaSend === attemptCount(value) &&
+    if (!obligation?.cpa503 || !obligation.cpaResend || obligation.phase !== "fallback") return null;
+    const due = (value: ResumeRecord) => (value.state === "parked" || value.state === "detected") &&
       sameModel(value.model, obligation.fallback.model) && Date.parse(value.notBefore) > Date.now();
     const active = await records.activeForAgent(agentId);
     if (!active || !due(active)) return null;
@@ -141,16 +135,26 @@ export function createFallbackRunner(deps: FallbackDeps) {
     return next && Date.parse(next.notBefore) <= Date.now() ? next : null;
   }
 
+  // The owed resend is spent: it went out (`sent`), or the PM answered its latest input itself (`answered`).
+  async function clearResend(agentId: string, why: "sent" | "answered") {
+    const obligation = await returns.get(agentId);
+    if (!obligation?.cpaResend) return;
+    const cleared = await returns.update(obligation.obligationId, (o) => o.cpaResend ? { ...o, cpaResend: false, updatedAt: nowIso() } : o);
+    if (cleared && !cleared.cpaResend) log(`pm-cpa-resend-done agentId=${agentId} obligationId=${obligation.obligationId} reason=${why}`);
+  }
+
   // A move on CPA evidence needs the run still standing on the profile the agent is on now; a run counted on another
-  // model or profile is dropped and moves nothing.
-  async function cpaHolds(agent: AgentSnapshot, count = CPA_STREAK): Promise<boolean> {
-    const streak = (await returns.read()).cpaStreaks?.[agent.id];
-    if (!streak || streak.count < count) return false;
-    const live = profileOf(agent);
-    if (live && streak.profile && sameProfile(live, streak.profile)) return true;
-    await returns.clearCpa(agent.id);
-    log(`pm-cpa-count-dropped agentId=${agent.id} reason=profile-changed counted=${streak.profile ? show(streak.profile) : JSON.stringify(streak.model)} live=${live ? show(live) : "unknown"}`);
-    return false;
+  // model or profile is dropped and moves nothing. The run is read first (or given, as the sweep read it) and the agent
+  // after it, and the drop deletes only that run (its `run` identity): a run started since stands. The run, when it holds.
+  async function cpaHolds(agentId: string, read?: CpaStreak, count = CPA_STREAK): Promise<CpaStreak | null> {
+    const streak = read ?? (await returns.read()).cpaStreaks?.[agentId];
+    if (!streak || streak.count < count) return null;
+    const agent = await fetchAgent(await deps.acquire(), agentId);
+    const live = agent ? profileOf(agent) : null;
+    if (!live) return null;
+    if (streak.profile && sameProfile(live, streak.profile)) return streak;
+    if (await returns.clearCpa(agentId, streak.run ?? null)) log(`pm-cpa-count-dropped agentId=${agentId} reason=profile-changed counted=${streak.profile ? show(streak.profile) : JSON.stringify(streak.model)} live=${show(live)}`);
+    return null;
   }
 
   async function firstDelay(agentId: string, endedAt: string, config: Config): Promise<boolean> {
@@ -326,7 +330,11 @@ export function createFallbackRunner(deps: FallbackDeps) {
         const first = obligation.stages!.first;
         const firstSuccess = successOf(first.model);
         const step = stepOnPq(reading) ? `pq-capacity quota=${quotaText(reading)}` : firstSuccess ? successText(firstSuccess, first.model) : null;
-        if (step) {
+        // A CPA chain steps back at most once per PQ_PROBE_INTERVAL_MS, whatever the proof: a later step back waits for
+        // that window, so the PM cannot bounce between the stages. Proof for the original returns it at once (above).
+        const stepOpensAt = obligation.cpa503 && obligation.steppedBackAt ? Date.parse(obligation.steppedBackAt) + PQ_PROBE_INTERVAL_MS : 0;
+        if (step && Date.now() < stepOpensAt) once(agentId, `pm-stage-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=stepped-back-within-interval next-step=${new Date(stepOpensAt).toISOString()}`);
+        else if (step) {
           if (!await startStage(obligation, "first", `reason=${step}`)) return;
           return reconcileLocked(agentId, config);
         }
@@ -390,9 +398,10 @@ export function createFallbackRunner(deps: FallbackDeps) {
       return reconcileLocked(agentId, config);
     }
     // CPA's 503 twice in a row on the first stage: on to the last without asking pq.
-    if (evidence.cpa && !await cpaHolds(agent)) return reconcileLocked(agentId, config);
-    if (evidence.cpa) {
-      await startStage(obligation, "last", `trigger=${why} evidence=cpa-503`, true);
+    const held = evidence.cpa ? await cpaHolds(agentId) : null;
+    if (evidence.cpa && !held) return reconcileLocked(agentId, config);
+    if (held) {
+      await startStage(obligation, "last", `trigger=${why} evidence=cpa-503`, held);
       return reconcileLocked(agentId, config);
     }
     const decision = swapDecision(await deps.quota("claude", config), await deps.quota(agentPool("pi", obligation.stages!.last.model) ?? "codex", config));
@@ -426,8 +435,9 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const entry = config.pmFallbackFirst.find((item) => item.from === live.model);
     let stage: "first" | "last" = "last", note = "", distrusted = false;
     // CPA's 503 twice in a row: the single step, or a chain's first stage, without asking pq.
-    if (evidence.cpa && !await cpaHolds(agent)) return;
-    if (evidence.cpa) {
+    const held = evidence.cpa ? await cpaHolds(agentId) : null;
+    if (evidence.cpa && !held) return;
+    if (held) {
       stage = entry ? "first" : "last";
       note = " evidence=cpa-503";
     } else if (entry) {
@@ -458,7 +468,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const fallback = chain ? chain.stages[stage] : last;
     const stored = await returns.add(newObligation(agentId, original, fallback, "auto", "switching", Date.now(), chain, evidence.cpa === true));
     if (!stored) return reconcileLocked(agentId, config);
-    if (evidence.cpa) { await returns.clearCpa(agentId); await freeResend(agentId); }
+    if (held) await returns.clearCpa(agentId, held.run ?? null);
     log(`pm-swap-start agentId=${agentId} obligationId=${stored.obligationId} trigger=${why}${chain ? ` stage=${stage}` : ""}${note} original=${show(original)} fallback=${show(fallback)}`);
     await reconcileLocked(agentId, config);
   }
@@ -506,13 +516,16 @@ export function createFallbackRunner(deps: FallbackDeps) {
      */
     async sendUnheld(record: ResumeRecord, agent: AgentSnapshot, config: Config): Promise<string | null> {
       if (record.provider !== "pi" || agent.labels?.role !== "pm") return null;
-      if (typeof record.cpaSend === "number" && record.cpaSend === attemptCount(record)) {
-        const obligation = await returns.get(record.agentId);
-        if (obligation?.cpa503 && obligation.phase === "fallback" && sameModel(record.model, obligation.fallback.model)) return "cpa-503-moved";
-      }
+      const obligation = await returns.get(record.agentId);
+      if (obligation?.cpa503 && obligation.cpaResend && obligation.phase === "fallback" && sameModel(record.model, obligation.fallback.model)) return "cpa-503-moved";
       if (!config.pmFallback || fallbackIneligible(agent)) return null;
       const streak = (await returns.read()).cpaStreaks?.[record.agentId];
       return streak?.count === 1 && sameModel(streak.model, record.model) && !!agent.model && sameModel(agent.model, record.model) ? "cpa-503-first" : null;
+    },
+
+    /** The owed resend of a CPA move has gone out (sendUnheld said cpa-503-moved): later sends follow the pq hold. */
+    async freeResendSent(agentId: string): Promise<void> {
+      await clearResend(agentId, "sent");
     },
 
     /** A swap or a due restore is outstanding: the resume engine sends nothing until the profile is in place. */
@@ -531,6 +544,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // The first CPA 503 of a run: the waiting record's resend is due after the first transient delay, not a later
       // backoff step (its send also skips the pq hold, sendUnheld).
       // A CPA move a sweep made while this turn's end was still being handled: its marked resend is due now.
+      // A completed turn answered the PM's latest input: a CPA move owes no resend after it.
+      if (outcome.kind === "completed") await clearResend(agentId, "answered");
       const freed = (cpa?.count === 1 && config.pmFallback ? await firstDelay(agentId, endedAt, config) : false) || !!await dueFreeResend(agentId);
       // A failed turn on the final fallback of a return CPA's 503 made: no swap and no return come of it; the resume
       // engine handles its record as usual.
@@ -567,8 +582,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // A run whose agent has left the profile it was counted on, even for a round trip, is dropped.
       for (const [agentId, streak] of Object.entries((await returns.read()).cpaStreaks ?? {})) {
         await locked(agentId, async () => {
-          const agent = await fetchAgent(await deps.acquire(), agentId);
-          if (!agent || !await cpaHolds(agent, 1) || !config.pmFallback || streak.count < CPA_STREAK) return;
+          if (!await cpaHolds(agentId, streak, 1) || !config.pmFallback || streak.count < CPA_STREAK) return;
           await swapLocked(agentId, config, "cpa-503-held", { ...cpaSwapEvidence(""), named: streak.model });
         });
       }

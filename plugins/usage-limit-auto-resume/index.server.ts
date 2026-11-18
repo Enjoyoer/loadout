@@ -837,6 +837,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
           updatedAt: new Date().toISOString(),
         } : value);
         log(`${record.kind === "transient" ? "retry" : "resume"}-sent agentId=${record.agentId} messageId=${stableMessageId}`);
+        if (unheld === "cpa-503-moved") await fallback.freeResendSent(record.agentId).catch((error) => failed("pm-fallback-resend-failed", error));
       } catch (error) {
         if (isTransportNotConnected(error)) {
           // Undo the claim and stay parked; the next sweep opens a fresh client. A turn that started meanwhile turns it uncertain instead.

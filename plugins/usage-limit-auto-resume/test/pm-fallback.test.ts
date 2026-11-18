@@ -15,6 +15,7 @@ import { ResumeStore } from "../server/store.ts";
 
 const OPUS = "fleet/claude-opus-5-5";
 const SOL = "fleet/gpt-6.2-sol";
+const FABLE = "fleet/claude-fable-5-2";
 const USAGE = "usage_limit_exceeded: fixture limit (stopReason=error, model=fleet/claude-opus-5-5)";
 // The provider errors of the 10/21 incident, as Pi reports them on a failed turn.
 const RATE_LIMIT = '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}} (stopReason=error, model=fleet/claude-opus-5-5)';
@@ -33,6 +34,10 @@ function fixture(home: string) {
   // The plugin's own message per turn it started, which is that turn's newest user row.
   const sent = new Map<string, { text: string; messageId: string }>();
   let failApply = 0;
+  // Race hooks (T9, T11): run before an agent read, after it with the snapshot it returns, and on a settings write.
+  let beforeFetch: ((id: string) => Promise<void>) | undefined;
+  let afterFetch: ((agent: AgentSnapshot | undefined) => Promise<void>) | undefined;
+  let onApply: (() => void) | undefined;
   // What the daemon's stored record holds per agent: it follows memory unless the agent's background persist fails.
   const unpersisted = new Map<string, Profile[]>();
   const stored = async (id: string): Promise<Profile[]> => unpersisted.get(id) ?? (agents.has(id) ? [profileOf(agents.get(id)!)!] : []);
@@ -60,9 +65,14 @@ function fixture(home: string) {
   ] });
   const api = {
     getConnectionState: () => ({ status: "connected" }), close: async () => undefined,
-    providers: { listModels: async () => ({ models: [OPUS, SOL].map((id) => ({ id, defaultThinkingOptionId: id === OPUS ? "medium" : "high", thinkingOptions: ["low", "medium", "high"].map((t) => ({ id: t })) })) }) },
+    providers: { listModels: async () => ({ models: [OPUS, SOL, FABLE].map((id) => ({ id, defaultThinkingOptionId: id === OPUS ? "medium" : "high", thinkingOptions: ["low", "medium", "high"].map((t) => ({ id: t })) })) }) },
     agents: { ref: (id: string) => ({
-      refresh: async () => agents.has(id) ? { agent: structuredClone(agents.get(id)!) } : null,
+      refresh: async () => {
+        await beforeFetch?.(id);
+        const agent = agents.has(id) ? structuredClone(agents.get(id)!) : undefined;
+        await afterFetch?.(agent);
+        return agent ? { agent } : null;
+      },
       timeline: { refetch: async () => ({ entries: (timelines.get(id) ?? []).map((item) => ({ item })), hasNewer: false, hasOlder: false }) },
       cancel: async () => { calls.cancels++; },
       send: async (prompt: string, options: { messageId: string }) => {
@@ -77,6 +87,7 @@ function fixture(home: string) {
       apply: async (agentId: string, settings: { modelId: string; thinkingOptionId: string | null }) => {
         calls.apply.push({ agentId, ...settings });
         if (failApply > 0) { failApply--; throw new Error("fixture apply rejected"); }
+        onApply?.();
         Object.assign(agents.get(agentId)!, { model: settings.modelId, thinkingOptionId: settings.thinkingOptionId ?? "medium" });
       },
       setLabels: async (agentId: string, labels: Record<string, string>) => {
@@ -115,6 +126,7 @@ function fixture(home: string) {
     agents, calls, pq, start, stop, add, endTurn, tick, handlers, unpersisted, timelines, sent,
     returns: new ReturnStore(path.join(home, "pm-return.json")), records: new ResumeStore(),
     failApplies: (n: number) => { failApply = n; },
+    hooks: (set: { beforeFetch?: typeof beforeFetch; afterFetch?: typeof afterFetch; onApply?: typeof onApply }) => { ({ beforeFetch, afterFetch, onApply } = set); },
     setConfig: (patch: Partial<Config>) => { config = ConfigSchema.parse({ ...config, ...patch }); },
   };
 }
@@ -802,4 +814,134 @@ it("T8: a diagnostic that only quotes CPA's refusal does not count", () => scena
   assert.deepEqual(f.calls.apply, []);
   assert.equal((await f.returns.read()).cpaStreaks, undefined);
   assert.ok(f.calls.sends.every((s) => s.startsWith(`pm:${OPUS}:`)), "it retries on Opus as on main");
+}));
+
+// CPA's 503 for a turn on `model`.
+const cpaOn = (model: string) => ({ kind: "failed" as const, error: { message: CPA_NOT_FOUND.replace(/claude-opus-5-5/g, model.split("/").at(-1)!) } });
+// Rejects after `ms` of real time, so a race that never reaches its pause fails the test instead of hanging it.
+const within = (ms: number, label: string) => new Promise<never>((_, reject) => setTimeout(() => reject(new Error(label)), ms).unref());
+
+it("T9: a newer user turn whose record is written after a sweep made the CPA move takes the move's one pq-free resend on Sol", () => scenario(async (f, logs) => {
+  f.setConfig({ pmFallbackThinking: "high", transientBackoffSeconds: [60, 120] });
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.pq.codex = { five: "out", week: "out" };
+  f.add("pm", "pm");
+  await f.endTurn("pm", cpaOn(OPUS), "user-1");
+  assert.equal((await f.records.activeForAgent("pm"))?.state, "parked");
+  // User turn 2 fails the same way. Its handler pauses after the first record was superseded and before its own is
+  // written, while the timer sweep moves the PM.
+  let entered!: () => void, release!: () => void, moved!: () => void;
+  const enteredP = new Promise<void>((resolve) => { entered = resolve; });
+  const releaseP = new Promise<void>((resolve) => { release = resolve; });
+  const movedP = new Promise<void>((resolve) => { moved = resolve; });
+  let blocked = false;
+  f.hooks({
+    beforeFetch: async (id) => {
+      if (id !== "pm" || blocked || (await f.returns.read()).cpaStreaks?.pm?.count !== 2 || await f.records.activeForAgent("pm")) return;
+      blocked = true; entered(); await releaseP;
+    },
+    onApply: () => moved(),
+  });
+  Object.assign(f.agents.get("pm")!, { lastUserMessageAt: new Date().toISOString() });
+  const ended = f.endTurn("pm", cpaOn(OPUS), "user-2");
+  try {
+    await Promise.race([enteredP, within(2000, "no gap before the new record")]);
+    mock.timers.tick(30_000);
+    await Promise.race([movedP, within(2000, "the sweep did not move the PM")]);
+  } finally { release(); await ended; }
+  f.hooks({});
+  assert.deepEqual(f.calls.apply.map((c) => c.modelId), [SOL]);
+  assert.deepEqual(f.calls.sends, [`pm:${SOL}:continue`], "turn 2's record resends at once on Sol");
+  for (let n = 0; n < 8; n++) await f.tick();
+  assert.equal(f.calls.sends.length, 1, "exactly one Sol send");
+  const records = (await f.records.read()).map((r) => [r.sourceTurnId, r.state, !!r.quotaHold]);
+  assert.deepEqual(records, [["user-1", "superseded", false], ["user-2", "verifying", false]]);
+  assert.ok(!logs.some((l) => l.includes("quota-hold agentId=pm")));
+  assert.equal((await f.returns.get("pm"))?.cpaResend, false, "the owed resend is spent");
+}));
+
+it("T10: a CPA chain steps back from Sol to Opus at most once an hour; a Fable success still returns the PM at once", async () => {
+  // Fable PM on Sol by CPA's 503 (Fable twice, Opus twice); an unrelated Opus success steps it back; refused twice
+  // again on Opus, it is on Sol again; a second Opus success comes. Returns the time of the first step back.
+  const bounce = async (f: ReturnType<typeof fixture>) => {
+    f.setConfig({ pmFallbackThinking: "high", pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+    f.pq.claude = { five: "ok", week: "ok" };
+    f.pq.codex = { five: "out", week: "out" };
+    f.add("pm", "pm", { model: FABLE });
+    f.add("other", "worker");
+    const fail = (model: string, id?: string) => f.endTurn("pm", cpaOn(model), id ?? `resume-${f.calls.sends.length}`);
+    await fail(FABLE, "fable-1"); await fail(FABLE); await fail(OPUS); await fail(OPUS);
+    assert.deepEqual(f.calls.apply.map((c) => c.modelId), [OPUS, SOL]);
+    await f.tick();
+    await f.endTurn("other", { kind: "completed" }, "other-1", "Normal reply on Opus.");
+    await f.tick();
+    assert.equal(f.agents.get("pm")!.model, OPUS, "the first step back");
+    const steppedBack = Date.parse((await f.returns.get("pm"))!.steppedBackAt!);
+    Object.assign(f.agents.get("pm")!, { lastUserMessageAt: new Date().toISOString() });
+    await fail(OPUS, "fresh-opus-failure"); await fail(OPUS);
+    assert.equal(f.agents.get("pm")!.model, SOL);
+    await f.tick();
+    await f.endTurn("other", { kind: "completed" }, "other-2", "Another normal reply on Opus.");
+    await f.tick();
+    return steppedBack;
+  };
+  await scenario(async (f, logs) => {
+    const steppedBack = await bounce(f);
+    assert.equal(f.agents.get("pm")!.model, SOL, "no second step back inside the hour");
+    assert.ok(logs.some((l) => l.includes("pm-stage-waiting agentId=pm") && l.includes("reason=stepped-back-within-interval")));
+    while (Date.now() < steppedBack + 59 * 60_000) await f.tick();
+    assert.equal(f.agents.get("pm")!.model, SOL);
+    while (Date.now() < steppedBack + 61 * 60_000) await f.tick();
+    assert.equal(f.agents.get("pm")!.model, OPUS, "the waiting step back once the window opens");
+    assert.equal(logs.filter((l) => l.includes("pm-stage-start agentId=pm") && l.includes("from=last to=first")).length, 2);
+  });
+  await scenario(async (f) => {
+    await bounce(f);
+    assert.equal(f.agents.get("pm")!.model, SOL);
+    f.add("fable-worker", "worker", { model: FABLE });
+    await f.endTurn("fable-worker", { kind: "completed" }, "fable-ok", "Normal reply on Fable.");
+    await f.tick();
+    assert.equal(f.agents.get("pm")!.model, FABLE, "a Fable success returns it at once");
+  });
+});
+
+it("T11: a sweep that read the PM before its change to Fable drops only the count it read; the new Fable count stands and moves the PM", () => scenario(async (f, logs) => {
+  f.setConfig({ pmFallback: false, transientBackoffSeconds: [90, 120], pmFallbackThinking: "high", pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.pq.codex = { five: "out", week: "out" };
+  f.add("pm", "pm");
+  await f.endTurn("pm", cpaOn(OPUS), "opus-1");
+  assert.equal((await f.returns.read()).cpaStreaks?.pm?.count, 1);
+  // A sweep reads the PM on Opus and pauses; meanwhile the PM changes to Fable and its first Fable turn fails, counted
+  // by both turn hooks.
+  let reached!: () => void, release!: () => void, accounted!: () => void;
+  const reachedP = new Promise<void>((resolve) => { reached = resolve; });
+  const releaseP = new Promise<void>((resolve) => { release = resolve; });
+  const accountedP = new Promise<void>((resolve) => { accounted = resolve; });
+  let paused = false;
+  f.hooks({ afterFetch: async (agent) => { if (agent?.model === OPUS && !paused) { paused = true; reached(); await releaseP; } } });
+  const sweep = f.tick();
+  let fableCalls = 0;
+  const addCpa = ReturnStore.prototype.addCpa;
+  ReturnStore.prototype.addCpa = async function (...args: Parameters<typeof addCpa>) {
+    const count = await addCpa.apply(this, args);
+    if (args[1].model === FABLE && args[3] === "fable-1" && ++fableCalls === 2) accounted();
+    return count;
+  };
+  let ended: Promise<void> | undefined;
+  try {
+    await Promise.race([reachedP, within(2000, "the sweep did not read Opus")]);
+    Object.assign(f.agents.get("pm")!, { model: FABLE, lastUserMessageAt: new Date().toISOString() });
+    f.setConfig({ pmFallback: true });
+    ended = f.endTurn("pm", cpaOn(FABLE), "fable-1");
+    await Promise.race([accountedP, within(2000, "the Fable turn was not counted twice")]);
+  } finally { release(); await sweep; await ended; ReturnStore.prototype.addCpa = addCpa; f.hooks({}); }
+  const after = (await f.returns.read()).cpaStreaks?.pm;
+  assert.equal(after?.model, FABLE);
+  assert.equal(after?.count, 1, "the old sweep left the Fable count");
+  assert.ok(!logs.some((l) => l.includes("pm-cpa-count-dropped agentId=pm")));
+  mock.timers.setTime(Date.now() + 1000);
+  Object.assign(f.agents.get("pm")!, { lastUserMessageAt: new Date().toISOString() });
+  await f.endTurn("pm", cpaOn(FABLE), "fable-2");
+  assert.deepEqual(f.calls.apply.map((c) => c.modelId), [OPUS], "the second Fable failure moves it to the chain's first stage");
 }));
