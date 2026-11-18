@@ -947,13 +947,14 @@ export function imageInputHandler(record, images = IMAGES) {
     try {
       if (!pi.SettingsManager.create(ctx.cwd, pi.getAgentDir(), { projectTrusted: ctx.isProjectTrusted() }).getImageAutoResize()) return undefined;
     } catch {}
+    // Pi resizes each image in its own worker, so they run together: Paseo waits at most 30 s for a steer's answer.
+    const results = await Promise.all(list.map(image => Promise.resolve()
+      .then(() => pi.resizeImage(Buffer.from(image.data, 'base64'), image.mimeType, { maxWidth: images.maxSide, maxHeight: images.maxSide }))
+      .catch(() => null)));
     const out = [], notes = [];
     let resized = 0, failed = 0;
-    for (const image of list) {
-      let result = null;
-      try {
-        result = await pi.resizeImage(Buffer.from(image.data, 'base64'), image.mimeType, { maxWidth: images.maxSide, maxHeight: images.maxSide });
-      } catch {}
+    for (const [at, image] of list.entries()) {
+      const result = results[at];
       if (!result) { failed++; out.push(image); continue; }
       if (Math.max(result.originalWidth, result.originalHeight) <= images.maxSide || !result.wasResized) { out.push(image); continue; }
       resized++;
