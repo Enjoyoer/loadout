@@ -943,7 +943,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
         }
         if (latest.kind === "transient" && (latest.state === "uncertain" || latest.state === "verifying")) {
           const rearmed = await reverifyTransient(latest, currentConfig);
-          if (rearmed) await processRecord(rearmed, currentConfig);
+          if (rearmed) await processRecord(await fallback.freeResendDue(rearmed), currentConfig);
           continue;
         }
         if (latest.state === "verifying") {

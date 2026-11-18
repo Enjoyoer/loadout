@@ -88,6 +88,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
     if (goal === "swap") {
       await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), lastError: null, updatedAt: nowIso() }));
       log(`pm-swap-verified agentId=${agent.id} obligationId=${obligation.obligationId}${obligation.stage ? ` stage=${obligation.stage}` : ""} profile=${show(obligation.fallback)}`);
+      // A CPA move whose marked resend was parked again before the move was verified: due now (dueFreeResend).
+      if (obligation.cpa503) await dueFreeResend(agent.id);
     } else {
       await returns.remove(obligation.obligationId);
       log(`pm-restore-verified agentId=${agent.id} obligationId=${obligation.obligationId} profile=${show(obligation.original)}`);
@@ -127,23 +129,23 @@ export function createFallbackRunner(deps: FallbackDeps) {
       ? { ...value, cpaSend: attemptCount(value), ...(waiting(value.state) ? { notBefore: new Date(Math.min(Date.parse(value.notBefore), Date.now())).toISOString() } : {}), updatedAt: nowIso() } : value);
   }
 
-  // The marked resend of a CPA move, parked again after the move landed: due now. True when it changed.
-  async function dueFreeResend(agentId: string): Promise<boolean> {
+  // The marked resend of a CPA move, parked again after the move landed: due now. The record when it changed.
+  async function dueFreeResend(agentId: string): Promise<ResumeRecord | null> {
     const obligation = await returns.get(agentId);
-    if (!obligation?.cpa503 || obligation.phase !== "fallback") return false;
+    if (!obligation?.cpa503 || obligation.phase !== "fallback") return null;
     const due = (value: ResumeRecord) => (value.state === "parked" || value.state === "detected") && value.cpaSend === attemptCount(value) &&
       sameModel(value.model, obligation.fallback.model) && Date.parse(value.notBefore) > Date.now();
     const active = await records.activeForAgent(agentId);
-    if (!active || !due(active)) return false;
+    if (!active || !due(active)) return null;
     const next = await records.update(active.recordId, (value) => due(value) ? { ...value, notBefore: nowIso(), updatedAt: nowIso() } : value);
-    return !!next && Date.parse(next.notBefore) <= Date.now();
+    return next && Date.parse(next.notBefore) <= Date.now() ? next : null;
   }
 
   // A move on CPA evidence needs the run still standing on the profile the agent is on now; a run counted on another
   // model or profile is dropped and moves nothing.
-  async function cpaHolds(agent: AgentSnapshot): Promise<boolean> {
+  async function cpaHolds(agent: AgentSnapshot, count = CPA_STREAK): Promise<boolean> {
     const streak = (await returns.read()).cpaStreaks?.[agent.id];
-    if (!streak || streak.count < CPA_STREAK) return false;
+    if (!streak || streak.count < count) return false;
     const live = profileOf(agent);
     if (live && streak.profile && sameProfile(live, streak.profile)) return true;
     await returns.clearCpa(agent.id);
@@ -490,6 +492,9 @@ export function createFallbackRunner(deps: FallbackDeps) {
   return {
     isBusy: (agentId: string) => busy.has(agentId),
 
+    /** A record the engine just parked again, which carries a CPA move's marked resend: that resend, due now. */
+    freeResendDue: (record: ResumeRecord) => dueFreeResend(record.agentId).then((next) => next ?? record),
+
     /** Counts a turn's CPA 503 before its record is handled, so the record's first send already sees the run. */
     async noteTurn(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], endedAt: string, turnId: string): Promise<void> {
       await noteCpa(agentId, outcome, endedAt, turnId);
@@ -526,7 +531,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // The first CPA 503 of a run: the waiting record's resend is due after the first transient delay, not a later
       // backoff step (its send also skips the pq hold, sendUnheld).
       // A CPA move a sweep made while this turn's end was still being handled: its marked resend is due now.
-      const freed = (cpa?.count === 1 && config.pmFallback ? await firstDelay(agentId, endedAt, config) : false) || await dueFreeResend(agentId);
+      const freed = (cpa?.count === 1 && config.pmFallback ? await firstDelay(agentId, endedAt, config) : false) || !!await dueFreeResend(agentId);
       // A failed turn on the final fallback of a return CPA's 503 made: no swap and no return come of it; the resume
       // engine handles its record as usual.
       const held = outcome.kind === "failed" ? await returns.get(agentId) : null;
@@ -558,11 +563,16 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // never holds up the returns below.
       await ingest(config).catch((error) => deps.failed("pm-enroll-failed", error));
       for (const obligation of (await returns.read()).obligations) await locked(obligation.agentId, () => reconcileLocked(obligation.agentId, config));
-      if (!config.pmFallback) return;
       // A run of CPA 503s that reached the count but has not moved its PM yet (a busy agent, a restart).
+      // A run whose agent has left the profile it was counted on, even for a round trip, is dropped.
       for (const [agentId, streak] of Object.entries((await returns.read()).cpaStreaks ?? {})) {
-        if (streak.count >= CPA_STREAK) await locked(agentId, () => swapLocked(agentId, config, "cpa-503-held", { ...cpaSwapEvidence(""), named: streak.model }));
+        await locked(agentId, async () => {
+          const agent = await fetchAgent(await deps.acquire(), agentId);
+          if (!agent || !await cpaHolds(agent, 1) || !config.pmFallback || streak.count < CPA_STREAK) return;
+          await swapLocked(agentId, config, "cpa-503-held", { ...cpaSwapEvidence(""), named: streak.model });
+        });
       }
+      if (!config.pmFallback) return;
       for (const record of await records.read()) {
         const evidence = recordSwapEvidence(record);
         if (!isSwapEvidence(evidence) || !record.quotaHold || record.provider !== "pi") continue;
