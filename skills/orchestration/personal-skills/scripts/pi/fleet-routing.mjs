@@ -86,6 +86,13 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
 // process adds no advisor until runtime.json changes or the process restarts, so a retired beta costs one failed
 // request per agent, not one per turn. The marked error keeps no upstream text, so Pi's own retry never runs on it. The
 // retry carries no advisor, so it is never retried again: if it fails too, the turn fails with that second error as before. Any other error, and any request without the advisor, is left alone.
+//
+// Context usage. When a response ran a server tool (the advisor included), Anthropic's top-level usage is the sum of
+// its executor steps (usage.iterations, type 'message'): an advisor call at about 200K of context reads about 400K.
+// Pi takes that sum as the context size and clamps the next request's max_tokens to the window minus it, floored at 1,
+// so a large session gets empty length-stop replies. So an Anthropic reply with more than one executor step gets, in
+// message_end, the input, cacheRead and cacheWrite of its last step (withContextUsage). Its cost and output stay as
+// reported. A reply with zero or one step, or an error or aborted reply, is left alone.
 export const ADVISOR = {
   beta: 'advisor-tool-2026-03-01',
   tool: { type: 'advisor_20260301', name: 'advisor', model: 'claude-fable-5-2' },
@@ -123,6 +130,34 @@ export function advisorResults() {
     },
     take() { const done = count; count = 0; return done; },
   };
+}
+/** The executor steps (usage.iterations of type 'message') of the Anthropic response now streaming, from its raw events. */
+export function executorSteps() {
+  let steps = [];
+  return {
+    event(data, api) {
+      if (data?.type === 'message_start') steps = [];
+      else if (api === 'anthropic-messages' && data?.type === 'message_delta' && Array.isArray(data.usage?.iterations))
+        steps = data.usage.iterations.filter(step => step?.type === 'message');
+    },
+    take() { const done = steps; steps = []; return done; },
+  };
+}
+const tokens = value => Number.isFinite(value) && value >= 0 ? value : 0;
+/**
+ * The assistant message with its usage context read from the last executor step when it had more than one, else the
+ * message itself. totalTokens = last.input_tokens + last.cache_read_input_tokens + last.cache_creation_input_tokens
+ * + usage.output: the prompt the last step saw plus this reply's whole output, the same sum Pi forms, without the
+ * earlier steps' prompts. usage.cost, output and the other fields are kept, so billing stays as reported.
+ */
+export function withContextUsage(message, steps) {
+  if (message?.role !== 'assistant' || message.stopReason === 'error' || message.stopReason === 'aborted'
+    || message.api !== 'anthropic-messages' || !message.usage || !Array.isArray(steps) || steps.length < 2) return message;
+  const last = steps.at(-1);
+  const input = tokens(last?.input_tokens), cacheRead = tokens(last?.cache_read_input_tokens), cacheWrite = tokens(last?.cache_creation_input_tokens);
+  const totalTokens = input + cacheRead + cacheWrite + tokens(message.usage.output);
+  if (totalTokens <= 0) return message;
+  return { ...message, usage: { ...message.usage, input, cacheRead, cacheWrite, totalTokens } };
 }
 /** The assistant message with ADVISOR.note before its first tool call, else at the end. */
 export function withAdvisorNote(message) {
@@ -1677,10 +1712,12 @@ export default function(pi) {
   // Advisor results in the response now streaming (Pi drops those blocks). A call the model starts after a client
   // tool call gets no result in that response, so results are counted, not calls.
   const advised = advisorResults();
+  const executor = executorSteps();
   pi.on('message_end', (event, ctx) => {
     const message = event?.message;
     if (message?.role !== 'assistant') return undefined;
     const request = sent; sent = null;
+    const steps = executor.take();
     const reason = request?.advisor ? advisorRejection(message) : null;
     if (reason) {
       rejectedAt = request.key;
@@ -1694,7 +1731,10 @@ export default function(pi) {
     }
     // Pi maps pause_turn to an ordinary stop, so a turn the API paused on a pending advisor call just ends.
     if (message.rawStopReason === 'pause_turn') record({ event: 'advisor', model: message.model ?? null, outcome: 'pause_turn' });
-    return advised.take() && message.stopReason !== 'error' ? { message: withAdvisorNote(message) } : undefined;
+    let next = message;
+    try { next = withContextUsage(message, steps); } catch {}
+    if (advised.take() && message.stopReason !== 'error') next = withAdvisorNote(next);
+    return next !== message ? { message: next } : undefined;
   });
   pi.on('agent_settled', () => { limit.settled(); });
   pi.on('turn_end', (_event, ctx) => { privacy.turnEnd(ctx); });
@@ -1810,6 +1850,7 @@ export default function(pi) {
     const response=event.data?.response;
     if(event.data?.type==='response.completed') record({event:'response',model:event.model,service_tier:response?.service_tier,responseId:response?.id});
     advised.event(event.data);
+    executor.event(event.data,event.api);
     // Each advisor call that brought no advice (an error code such as too_many_requests, or refusal).
     const block=event.data?.type==='content_block_start'&&event.data.content_block?.type==='advisor_tool_result'?event.data.content_block:null;
     const outcome=block?advisorOutcome(block):'advice';

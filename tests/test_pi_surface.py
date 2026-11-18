@@ -673,6 +673,53 @@ rmSync(dir,{recursive:true,force:true});
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_advised_reply_reports_last_executor_context(self):
+        # PM-specified cases U1-U3 (brief advisor-usage). Invented numbers.
+        script=r"""
+import assert from 'node:assert/strict';
+import {copyFileSync,mkdtempSync,rmSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {fileURLToPath} from 'node:url';
+const dir=mkdtempSync(join(tmpdir(),'advisor-usage-'));process.env.PI_CODING_AGENT_DIR=dir;
+const src=fileURLToPath(process.argv[1]);for(const name of ['fleet-routing.mjs','service-guard.mjs'])copyFileSync(join(src,'..',name),join(dir,name));
+writeFileSync(join(dir,'runtime.json'),JSON.stringify({advisor:{enabled:true}}));
+const m=await import(join(dir,'fleet-routing.mjs'));
+const h={};m.default({getSettings:()=>({codemode:{mode:'on'}}),getActiveTools:()=>['codemode'],appendEntry:()=>{},on:(e,f)=>{(h[e]??=[]).push(f);return ()=>{};}});
+const api='anthropic-messages',model={api,provider:'fleet',id:'claude-example-1'};
+const ctx={model,thinkingLevel:'high',cwd:dir,sessionManager:{getSessionId:()=> 'sess'}};
+// Pi's runner: each message_end handler sees the previous handler's replacement.
+const end=async message=>{let current=message,modified=false;for(const f of h.message_end){const r=await f({type:'message_end',message:current},ctx);if(r?.message){current=r.message;modified=true;}}return modified?current:undefined;};
+const stream=async events=>{for(const data of events)for(const f of h.provider_stream_event)await f({type:'provider_stream_event',data,api,provider:'fleet',model:model.id});};
+const request=()=>h.before_provider_request[0]({payload:{model:model.id,system:[{type:'text',text:'s'}],messages:[],tools:[{name:'read'}]}},ctx);
+const exec=(cacheRead,output)=>({type:'message',input_tokens:3,output_tokens:output,cache_read_input_tokens:cacheRead,cache_creation_input_tokens:1000});
+const advice={type:'content_block_start',index:2,content_block:{type:'advisor_tool_result',tool_use_id:'t',content:{type:'advisor_redacted_result'}}};
+const cost={input:1,output:2,cacheRead:3,cacheWrite:4,total:10};
+const usage={input:6,output:300,cacheRead:410000,cacheWrite:2000,totalTokens:412306,cost};
+const reply=(extra={})=>({role:'assistant',api,provider:'fleet',model:model.id,content:[{type:'text',text:'done'},{type:'toolCall',id:'c',name:'read',arguments:{}}],
+  usage:structuredClone(usage),stopReason:'toolUse',timestamp:1,...extra});
+// U1: two executor steps around one advisor step report the last step's context, keep cost and output, and get the note.
+assert.ok(request().tools.some(tool=>tool.name==='advisor'));
+await stream([{type:'message_start',message:{usage:{}}},advice,{type:'message_delta',delta:{stop_reason:'tool_use'},usage:{output_tokens:300,iterations:[exec(204000,100),
+  {type:'advisor_message',model:'claude-advisor-1',input_tokens:150000,output_tokens:5000},exec(206000,200)]}}]);
+const u1=await end(reply());
+assert.deepEqual(u1.usage,{...usage,input:3,cacheRead:206000,cacheWrite:1000,totalTokens:3+206000+1000+300});
+assert.deepEqual(u1.usage.cost,cost);assert.equal(u1.usage.output,300);
+assert.deepEqual(u1.content.map(b=>b.text??b.type),['done',m.ADVISOR.note,'toolCall']);
+// The steps are kept for one response only: the next reply with no iterations is left alone.
+assert.equal(await end(reply()),undefined);
+// U2: a single executor step and no advisor: no change.
+await stream([{type:'message_start',message:{usage:{}}},{type:'message_delta',delta:{stop_reason:'end_turn'},usage:{output_tokens:300,iterations:[exec(205000,300)]}}]);
+assert.equal(await end(reply({stopReason:'stop'})),undefined);
+// U3: error replies that had iterations are unchanged by the usage fix; an advisor rejection still gets its own error.
+const two=[{type:'message_start',message:{usage:{}}},{type:'message_delta',delta:{},usage:{iterations:[exec(204000,100),exec(206000,200)]}}];
+await stream(two);
+assert.equal(await end(reply({stopReason:'error',errorMessage:'500 api_error'})),undefined);
+request();await stream(two);
+const rejected=await end(reply({stopReason:'error',errorMessage:`400 invalid_request_error: unknown anthropic-beta ${m.ADVISOR.beta}`}));
+assert.ok(rejected.errorMessage.startsWith(m.ADVISOR_RETRY));assert.deepEqual(rejected.usage,usage);
+rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_failed_compaction_writes_one_evidence_row(self):
         script=r"""
 import assert from 'node:assert/strict';
