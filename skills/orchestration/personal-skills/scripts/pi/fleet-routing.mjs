@@ -919,16 +919,127 @@ export function compactFailure(event) {
 // compact() could not be loaded or has another shape). The thinking cap, the length bound and maxFiles are pi.runtime
 // keys (runtime.json "compaction": {"thinking", "lengthBound", "maxFiles"}), which configure.py validates.
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+// Pi's own bundled entry beside the cli.js launch.mjs starts, so its exports come from the module instances Pi runs.
+// A dynamic import of the package name would not resolve: Pi maps that name only for an extension's static imports.
+const piPackage = () => import(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/index.js')).href);
 export const COMPACTION = {
   thinking: 'medium',
   lengthBound: 'Keep the whole summary under 8,000 words. Drop finished items that no longer affect the next steps.',
   maxRetries: 2,
   maxFiles: 100,
   versions: ['1.0.0'],
-  // Pi's own bundled entry beside the cli.js launch.mjs starts, so compact() comes from the module instances Pi runs.
-  // A dynamic import of the package name would not resolve: Pi maps that name only for an extension's static imports.
-  load: () => import(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/index.js')).href),
+  load: piPackage,
 };
+// Image size cap. Pi scales prompt images to 2000 px a side only when the agent is idle, so an image queued as a steer
+// or follow-up while it streams is stored as sent, and Anthropic then refuses every later request of a many-image chat.
+// The context handler fixes the model-facing copy of each request instead: every image block (any message) whose
+// header says a side is over IMAGES.maxSide is replaced by Pi's own resizeImage output plus Pi's dimension note as a
+// text block after it. The session, the queue and the user's text stay as they were, so this also heals a session that
+// already holds such an image. A request with no such image is left alone (undefined, nothing mutated); only headers
+// are read. Results are kept by content hash (IMAGES.cache entries), so every request sends the same bytes. An image
+// that cannot be resized in time (IMAGES.deadlineMs per request) or at all goes out as Pi's omitted-image text, since
+// the original would fail the request. Pi's images.autoResize false turns this off. Each image's outcome leaves one
+// image-resize row per process.
+export const IMAGES = { maxSide: 2000, deadlineMs: 20_000, cache: 16, workers: 2, load: piPackage };
+const OMITTED_IMAGE = '[Image omitted: could not be resized below the inline image size limit.]';
+const SOF = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
+/** Width and height from a PNG, GIF, WebP or JPEG header; null when unknown, 'more' when a JPEG needs more bytes. */
+export function imageHeaderSize(b) {
+  if (b.length >= 24 && b.readUInt32BE(0) === 0x89504e47 && b.toString('latin1', 12, 16) === 'IHDR') return [b.readUInt32BE(16), b.readUInt32BE(20)];
+  if (b.length >= 10 && b.toString('latin1', 0, 4) === 'GIF8') return [b.readUInt16LE(6), b.readUInt16LE(8)];
+  if (b.length >= 30 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') {
+    const kind = b.toString('latin1', 12, 16);
+    if (kind === 'VP8 ') return [b.readUInt16LE(26) & 0x3fff, b.readUInt16LE(28) & 0x3fff];
+    if (kind === 'VP8L') { const v = b.readUInt32LE(21); return [(v & 0x3fff) + 1, ((v >>> 14) & 0x3fff) + 1]; }
+    if (kind === 'VP8X') return [b.readUIntLE(24, 3) + 1, b.readUIntLE(27, 3) + 1];
+    return null;
+  }
+  if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return null;
+  for (let at = 2; ;) {
+    while (at < b.length && b[at] !== 0xff) at++;
+    while (at < b.length && b[at] === 0xff) at++;
+    if (at >= b.length) return 'more';
+    const marker = b[at++];
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (marker === 0xd9 || marker === 0xda) return null;
+    if (at + 7 > b.length) return 'more';
+    if (SOF.has(marker)) return [b.readUInt16BE(at + 5), b.readUInt16BE(at + 3)];
+    at += b.readUInt16BE(at);
+  }
+}
+function base64Size(data) {
+  const head = imageHeaderSize(Buffer.from(data.slice(0, 64), 'base64'));
+  if (head !== 'more') return head;
+  const more = imageHeaderSize(Buffer.from(data.slice(0, 65_536), 'base64'));
+  return more === 'more' && data.length > 65_536 ? imageHeaderSize(Buffer.from(data, 'base64')) : more === 'more' ? null : more;
+}
+export function imageContextHandler(pi, record, images = IMAGES) {
+  const done = new Map(); // content hash -> Promise of { block, note } or { omitted }
+  let running = 0; const waiting = [];
+  const slot = async run => {
+    if (running >= images.workers) await new Promise(go => waiting.push(go));
+    running++;
+    try { return await run(); } finally { running--; waiting.shift()?.(); }
+  };
+  const resize = (image, size) => {
+    const key = createHash('sha256').update(image.mimeType).update('\0').update(image.data).digest('hex');
+    let outcome = done.get(key);
+    if (outcome) { done.delete(key); done.set(key, outcome); return outcome; }
+    outcome = slot(async () => {
+      const started = Date.now();
+      let pkg = null, result = null;
+      try { pkg = await images.load(); result = await pkg.resizeImage(Buffer.from(image.data, 'base64'), image.mimeType, { maxWidth: images.maxSide, maxHeight: images.maxSide }); } catch {}
+      const row = { event: 'image-resize', width: size[0], height: size[1], mimeType: image.mimeType, ms: Date.now() - started };
+      // A header that overstated the size: Pi found the image within its limits, so it goes out as it is.
+      if (result && !result.wasResized) { record({ ...row, outcome: 'within-limits', to: [result.width, result.height] }); return { keep: true }; }
+      if (!result) {
+        record({ ...row, outcome: pkg ? 'failed' : 'unavailable' });
+        return { omitted: true };
+      }
+      record({ ...row, outcome: 'resized', to: [result.width, result.height], toMimeType: result.mimeType });
+      let note; try { note = pkg.formatDimensionNote(result); } catch {}
+      return { block: { type: 'image', data: result.data, mimeType: result.mimeType }, note };
+    });
+    done.set(key, outcome);
+    while (done.size > images.cache) done.delete(done.keys().next().value);
+    return outcome;
+  };
+  return async event => {
+    const messages = event?.messages;
+    if (!Array.isArray(messages)) return undefined;
+    let on = true;
+    try { on = pi.getSettings()?.images?.autoResize !== false; } catch {}
+    if (!on) return undefined;
+    const found = [];
+    messages.forEach((message, at) => {
+      if (!Array.isArray(message?.content)) return;
+      message.content.forEach((block, part) => {
+        if (block?.type !== 'image' || typeof block.data !== 'string' || typeof block.mimeType !== 'string' || !block.mimeType.startsWith('image/')) return;
+        let size = null; try { size = base64Size(block.data); } catch {}
+        if (size && Math.max(size[0], size[1]) > images.maxSide) found.push({ at, part, block, size });
+      });
+    });
+    if (!found.length) return undefined;
+    let timer;
+    const late = new Promise(go => { timer = setTimeout(() => go(null), images.deadlineMs); });
+    const outcomes = await Promise.all(found.map(f => Promise.race([resize(f.block, f.size), late])));
+    clearTimeout(timer);
+    const out = messages.slice();
+    const swaps = new Map();
+    found.forEach((f, i) => { if (!swaps.has(f.at)) swaps.set(f.at, new Map()); swaps.get(f.at).set(f.part, outcomes[i] ?? { omitted: true }); });
+    for (const [at, parts] of swaps) {
+      const content = [];
+      messages[at].content.forEach((block, part) => {
+        const o = parts.get(part);
+        if (!o || o.keep) content.push(block);
+        else if (o.omitted) content.push({ type: 'text', text: OMITTED_IMAGE });
+        else { content.push(o.block); if (o.note) content.push({ type: 'text', text: o.note }); }
+      });
+      out[at] = { ...messages[at], content };
+    }
+    return { messages: out };
+  };
+}
 /** The configured values from <root>/runtime.json, each falling back to its default when absent or not valid. */
 export function compactionSettings(root = dirname(fileURLToPath(import.meta.url))) {
   let own = {};
@@ -1503,6 +1614,7 @@ export default function(pi) {
   // The last request's advisor state, and the runtime.json key at the advisor's rejection (null: not rejected).
   let sent = null, rejectedAt = null;
   pi.on('input', event => { limit.input(event?.text); });
+  pi.on('context', imageContextHandler(pi, record));
   pi.on('message_end', (event, ctx) => limit.messageEnd(event, ctx));
   // Advisor results in the response now streaming (Pi drops those blocks). A call the model starts after a client
   // tool call gets no result in that response, so results are counted, not calls.
