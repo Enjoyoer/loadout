@@ -16,7 +16,7 @@ import { endedReads, killAgent } from "./server/vendor/ended-read.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
 // Logged once at startup so a deploy can confirm what is running. Keep equal to package.json "version".
-const VERSION = "0.6.0";
+const VERSION = "0.6.2";
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 // Thrown before anything reaches the socket, so the message was never delivered.
 const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/.test(errorMessage(error));
@@ -671,7 +671,10 @@ export default function contribute(server: PluginServerContext, openClient: () =
     skipLogged.delete(record.recordId);
     // Before any send, the pool's quota: while every account is out, hold until the earliest reset instead of burning
     // an attempt. The hold is stored and logged once per change; an available or unknown quota sends as before.
-    const decision = quotaDecision(record, await poolQuotaFor(record, currentConfig), quotaSettings(currentConfig));
+    // A PM's resend after the first CPA 503 of a run, or its one resend after a CPA move, goes out without reading pq.
+    const unheld = await fallback.sendUnheld(record, agent, currentConfig);
+    if (unheld) logOnce(record, `unheld-${unheld}`, `quota-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${unheld}`);
+    const decision = unheld ? { hold: null, changed: false } : quotaDecision(record, await poolQuotaFor(record, currentConfig), quotaSettings(currentConfig));
     if (decision.hold) {
       if (decision.changed) {
         const hold = decision.hold;
@@ -834,6 +837,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
           updatedAt: new Date().toISOString(),
         } : value);
         log(`${record.kind === "transient" ? "retry" : "resume"}-sent agentId=${record.agentId} messageId=${stableMessageId}`);
+        if (unheld === "cpa-503-moved") await fallback.freeResendSent(record.agentId).catch((error) => failed("pm-fallback-resend-failed", error));
       } catch (error) {
         if (isTransportNotConnected(error)) {
           // Undo the claim and stay parked; the next sweep opens a fresh client. A turn that started meanwhile turns it uncertain instead.
@@ -940,7 +944,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
         }
         if (latest.kind === "transient" && (latest.state === "uncertain" || latest.state === "verifying")) {
           const rearmed = await reverifyTransient(latest, currentConfig);
-          if (rearmed) await processRecord(rearmed, currentConfig);
+          if (rearmed) await processRecord(await fallback.freeResendDue(rearmed), currentConfig);
           continue;
         }
         if (latest.state === "verifying") {
@@ -1103,6 +1107,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
       if (claim) await claim.settled;
       const currentConfig = await config();
       if (!currentConfig) return;
+      // A PM's CPA 503 is counted before its record is handled, so that record's first send sees the run.
+      if (event.turnId) await fallback.noteTurn(event.agent.id, event.outcome, endedAt, event.turnId).catch((error) => failed("pm-fallback-note-failed", error));
       let active = await store.activeForAgent(event.agent.id);
       if (active && event.turnId && event.turnId !== active.sourceTurnId && event.turnId !== active.resumeTurnId) {
         const agent = await fetchAgent(context.paseo, event.agent.id);
@@ -1316,7 +1322,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
       // Claude subscription model it proves Claude usable for a waiting PM return.
       const reply = event.outcome.kind === "completed" ? turnText((await timeline) ?? []).assistant : null;
       const normalReply = !!reply && !/^\s*(?:API Error:|\[System Error\])/.test(reply) && !isTransientAssistantText(reply) && !isUsageLimitAssistantText(reply);
-      if (await fallback.afterTurnEnded(event.agent.id, event.outcome, currentConfig, normalReply, endedAt)) await sweep();
+      if (await fallback.afterTurnEnded(event.agent.id, event.outcome, currentConfig, normalReply, endedAt, event.turnId ?? null)) await sweep();
     }).catch((error) => failed("pm-fallback-turn-failed", error)));
   });
 

@@ -630,6 +630,49 @@ rmSync(dir,{recursive:true,force:true});
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_pm_cpa_503_fails_at_once_and_other_account_limits_are_unchanged(self):
+        # PM-specified (decision 236, T5): a role=pm Opus agent's CPA auth_unavailable 503 on an agent-message input is
+        # attended and fails at once; the same text on a non-PM, and a plain account 429 on an Opus PM, still wait.
+        script=r"""
+import assert from 'node:assert/strict';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const dir=mkdtempSync(join(tmpdir(),'cpa-'));process.env.PI_CODING_AGENT_DIR=dir;process.env.HOME=dir;
+// pq is replaced by a command that prints nothing, so no retry time is known.
+mkdirSync(join(dir,'.config','opc'),{recursive:true});writeFileSync(join(dir,'.config','opc','routing.json'),JSON.stringify({pq:[process.execPath,'-e','']}));
+process.env.LOADOUT_PI_MCP_URL='http://fixture.invalid/mcp';process.env.PASEO_AGENT_ID='fixture-agent';
+let labels={};
+globalThis.fetch=async()=>new Response(JSON.stringify({result:{structuredContent:{snapshot:{labels}}}}),{headers:{'content-type':'application/json'}});
+const m=await import(process.argv[1]);
+const CPA='503 {"type":"error","error":{"type":"api_error","message":"auth_unavailable: no auth available (providers=claude, model=claude-opus-5-5; last upstream error: rate_limit_error: This request would exceed your account\'s rate limit. Please try again later.)"}}';
+const PLAIN='429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}';
+const AGENT_MESSAGE='<paseo-system version="1" kind="agent-message" source-agent-id="fixture-pm" message-id="m1">\nfixture\n</paseo-system>';
+const rows=()=>{try{return readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse).filter(r=>r.event==='account-limit');}catch{return [];}};
+async function run(withLabels,errorMessage){
+ rmSync(join(dir,'route-evidence.jsonl'),{force:true});labels=withLabels;
+ // Pi runs every handler of an event; message_end has two.
+ const hs={};m.default({getSettings:()=>({codemode:{mode:'on'}}),getActiveTools:()=>['codemode'],on:(e,f)=>(hs[e]??=[]).push(f),appendEntry:()=>{}});
+ const fire=async(e,...a)=>{let out;for(const f of hs[e]??[]){const v=await f(...a);out??=v;}return out;};
+ const controller=new AbortController();controller.abort();
+ const ctx={hasUI:false,signal:controller.signal,model:{id:'claude-opus-5-5'},sessionManager:{getSessionId:()=> 'sess'}};
+ await fire('before_agent_start',{},{});await fire('input',{text:AGENT_MESSAGE});
+ const out=await fire('message_end',{message:{role:'assistant',stopReason:'error',model:'claude-opus-5-5',errorMessage}},ctx);
+ return {out,rows:rows()};
+}
+const pm={role:'pm',project:'fixture'};
+let r=await run(pm,CPA);
+assert.equal(r.rows.length,1);
+assert.deepEqual([r.rows[0].action,r.rows[0].attendance,r.rows[0].reason],['failed','attended','pm-cpa-503']);
+assert.match(r.out.message.errorMessage,/^Claude account limit; retry time unknown \(account quota exceeded\)\. 503 /);
+for(const [name,withLabels,text] of [['non-PM',{'paseo.parent-agent-id':'fixture-pm'},CPA],['plain 429 on an Opus PM',pm,PLAIN]]){
+ r=await run(withLabels,text);
+ assert.deepEqual(r.rows.map(row=>[row.action,row.attendance,row.reason]),[['wait','unattended','agent-message'],['stopped','unattended','agent-message']],name);
+ assert.match(r.out.message.errorMessage,/^Claude account limit; wait ended/,name);
+}
+rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_failed_compaction_writes_one_evidence_row(self):
         script=r"""
 import assert from 'node:assert/strict';

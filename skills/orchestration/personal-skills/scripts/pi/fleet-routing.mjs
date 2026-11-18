@@ -1322,6 +1322,10 @@ export function sessionPrivacy(record, platform = process.platform) {
 //   of the run is not made: the turn fails as before. New inputs within the run keep that deadline; only a successful
 //   answer or the end of the run clears it;
 // - for an attended agent fails at once.
+// A role=pm agent's Claude turn that the router (CPA) refuses with 503 api_error `auth_not_found: no auth candidates
+// (providers=claude` or `auth_unavailable: no auth available (providers=claude` (isCpaClaudeUnavailable) fails the same
+// way at once for every input, outside a headless run: the usage-limit resume plugin moves such a PM to its fallback
+// after two of them in a row. Every other agent, and every other error, is as above.
 // A turn that fails this way leads its error with "Claude 5h limit; retry after HH:MM <zone>" when the response's reset
 // header or Paceline's pq gives the time, else "Claude account limit; retry time unknown", and keeps the original error
 // after it, so the usage-limit resume plugin and log readers classify it as before. Every other error (529, per-minute
@@ -1338,6 +1342,14 @@ const ACCOUNT_LIMIT_TEXT = /would exceed your account(?:'|\u2019)s rate limit/i;
 export const isAccountLimit = message => message?.role === 'assistant' && message.stopReason === 'error'
   && typeof message.errorMessage === 'string' && message.errorMessage.includes('rate_limit_error')
   && ACCOUNT_LIMIT_TEXT.test(message.errorMessage) && !message.errorMessage.includes(`(${ACCOUNT_LIMIT.tag}`);
+// CPA's own response: a 503 whose api_error message starts with the refusal for providers=claude exactly. Only this
+// extension's account-limit lead may come before it; text that merely quotes the refusal does not match. The usage-limit
+// resume plugin matches the same shape (server/fallback.ts, CPA_UNAVAILABLE).
+const CPA_CLAUDE_UNAVAILABLE = /^\s*(?:Claude [\w ]*limit; [^\n]*?\(account quota exceeded[^)\n]*\)\.\s+)?503\s+\{\s*"type"\s*:\s*"error"\s*,\s*"error"\s*:\s*\{\s*"type"\s*:\s*"api_error"\s*,\s*"message"\s*:\s*"(?:auth_not_found: no auth candidates|auth_unavailable: no auth available) \(providers=claude[,;]/;
+/** CPA's 503 for a Claude request with no usable account, not marked yet (as isAccountLimit, a marked error is final). */
+export const isCpaClaudeUnavailable = message => message?.role === 'assistant' && message.stopReason === 'error'
+  && typeof message.errorMessage === 'string' && CPA_CLAUDE_UNAVAILABLE.test(message.errorMessage)
+  && !message.errorMessage.includes(`(${ACCOUNT_LIMIT.tag}`);
 // The scratch proof shortens the cap; anything else keeps 90 minutes.
 export function accountCapMs(env = process.env) {
   const value = Number(env.LOADOUT_PI_ACCOUNT_WAIT_CAP_MS);
@@ -1496,12 +1508,16 @@ export function inputKind(text) {
  * Attended: a user message to a PM or to an agent with no parent. An unknown input is attended too: it fails at
  * once, as before, only faster. A role=pm agent on a Fable model is attended for every input: the usage-limit resume
  * plugin moves such a PM to its fallback chain (Opus, then Sol) on the failed turn, which a wait would delay by up
- * to the cap while a Fable-only limit lasts. Every other agent, an Opus PM included, is as above.
+ * to the cap while a Fable-only limit lasts. A role=pm agent whose error is CPA's 503 (`cpa`, isCpaClaudeUnavailable)
+ * is attended for every input too, on any Claude model: the plugin moves it after two such failures in a row. Every
+ * other agent, and an Opus PM's plain account 429, is as above.
  */
-export function accountAttendance({ mode, labels, input, model }) {
+export const isPmLabels = labels => typeof labels?.role === 'string' && labels.role.trim().toLowerCase() === 'pm';
+export function accountAttendance({ mode, labels, input, model, cpa = false }) {
   if (mode === 'print' || mode === 'json') return { unattended: true, reason: 'headless' };
-  const pm = typeof labels?.role === 'string' && labels.role.trim().toLowerCase() === 'pm';
+  const pm = isPmLabels(labels);
   if (pm && /(?:^|[/._-])fable(?:$|[/._-])/i.test(String(model ?? ''))) return { unattended: false, reason: 'pm-fable' };
+  if (pm && cpa) return { unattended: false, reason: 'pm-cpa-503' };
   if (['agent-message', 'agent-notification', 'schedule'].includes(input)) return { unattended: true, reason: input };
   if (input !== 'user') return { unattended: false, reason: 'unknown' };
   const label = name => typeof labels?.[name] === 'string' && labels[name].trim() !== '';
@@ -1603,9 +1619,13 @@ function accountLimit(pi, record, retry = settleRetry(pi)) {
         }
         return undefined;
       }
-      if (!isAccountLimit(message)) return undefined;
+      const account = isAccountLimit(message);
+      const cpa = isPmLabels(labels) && isCpaClaudeUnavailable(message);
+      if (!account && !cpa) return undefined;
       const model = message.model ?? ctx?.model?.id ?? null;
-      const who = accountAttendance({ mode: ctx?.mode, labels, input, model });
+      const who = accountAttendance({ mode: ctx?.mode, labels, input, model, cpa });
+      // CPA's auth_not_found carries no account-limit text: it keeps Pi's own retry unless the PM rule fails it at once.
+      if (!account && who.unattended) return undefined;
       const row = { event: 'account-limit', sessionId: sessionId(ctx), model, attendance: who.unattended ? 'unattended' : 'attended', reason: who.reason };
       if (!who.unattended) {
         const done = await fail(message);

@@ -3,9 +3,9 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config.ts";
 import type { AgentSettingsPort } from "./daemon.ts";
-import { chainDecision, chainRefusal, enrollmentKey, fallbackIneligible, fallbackSinceMs, pqProbeOpensAt, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
+import { chainDecision, chainRefusal, CPA_STREAK, cpaSwapEvidence, cpaUnavailable, turnModel, enrollmentKey, fallbackIneligible, fallbackSinceMs, pqProbeOpensAt, PQ_PROBE_INTERVAL_MS, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type CpaStreak, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
 import { agentPool, type PoolQuota, type QuotaPool } from "./quota.ts";
-import { isActive, rebindRecord, type AgentSnapshot } from "./model.ts";
+import { isActive, rebindRecord, transientDelaySeconds, type AgentSnapshot, type ResumeRecord } from "./model.ts";
 import type { ResumeStore } from "./store.ts";
 
 export type FallbackApi = PaseoApi & { agentSettings?: AgentSettingsPort };
@@ -88,6 +88,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
     if (goal === "swap") {
       await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), lastError: null, updatedAt: nowIso() }));
       log(`pm-swap-verified agentId=${agent.id} obligationId=${obligation.obligationId}${obligation.stage ? ` stage=${obligation.stage}` : ""} profile=${show(obligation.fallback)}`);
+      // A CPA move whose marked resend was parked again before the move was verified: due now (dueFreeResend).
+      if (obligation.cpa503) await dueFreeResend(agent.id);
     } else {
       await returns.remove(obligation.obligationId);
       log(`pm-restore-verified agentId=${agent.id} obligationId=${obligation.obligationId} profile=${show(obligation.original)}`);
@@ -106,12 +108,78 @@ export function createFallbackRunner(deps: FallbackDeps) {
 
   // Starts a move to another stage of the chain; the next pass applies it as a swap. The stage's proof clock restarts
   // when the move is verified.
-  async function startStage(obligation: ReturnObligation, stage: "first" | "last", detail: string) {
+  // A move on CPA evidence (`cpa`, the run it rests on) owes one pq-free resend on the new stage (cpaResend). A step back
+  // from the last stage to the first is noted (steppedBackAt) and owes none.
+  async function startStage(obligation: ReturnObligation, stage: "first" | "last", detail: string, cpa: CpaStreak | null = null) {
     const from = obligation.stage;
+    const back = from === "last" && stage === "first";
     const moved = await returns.update(obligation.obligationId, (o) => o.phase === "fallback" && o.stage === from
-      ? { ...o, phase: "switching", stage, fallback: o.stages![stage], fallbackSince: null, restoreDueAt: null, restoreReadback: null, updatedAt: nowIso() } : o);
+      ? { ...o, phase: "switching", stage, fallback: o.stages![stage], fallbackSince: null, restoreDueAt: null, restoreReadback: null, ...(cpa ? { cpa503: true, cpaResend: true } : {}), ...(back ? { steppedBackAt: nowIso(), cpaResend: false } : {}), updatedAt: nowIso() } : o);
+    if (cpa && moved?.stage === stage) await returns.clearCpa(obligation.agentId, cpa.run ?? null);
     if (moved?.stage === stage && moved.phase === "switching") log(`pm-stage-start agentId=${obligation.agentId} obligationId=${obligation.obligationId} from=${from} to=${stage} ${detail} profile=${show(moved.fallback)}`);
     return moved;
+  }
+
+  // A CPA move's owed resend (cpaResend) belongs to the obligation, not to a record: whichever record of the PM waits on
+  // the fallback profile, one that stood at the move or one written since (a newer user turn that superseded it), is due
+  // now, and its send skips the pq hold (sendUnheld). Called when the move is verified, when a turn's end was handled
+  // and when the engine re-arms a record. The record when it changed.
+  async function dueFreeResend(agentId: string): Promise<ResumeRecord | null> {
+    const obligation = await returns.get(agentId);
+    if (!obligation?.cpa503 || !obligation.cpaResend || obligation.phase !== "fallback") return null;
+    const due = (value: ResumeRecord) => (value.state === "parked" || value.state === "detected") &&
+      sameModel(value.model, obligation.fallback.model) && Date.parse(value.notBefore) > Date.now();
+    const active = await records.activeForAgent(agentId);
+    if (!active || !due(active)) return null;
+    const next = await records.update(active.recordId, (value) => due(value) ? { ...value, notBefore: nowIso(), updatedAt: nowIso() } : value);
+    return next && Date.parse(next.notBefore) <= Date.now() ? next : null;
+  }
+
+  // The owed resend is spent: it went out (`sent`), or the PM answered its latest input itself (`answered`).
+  async function clearResend(agentId: string, why: "sent" | "answered") {
+    const obligation = await returns.get(agentId);
+    if (!obligation?.cpaResend) return;
+    const cleared = await returns.update(obligation.obligationId, (o) => o.cpaResend ? { ...o, cpaResend: false, updatedAt: nowIso() } : o);
+    if (cleared && !cleared.cpaResend) log(`pm-cpa-resend-done agentId=${agentId} obligationId=${obligation.obligationId} reason=${why}`);
+  }
+
+  // A move on CPA evidence needs the run still standing on the profile the agent is on now; a run counted on another
+  // model or profile is dropped and moves nothing. The run is read first (or given, as the sweep read it) and the agent
+  // after it, and the drop deletes only that run (its `run` identity): a run started since stands. The run, when it holds.
+  async function cpaHolds(agentId: string, read?: CpaStreak, count = CPA_STREAK): Promise<CpaStreak | null> {
+    const streak = read ?? (await returns.read()).cpaStreaks?.[agentId];
+    if (!streak || streak.count < count) return null;
+    const agent = await fetchAgent(await deps.acquire(), agentId);
+    const live = agent ? profileOf(agent) : null;
+    if (!live) return null;
+    if (streak.profile && sameProfile(live, streak.profile)) return streak;
+    if (await returns.clearCpa(agentId, streak.run ?? null)) log(`pm-cpa-count-dropped agentId=${agentId} reason=profile-changed counted=${streak.profile ? show(streak.profile) : JSON.stringify(streak.model)} live=${show(live)}`);
+    return null;
+  }
+
+  async function firstDelay(agentId: string, endedAt: string, config: Config): Promise<boolean> {
+    const active = await records.activeForAgent(agentId);
+    if (!active || (active.state !== "parked" && active.state !== "detected")) return false;
+    const due = Date.parse(endedAt) + transientDelaySeconds(config, 0) * 1000;
+    if (Date.parse(active.notBefore) <= due) return false;
+    const next = await records.update(active.recordId, (value) => (value.state === "parked" || value.state === "detected") && Date.parse(value.notBefore) > due
+      ? { ...value, notBefore: new Date(due).toISOString(), updatedAt: nowIso() } : value);
+    return !!next && Date.parse(next.notBefore) <= due;
+  }
+
+  // A live Pi PM's Claude turn refused by CPA's 503 is counted in a run; a completed turn or a failure of any other kind
+  // ends the run. Any other agent is only read, never counted. The same turn counts once however often it is noted.
+  async function noteCpa(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], endedAt: string, turnId: string | null) {
+    if (cpaUnavailable(outcome)) {
+      const message = outcome.error!.message!;
+      const agent = await deps.acquire().then((api) => fetchAgent(api, agentId)).catch(() => null);
+      const live = agent ? profileOf(agent) : null;
+      const ran = turnModel(message);
+      // Counted on the live profile, only when the refused turn ran on the model the agent is on now.
+      if (agent && live && !fallbackIneligible(agent) && (!ran || sameModel(ran, live.model))) return { count: await returns.addCpa(agentId, live, endedAt, turnId), message };
+      if (live && ran && !sameModel(ran, live.model)) await returns.clearCpa(agentId);
+    } else if (outcome.kind === "completed" || outcome.kind === "failed") await returns.clearCpa(agentId);
+    return null;
   }
 
   async function cancel(obligationId: string) {
@@ -161,7 +229,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
     if (onStage) {
       if (onStage === "last" && obligation.stage === "first") return obligation;
       let reason = fallbackIneligible(agent, obligation.original.model) ?? (config.pmFallback ? null : "pmFallback-off");
-      if (!reason) {
+      // A move made by CPA's 503 evidence is not re-read against pq.
+      if (!reason && !obligation.cpa503) {
         const decision = swapDecision(...await fresh());
         if (!decision.swap) reason = decision.reason;
       }
@@ -184,7 +253,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
         return restaged;
       }
       if (decision.stage !== "last") reason = decision.reason;
-    } else if (!reason && !obligation.stages) {
+    } else if (!reason && !obligation.stages && !obligation.cpa503) {
       const decision = swapDecision(...await fresh());
       if (!decision.swap) reason = decision.reason;
     }
@@ -232,16 +301,18 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // pq that showed the window left while the provider refused it proves nothing for this obligation.
       // It may still probe the original on pq proof once per PQ_PROBE_INTERVAL_MS; a restore already due by a probe
       // stays due until it lands.
-      const distrusted = !!window && obligation.pqFableDistrusted === true;
+      // An obligation made by CPA's 503 evidence distrusts pq the same way, on any original, and for a step back too.
+      const distrusted = obligation.cpa503 === true || !!window && obligation.pqFableDistrusted === true;
       const probeOpensAt = pqProbeOpensAt(obligation);
       const probing = distrusted && (Date.now() >= probeOpensAt || obligation.restoreDueAt !== null && obligation.pqProbeAt === obligation.restoreDueAt);
-      const proven = (quota: PoolQuota) => window ? (!distrusted || probing) && scopedCapacity(quota, window) : restoreDue(quota);
+      const proven = (quota: PoolQuota) => (!distrusted || probing) && (window ? scopedCapacity(quota, window) : restoreDue(quota));
       const stepping = !!obligation.stages && obligation.stage === "last";
+      const stepOnPq = (quota: PoolQuota) => (!obligation!.cpa503 || probing) && hasCapacity(quota);
       // Due, which holds resume sends, follows the latest reading. Applying the restore needs capacity proven by a
       // reading taken now, or a Claude subscription turn of the original model this daemon saw succeed since the stage
       // began.
       let reading = await deps.quota(pool, config);
-      if (proven(reading) || stepping && hasCapacity(reading)) reading = await deps.quota(pool, config, { fresh: true });
+      if (proven(reading) || stepping && stepOnPq(reading)) reading = await deps.quota(pool, config, { fresh: true });
       const successOf = (model: string) => {
         const seen = claudeSuccess.get(model);
         return seen && seen.at > fallbackSinceMs(obligation!) ? seen : null;
@@ -249,7 +320,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       const successText = (seen: { agentId: string; at: number }, model: string) => `claude-success agent=${seen.agentId.slice(0, 8)} model=${model} at=${new Date(seen.at).toISOString()}`;
       const success = successOf(obligation.original.model);
       const reason = success && (distrusted || !proven(reading)) ? successText(success, obligation.original.model)
-        : proven(reading) ? `${distrusted ? "pq-fable-probe" : "pq-capacity"} quota=${quotaText(reading)}` : null;
+        : proven(reading) ? `${distrusted ? window ? "pq-fable-probe" : "pq-probe" : "pq-capacity"} quota=${quotaText(reading)}` : null;
       // Back on the original by hand: settled as a restore, which also writes the original's tier label.
       const due = reason !== null || onOriginal(obligation, live);
       // On the chain's last stage without proof for the original: proof for the first stage's model (the account windows
@@ -258,20 +329,24 @@ export function createFallbackRunner(deps: FallbackDeps) {
       if (!due && stepping) {
         const first = obligation.stages!.first;
         const firstSuccess = successOf(first.model);
-        const step = hasCapacity(reading) ? `pq-capacity quota=${quotaText(reading)}` : firstSuccess ? successText(firstSuccess, first.model) : null;
-        if (step) {
+        const step = stepOnPq(reading) ? `pq-capacity quota=${quotaText(reading)}` : firstSuccess ? successText(firstSuccess, first.model) : null;
+        // A CPA chain steps back at most once per PQ_PROBE_INTERVAL_MS, whatever the proof: a later step back waits for
+        // that window, so the PM cannot bounce between the stages. Proof for the original returns it at once (above).
+        const stepOpensAt = obligation.cpa503 && obligation.steppedBackAt ? Date.parse(obligation.steppedBackAt) + PQ_PROBE_INTERVAL_MS : 0;
+        if (step && Date.now() < stepOpensAt) once(agentId, `pm-stage-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=stepped-back-within-interval next-step=${new Date(stepOpensAt).toISOString()}`);
+        else if (step) {
           if (!await startStage(obligation, "first", `reason=${step}`)) return;
           return reconcileLocked(agentId, config);
         }
       }
       if (due !== (obligation.restoreDueAt !== null)) {
-        const at = nowIso(), probe = due && reason?.startsWith("pq-fable-probe");
+        const at = nowIso(), probe = due && /^pq-(?:fable-)?probe\b/.test(reason ?? "");
         obligation = await returns.update(obligation.obligationId, (o) => ({ ...o, restoreDueAt: due ? at : null, ...(probe ? { pqProbeAt: at } : {}), updatedAt: at }));
         if (!obligation) return;
         log(`pm-restore-${due ? "due" : "deferred"} agentId=${agentId} obligationId=${obligation.obligationId} ${due ? `reason=${reason ?? "already-on-original"}` : `quota=${quotaText(reading)}`}`);
       }
       if (due) goal = "restore";
-      else once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=${distrusted && scopedCapacity(reading, window!) ? `pq-fable-contradicted next-probe=${new Date(probeOpensAt).toISOString()}` : "no-claude-proof"}${obligation.stage ? ` stage=${obligation.stage}` : ""} pq=${quotaText(reading)}`);
+      else once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=${distrusted && (window ? scopedCapacity(reading, window) : hasCapacity(reading)) ? `pq-${window ? "fable-" : ""}contradicted next-probe=${new Date(probeOpensAt).toISOString()}` : "no-claude-proof"}${obligation.stage ? ` stage=${obligation.stage}` : ""} pq=${quotaText(reading)}`);
     }
     if (!goal) return;
     const target = goal === "swap" ? obligation.fallback : obligation.original;
@@ -322,6 +397,13 @@ export function createFallbackRunner(deps: FallbackDeps) {
       once(agentId, `pm-stage-held agentId=${agentId} reason=pmFallback-off trigger=${why}`);
       return reconcileLocked(agentId, config);
     }
+    // CPA's 503 twice in a row on the first stage: on to the last without asking pq.
+    const held = evidence.cpa ? await cpaHolds(agentId) : null;
+    if (evidence.cpa && !held) return reconcileLocked(agentId, config);
+    if (held) {
+      await startStage(obligation, "last", `trigger=${why} evidence=cpa-503`, held);
+      return reconcileLocked(agentId, config);
+    }
     const decision = swapDecision(await deps.quota("claude", config), await deps.quota(agentPool("pi", obligation.stages!.last.model) ?? "codex", config));
     if (!decision.swap) {
       once(agentId, `pm-stage-held agentId=${agentId} reason=${JSON.stringify(decision.reason)} trigger=${why}`);
@@ -351,10 +433,16 @@ export function createFallbackRunner(deps: FallbackDeps) {
     // straight to the last when pq proves every Claude account out. Any other original: the single step, as before.
     // A chained refusal is read against a fresh pq reading, which also tells whether pq and the provider disagree.
     const entry = config.pmFallbackFirst.find((item) => item.from === live.model);
-    const claude = await deps.quota("claude", config, entry ? { fresh: true } : undefined);
-    const lastPool = await deps.quota(agentPool("pi", configured.model) ?? "codex", config);
     let stage: "first" | "last" = "last", note = "", distrusted = false;
-    if (entry) {
+    // CPA's 503 twice in a row: the single step, or a chain's first stage, without asking pq.
+    const held = evidence.cpa ? await cpaHolds(agentId) : null;
+    if (evidence.cpa && !held) return;
+    if (held) {
+      stage = entry ? "first" : "last";
+      note = " evidence=cpa-503";
+    } else if (entry) {
+      const claude = await deps.quota("claude", config, { fresh: true });
+      const lastPool = await deps.quota(agentPool("pi", configured.model) ?? "codex", config);
       const window = scopedWindow(live.model);
       if (!chainRefusal(evidence, claude, window)) return once(agentId, `pm-fallback-held agentId=${agentId} reason="not-account-level" trigger=${why}`);
       // Refused while pq shows this model's window left (a cooldown pq cannot see): pq proof will not return this PM.
@@ -365,7 +453,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       stage = decision.stage;
       if (decision.stage === "last") note += ` reason=${decision.reason}`;
     } else {
-      const decision = swapDecision(claude, lastPool);
+      const decision = swapDecision(await deps.quota("claude", config), await deps.quota(agentPool("pi", configured.model) ?? "codex", config));
       if (!decision.swap) return once(agentId, `pm-fallback-held agentId=${agentId} reason=${JSON.stringify(decision.reason)} trigger=${why}`);
     }
     const last = await inCatalog(api, configured);
@@ -378,9 +466,10 @@ export function createFallbackRunner(deps: FallbackDeps) {
     if (!original) return once(agentId, `pm-fallback-skipped agentId=${agentId} reason=original-not-in-catalog profile=${show(live)}`);
     const chain = first ? { stages: { first, last }, stage, ...(distrusted ? { pqFableDistrusted: true } : {}) } : null;
     const fallback = chain ? chain.stages[stage] : last;
-    const stored = await returns.add(newObligation(agentId, original, fallback, "auto", "switching", Date.now(), chain));
+    const stored = await returns.add(newObligation(agentId, original, fallback, "auto", "switching", Date.now(), chain, evidence.cpa === true));
     if (!stored) return reconcileLocked(agentId, config);
-    log(`pm-swap-start agentId=${agentId} obligationId=${stored.obligationId} trigger=${why}${chain ? ` stage=${stage}${note}` : ""} original=${show(original)} fallback=${show(fallback)}`);
+    if (held) await returns.clearCpa(agentId, held.run ?? null);
+    log(`pm-swap-start agentId=${agentId} obligationId=${stored.obligationId} trigger=${why}${chain ? ` stage=${stage}` : ""}${note} original=${show(original)} fallback=${show(fallback)}`);
     await reconcileLocked(agentId, config);
   }
 
@@ -413,6 +502,32 @@ export function createFallbackRunner(deps: FallbackDeps) {
   return {
     isBusy: (agentId: string) => busy.has(agentId),
 
+    /** A record the engine just parked again, which carries a CPA move's marked resend: that resend, due now. */
+    freeResendDue: (record: ResumeRecord) => dueFreeResend(record.agentId).then((next) => next ?? record),
+
+    /** Counts a turn's CPA 503 before its record is handled, so the record's first send already sees the run. */
+    async noteTurn(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], endedAt: string, turnId: string): Promise<void> {
+      await noteCpa(agentId, outcome, endedAt, turnId);
+    },
+
+    /**
+     * Why this send of a PM's record skips the pq hold, or null for today's hold rules: the resend after the first CPA
+     * 503 of a run (pmFallback on), and the one resend on the profile a CPA move put in place.
+     */
+    async sendUnheld(record: ResumeRecord, agent: AgentSnapshot, config: Config): Promise<string | null> {
+      if (record.provider !== "pi" || agent.labels?.role !== "pm") return null;
+      const obligation = await returns.get(record.agentId);
+      if (obligation?.cpa503 && obligation.cpaResend && obligation.phase === "fallback" && sameModel(record.model, obligation.fallback.model)) return "cpa-503-moved";
+      if (!config.pmFallback || fallbackIneligible(agent)) return null;
+      const streak = (await returns.read()).cpaStreaks?.[record.agentId];
+      return streak?.count === 1 && sameModel(streak.model, record.model) && !!agent.model && sameModel(agent.model, record.model) ? "cpa-503-first" : null;
+    },
+
+    /** The owed resend of a CPA move has gone out (sendUnheld said cpa-503-moved): later sends follow the pq hold. */
+    async freeResendSent(agentId: string): Promise<void> {
+      await clearResend(agentId, "sent");
+    },
+
     /** A swap or a due restore is outstanding: the resume engine sends nothing until the profile is in place. */
     async blocksSend(agentId: string): Promise<boolean> {
       const obligation = await returns.get(agentId);
@@ -420,8 +535,25 @@ export function createFallbackRunner(deps: FallbackDeps) {
     },
 
     /** Returns true when the agent has an obligation afterwards, so the caller sweeps its waiting record. */
-    async afterTurnEnded(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], config: Config, normalReply = false, endedAt = new Date().toISOString()): Promise<boolean> {
-      const evidence = turnSwapEvidence(outcome);
+    async afterTurnEnded(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], config: Config, normalReply = false, endedAt = new Date().toISOString(), turnId: string | null = null): Promise<boolean> {
+      let evidence = turnSwapEvidence(outcome);
+      let why = "usage-limit-turn";
+      // The second CPA 503 in a row of a live Pi PM's Claude turns moves it without asking pq (noteCpa).
+      const cpa = await noteCpa(agentId, outcome, endedAt, turnId);
+      if (cpa && cpa.count >= CPA_STREAK) { evidence = cpaSwapEvidence(cpa.message); why = "cpa-503-twice"; }
+      // The first CPA 503 of a run: the waiting record's resend is due after the first transient delay, not a later
+      // backoff step (its send also skips the pq hold, sendUnheld).
+      // A CPA move a sweep made while this turn's end was still being handled: its marked resend is due now.
+      // A completed turn answered the PM's latest input: a CPA move owes no resend after it.
+      if (outcome.kind === "completed") await clearResend(agentId, "answered");
+      const freed = (cpa?.count === 1 && config.pmFallback ? await firstDelay(agentId, endedAt, config) : false) || !!await dueFreeResend(agentId);
+      // A failed turn on the final fallback of a return CPA's 503 made: no swap and no return come of it; the resume
+      // engine handles its record as usual.
+      const held = outcome.kind === "failed" ? await returns.get(agentId) : null;
+      if (held?.cpa503 && held.phase === "fallback" && (!held.stages || held.stage === "last")) {
+        const ran = typeof outcome.error?.message === "string" ? turnModel(outcome.error.message) : null;
+        if (!ran || sameModel(ran, held.fallback.model)) log(`pm-fallback-turn-failed agentId=${agentId} obligationId=${held.obligationId} profile=${show(held.fallback)} action=none`);
+      }
       // A normal reply on a Claude subscription model, from an agent with no return of its own, while some PM waits on
       // the fallback profile: proof for the return. The agent is read only then.
       if (outcome.kind === "completed" && normalReply && !await returns.get(agentId)) {
@@ -434,9 +566,9 @@ export function createFallbackRunner(deps: FallbackDeps) {
           if (!previous || previous.at < at) claudeSuccess.set(model, { agentId, at });
         }
       }
-      if (await returns.get(agentId)) await locked(agentId, () => stepLocked(agentId, config, "usage-limit-turn", evidence));
-      else if (config.pmFallback && isSwapEvidence(evidence)) await locked(agentId, () => swapLocked(agentId, config, "usage-limit-turn", evidence));
-      else return false;
+      if (await returns.get(agentId)) await locked(agentId, () => stepLocked(agentId, config, why, evidence));
+      else if (config.pmFallback && isSwapEvidence(evidence)) await locked(agentId, () => swapLocked(agentId, config, why, evidence));
+      else return freed;
       return true;
     },
 
@@ -446,6 +578,14 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // never holds up the returns below.
       await ingest(config).catch((error) => deps.failed("pm-enroll-failed", error));
       for (const obligation of (await returns.read()).obligations) await locked(obligation.agentId, () => reconcileLocked(obligation.agentId, config));
+      // A run of CPA 503s that reached the count but has not moved its PM yet (a busy agent, a restart).
+      // A run whose agent has left the profile it was counted on, even for a round trip, is dropped.
+      for (const [agentId, streak] of Object.entries((await returns.read()).cpaStreaks ?? {})) {
+        await locked(agentId, async () => {
+          if (!await cpaHolds(agentId, streak, 1) || !config.pmFallback || streak.count < CPA_STREAK) return;
+          await swapLocked(agentId, config, "cpa-503-held", { ...cpaSwapEvidence(""), named: streak.model });
+        });
+      }
       if (!config.pmFallback) return;
       for (const record of await records.read()) {
         const evidence = recordSwapEvidence(record);
