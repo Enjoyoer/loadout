@@ -938,11 +938,12 @@ export const COMPACTION = {
 // already holds such an image. A request with no such image is left alone (undefined, nothing mutated); only a few header
 // bytes are decoded, and an image whose header is unknown is not capped. Each image is resized once by content hash and
 // the result is kept while the image stays in the context, so a settled image sends the same bytes on every request.
-// Resizes run on at most IMAGES.workers of Pi's worker threads at once. An image that is not resized by the request's
+// At most IMAGES.workers resizes hold a slot at once (live threads can exceed that; see Limits). An image that is not resized by the request's
 // deadline (IMAGES.deadlineMs from the start of the request, judged by when the job finished) or cannot be resized goes
 // out as Pi's omitted-image text, since the original would fail the request; a later request uses the finished result.
-// Limits: Pi's worker has no timeout, so a job still running after IMAGES.holdMs gives up its slot and counts as failed
-// while its thread runs on; and when Pi's worker fails, Pi retries on the main thread, which blocks the agent meanwhile.
+// Limits: Pi's worker has no timeout and cannot be stopped from here, so a job still running after IMAGES.holdMs gives up
+// its slot and counts as failed while its thread runs on, and threads of hung resizes can add up; a Pi package load that
+// never settles keeps its slot; and when Pi's worker fails, Pi retries on the main thread, which blocks the agent meanwhile.
 // Pi's images.autoResize false turns this off. Evidence rows carry sizes, MIME tokens, outcome and times only.
 export const IMAGES = { maxSide: 2000, deadlineMs: 20_000, holdMs: 120_000, workers: 2, load: piPackage };
 const OMITTED_IMAGE = '[Image omitted: could not be resized below the inline image size limit.]';
