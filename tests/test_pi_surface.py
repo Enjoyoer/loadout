@@ -677,11 +677,11 @@ rmSync(dir,{recursive:true,force:true});
         # PM-specified cases U1-U3 (brief advisor-usage). Invented numbers.
         script=r"""
 import assert from 'node:assert/strict';
-import {copyFileSync,mkdtempSync,rmSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {fileURLToPath} from 'node:url';
+import {copyFileSync,mkdtempSync,rmSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {fileURLToPath,pathToFileURL} from 'node:url';
 const dir=mkdtempSync(join(tmpdir(),'advisor-usage-'));process.env.PI_CODING_AGENT_DIR=dir;
 const src=fileURLToPath(process.argv[1]);for(const name of ['fleet-routing.mjs','service-guard.mjs'])copyFileSync(join(src,'..',name),join(dir,name));
 writeFileSync(join(dir,'runtime.json'),JSON.stringify({advisor:{enabled:true}}));
-const m=await import(join(dir,'fleet-routing.mjs'));
+const m=await import(pathToFileURL(join(dir,'fleet-routing.mjs')).href);
 const h={};m.default({getSettings:()=>({codemode:{mode:'on'}}),getActiveTools:()=>['codemode'],appendEntry:()=>{},on:(e,f)=>{(h[e]??=[]).push(f);return ()=>{};}});
 const api='anthropic-messages',model={api,provider:'fleet',id:'claude-example-1'};
 const ctx={model,thinkingLevel:'high',cwd:dir,sessionManager:{getSessionId:()=> 'sess'}};
