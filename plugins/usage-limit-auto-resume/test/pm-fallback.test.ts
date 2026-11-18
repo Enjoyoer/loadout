@@ -35,6 +35,8 @@ function fixture(home: string) {
   const sent = new Map<string, { text: string; messageId: string }>();
   let failApply = 0;
   // Race hooks (T9, T11): run before an agent read, after it with the snapshot it returns, and on a settings write.
+  // T12, T13: run before a send; a throw fails it.
+  let beforeSend: ((agent: AgentSnapshot) => void) | undefined;
   let beforeFetch: ((id: string) => Promise<void>) | undefined;
   let afterFetch: ((agent: AgentSnapshot | undefined) => Promise<void>) | undefined;
   let onApply: (() => void) | undefined;
@@ -77,6 +79,7 @@ function fixture(home: string) {
       cancel: async () => { calls.cancels++; },
       send: async (prompt: string, options: { messageId: string }) => {
         const agent = agents.get(id)!;
+        beforeSend?.(agent);
         calls.sends.push(`${id}:${agent.model}:${prompt.slice(0, 20)}`);
         sent.set(`resume-${calls.sends.length}`, { text: prompt, messageId: options.messageId });
         Object.assign(agent, { status: "running", activeTurn: { turnId: `resume-${calls.sends.length}` }, lastUserMessageAt: new Date().toISOString(), requiresAttention: false });
@@ -126,7 +129,9 @@ function fixture(home: string) {
     agents, calls, pq, start, stop, add, endTurn, tick, handlers, unpersisted, timelines, sent,
     returns: new ReturnStore(path.join(home, "pm-return.json")), records: new ResumeStore(),
     failApplies: (n: number) => { failApply = n; },
-    hooks: (set: { beforeFetch?: typeof beforeFetch; afterFetch?: typeof afterFetch; onApply?: typeof onApply }) => { ({ beforeFetch, afterFetch, onApply } = set); },
+    hooks: (set: { beforeFetch?: typeof beforeFetch; afterFetch?: typeof afterFetch; onApply?: typeof onApply; beforeSend?: typeof beforeSend }) => { ({ beforeFetch, afterFetch, onApply, beforeSend } = set); },
+    // Delivers a turn end as given (T13: a late event for an older turn).
+    emit: async (event: unknown) => { handlers.get("agent.turn_ended")!(event, { paseo: api }); await plugin!.idle(); },
     setConfig: (patch: Partial<Config>) => { config = ConfigSchema.parse({ ...config, ...patch }); },
   };
 }
@@ -944,4 +949,94 @@ it("T11: a sweep that read the PM before its change to Fable drops only the coun
   Object.assign(f.agents.get("pm")!, { lastUserMessageAt: new Date().toISOString() });
   await f.endTurn("pm", cpaOn(FABLE), "fable-2");
   assert.deepEqual(f.calls.apply.map((c) => c.modelId), [OPUS], "the second Fable failure moves it to the chain's first stage");
+}));
+
+// An Opus PM refused twice by CPA's 503 (user-1, then a newer user-2) is moved to Sol, but every send on Sol fails
+// before delivery until `deliver` is called: the move's owed resend is still pending.
+async function cpaMovePending(f: ReturnType<typeof fixture>) {
+  f.setConfig({ pmFallbackThinking: "high", transientBackoffSeconds: [60, 120] });
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.pq.codex = { five: "out", week: "out" };
+  f.add("pm", "pm");
+  f.hooks({ beforeSend: (agent) => { if (agent.model === SOL) throw new Error("Transport not connected"); } });
+  await f.endTurn("pm", cpaOn(OPUS), "user-1");
+  mock.timers.setTime(Date.now() + 1000);
+  Object.assign(f.agents.get("pm")!, { lastUserMessageAt: new Date().toISOString() });
+  await f.endTurn("pm", cpaOn(OPUS), "user-2");
+  assert.deepEqual(f.calls.sends, []);
+  assert.deepEqual(f.calls.apply.map((c) => c.modelId), [SOL]);
+  assert.equal((await f.returns.get("pm"))?.cpaResend, true);
+  return { deliver: () => f.hooks({}) };
+}
+
+it("T12: a restart after the owed Sol resend went out, before its flag was cleared, gives no second pq-free send", () => scenario(async (f, logs) => {
+  const { deliver } = await cpaMovePending(f);
+  deliver();
+  // The send and its receipt land; the write that clears the flag is lost.
+  const update = ReturnStore.prototype.update;
+  let lost = 0;
+  ReturnStore.prototype.update = function (id, apply) {
+    return update.call(this, id, (o) => { const next = apply(o); if (o.cpaResend && !next.cpaResend) { lost++; throw new Error("fixture: write lost"); } return next; });
+  };
+  try { await f.tick(); } finally { ReturnStore.prototype.update = update; }
+  assert.deepEqual(f.calls.sends, [`pm:${SOL}:continue`]);
+  assert.equal(lost, 1);
+  assert.equal((await f.returns.get("pm"))?.cpaResend, true, "the flag survived on disk");
+  await f.stop();
+  await f.start();
+  const bypasses = logs.filter((l) => l.includes("reason=cpa-503-moved")).length;
+  await f.endTurn("pm", { kind: "failed", error: { message: "503 upstream unavailable (stopReason=error, model=fleet/gpt-6.2-sol)" } }, "resume-1");
+  for (let n = 0; n < 8; n++) await f.tick();
+  assert.deepEqual(f.calls.sends, [`pm:${SOL}:continue`], "the failed Sol turn's resend is held on pq");
+  assert.equal(logs.filter((l) => l.includes("reason=cpa-503-moved")).length, bypasses, "no second pq-free send");
+  assert.ok(logs.some((l) => l.includes("pm-cpa-resend-done agentId=pm") && l.includes("reason=sent")));
+  assert.equal((await f.returns.get("pm"))?.cpaResend, false);
+}));
+
+it("T13: a late completed event for an older turn keeps the owed resend of the newer unanswered input", () => scenario(async (f, logs) => {
+  const { deliver } = await cpaMovePending(f);
+  await f.emit({ agent: { id: "pm" }, turnId: "prior-completed", outcome: { kind: "completed" }, timeline: [{ type: "user_message", text: "old question", messageId: "old-user" }, { type: "assistant_message", text: "old reply" }] });
+  await f.tick();
+  assert.equal((await f.returns.get("pm"))?.cpaResend, true, "still owed");
+  assert.ok(!logs.some((l) => l.includes("pm-cpa-resend-done agentId=pm") && l.includes("reason=answered")));
+  deliver();
+  for (let n = 0; n < 4; n++) await f.tick();
+  assert.deepEqual(f.calls.sends, [`pm:${SOL}:continue`], "user-2's resend goes out on Sol");
+  const records = (await f.records.read()).map((r) => [r.sourceTurnId, r.state, !!r.quotaHold]);
+  assert.deepEqual(records, [["user-1", "superseded", false], ["user-2", "verifying", false]]);
+}));
+
+it("T14: the hour between a CPA chain's step backs counts from the step that landed, not from a rejected attempt", () => scenario(async (f, logs) => {
+  f.setConfig({ pmFallbackThinking: "high", pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.pq.codex = { five: "out", week: "out" };
+  f.add("pm", "pm", { model: FABLE });
+  f.add("other", "worker");
+  const fail = (model: string, id?: string) => f.endTurn("pm", cpaOn(model), id ?? `resume-${f.calls.sends.length}`);
+  await fail(FABLE, "fable-1"); await fail(FABLE); await fail(OPUS); await fail(OPUS);
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  await f.tick();
+  await f.endTurn("other", { kind: "completed" }, "other-1", "Normal reply on Opus.");
+  // The step back's settings write is rejected until 58.5 minutes after it was first tried.
+  f.failApplies(100);
+  await f.tick();
+  const intended = Date.now();
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  mock.timers.setTime(intended + 58 * 60_000 + 30_000);
+  f.failApplies(0);
+  await f.tick();
+  const landed = Date.now();
+  assert.equal(f.agents.get("pm")!.model, OPUS, "the first step back lands");
+  Object.assign(f.agents.get("pm")!, { lastUserMessageAt: new Date().toISOString() });
+  await fail(OPUS, "fresh-opus-1"); await fail(OPUS);
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  await f.tick();
+  await f.endTurn("other", { kind: "completed" }, "other-2", "Another normal reply on Opus.");
+  await f.tick();
+  assert.equal(f.agents.get("pm")!.model, SOL, "no second step back a minute after the first landed");
+  assert.ok(logs.some((l) => l.includes("pm-stage-waiting agentId=pm") && l.includes("reason=stepped-back-within-interval")));
+  while (Date.now() < landed + 59 * 60_000) await f.tick();
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  while (Date.now() < landed + 61 * 60_000) await f.tick();
+  assert.equal(f.agents.get("pm")!.model, OPUS, "the second step back once the hour from the landing is over");
 }));
