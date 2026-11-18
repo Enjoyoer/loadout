@@ -91,8 +91,14 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
 // its executor steps (usage.iterations, type 'message'): an advisor call at about 200K of context reads about 400K.
 // Pi takes that sum as the context size and clamps the next request's max_tokens to the window minus it, floored at 1,
 // so a large session gets empty length-stop replies. So an Anthropic reply with more than one executor step gets, in
-// message_end, the input, cacheRead and cacheWrite of its last step (withContextUsage). Its cost and output stay as
-// reported. A reply with zero or one step, or an error or aborted reply, is left alone.
+// message_end, the input, cacheRead, cacheWrite and cacheWrite1h of its last step (withContextUsage). Its cost and output
+// stay as reported. Pi's session token totals then count these per-reply context figures, not the billed executor input;
+// that is accepted, and the dollar totals are unchanged. A reply with zero or one step, an error or aborted reply, and a
+// last step without usable prompt counters are left alone.
+// Pi's cache warmer sends side requests through the same stream hook, overlapping the main one, and stream events carry
+// no request identity. So executorSteps keeps each message_start by its message id and each delta with iterations, and
+// gives a reply only the one delta that, applied to that reply's own message_start (its responseId) the way Pi applies
+// it, gives exactly the reply's recorded counters. No match, or several with different steps, leaves the reply alone.
 export const ADVISOR = {
   beta: 'advisor-tool-2026-03-01',
   tool: { type: 'advisor_20260301', name: 'advisor', model: 'claude-fable-5-2' },
@@ -131,33 +137,62 @@ export function advisorResults() {
     take() { const done = count; count = 0; return done; },
   };
 }
-/** The executor steps (usage.iterations of type 'message') of the Anthropic response now streaming, from its raw events. */
-export function executorSteps() {
-  let steps = [];
+const USAGE_FIELDS = [['input_tokens', 'input'], ['output_tokens', 'output'], ['cache_read_input_tokens', 'cacheRead'],
+  ['cache_creation_input_tokens', 'cacheWrite']];
+/**
+ * The executor steps (usage.iterations of type 'message') of Anthropic responses, from their raw events, handed to the
+ * reply they belong to (see the Context usage comment above). Each list keeps at most `keep` entries.
+ */
+export function executorSteps(keep = 16) {
+  let seq = 0, deltas = [];
+  const starts = new Map();
   return {
     event(data, api) {
-      if (data?.type === 'message_start') steps = [];
-      else if (api === 'anthropic-messages' && data?.type === 'message_delta' && Array.isArray(data.usage?.iterations))
-        steps = data.usage.iterations.filter(step => step?.type === 'message');
+      if (api !== 'anthropic-messages') return;
+      if (data?.type === 'message_start' && typeof data.message?.id === 'string') {
+        starts.delete(data.message.id);
+        starts.set(data.message.id, { seq: ++seq, usage: data.message.usage ?? {} });
+        if (starts.size > keep) starts.delete(starts.keys().next().value);
+      } else if (data?.type === 'message_delta' && Array.isArray(data.usage?.iterations)) {
+        deltas.push({ seq: ++seq, usage: data.usage, steps: data.usage.iterations.filter(step => step?.type === 'message') });
+        if (deltas.length > keep) deltas.shift();
+      }
     },
-    take() { const done = steps; steps = []; return done; },
+    take(message) {
+      const id = message?.responseId, start = typeof id === 'string' ? starts.get(id) : undefined;
+      if (!start || !message.usage) return [];
+      starts.delete(id);
+      // pi-ai: each counter is the delta's value when present, else message_start's, else 0.
+      const matches = deltas.filter(delta => delta.seq > start.seq && USAGE_FIELDS.every(([wire, key]) =>
+        (delta.usage[wire] ?? (start.usage[wire] || 0)) === message.usage[key]));
+      if (!matches.length) return [];
+      deltas = deltas.filter(delta => !matches.includes(delta));
+      const steps = JSON.stringify(matches[0].steps);
+      return matches.every(delta => JSON.stringify(delta.steps) === steps) ? matches[0].steps : [];
+    },
   };
 }
-const tokens = value => Number.isFinite(value) && value >= 0 ? value : 0;
+const count = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 /**
  * The assistant message with its usage context read from the last executor step when it had more than one, else the
  * message itself. totalTokens = last.input_tokens + last.cache_read_input_tokens + last.cache_creation_input_tokens
  * + usage.output: the prompt the last step saw plus this reply's whole output, the same sum Pi forms, without the
- * earlier steps' prompts. usage.cost, output and the other fields are kept, so billing stays as reported.
+ * earlier steps' prompts. cacheWrite1h, Pi's 1h subset of cacheWrite, comes from the same step's
+ * cache_creation.ephemeral_1h_input_tokens, else is capped at the new cacheWrite. usage.cost, output and the other
+ * fields are kept, so billing stays as reported. A last step whose three prompt counters are not all whole numbers
+ * leaves the message as it is.
  */
 export function withContextUsage(message, steps) {
   if (message?.role !== 'assistant' || message.stopReason === 'error' || message.stopReason === 'aborted'
     || message.api !== 'anthropic-messages' || !message.usage || !Array.isArray(steps) || steps.length < 2) return message;
   const last = steps.at(-1);
-  const input = tokens(last?.input_tokens), cacheRead = tokens(last?.cache_read_input_tokens), cacheWrite = tokens(last?.cache_creation_input_tokens);
-  const totalTokens = input + cacheRead + cacheWrite + tokens(message.usage.output);
-  if (totalTokens <= 0) return message;
-  return { ...message, usage: { ...message.usage, input, cacheRead, cacheWrite, totalTokens } };
+  const input = last?.input_tokens, cacheRead = last?.cache_read_input_tokens, cacheWrite = last?.cache_creation_input_tokens;
+  if (![input, cacheRead, cacheWrite, message.usage.output].every(count)) return message;
+  const usage = { ...message.usage, input, cacheRead, cacheWrite, totalTokens: input + cacheRead + cacheWrite + message.usage.output };
+  const long = last.cache_creation?.ephemeral_1h_input_tokens;
+  if (count(long)) usage.cacheWrite1h = Math.min(long, cacheWrite);
+  else if (usage.cacheWrite1h !== undefined) usage.cacheWrite1h = Math.min(count(usage.cacheWrite1h) ? usage.cacheWrite1h : 0, cacheWrite);
+  return { ...message, usage };
 }
 /** The assistant message with ADVISOR.note before its first tool call, else at the end. */
 export function withAdvisorNote(message) {
@@ -1717,7 +1752,8 @@ export default function(pi) {
     const message = event?.message;
     if (message?.role !== 'assistant') return undefined;
     const request = sent; sent = null;
-    const steps = executor.take();
+    let steps = [];
+    try { steps = executor.take(message); } catch {}
     const reason = request?.advisor ? advisorRejection(message) : null;
     if (reason) {
       rejectedAt = request.key;
