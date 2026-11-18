@@ -95,10 +95,14 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
 // stay as reported. Pi's session token totals then count these per-reply context figures, not the billed executor input;
 // that is accepted, and the dollar totals are unchanged. A reply with zero or one step, an error or aborted reply, and a
 // last step without usable prompt counters are left alone.
-// Pi's cache warmer sends side requests through the same stream hook, overlapping the main one, and stream events carry
-// no request identity. So executorSteps keeps each message_start by its message id and each message_delta, and
-// gives a reply only the one delta that, applied to that reply's own message_start (its responseId) the way Pi applies
-// it, gives exactly the reply's recorded counters. No match, or several with different steps, leaves the reply alone.
+// Stream events carry no request identity, Pi's cache warmer sends side requests through the same stream hook while
+// the main one runs, and SDK sessions sharing one resource loader share this extension's handlers. So executorSteps
+// keeps streams per session (the handler context's sessionManager). An Anthropic stream sends one message_delta, after
+// its message_start, so a delta goes to the one stream of that session still waiting for its delta, and a reply takes
+// the stream its responseId started. A delta while two streams wait, a further delta, or a reply whose stream was not
+// seen leaves the reply alone, as does a delta that does not reproduce the reply's recorded counters (a check only).
+// Each reply's end clears its session's streams: the session's next request starts after it, and Pi aborts a running
+// cache warm before that request is sent, so no older stream can send anything once the next one starts.
 export const ADVISOR = {
   beta: 'advisor-tool-2026-03-01',
   tool: { type: 'advisor_20260301', name: 'advisor', model: 'claude-fable-5-2' },
@@ -141,39 +145,42 @@ const USAGE_FIELDS = [['input_tokens', 'input'], ['output_tokens', 'output'], ['
   ['cache_creation_input_tokens', 'cacheWrite']];
 /**
  * The executor steps (usage.iterations of type 'message') of Anthropic responses, from their raw events, handed to the
- * reply they belong to (see the Context usage comment above). Each list keeps at most `keep` entries.
+ * reply they belong to (see the Context usage comment above). `session` is the handler context's sessionManager; each
+ * session keeps at most `keep` open streams.
  */
 export function executorSteps(keep = 16) {
-  let seq = 0, deltas = [];
-  const starts = new Map();
+  const sessions = new WeakMap(), none = { open: [] };
+  const streams = session => {
+    if (session === null || typeof session !== 'object') return none;
+    let found = sessions.get(session);
+    if (!found) sessions.set(session, found = { open: [] });
+    return found;
+  };
   return {
-    event(data, api) {
+    event(data, api, session) {
       if (api !== 'anthropic-messages') return;
-      if (data?.type === 'message_start' && typeof data.message?.id === 'string') {
-        starts.delete(data.message.id);
-        starts.set(data.message.id, { seq: ++seq, usage: data.message.usage ?? {} });
-        if (starts.size > keep) starts.delete(starts.keys().next().value);
+      const scope = streams(session);
+      if (data?.type === 'message_start') {
+        scope.open.push({ id: data.message?.id, start: data.message?.usage ?? {}, delta: null, known: true });
+        if (scope.open.length > keep) scope.open.shift();
       } else if (data?.type === 'message_delta') {
-        // Every delta, so a reply's own delta without iterations also matches and a look-alike never supplies steps.
-        const iterations = Array.isArray(data.usage?.iterations) ? data.usage.iterations : [];
-        deltas.push({ seq: ++seq, usage: data.usage ?? {}, steps: iterations.filter(step => step?.type === 'message') });
-        if (deltas.length > keep) deltas.shift();
+        const waiting = scope.open.filter(stream => !stream.delta);
+        if (waiting.length === 1) waiting[0].delta = data.usage ?? {};
+        else for (const stream of waiting.length ? waiting : scope.open) stream.known = false;
       }
     },
-    take(message) {
-      const id = message?.responseId, start = typeof id === 'string' ? starts.get(id) : undefined;
-      if (!start || !message.usage) return [];
-      starts.delete(id);
+    take(message, session) {
+      const scope = streams(session), open = scope.open;
+      scope.open = [];
+      const id = message?.responseId, own = typeof id === 'string' ? open.find(stream => stream.id === id) : undefined;
+      if (!own?.known || !own.delta || !message.usage) return [];
       // pi-ai: each counter is the delta's value when present, else message_start's, else 0.
-      const matches = deltas.filter(delta => delta.seq > start.seq && USAGE_FIELDS.every(([wire, key]) =>
-        (delta.usage[wire] ?? (start.usage[wire] || 0)) === message.usage[key]));
-      if (!matches.length) return [];
-      deltas = deltas.filter(delta => !matches.includes(delta));
-      const steps = JSON.stringify(matches[0].steps);
-      return matches.every(delta => JSON.stringify(delta.steps) === steps) ? matches[0].steps : [];
+      if (!USAGE_FIELDS.every(([wire, key]) => (own.delta[wire] ?? (own.start[wire] || 0)) === message.usage[key])) return [];
+      return Array.isArray(own.delta.iterations) ? own.delta.iterations.filter(step => step?.type === 'message') : [];
     },
   };
 }
+const sessionOf = ctx => { try { return ctx?.sessionManager; } catch { return undefined; } };
 const count = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 /**
  * The assistant message with its usage context read from the last executor step when it had more than one, else the
@@ -1755,7 +1762,7 @@ export default function(pi) {
     if (message?.role !== 'assistant') return undefined;
     const request = sent; sent = null;
     let steps = [];
-    try { steps = executor.take(message); } catch {}
+    try { steps = executor.take(message, sessionOf(ctx)); } catch {}
     const reason = request?.advisor ? advisorRejection(message) : null;
     if (reason) {
       rejectedAt = request.key;
@@ -1884,11 +1891,11 @@ export default function(pi) {
     if(ctx?.model?.api==='openai-responses' && ctx.model.provider !== 'opencode') event.headers['X-Client-Request-Id']=requestId();
     settle('headers');
   });
-  pi.on('provider_stream_event',event=>{
+  pi.on('provider_stream_event',(event,ctx)=>{
     const response=event.data?.response;
     if(event.data?.type==='response.completed') record({event:'response',model:event.model,service_tier:response?.service_tier,responseId:response?.id});
     advised.event(event.data);
-    executor.event(event.data,event.api);
+    executor.event(event.data,event.api,sessionOf(ctx));
     // Each advisor call that brought no advice (an error code such as too_many_requests, or refusal).
     const block=event.data?.type==='content_block_start'&&event.data.content_block?.type==='advisor_tool_result'?event.data.content_block:null;
     const outcome=block?advisorOutcome(block):'advice';
