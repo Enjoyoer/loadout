@@ -31,7 +31,7 @@ const ConfigObjectSchema = z.object({
     from: z.string().min(1),
     model: z.string().min(1),
     thinking: z.string().min(1),
-  }).strict()).max(20).default([{ from: "fleet/claude-fable-5-2", model: "fleet/claude-opus-5-5", thinking: "xhigh" }]),
+  }).strict()).max(20).default([{ from: "fleet/claude-fable-5-2", model: "fleet/claude-opus-5-5", thinking: "high" }]),
   // Owner surface: register the original profile of a PM that is already elsewhere, or cancel one return by its id.
   pmFallbackEnroll: z.array(z.object({
     agentId: z.string().min(1),
