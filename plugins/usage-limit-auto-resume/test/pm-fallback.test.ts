@@ -656,3 +656,100 @@ it("a repeated 429 rate_limit_error with pool capacity keeps retrying on the bac
     });
   }
 });
+
+// PM-specified (decision 236): the router's 503 when it has no usable Claude account, with and without Pi's lead.
+const CPA_UNAVAILABLE = 'Claude 5h limit; retry after Jan 3 10:00 EST (account quota exceeded). 503 {"type":"error","error":{"type":"api_error","message":"auth_unavailable: no auth available (providers=claude, model=claude-opus-5-5; last upstream error: rate_limit_error: This request would exceed your account\'s rate limit. Please try again later.); check Claude auth"}} (stopReason=error, model=fleet/claude-opus-5-5)';
+const CPA_NOT_FOUND = '503 {"type":"error","error":{"type":"api_error","message":"auth_not_found: no auth candidates (providers=claude, model=claude-opus-5-5); check Claude auth"}} (stopReason=error, model=fleet/claude-opus-5-5)';
+
+// One turn fails with auth_unavailable, its immediate retry with auth_not_found. Returns the retry's turn id.
+async function cpaTwice(f: ReturnType<typeof fixture>, id: string, turn: string) {
+  const before = f.calls.sends.length;
+  await f.endTurn(id, { kind: "failed", error: { message: CPA_UNAVAILABLE } }, turn);
+  assert.equal(f.calls.sends.length, before + 1, "the first failure is retried at once");
+  const retry = `resume-${f.calls.sends.length}`;
+  await f.endTurn(id, { kind: "failed", error: { message: CPA_NOT_FOUND } }, retry);
+  return retry;
+}
+
+it("T1: an Opus PM refused twice in a row by CPA's 503 moves to Sol high on the second, though pq shows Claude capacity and Codex out", () => scenario(async (f, logs) => {
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.pq.codex = { five: "out", week: "out" };
+  f.setConfig({ pmFallbackThinking: "high" });
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+  await f.endTurn("pm", { kind: "failed", error: { message: CPA_UNAVAILABLE } }, "pm-turn-1");
+  assert.deepEqual(f.calls.apply, [], "no swap after the first");
+  assert.deepEqual(f.calls.sends, [`pm:${OPUS}:continue`]);
+  await f.endTurn("pm", { kind: "failed", error: { message: CPA_NOT_FOUND } }, "resume-1");
+  assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "high" }], "swap after the second");
+  const obligation = await f.returns.get("pm");
+  assert.equal(obligation?.phase, "fallback");
+  assert.equal(obligation?.cpa503, true);
+  assert.equal((await f.returns.read()).cpaStreaks?.pm, undefined, "the run ends with the move");
+  assert.ok(logs.some((l) => l.includes("pm-swap-start agentId=pm") && l.includes("trigger=cpa-503-twice evidence=cpa-503")));
+  assert.equal((await f.records.read()).find((r) => r.agentId === "pm")?.model, SOL, "its resume record follows it to Sol");
+}));
+
+it("T2: a non-PM agent with the same two failures retries on the backoff and never swaps", () => scenario(async (f, logs) => {
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.pq.codex = { five: "out", week: "out" };
+  f.add("worker", "worker");
+  await cpaTwice(f, "worker", "worker-turn-1");
+  for (let n = 0; n < 5; n++) await f.tick();
+  assert.deepEqual(f.calls.apply, []);
+  assert.deepEqual(f.calls.sends, [`worker:${OPUS}:continue`, `worker:${OPUS}:continue`], "transient retries, now, then after 120 s");
+  assert.deepEqual((await f.returns.read()).obligations, []);
+  assert.equal((await f.returns.read()).cpaStreaks, undefined, "nothing is counted for a non-PM");
+  assert.ok(!logs.some((l) => l.includes("pm-")));
+}));
+
+it("T3: a failed turn on Sol after the CPA swap changes no model and starts no return", () => scenario(async (f, logs) => {
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+  await cpaTwice(f, "pm", "pm-turn-1");
+  for (let n = 0; n < 5; n++) await f.tick();
+  assert.deepEqual(f.calls.sends.map((s) => s.split(":")[1]), [OPUS, SOL], "the resume goes out on Sol");
+  await f.endTurn("pm", { kind: "failed", error: { message: "503 temporarily unavailable (stopReason=error, model=fleet/gpt-6.2-sol)" } }, "resume-2");
+  for (let n = 0; n < 20; n++) await f.tick();
+  assert.deepEqual(f.calls.apply.map((c) => c.modelId), [SOL], "no further change");
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  assert.equal((await f.returns.get("pm"))?.restoreDueAt, null, "no return");
+  assert.equal(logs.filter((l) => l.includes("pm-fallback-turn-failed agentId=pm")).length, 1);
+  assert.ok(f.calls.sends.length > 2 && f.calls.sends.slice(2).every((s) => s.split(":")[1] === SOL), "its record retries on Sol as usual");
+}));
+
+it("T4: a CPA return comes at once on a seen Claude success, and on pq alone at most once per 60 minutes", async () => {
+  await scenario(async (f, logs) => {
+    f.pq.claude = { five: "ok", week: "ok" };
+    f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+    f.add("other", "worker");
+    await cpaTwice(f, "pm", "pm-turn-1");
+    assert.equal(f.agents.get("pm")!.model, SOL);
+    await f.tick();
+    assert.equal(f.agents.get("pm")!.model, SOL, "pq capacity alone does not return it");
+    assert.ok(logs.some((l) => l.includes("pm-return-waiting agentId=pm") && l.includes("reason=pq-contradicted")));
+    await f.endTurn("other", { kind: "completed" }, "other-turn-1", "Work completed.");
+    await f.tick();
+    assert.equal(f.agents.get("pm")!.model, OPUS);
+    assert.ok(logs.some((l) => l.includes("pm-restore-due agentId=pm") && l.includes("reason=claude-success agent=other")));
+  });
+  await scenario(async (f, logs) => {
+    f.pq.claude = { five: "ok", week: "ok" };
+    f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+    await cpaTwice(f, "pm", "pm-turn-1");
+    const swappedAt = Date.now();
+    for (let n = 0; n < 5; n++) await f.tick();
+    await f.endTurn("pm", { kind: "completed" }, "resume-2", "Done on Sol.");
+    while (Date.now() < swappedAt + 59 * 60_000) await f.tick();
+    assert.equal(f.agents.get("pm")!.model, SOL, "no return on pq before 60 minutes");
+    while (Date.now() < swappedAt + 61 * 60_000) await f.tick();
+    assert.equal(f.agents.get("pm")!.model, OPUS, "the hourly pq probe returns it");
+    assert.ok(logs.some((l) => l.includes("pm-restore-due agentId=pm") && l.includes("reason=pq-probe")));
+    // Refused twice again: back on Sol, and pq does not return it for another hour.
+    await cpaTwice(f, "pm", "pm-turn-2");
+    assert.equal(f.agents.get("pm")!.model, SOL);
+    const again = Date.now();
+    while (Date.now() < again + 59 * 60_000) await f.tick();
+    assert.equal(f.agents.get("pm")!.model, SOL);
+    assert.equal(logs.filter((l) => l.includes("pm-restore-due agentId=pm")).length, 1);
+  });
+});

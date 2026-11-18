@@ -16,7 +16,7 @@ import { endedReads, killAgent } from "./server/vendor/ended-read.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
 // Logged once at startup so a deploy can confirm what is running. Keep equal to package.json "version".
-const VERSION = "0.6.0";
+const VERSION = "0.6.2";
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 // Thrown before anything reaches the socket, so the message was never delivered.
 const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/.test(errorMessage(error));
@@ -1316,7 +1316,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
       // Claude subscription model it proves Claude usable for a waiting PM return.
       const reply = event.outcome.kind === "completed" ? turnText((await timeline) ?? []).assistant : null;
       const normalReply = !!reply && !/^\s*(?:API Error:|\[System Error\])/.test(reply) && !isTransientAssistantText(reply) && !isUsageLimitAssistantText(reply);
-      if (await fallback.afterTurnEnded(event.agent.id, event.outcome, currentConfig, normalReply, endedAt)) await sweep();
+      if (await fallback.afterTurnEnded(event.agent.id, event.outcome, currentConfig, normalReply, endedAt, event.turnId ?? null)) await sweep();
     }).catch((error) => failed("pm-fallback-turn-failed", error)));
   });
 

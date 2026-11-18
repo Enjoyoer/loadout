@@ -47,6 +47,11 @@ export type ReturnObligation = {
   pqFableDistrusted?: boolean;
   /** When a pq reading last made a distrusted obligation's return due (a probe), or absent. */
   pqProbeAt?: string | null;
+  /**
+   * Since 0.6.2: made, or moved on to its last stage, by CPA's 503 evidence (cpaUnavailable). pq is distrusted for its
+   * return and stage steps back, as with pqFableDistrusted, whatever the original model. Absent: false.
+   */
+  cpa503?: boolean;
   attempts: number;
   lastAttemptAt: string | null;
   lastError: string | null;
@@ -101,7 +106,23 @@ export type SwapEvidence = {
   accountLimit: boolean;
   /** The model the error names, when it names one. */
   named: string | null;
+  /** Two Claude turns of a PM in a row refused with CPA's 503 (CPA_STREAK): a swap or step that skips pq. */
+  cpa?: boolean;
 };
+
+// CPA's 503 for a Claude request with no usable account, anywhere in the error (Pi's account-limit lead may come first).
+const CPA_UNAVAILABLE = /\b503\b[\s\S]*"api_error"[\s\S]*(?:auth_not_found: no auth candidates|auth_unavailable: no auth available) \(providers=claude\b/;
+export const cpaUnavailable = (outcome: { kind: string; error?: { message?: string } }) =>
+  outcome.kind === "failed" && typeof outcome.error?.message === "string" && CPA_UNAVAILABLE.test(outcome.error.message);
+/** The model a Pi failed turn ran on, from its trailer "(stopReason=error, model=<id>)". */
+export const turnModel = (message: string) => message.match(/\(stopReason=\w+, model=([^\s,)]+)\)\s*$/)?.[1] ?? null;
+/** How many CPA 503s in a row move a PM. */
+export const CPA_STREAK = 2;
+export function cpaSwapEvidence(message: string): SwapEvidence {
+  return { failedOutcome: true, usageLimit: true, accountLimit: true, named: turnModel(message), cpa: true };
+}
+/** A PM's run of CPA 503 turns: on which model, how many in a row, the last one's end. */
+export type CpaStreak = { model: string; count: number; at: string; turnId?: string | null };
 export const isSwapEvidence = (evidence: SwapEvidence) => evidence.failedOutcome && evidence.usageLimit;
 
 const ACCOUNT_LIMIT_TEXT = /would exceed your account(?:'|\u2019)s rate limit/i;
@@ -253,11 +274,11 @@ export function profileChanged(obligation: ReturnObligation, live: Profile): boo
   return !(obligation.restoreReadback && sameProfile(live, obligation.restoreReadback));
 }
 
-export function newObligation(agentId: string, original: Profile, fallback: Profile, source: ReturnObligation["source"], phase: ReturnObligation["phase"], now = Date.now(), chain: { stages: { first: Profile; last: Profile }; stage: "first" | "last"; pqFableDistrusted?: boolean } | null = null): ReturnObligation {
+export function newObligation(agentId: string, original: Profile, fallback: Profile, source: ReturnObligation["source"], phase: ReturnObligation["phase"], now = Date.now(), chain: { stages: { first: Profile; last: Profile }; stage: "first" | "last"; pqFableDistrusted?: boolean } | null = null, cpa503 = false): ReturnObligation {
   const at = new Date(now).toISOString();
   return {
     version: 1, obligationId: `pm-return:${createHash("sha256").update([agentId, at, randomUUID()].join("\u0000")).digest("hex").slice(0, 24)}`,
-    agentId, source, phase, original, fallback, ...(chain ?? {}), restoreDueAt: null, fallbackSince: phase === "fallback" ? at : null, attempts: 0, lastAttemptAt: null, lastError: null, createdAt: at, updatedAt: at,
+    agentId, source, phase, original, fallback, ...(chain ?? {}), ...(cpa503 ? { cpa503: true } : {}), restoreDueAt: null, fallbackSince: phase === "fallback" ? at : null, attempts: 0, lastAttemptAt: null, lastError: null, createdAt: at, updatedAt: at,
   };
 }
 
@@ -265,7 +286,7 @@ export function newObligation(agentId: string, original: Profile, fallback: Prof
 export type Enrollment = { agentId: string; model: string; thinkingOptionId: string | null; serviceTier: string | null };
 export const enrollmentKey = (entry: Enrollment) => `enroll:${createHash("sha256").update(JSON.stringify([entry.agentId, entry.model, entry.thinkingOptionId, tier(entry.serviceTier)])).digest("hex").slice(0, 24)}`;
 
-type State = { version: 1; obligations: ReturnObligation[]; consumed: string[] };
+type State = { version: 1; obligations: ReturnObligation[]; consumed: string[]; cpaStreaks?: Record<string, CpaStreak> };
 const MAX_CONSUMED = 500;
 
 const isTime = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value));
@@ -273,6 +294,10 @@ const isNullableString = (value: unknown) => value === null || typeof value === 
 const isProfile = (value: unknown) => typeof value === "object" && value !== null &&
   typeof (value as Profile).model === "string" && (value as Profile).model !== "" &&
   isNullableString((value as Profile).thinkingOptionId) && isNullableString((value as Profile).serviceTier);
+
+const isStreak = (value: unknown) => typeof value === "object" && value !== null && typeof (value as CpaStreak).model === "string" &&
+  Number.isSafeInteger((value as CpaStreak).count) && isTime((value as CpaStreak).at) &&
+  ((value as CpaStreak).turnId === undefined || (value as CpaStreak).turnId === null || typeof (value as CpaStreak).turnId === "string");
 
 function isObligation(value: unknown): value is ReturnObligation {
   if (typeof value !== "object" || value === null) return false;
@@ -286,6 +311,7 @@ function isObligation(value: unknown): value is ReturnObligation {
     (o.stage === undefined || o.stage === null || ((o.stage === "first" || o.stage === "last") && !!o.stages)) &&
     (o.pqFableDistrusted === undefined || typeof o.pqFableDistrusted === "boolean") &&
     (o.pqProbeAt === undefined || o.pqProbeAt === null || (typeof o.pqProbeAt === "string" && Number.isFinite(Date.parse(o.pqProbeAt)))) &&
+    (o.cpa503 === undefined || typeof o.cpa503 === "boolean") &&
     Number.isSafeInteger(o.attempts) && (o.lastAttemptAt === null || isTime(o.lastAttemptAt)) && isNullableString(o.lastError) &&
     isTime(o.createdAt) && isTime(o.updatedAt);
 }
@@ -306,6 +332,7 @@ export class ReturnStore {
       if (!state.obligations.every(isObligation)) throw new Error("invalid obligation");
       if (!state.consumed.every((key) => typeof key === "string")) throw new Error("invalid consumed keys");
       if (new Set(state.obligations.map((o) => o.agentId)).size !== state.obligations.length) throw new Error("two obligations for one agent");
+      if (state.cpaStreaks !== undefined && (typeof state.cpaStreaks !== "object" || state.cpaStreaks === null || !Object.values(state.cpaStreaks).every(isStreak))) throw new Error("invalid cpa streaks");
       return state;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, obligations: [], consumed: [] };
@@ -360,6 +387,30 @@ export class ReturnStore {
       const found = state.obligations.find((o) => o.obligationId === obligationId);
       if (!found) return null;
       return { state: { ...state, obligations: state.obligations.filter((o) => o !== found) }, result: found };
+    });
+  }
+
+  /**
+   * Counts one more CPA 503 turn of this agent on this model (a run on another model starts again at 1); returns the
+   * count. A repeated end event of the turn last counted adds nothing. Kept with the obligations so it survives the
+   * resend path and a daemon restart.
+   */
+  async addCpa(agentId: string, model: string, at: string, turnId: string | null = null): Promise<number> {
+    const next = await this.change((state) => {
+      const prior = state.cpaStreaks?.[agentId];
+      if (prior && turnId && prior.turnId === turnId) return { state, result: prior.count };
+      const streak = { model, count: prior && prior.model === model ? prior.count + 1 : 1, at, turnId };
+      return { state: { ...state, cpaStreaks: { ...state.cpaStreaks, [agentId]: streak } }, result: streak.count };
+    });
+    return next ?? 0;
+  }
+
+  /** A successful turn, a failure of another kind, or the move it led to, ends the run. Writes only when one exists. */
+  clearCpa(agentId: string): Promise<true | null> {
+    return this.change((state) => {
+      if (!state.cpaStreaks?.[agentId]) return null;
+      const { [agentId]: _gone, ...rest } = state.cpaStreaks;
+      return { state: { ...state, cpaStreaks: rest }, result: true as const };
     });
   }
 
