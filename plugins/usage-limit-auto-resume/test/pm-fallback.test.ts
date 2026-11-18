@@ -768,3 +768,38 @@ it("T6: with pq showing Claude and Codex out, an Opus PM's CPA resend is not hel
   assert.deepEqual(f.calls.sends, [`pm:${OPUS}:continue`, `pm:${SOL}:continue`], "the resend on Sol goes out at once");
   assert.ok(!logs.some((l) => l.includes("quota-hold agentId=pm")));
 }));
+
+it("T7: a CPA count from Opus does not survive the PM's change to another model", () => scenario(async (f, logs) => {
+  const fable = "fleet/claude-fable-5-2";
+  f.pq.claude = { five: "out", week: "out" };
+  f.pq.codex = { five: "out", week: "out" };
+  f.setConfig({ pmFallback: false, pmFallbackThinking: "high" });
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+  await f.endTurn("pm", { kind: "failed", error: { message: CPA_NOT_FOUND } }, "pm-turn-1");
+  await f.endTurn("pm", { kind: "failed", error: { message: CPA_NOT_FOUND } }, "pm-turn-2");
+  assert.equal((await f.returns.read()).cpaStreaks?.pm?.count, 2, "two on Opus while fallback is off");
+  Object.assign(f.agents.get("pm")!, { model: fable });
+  f.setConfig({ pmFallback: true, pmFallbackThinking: "high" });
+  await f.tick();
+  assert.deepEqual(f.calls.apply, [], "the Opus count moves no PM now on Fable");
+  assert.ok(!logs.some((l) => l.includes("pm-swap-start agentId=pm")));
+  assert.ok(logs.some((l) => l.includes("pm-cpa-count-dropped agentId=pm reason=profile-changed")));
+  assert.equal((await f.returns.read()).cpaStreaks?.pm, undefined);
+  await f.endTurn("pm", { kind: "failed", error: { message: CPA_NOT_FOUND.replace(/claude-opus-5-5/g, "claude-fable-5-2") } }, "pm-turn-3");
+  assert.equal((await f.returns.read()).cpaStreaks?.pm?.count, 1, "a Fable refusal starts a new count");
+  await f.endTurn("pm", { kind: "failed", error: { message: CPA_NOT_FOUND } }, "pm-turn-4");
+  assert.equal((await f.returns.read()).cpaStreaks?.pm, undefined, "a refusal of the old model counts nothing on the new one");
+}));
+
+it("T8: a diagnostic that only quotes CPA's refusal does not count", () => scenario(async (f) => {
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.pq.codex = { five: "out", week: "out" };
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+  const quoted = '503 {"type":"error","error":{"type":"api_error","message":"Diagnostic quoting auth_unavailable: no auth available (providers=claude, model=claude-opus-5-5)"}} (stopReason=error, model=fleet/claude-opus-5-5)';
+  await f.endTurn("pm", { kind: "failed", error: { message: quoted } }, "pm-turn-1");
+  await f.endTurn("pm", { kind: "failed", error: { message: quoted } }, "resume-1");
+  for (let n = 0; n < 5; n++) await f.tick();
+  assert.deepEqual(f.calls.apply, []);
+  assert.equal((await f.returns.read()).cpaStreaks, undefined);
+  assert.ok(f.calls.sends.every((s) => s.startsWith(`pm:${OPUS}:`)), "it retries on Opus as on main");
+}));

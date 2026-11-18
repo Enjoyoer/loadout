@@ -115,13 +115,40 @@ export function createFallbackRunner(deps: FallbackDeps) {
     return moved;
   }
 
-  // A move CPA's 503 made: the agent's waiting record sends its next resend at once once the profile is in place, not
-  // held on pq (sendUnheld). Only that one send: the mark names the attempt it is for.
+  // A move CPA's 503 made: the agent's active record sends its next resend at once once the profile is in place, not
+  // held on pq (sendUnheld). Only that one send: the mark names the attempt it is for. A record whose failed resend is
+  // still being settled (a sweep made the move first) is marked too: its attempt count already holds that send, and the
+  // re-park keeps the mark; dueFreeResend then makes it due once the turn's end is handled.
   async function freeResend(agentId: string) {
     const active = await records.activeForAgent(agentId);
-    if (!active || (active.state !== "parked" && active.state !== "detected")) return;
-    await records.update(active.recordId, (value) => value.state === "parked" || value.state === "detected"
-      ? { ...value, cpaSend: attemptCount(value), notBefore: new Date(Math.min(Date.parse(value.notBefore), Date.now())).toISOString(), updatedAt: nowIso() } : value);
+    if (!active || !isActive(active)) return;
+    const waiting = (state: string) => state === "parked" || state === "detected";
+    await records.update(active.recordId, (value) => isActive(value) && value.recordId === active.recordId
+      ? { ...value, cpaSend: attemptCount(value), ...(waiting(value.state) ? { notBefore: new Date(Math.min(Date.parse(value.notBefore), Date.now())).toISOString() } : {}), updatedAt: nowIso() } : value);
+  }
+
+  // The marked resend of a CPA move, parked again after the move landed: due now. True when it changed.
+  async function dueFreeResend(agentId: string): Promise<boolean> {
+    const obligation = await returns.get(agentId);
+    if (!obligation?.cpa503 || obligation.phase !== "fallback") return false;
+    const due = (value: ResumeRecord) => (value.state === "parked" || value.state === "detected") && value.cpaSend === attemptCount(value) &&
+      sameModel(value.model, obligation.fallback.model) && Date.parse(value.notBefore) > Date.now();
+    const active = await records.activeForAgent(agentId);
+    if (!active || !due(active)) return false;
+    const next = await records.update(active.recordId, (value) => due(value) ? { ...value, notBefore: nowIso(), updatedAt: nowIso() } : value);
+    return !!next && Date.parse(next.notBefore) <= Date.now();
+  }
+
+  // A move on CPA evidence needs the run still standing on the profile the agent is on now; a run counted on another
+  // model or profile is dropped and moves nothing.
+  async function cpaHolds(agent: AgentSnapshot): Promise<boolean> {
+    const streak = (await returns.read()).cpaStreaks?.[agent.id];
+    if (!streak || streak.count < CPA_STREAK) return false;
+    const live = profileOf(agent);
+    if (live && streak.profile && sameProfile(live, streak.profile)) return true;
+    await returns.clearCpa(agent.id);
+    log(`pm-cpa-count-dropped agentId=${agent.id} reason=profile-changed counted=${streak.profile ? show(streak.profile) : JSON.stringify(streak.model)} live=${live ? show(live) : "unknown"}`);
+    return false;
   }
 
   async function firstDelay(agentId: string, endedAt: string, config: Config): Promise<boolean> {
@@ -140,8 +167,11 @@ export function createFallbackRunner(deps: FallbackDeps) {
     if (cpaUnavailable(outcome)) {
       const message = outcome.error!.message!;
       const agent = await deps.acquire().then((api) => fetchAgent(api, agentId)).catch(() => null);
-      const model = turnModel(message) ?? agent?.model ?? null;
-      if (agent && model && !fallbackIneligible(agent) && agentPool("pi", model) === "claude") return { count: await returns.addCpa(agentId, model, endedAt, turnId), message };
+      const live = agent ? profileOf(agent) : null;
+      const ran = turnModel(message);
+      // Counted on the live profile, only when the refused turn ran on the model the agent is on now.
+      if (agent && live && !fallbackIneligible(agent) && (!ran || sameModel(ran, live.model))) return { count: await returns.addCpa(agentId, live, endedAt, turnId), message };
+      if (live && ran && !sameModel(ran, live.model)) await returns.clearCpa(agentId);
     } else if (outcome.kind === "completed" || outcome.kind === "failed") await returns.clearCpa(agentId);
     return null;
   }
@@ -358,6 +388,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       return reconcileLocked(agentId, config);
     }
     // CPA's 503 twice in a row on the first stage: on to the last without asking pq.
+    if (evidence.cpa && !await cpaHolds(agent)) return reconcileLocked(agentId, config);
     if (evidence.cpa) {
       await startStage(obligation, "last", `trigger=${why} evidence=cpa-503`, true);
       return reconcileLocked(agentId, config);
@@ -393,6 +424,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const entry = config.pmFallbackFirst.find((item) => item.from === live.model);
     let stage: "first" | "last" = "last", note = "", distrusted = false;
     // CPA's 503 twice in a row: the single step, or a chain's first stage, without asking pq.
+    if (evidence.cpa && !await cpaHolds(agent)) return;
     if (evidence.cpa) {
       stage = entry ? "first" : "last";
       note = " evidence=cpa-503";
@@ -493,7 +525,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
       if (cpa && cpa.count >= CPA_STREAK) { evidence = cpaSwapEvidence(cpa.message); why = "cpa-503-twice"; }
       // The first CPA 503 of a run: the waiting record's resend is due after the first transient delay, not a later
       // backoff step (its send also skips the pq hold, sendUnheld).
-      const freed = cpa?.count === 1 && config.pmFallback ? await firstDelay(agentId, endedAt, config) : false;
+      // A CPA move a sweep made while this turn's end was still being handled: its marked resend is due now.
+      const freed = (cpa?.count === 1 && config.pmFallback ? await firstDelay(agentId, endedAt, config) : false) || await dueFreeResend(agentId);
       // A failed turn on the final fallback of a return CPA's 503 made: no swap and no return come of it; the resume
       // engine handles its record as usual.
       const held = outcome.kind === "failed" ? await returns.get(agentId) : null;

@@ -1342,8 +1342,11 @@ const ACCOUNT_LIMIT_TEXT = /would exceed your account(?:'|\u2019)s rate limit/i;
 export const isAccountLimit = message => message?.role === 'assistant' && message.stopReason === 'error'
   && typeof message.errorMessage === 'string' && message.errorMessage.includes('rate_limit_error')
   && ACCOUNT_LIMIT_TEXT.test(message.errorMessage) && !message.errorMessage.includes(`(${ACCOUNT_LIMIT.tag}`);
-const CPA_CLAUDE_UNAVAILABLE = /\b503\b[\s\S]*"api_error"[\s\S]*(?:auth_not_found: no auth candidates|auth_unavailable: no auth available) \(providers=claude\b/;
-/** CPA's 503 for a Claude request with no usable account, not marked yet. The usage-limit resume plugin matches the same text. */
+// CPA's own response: a 503 whose api_error message starts with the refusal for providers=claude exactly. Only this
+// extension's account-limit lead may come before it; text that merely quotes the refusal does not match. The usage-limit
+// resume plugin matches the same shape (server/fallback.ts, CPA_UNAVAILABLE).
+const CPA_CLAUDE_UNAVAILABLE = /^\s*(?:Claude [\w ]*limit; [^\n]*?\(account quota exceeded[^)\n]*\)\.\s+)?503\s+\{\s*"type"\s*:\s*"error"\s*,\s*"error"\s*:\s*\{\s*"type"\s*:\s*"api_error"\s*,\s*"message"\s*:\s*"(?:auth_not_found: no auth candidates|auth_unavailable: no auth available) \(providers=claude[,;]/;
+/** CPA's 503 for a Claude request with no usable account, not marked yet (as isAccountLimit, a marked error is final). */
 export const isCpaClaudeUnavailable = message => message?.role === 'assistant' && message.stopReason === 'error'
   && typeof message.errorMessage === 'string' && CPA_CLAUDE_UNAVAILABLE.test(message.errorMessage)
   && !message.errorMessage.includes(`(${ACCOUNT_LIMIT.tag}`);

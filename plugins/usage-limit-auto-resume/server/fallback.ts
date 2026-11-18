@@ -110,8 +110,11 @@ export type SwapEvidence = {
   cpa?: boolean;
 };
 
-// CPA's 503 for a Claude request with no usable account, anywhere in the error (Pi's account-limit lead may come first).
-const CPA_UNAVAILABLE = /\b503\b[\s\S]*"api_error"[\s\S]*(?:auth_not_found: no auth candidates|auth_unavailable: no auth available) \(providers=claude\b/;
+// CPA's own 503 for a Claude request with no usable account: the error is that response, a 503 whose api_error message
+// starts with the refusal for providers=claude exactly. Only fleet routing's account-limit lead ("Claude 5h limit; ...
+// (account quota exceeded). ") may come before it; text that merely quotes the refusal does not match. The Pi extension
+// (fleet-routing.mjs, CPA_CLAUDE_UNAVAILABLE) matches the same shape.
+const CPA_UNAVAILABLE = /^\s*(?:Claude [\w ]*limit; [^\n]*?\(account quota exceeded[^)\n]*\)\.\s+)?503\s+\{\s*"type"\s*:\s*"error"\s*,\s*"error"\s*:\s*\{\s*"type"\s*:\s*"api_error"\s*,\s*"message"\s*:\s*"(?:auth_not_found: no auth candidates|auth_unavailable: no auth available) \(providers=claude[,;]/;
 export const cpaUnavailable = (outcome: { kind: string; error?: { message?: string } }) =>
   outcome.kind === "failed" && typeof outcome.error?.message === "string" && CPA_UNAVAILABLE.test(outcome.error.message);
 /** The model a Pi failed turn ran on, from its trailer "(stopReason=error, model=<id>)". */
@@ -121,8 +124,11 @@ export const CPA_STREAK = 2;
 export function cpaSwapEvidence(message: string): SwapEvidence {
   return { failedOutcome: true, usageLimit: true, accountLimit: true, named: turnModel(message), cpa: true };
 }
-/** A PM's run of CPA 503 turns: on which model, how many in a row, the last one's end. */
-export type CpaStreak = { model: string; count: number; at: string; turnId?: string | null };
+/**
+ * A PM's run of CPA 503 turns: the live profile they were counted on, how many in a row, the last one's end. A run on
+ * another profile counts nothing: any model or profile change starts it again, and a move checks it against the live one.
+ */
+export type CpaStreak = { model: string; count: number; at: string; turnId?: string | null; profile?: Profile };
 export const isSwapEvidence = (evidence: SwapEvidence) => evidence.failedOutcome && evidence.usageLimit;
 
 const ACCOUNT_LIMIT_TEXT = /would exceed your account(?:'|\u2019)s rate limit/i;
@@ -297,7 +303,8 @@ const isProfile = (value: unknown) => typeof value === "object" && value !== nul
 
 const isStreak = (value: unknown) => typeof value === "object" && value !== null && typeof (value as CpaStreak).model === "string" &&
   Number.isSafeInteger((value as CpaStreak).count) && isTime((value as CpaStreak).at) &&
-  ((value as CpaStreak).turnId === undefined || (value as CpaStreak).turnId === null || typeof (value as CpaStreak).turnId === "string");
+  ((value as CpaStreak).turnId === undefined || (value as CpaStreak).turnId === null || typeof (value as CpaStreak).turnId === "string") &&
+  ((value as CpaStreak).profile === undefined || isProfile((value as CpaStreak).profile));
 
 function isObligation(value: unknown): value is ReturnObligation {
   if (typeof value !== "object" || value === null) return false;
@@ -395,12 +402,13 @@ export class ReturnStore {
    * count. A repeated end event of the turn last counted adds nothing. Kept with the obligations so it survives the
    * resend path and a daemon restart.
    */
-  async addCpa(agentId: string, model: string, at: string, turnId: string | null = null): Promise<number> {
+  async addCpa(agentId: string, profile: Profile, at: string, turnId: string | null = null): Promise<number> {
     let seen = 0;
     const next = await this.change((state) => {
       const prior = state.cpaStreaks?.[agentId];
       if (prior && turnId && prior.turnId === turnId) { seen = prior.count; return null; }
-      const streak = { model, count: prior && prior.model === model ? prior.count + 1 : 1, at, turnId };
+      const same = !!prior?.profile && sameProfile(prior.profile, profile);
+      const streak = { model: profile.model, count: same ? prior!.count + 1 : 1, at, turnId, profile };
       return { state: { ...state, cpaStreaks: { ...state.cpaStreaks, [agentId]: streak } }, result: streak.count };
     });
     return next ?? seen;
