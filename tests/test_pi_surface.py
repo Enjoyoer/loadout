@@ -737,6 +737,10 @@ for(const [i,order] of [
 // A warm delta whose iterations match no reply's counters supplies nothing: the next reply is left alone.
 await stream([start('u4-x'),warmStart,warmDelta(warmSteps)]);
 assert.equal(await end(reply('u4-x')),undefined);
+// A warm delta with the same counters and steps of its own never supplies steps to a reply whose own delta had none.
+const plain=delta(undefined);delete plain.usage.iterations;
+await stream([start('u4-y'),{...warmStart,message:{...warmStart.message,usage:start('u4-y').message.usage}},delta(advised),plain,stop,stop]);
+assert.equal(await end(reply('u4-y')),undefined);
 // U5: cacheWrite1h stays a subset of cacheWrite: from the last step's split, else capped at the new cacheWrite.
 const long=(write,h)=>({...exec(206000,200),cache_creation_input_tokens:write,...(h===undefined?{}:{cache_creation:{ephemeral_1h_input_tokens:h,ephemeral_5m_input_tokens:write-h}})});
 for(const [last,want] of [[long(0),0],[long(500,200),200],[long(500),500],[long(0,0),0]]){

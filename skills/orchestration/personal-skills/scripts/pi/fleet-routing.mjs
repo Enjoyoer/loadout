@@ -96,7 +96,7 @@ export function preparePayload(payload, { model, sessionId, turnId, cwd, tier, r
 // that is accepted, and the dollar totals are unchanged. A reply with zero or one step, an error or aborted reply, and a
 // last step without usable prompt counters are left alone.
 // Pi's cache warmer sends side requests through the same stream hook, overlapping the main one, and stream events carry
-// no request identity. So executorSteps keeps each message_start by its message id and each delta with iterations, and
+// no request identity. So executorSteps keeps each message_start by its message id and each message_delta, and
 // gives a reply only the one delta that, applied to that reply's own message_start (its responseId) the way Pi applies
 // it, gives exactly the reply's recorded counters. No match, or several with different steps, leaves the reply alone.
 export const ADVISOR = {
@@ -153,8 +153,10 @@ export function executorSteps(keep = 16) {
         starts.delete(data.message.id);
         starts.set(data.message.id, { seq: ++seq, usage: data.message.usage ?? {} });
         if (starts.size > keep) starts.delete(starts.keys().next().value);
-      } else if (data?.type === 'message_delta' && Array.isArray(data.usage?.iterations)) {
-        deltas.push({ seq: ++seq, usage: data.usage, steps: data.usage.iterations.filter(step => step?.type === 'message') });
+      } else if (data?.type === 'message_delta') {
+        // Every delta, so a reply's own delta without iterations also matches and a look-alike never supplies steps.
+        const iterations = Array.isArray(data.usage?.iterations) ? data.usage.iterations : [];
+        deltas.push({ seq: ++seq, usage: data.usage ?? {}, steps: iterations.filter(step => step?.type === 'message') });
         if (deltas.length > keep) deltas.shift();
       }
     },
@@ -179,8 +181,8 @@ const count = value => typeof value === 'number' && Number.isFinite(value) && va
  * + usage.output: the prompt the last step saw plus this reply's whole output, the same sum Pi forms, without the
  * earlier steps' prompts. cacheWrite1h, Pi's 1h subset of cacheWrite, comes from the same step's
  * cache_creation.ephemeral_1h_input_tokens, else is capped at the new cacheWrite. usage.cost, output and the other
- * fields are kept, so billing stays as reported. A last step whose three prompt counters are not all whole numbers
- * leaves the message as it is.
+ * fields are kept, so billing stays as reported. A last step whose three prompt counters (or a reply whose output) are
+ * not all finite non-negative numbers leaves the message as it is.
  */
 export function withContextUsage(message, steps) {
   if (message?.role !== 'assistant' || message.stopReason === 'error' || message.stopReason === 'aborted'
