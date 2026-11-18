@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "314a79b8b8cccd900738b6def420139ba20727ea",
+  "source_commit": "c31b84f14370369a00fe2a91ea3d57627f1b1b3c",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -240,8 +240,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 12780,
-      "sha256": "ace193d473879b8a95ae0bcc7e566eae2ca66a280099d9867bee5b74a4895c4f"
+      "bytes": 12517,
+      "sha256": "c994ad3d4e50af1b6059a9618936beb9bbb77b977e988ecaf14bf5ff230ab661"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -275,8 +275,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 35110,
-      "sha256": "5d27daf2973a28fcc23f77846f0de5be050cf61dc6db5df9da53d507c8b41709"
+      "bytes": 35163,
+      "sha256": "2134886bceb9736220302436da0aecb9d5ba659b93a12db4c758dfe06b8f0e20"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",

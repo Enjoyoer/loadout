@@ -30,7 +30,8 @@ export const WORKER_DEFAULT_ROUTES = Object.freeze({
   plan: workerClass('Sol', 'high'),
   // Owner 2026-11-17: browser runs at Sol low; ceiling high keeps earlier medium lanes rebuildable.
   browser: workerClass('Sol', 'low', 'high'),
-  'browser-hard': workerClass('Astra', 'medium', 'high'),
+  // Owner 2026-11-18: browser-hard runs at Sol high, not Astra.
+  'browser-hard': workerClass('Sol', 'high'),
   smoke: workerClass('Luna', 'low', null, true),
   watcher: workerClass('Luna', 'xhigh', null, true),
   // Hosted Codex Sites interaction: native Codex Luna xhigh, Fast on (owner 2026-11-17).
