@@ -7,14 +7,22 @@ description: Ask the owner questions and read his answers in his preferred forma
 
 ## Asking the owner
 
-- Put every decision the owner must make in one numbered list at the end of the reply, never scattered through the text.
-- One line per item, in plain words, answerable with a short reply: yes/no, a pick, or a value. State your recommendation in the line.
+- Put every decision the owner must make in one list at the end of the reply, never scattered through the text and never as a prose paragraph.
+- The open list uses the same format as the Held list: a bold heading, **Open**, then one numbered line per item, `<stable number>. <short item> (<recommendation>)`. Options or sub-items go as a, b and c on that same line.
+- Each line is in plain words, answerable with a short reply: yes/no, a pick, or a value.
 - The list holds only decisions. The owner's own dated actions (pay, call, sign, post) stay in Todoist; show them at most as one line, "Due today in Todoist: N".
-- Each item keeps one stable number in your scope across lists; never renumber it. Never nest a numbered list inside the list; use a, b and c for options or sub-items.
+- Each item keeps one stable number in your scope across lists; never renumber it. Never nest a list inside the list.
 - Example:
-  1. Update Claude Code to 2.1.299 on all hosts? I recommend yes.
-  2. Trim old Codex backups on the PC (frees 7.5 GB)? I recommend yes.
-  3. Plan: Free or Teams ($6/mo)? I recommend Free.
+
+  ```
+  **Open**
+  1. Update Claude Code to 2.1.299 on all hosts (recommend yes)
+  2. Trim old Codex backups on the PC, frees 7.5 GB (recommend yes)
+  3. Plan: a Free, b Teams at $6/mo (recommend a)
+
+  **Held**
+  4. Move the NAS backups to new disks (check 11/25)
+  ```
 
 ## Reading his answers
 
@@ -27,4 +35,4 @@ description: Ask the owner questions and read his answers in his preferred forma
 
 ## /wo
 
-When the owner types `/wo` or asks what's open, reply with only the numbered list of decisions you are still waiting on him for, in your own scope, oldest first, with your recommendation each. Include deadlines. Then append every held item at the bottom under a "Held" label: same stable number, one line, with its check date when it has one. If nothing is open or held, say "Nothing open." Do not repeat status or finished work.
+When the owner types `/wo` or asks what's open, reply with only the **Open** list of decisions you are still waiting on him for, in your own scope, oldest first, in the format above, with your recommendation and any deadline in each line's parentheses. Then append every held item at the bottom under a bold **Held** heading in the same format: same stable number, one line, with its check date in the parentheses when it has one. If nothing is open or held, say "Nothing open." Do not repeat status or finished work.
