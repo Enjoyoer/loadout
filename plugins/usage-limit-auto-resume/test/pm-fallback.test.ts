@@ -753,3 +753,18 @@ it("T4: a CPA return comes at once on a seen Claude success, and on pq alone at 
     assert.equal(logs.filter((l) => l.includes("pm-restore-due agentId=pm")).length, 1);
   });
 });
+
+it("T6: with pq showing Claude and Codex out, an Opus PM's CPA resend is not held, its second CPA 503 moves it to Sol high, and the resend on Sol goes out at once", () => scenario(async (f, logs) => {
+  f.pq.claude = { five: "out", week: "out" };
+  f.pq.codex = { five: "out", week: "out" };
+  f.setConfig({ pmFallbackThinking: "high" });
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+  await f.endTurn("pm", { kind: "failed", error: { message: CPA_UNAVAILABLE } }, "pm-turn-1");
+  assert.deepEqual(f.calls.sends, [`pm:${OPUS}:continue`], "the first CPA 503 is resent after the first transient delay, not held");
+  assert.ok(!logs.some((l) => l.includes("quota-hold agentId=pm")));
+  assert.deepEqual(f.calls.apply, []);
+  await f.endTurn("pm", { kind: "failed", error: { message: CPA_UNAVAILABLE } }, "resume-1");
+  assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "high" }], "the second moves it to Sol high");
+  assert.deepEqual(f.calls.sends, [`pm:${OPUS}:continue`, `pm:${SOL}:continue`], "the resend on Sol goes out at once");
+  assert.ok(!logs.some((l) => l.includes("quota-hold agentId=pm")));
+}));

@@ -396,13 +396,14 @@ export class ReturnStore {
    * resend path and a daemon restart.
    */
   async addCpa(agentId: string, model: string, at: string, turnId: string | null = null): Promise<number> {
+    let seen = 0;
     const next = await this.change((state) => {
       const prior = state.cpaStreaks?.[agentId];
-      if (prior && turnId && prior.turnId === turnId) return { state, result: prior.count };
+      if (prior && turnId && prior.turnId === turnId) { seen = prior.count; return null; }
       const streak = { model, count: prior && prior.model === model ? prior.count + 1 : 1, at, turnId };
       return { state: { ...state, cpaStreaks: { ...state.cpaStreaks, [agentId]: streak } }, result: streak.count };
     });
-    return next ?? 0;
+    return next ?? seen;
   }
 
   /** A successful turn, a failure of another kind, or the move it led to, ends the run. Writes only when one exists. */

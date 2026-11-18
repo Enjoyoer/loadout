@@ -5,7 +5,7 @@ import type { Config } from "./config.ts";
 import type { AgentSettingsPort } from "./daemon.ts";
 import { chainDecision, chainRefusal, CPA_STREAK, cpaSwapEvidence, cpaUnavailable, turnModel, enrollmentKey, fallbackIneligible, fallbackSinceMs, pqProbeOpensAt, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
 import { agentPool, type PoolQuota, type QuotaPool } from "./quota.ts";
-import { isActive, rebindRecord, type AgentSnapshot } from "./model.ts";
+import { attemptCount, isActive, rebindRecord, type AgentSnapshot, type ResumeRecord } from "./model.ts";
 import type { ResumeStore } from "./store.ts";
 
 export type FallbackApi = PaseoApi & { agentSettings?: AgentSettingsPort };
@@ -110,9 +110,30 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const from = obligation.stage;
     const moved = await returns.update(obligation.obligationId, (o) => o.phase === "fallback" && o.stage === from
       ? { ...o, phase: "switching", stage, fallback: o.stages![stage], fallbackSince: null, restoreDueAt: null, restoreReadback: null, ...(cpa ? { cpa503: true } : {}), updatedAt: nowIso() } : o);
-    if (cpa && moved?.stage === stage) await returns.clearCpa(obligation.agentId);
+    if (cpa && moved?.stage === stage) { await returns.clearCpa(obligation.agentId); await freeResend(obligation.agentId); }
     if (moved?.stage === stage && moved.phase === "switching") log(`pm-stage-start agentId=${obligation.agentId} obligationId=${obligation.obligationId} from=${from} to=${stage} ${detail} profile=${show(moved.fallback)}`);
     return moved;
+  }
+
+  // A move CPA's 503 made: the agent's waiting record sends its next resend at once once the profile is in place, not
+  // held on pq (sendUnheld). Only that one send: the mark names the attempt it is for.
+  async function freeResend(agentId: string) {
+    const active = await records.activeForAgent(agentId);
+    if (!active || (active.state !== "parked" && active.state !== "detected")) return;
+    await records.update(active.recordId, (value) => value.state === "parked" || value.state === "detected"
+      ? { ...value, cpaSend: attemptCount(value), notBefore: new Date(Math.min(Date.parse(value.notBefore), Date.now())).toISOString(), updatedAt: nowIso() } : value);
+  }
+
+  // A live Pi PM's Claude turn refused by CPA's 503 is counted in a run; a completed turn or a failure of any other kind
+  // ends the run. Any other agent is only read, never counted. The same turn counts once however often it is noted.
+  async function noteCpa(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], endedAt: string, turnId: string | null) {
+    if (cpaUnavailable(outcome)) {
+      const message = outcome.error!.message!;
+      const agent = await deps.acquire().then((api) => fetchAgent(api, agentId)).catch(() => null);
+      const model = turnModel(message) ?? agent?.model ?? null;
+      if (agent && model && !fallbackIneligible(agent) && agentPool("pi", model) === "claude") return { count: await returns.addCpa(agentId, model, endedAt, turnId), message };
+    } else if (outcome.kind === "completed" || outcome.kind === "failed") await returns.clearCpa(agentId);
+    return null;
   }
 
   async function cancel(obligationId: string) {
@@ -393,7 +414,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const fallback = chain ? chain.stages[stage] : last;
     const stored = await returns.add(newObligation(agentId, original, fallback, "auto", "switching", Date.now(), chain, evidence.cpa === true));
     if (!stored) return reconcileLocked(agentId, config);
-    if (evidence.cpa) await returns.clearCpa(agentId);
+    if (evidence.cpa) { await returns.clearCpa(agentId); await freeResend(agentId); }
     log(`pm-swap-start agentId=${agentId} obligationId=${stored.obligationId} trigger=${why}${chain ? ` stage=${stage}` : ""}${note} original=${show(original)} fallback=${show(fallback)}`);
     await reconcileLocked(agentId, config);
   }
@@ -427,6 +448,26 @@ export function createFallbackRunner(deps: FallbackDeps) {
   return {
     isBusy: (agentId: string) => busy.has(agentId),
 
+    /** Counts a turn's CPA 503 before its record is handled, so the record's first send already sees the run. */
+    async noteTurn(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], endedAt: string, turnId: string): Promise<void> {
+      await noteCpa(agentId, outcome, endedAt, turnId);
+    },
+
+    /**
+     * Why this send of a PM's record skips the pq hold, or null for today's hold rules: the resend after the first CPA
+     * 503 of a run (pmFallback on), and the one resend on the profile a CPA move put in place.
+     */
+    async sendUnheld(record: ResumeRecord, agent: AgentSnapshot, config: Config): Promise<string | null> {
+      if (record.provider !== "pi" || agent.labels?.role !== "pm") return null;
+      if (typeof record.cpaSend === "number" && record.cpaSend === attemptCount(record)) {
+        const obligation = await returns.get(record.agentId);
+        if (obligation?.cpa503 && obligation.phase === "fallback" && sameModel(record.model, obligation.fallback.model)) return "cpa-503-moved";
+      }
+      if (!config.pmFallback || fallbackIneligible(agent)) return null;
+      const streak = (await returns.read()).cpaStreaks?.[record.agentId];
+      return streak?.count === 1 && sameModel(streak.model, record.model) && !!agent.model && sameModel(agent.model, record.model) ? "cpa-503-first" : null;
+    },
+
     /** A swap or a due restore is outstanding: the resume engine sends nothing until the profile is in place. */
     async blocksSend(agentId: string): Promise<boolean> {
       const obligation = await returns.get(agentId);
@@ -437,17 +478,9 @@ export function createFallbackRunner(deps: FallbackDeps) {
     async afterTurnEnded(agentId: string, outcome: Parameters<typeof turnSwapEvidence>[0], config: Config, normalReply = false, endedAt = new Date().toISOString(), turnId: string | null = null): Promise<boolean> {
       let evidence = turnSwapEvidence(outcome);
       let why = "usage-limit-turn";
-      // A live Pi PM's Claude turns refused by CPA's 503 are counted in a row; the second moves it without asking pq. A
-      // completed turn or a failure of any other kind ends the run. Any other agent is only read, never counted.
-      if (cpaUnavailable(outcome)) {
-        const message = outcome.error!.message!;
-        const agent = await deps.acquire().then((api) => fetchAgent(api, agentId)).catch(() => null);
-        const model = turnModel(message) ?? agent?.model ?? null;
-        if (agent && model && !fallbackIneligible(agent) && agentPool("pi", model) === "claude") {
-          const count = await returns.addCpa(agentId, model, endedAt, turnId);
-          if (count >= CPA_STREAK) { evidence = cpaSwapEvidence(message); why = "cpa-503-twice"; }
-        }
-      } else if (outcome.kind === "completed" || outcome.kind === "failed") await returns.clearCpa(agentId);
+      // The second CPA 503 in a row of a live Pi PM's Claude turns moves it without asking pq (noteCpa).
+      const cpa = await noteCpa(agentId, outcome, endedAt, turnId);
+      if (cpa && cpa.count >= CPA_STREAK) { evidence = cpaSwapEvidence(cpa.message); why = "cpa-503-twice"; }
       // A failed turn on the final fallback of a return CPA's 503 made: no swap and no return come of it; the resume
       // engine handles its record as usual.
       const held = outcome.kind === "failed" ? await returns.get(agentId) : null;

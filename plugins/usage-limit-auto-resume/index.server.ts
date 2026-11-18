@@ -671,7 +671,10 @@ export default function contribute(server: PluginServerContext, openClient: () =
     skipLogged.delete(record.recordId);
     // Before any send, the pool's quota: while every account is out, hold until the earliest reset instead of burning
     // an attempt. The hold is stored and logged once per change; an available or unknown quota sends as before.
-    const decision = quotaDecision(record, await poolQuotaFor(record, currentConfig), quotaSettings(currentConfig));
+    // A PM's resend after the first CPA 503 of a run, or its one resend after a CPA move, goes out without reading pq.
+    const unheld = await fallback.sendUnheld(record, agent, currentConfig);
+    if (unheld) logOnce(record, `unheld-${unheld}`, `quota-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${unheld}`);
+    const decision = unheld ? { hold: null, changed: false } : quotaDecision(record, await poolQuotaFor(record, currentConfig), quotaSettings(currentConfig));
     if (decision.hold) {
       if (decision.changed) {
         const hold = decision.hold;
@@ -1103,6 +1106,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
       if (claim) await claim.settled;
       const currentConfig = await config();
       if (!currentConfig) return;
+      // A PM's CPA 503 is counted before its record is handled, so that record's first send sees the run.
+      if (event.turnId) await fallback.noteTurn(event.agent.id, event.outcome, endedAt, event.turnId).catch((error) => failed("pm-fallback-note-failed", error));
       let active = await store.activeForAgent(event.agent.id);
       if (active && event.turnId && event.turnId !== active.sourceTurnId && event.turnId !== active.resumeTurnId) {
         const agent = await fetchAgent(context.paseo, event.agent.id);
