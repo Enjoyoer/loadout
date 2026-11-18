@@ -932,19 +932,30 @@ export const COMPACTION = {
 };
 // Image size cap. Pi scales prompt images to 2000 px a side only when the agent is idle, so an image queued as a steer
 // or follow-up while it streams is stored as sent, and Anthropic then refuses every later request of a many-image chat.
-// The context handler fixes the model-facing copy of each request instead: every image block (any message) whose
-// header says a side is over IMAGES.maxSide is replaced by Pi's own resizeImage output plus Pi's dimension note as a
-// text block after it. The session, the queue and the user's text stay as they were, so this also heals a session that
-// already holds such an image. A request with no such image is left alone (undefined, nothing mutated); only headers
-// are read. Results are kept by content hash (IMAGES.cache entries), so every request sends the same bytes. An image
-// that cannot be resized in time (IMAGES.deadlineMs per request) or at all goes out as Pi's omitted-image text, since
-// the original would fail the request. Pi's images.autoResize false turns this off. Each image's outcome leaves one
-// image-resize row per process.
-export const IMAGES = { maxSide: 2000, deadlineMs: 20_000, cache: 16, workers: 2, load: piPackage };
+// The context_with_system handler fixes the model-facing copy of each request instead: every image block (any message)
+// whose header says a side is over IMAGES.maxSide is replaced by Pi's own resizeImage output plus Pi's dimension note as
+// a text block after it. The session, the queue and the user's text stay as they were, so this also heals a session that
+// already holds such an image. A request with no such image is left alone (undefined, nothing mutated); only a few header
+// bytes are decoded, and an image whose header is unknown is not capped. Each image is resized once by content hash and
+// the result is kept while the image stays in the context, so a settled image sends the same bytes on every request.
+// Resizes run on at most IMAGES.workers of Pi's worker threads at once. An image that is not resized by the request's
+// deadline (IMAGES.deadlineMs from the start of the request, judged by when the job finished) or cannot be resized goes
+// out as Pi's omitted-image text, since the original would fail the request; a later request uses the finished result.
+// Limits: Pi's worker has no timeout, so a job still running after IMAGES.holdMs gives up its slot and counts as failed
+// while its thread runs on; and when Pi's worker fails, Pi retries on the main thread, which blocks the agent meanwhile.
+// Pi's images.autoResize false turns this off. Evidence rows carry sizes, MIME tokens, outcome and times only.
+export const IMAGES = { maxSide: 2000, deadlineMs: 20_000, holdMs: 120_000, workers: 2, load: piPackage };
 const OMITTED_IMAGE = '[Image omitted: could not be resized below the inline image size limit.]';
 const SOF = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
-/** Width and height from a PNG, GIF, WebP or JPEG header; null when unknown, 'more' when a JPEG needs more bytes. */
-export function imageHeaderSize(b) {
+const mimeToken = mime => { const token = String(mime).split(';')[0].trim().toLowerCase(); return /^image\/[a-z0-9][a-z0-9.+-]{0,40}$/.test(token) ? token : 'unknown'; };
+/** `length` bytes from byte `start` of base64 `data`, decoding only the characters that hold them. */
+function base64Bytes(data, start, length) {
+  const from = Math.floor(start / 3) * 4, skip = start % 3;
+  return Buffer.from(data.slice(from, from + Math.ceil((skip + length) / 3) * 4), 'base64').subarray(skip, skip + length);
+}
+/** Width and height from the PNG, GIF, WebP or JPEG header of base64 `data`; null when unknown. */
+export function imageSize(data) {
+  const b = base64Bytes(data, 0, 32);
   if (b.length >= 24 && b.readUInt32BE(0) === 0x89504e47 && b.toString('latin1', 12, 16) === 'IHDR') return [b.readUInt32BE(16), b.readUInt32BE(20)];
   if (b.length >= 10 && b.toString('latin1', 0, 4) === 'GIF8') return [b.readUInt16LE(6), b.readUInt16LE(8)];
   if (b.length >= 30 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') {
@@ -955,54 +966,60 @@ export function imageHeaderSize(b) {
     return null;
   }
   if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return null;
-  for (let at = 2; ;) {
-    while (at < b.length && b[at] !== 0xff) at++;
-    while (at < b.length && b[at] === 0xff) at++;
-    if (at >= b.length) return 'more';
-    const marker = b[at++];
-    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+  // JPEG: jump from segment to segment, decoding 16 bytes at each marker, up to the frame header.
+  for (let at = 2, step = 0; step < 512; step++) {
+    const w = base64Bytes(data, at, 16);
+    let i = 0;
+    while (i < w.length && w[i] === 0xff) i++;
+    if (i === 0 || i + 8 > w.length) return null;
+    const marker = w[i];
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { at += i + 1; continue; }
     if (marker === 0xd9 || marker === 0xda) return null;
-    if (at + 7 > b.length) return 'more';
-    if (SOF.has(marker)) return [b.readUInt16BE(at + 5), b.readUInt16BE(at + 3)];
-    at += b.readUInt16BE(at);
+    if (SOF.has(marker)) return [w.readUInt16BE(i + 6), w.readUInt16BE(i + 4)];
+    at += i + 1 + w.readUInt16BE(i + 1);
   }
+  return null;
 }
-function base64Size(data) {
-  const head = imageHeaderSize(Buffer.from(data.slice(0, 64), 'base64'));
-  if (head !== 'more') return head;
-  const more = imageHeaderSize(Buffer.from(data.slice(0, 65_536), 'base64'));
-  return more === 'more' && data.length > 65_536 ? imageHeaderSize(Buffer.from(data, 'base64')) : more === 'more' ? null : more;
-}
-export function imageContextHandler(pi, record, images = IMAGES) {
-  const done = new Map(); // content hash -> Promise of { block, note } or { omitted }
+export function imageContextHandler(pi, record, options = {}) {
+  const images = { ...IMAGES, ...options };
+  // Content hash -> job { state: queued, running or done, done: Promise, outcome, doneAt, wantedUntil, timedOut }.
+  // Queued and running jobs are never dropped by a request; finished ones are kept while their image is in the context.
+  const jobs = new Map();
+  let current = new Set(); // hashes of the over-cap images in the latest request
   let running = 0; const waiting = [];
-  const slot = async run => {
-    if (running >= images.workers) await new Promise(go => waiting.push(go));
-    running++;
-    try { return await run(); } finally { running--; waiting.shift()?.(); }
-  };
-  const resize = (image, size) => {
-    const key = createHash('sha256').update(image.mimeType).update('\0').update(image.data).digest('hex');
-    let outcome = done.get(key);
-    if (outcome) { done.delete(key); done.set(key, outcome); return outcome; }
-    outcome = slot(async () => {
+  const acquire = () => { if (running < images.workers) { running++; return Promise.resolve(); } return new Promise(go => waiting.push(go)); };
+  const release = () => { const next = waiting.shift(); if (next) next(); else running--; }; // the slot passes straight on
+  const start = (key, image, size, wantedUntil) => {
+    const job = { state: 'queued', wantedUntil, timedOut: false };
+    const row = { event: 'image-resize', width: size[0], height: size[1], mimeType: mimeToken(image.mimeType) };
+    const finish = (outcome, fields) => {
+      if (fields) record({ ...row, ...fields, ...(job.timedOut ? { afterTimeout: true } : {}) });
+      Object.assign(job, { state: 'done', outcome, doneAt: Date.now() });
+      if (!current.has(key) && jobs.get(key) === job) jobs.delete(key);
+      return outcome;
+    };
+    job.done = (async () => {
+      await acquire();
+      // Nobody waits for it any more: every request's deadline has passed and the image left the context.
+      if (Date.now() > job.wantedUntil && !current.has(key)) { release(); return finish({ omitted: true }); }
+      job.state = 'running';
       const started = Date.now();
-      let pkg = null, result = null;
-      try { pkg = await images.load(); result = await pkg.resizeImage(Buffer.from(image.data, 'base64'), image.mimeType, { maxWidth: images.maxSide, maxHeight: images.maxSide }); } catch {}
-      const row = { event: 'image-resize', width: size[0], height: size[1], mimeType: image.mimeType, ms: Date.now() - started };
+      let pkg = null, result = null, stuck = false, hold;
+      try {
+        pkg = await images.load();
+        const work = pkg.resizeImage(Buffer.from(image.data, 'base64'), image.mimeType, { maxWidth: images.maxSide, maxHeight: images.maxSide });
+        result = await Promise.race([work, new Promise(go => { hold = setTimeout(() => { stuck = true; go(null); }, images.holdMs); hold.unref?.(); })]);
+      } catch {} finally { clearTimeout(hold); release(); }
+      const ms = Date.now() - started;
+      if (stuck) return finish({ omitted: true }, { outcome: 'stuck', ms });
+      if (!result) return finish({ omitted: true }, { outcome: pkg ? 'failed' : 'unavailable', ms });
       // A header that overstated the size: Pi found the image within its limits, so it goes out as it is.
-      if (result && !result.wasResized) { record({ ...row, outcome: 'within-limits', to: [result.width, result.height] }); return { keep: true }; }
-      if (!result) {
-        record({ ...row, outcome: pkg ? 'failed' : 'unavailable' });
-        return { omitted: true };
-      }
-      record({ ...row, outcome: 'resized', to: [result.width, result.height], toMimeType: result.mimeType });
+      if (!result.wasResized) return finish({ keep: true }, { outcome: 'within-limits', to: [result.width, result.height], ms });
       let note; try { note = pkg.formatDimensionNote(result); } catch {}
-      return { block: { type: 'image', data: result.data, mimeType: result.mimeType }, note };
-    });
-    done.set(key, outcome);
-    while (done.size > images.cache) done.delete(done.keys().next().value);
-    return outcome;
+      return finish({ block: { type: 'image', data: result.data, mimeType: result.mimeType }, note },
+        { outcome: 'resized', to: [result.width, result.height], toMimeType: mimeToken(result.mimeType), ms });
+    })();
+    return job;
   };
   return async event => {
     const messages = event?.messages;
@@ -1012,28 +1029,48 @@ export function imageContextHandler(pi, record, images = IMAGES) {
     if (!on) return undefined;
     const found = [];
     messages.forEach((message, at) => {
-      if (!Array.isArray(message?.content)) return;
+      if (message?.role === 'system' || !Array.isArray(message?.content)) return;
       message.content.forEach((block, part) => {
         if (block?.type !== 'image' || typeof block.data !== 'string' || typeof block.mimeType !== 'string' || !block.mimeType.startsWith('image/')) return;
-        let size = null; try { size = base64Size(block.data); } catch {}
+        let size = null; try { size = imageSize(block.data); } catch {}
         if (size && Math.max(size[0], size[1]) > images.maxSide) found.push({ at, part, block, size });
       });
     });
+    const began = Date.now(), deadline = began + images.deadlineMs;
+    for (const f of found) f.key = createHash('sha256').update(f.block.mimeType).update('\0').update(f.block.data).digest('hex');
+    current = new Set(found.map(f => f.key));
+    for (const [key, job] of jobs) if (job.state === 'done' && !current.has(key)) jobs.delete(key);
     if (!found.length) return undefined;
+    const wanted = found.map(f => {
+      let job = jobs.get(f.key);
+      if (!job) jobs.set(f.key, job = start(f.key, f.block, f.size, deadline));
+      job.wantedUntil = Math.max(job.wantedUntil, deadline);
+      return job;
+    });
     let timer;
-    const late = new Promise(go => { timer = setTimeout(() => go(null), images.deadlineMs); });
-    const outcomes = await Promise.all(found.map(f => Promise.race([resize(f.block, f.size), late])));
+    const late = new Promise(go => { timer = setTimeout(go, Math.max(0, deadline - Date.now())); });
+    await Promise.race([Promise.all(wanted.map(job => job.done)), late]);
     clearTimeout(timer);
+    // Judged by when each job finished, not by which timer fired first, so a blocked main thread cannot sneak a late
+    // result into this request; the next request sends it.
+    const outcomes = wanted.map((job, i) => {
+      if (job.state === 'done' && job.doneAt <= deadline) return job.outcome;
+      if (!job.timedOut) {
+        job.timedOut = true;
+        record({ event: 'image-resize', width: found[i].size[0], height: found[i].size[1], mimeType: mimeToken(found[i].block.mimeType), outcome: 'timeout', state: job.state, ms: Date.now() - began });
+      }
+      return { omitted: true };
+    });
     const out = messages.slice();
     const swaps = new Map();
-    found.forEach((f, i) => { if (!swaps.has(f.at)) swaps.set(f.at, new Map()); swaps.get(f.at).set(f.part, outcomes[i] ?? { omitted: true }); });
+    found.forEach((f, i) => { if (!swaps.has(f.at)) swaps.set(f.at, new Map()); swaps.get(f.at).set(f.part, outcomes[i]); });
     for (const [at, parts] of swaps) {
       const content = [];
       messages[at].content.forEach((block, part) => {
         const o = parts.get(part);
         if (!o || o.keep) content.push(block);
         else if (o.omitted) content.push({ type: 'text', text: OMITTED_IMAGE });
-        else { content.push(o.block); if (o.note) content.push({ type: 'text', text: o.note }); }
+        else { content.push({ ...o.block }); if (o.note) content.push({ type: 'text', text: o.note }); }
       });
       out[at] = { ...messages[at], content };
     }
@@ -1614,7 +1651,7 @@ export default function(pi) {
   // The last request's advisor state, and the runtime.json key at the advisor's rejection (null: not rejected).
   let sent = null, rejectedAt = null;
   pi.on('input', event => { limit.input(event?.text); });
-  pi.on('context', imageContextHandler(pi, record));
+  pi.on('context_with_system', imageContextHandler(pi, record));
   pi.on('message_end', (event, ctx) => limit.messageEnd(event, ctx));
   // Advisor results in the response now streaming (Pi drops those blocks). A call the model starts after a client
   // tool call gets no result in that response, so results are counted, not calls.

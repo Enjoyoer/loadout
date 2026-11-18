@@ -847,11 +847,13 @@ const send=messages=>session.agent.transformContext(messages);
 const user=(...content)=>({role:'user',content,timestamp:1});
 const text={type:'text',text:'look'};
 const rows=()=>{try{return readFileSync(join(dir,'route-evidence.jsonl'),'utf8').trim().split('\n').map(JSON.parse).filter(r=>r.event==='image-resize');}catch{return [];}};
-// A 3834x2064 PNG goes out at 2000 px on the long side, still PNG, with Pi's note after it; the input is not changed.
+// A 3834x2064 PNG goes out at 2000 px on the long side, still PNG, with Pi's note after it; the input is not changed,
+// and a system message after it keeps its place.
 const big=user(text,{type:'image',data:png(3834,2064),mimeType:'image/png'});const kept=JSON.stringify(big);
-const out=await send([big]);
-assert.equal(JSON.stringify(big),kept);
-const c=out.at(-1).content;assert.deepEqual(c.map(b=>b.type),['text','image','text']);assert.equal(c[0].text,'look');
+const system={role:'system',content:'mid',timestamp:1};
+const out=await send([big,system,user(text)]);
+assert.equal(JSON.stringify(big),kept);assert.deepEqual(out.map(m=>m.role),['user','system','user']);
+const c=out[0].content;assert.deepEqual(c.map(b=>b.type),['text','image','text']);assert.equal(c[0].text,'look');
 assert.equal(c[1].mimeType,'image/png');assert.deepEqual(size(c[1].data),[2000,1077]);
 assert.match(c[2].text,/^\[Image: original 3834x2064, displayed at 2000x1077/);
 assert.equal((await send([big])).at(-1).content[1].data,c[1].data);
