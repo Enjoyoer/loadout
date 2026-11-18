@@ -10,7 +10,7 @@ It prints one JSON object, `{route, reason}` (also `provider` for browser defaul
 
 ## Classes
 
-Labels resolve through the target Pi catalog; browser classes launch with native Codex catalog IDs (`gpt-6.2-sol`, `gpt-6.2-astra`). Routes are the minimum (owner rule): nothing lowers a route. Each class runs at its default; only an owner-named route changes it.
+Labels resolve through the target Pi catalog; browser classes launch with native Codex catalog IDs (`gpt-6.2-sol`). Routes are the minimum (owner rule): nothing lowers a route. Each class runs at its default; only an owner-named route changes it.
 
 | Class | Use for | Default | Fast |
 |---|---|---|---|
@@ -21,7 +21,7 @@ Labels resolve through the target Pi catalog; browser classes launch with native
 | `review` | read-only simplifier review | Sol high | off |
 | `review-security` | read-only correctness review of a security-sensitive diff: one touching auth, secrets or credentials, permissions or sandboxing, firewall or network exposure, backups, or deletion and archive paths | Opus xhigh, owner rule | off |
 | `browser` | routine website navigation, data entry, repetitive and high-volume browser automation, ordinary computer use | native Codex Sol low (owner 2026-11-17) | off |
-| `browser-hard` | complex desktop application workflows; fragile, ambiguous or repeatedly failing browser workflows | native Codex Astra medium | off |
+| `browser-hard` | complex desktop application workflows; fragile, ambiguous or repeatedly failing browser workflows | native Codex Sol high (owner 2026-11-18) | off |
 | `sites` | hosted Codex Sites interaction ([Sites](codex-sites.md "branch:sites")) | native Codex Luna xhigh, owner rule | on (owner 2026-11-17) |
 | `smoke` | smokes, canaries | Luna low | on (owner 2026-11-17) |
 | `watcher` | watchers, heartbeats | Luna xhigh | on (owner 2026-11-17) |
@@ -30,7 +30,7 @@ Owner 2026-10-14 grants standing native Codex authorization to `browser` and `br
 
 Browser Worker briefs must say: "Use the Paseo MCP server's browser_* tools (discover them if deferred), not cua_repl or native Chrome computer control. Before pressing Enter or clicking Send or Submit in any web form or chat composer, take a fresh browser_snapshot and check the field holds exactly the text you typed; if it holds anything else, clear it, report it, and do not send. Prefer clicking the Send button over pressing Enter." Reason: the Paseo browser tab lives inside the owner's desktop app, and an agent's click can move keyboard focus into the page, so the owner's typing lands in the field.
 
-The PM picks `browser-hard` and records why for complex desktop application workflows or browser work that is fragile, ambiguous or failing repeatedly on `browser`; raise to high for difficult multi-app work or troubleshooting using `node scripts/route.mjs --class browser-hard --owner-model <Astra catalog id> --owner-effort high` (the resolver has no class-effort override, so this records the owner-authorized high route).
+The PM picks `browser-hard` and records why for complex desktop application workflows or browser work that is fragile, ambiguous or failing repeatedly on `browser`.
 
 Aliases: `code-bounded`, `test-fix`, `automation`, `mechanical` resolve to `code`; `research` to `plan`; `review-critical`, `review-general` to `review`; `security` to `review-security`; `ui` (compatibility) to `ui-design`, with new routes and reasons naming the canonical class.
 

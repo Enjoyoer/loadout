@@ -1336,7 +1336,7 @@ const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:
 const plain=value=>JSON.parse(JSON.stringify(value));
 // Owner-approved task routes: Fast off by default, on for the Luna classes (owner 2026-11-17).
 assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','review','review-security','sites','smoke','ui-check','ui-design','watcher']);
-for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','high',false],['research','Sol','high',false],['review','Sol','high',false],['review-security','Opus','xhigh',false],['smoke','Luna','low',true],['sites','Luna','xhigh',true],['browser','Sol','low',false],['browser-hard','Astra','medium',false],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Luna','xhigh',true]]){
+for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','high',false],['research','Sol','high',false],['review','Sol','high',false],['review-security','Opus','xhigh',false],['smoke','Luna','low',true],['sites','Luna','xhigh',true],['browser','Sol','low',false],['browser-hard','Sol','high',false],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Luna','xhigh',true]]){
  const route=r.selectWorkerRoute({taskKind:kind,catalog});
  assert.equal(route.model,['browser','browser-hard','sites'].includes(kind)?r.resolveCatalogLabel(catalog,label).id.slice(6):r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
 }
