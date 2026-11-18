@@ -919,16 +919,54 @@ export function compactFailure(event) {
 // compact() could not be loaded or has another shape). The thinking cap, the length bound and maxFiles are pi.runtime
 // keys (runtime.json "compaction": {"thinking", "lengthBound", "maxFiles"}), which configure.py validates.
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+// Pi's own bundled entry beside the cli.js launch.mjs starts, so its exports come from the module instances Pi runs.
+// A dynamic import of the package name would not resolve: Pi maps that name only for an extension's static imports.
+const piPackage = () => import(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/index.js')).href);
 export const COMPACTION = {
   thinking: 'medium',
   lengthBound: 'Keep the whole summary under 8,000 words. Drop finished items that no longer affect the next steps.',
   maxRetries: 2,
   maxFiles: 100,
   versions: ['1.0.0'],
-  // Pi's own bundled entry beside the cli.js launch.mjs starts, so compact() comes from the module instances Pi runs.
-  // A dynamic import of the package name would not resolve: Pi maps that name only for an extension's static imports.
-  load: () => import(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/index.js')).href),
+  load: piPackage,
 };
+// Images a user message brings in. Pi scales prompt images to 2000 px a side only when the agent is idle; a steer or
+// follow-up queued while it streams (Paseo sends an attachment during a turn as a steer) is stored as sent, and one
+// oversized image then fails every later request of that chat. The input hook runs on both paths, so it scales each
+// image with a side over IMAGES.maxSide with Pi's own resizeImage (aspect kept; Pi may pick JPEG to meet its byte cap)
+// and adds Pi's dimension note to the text, as Pi's idle path does. Images within the cap pass untouched, Pi's
+// images.autoResize false turns this off, and an image that fails to resize passes as sent. A message with a resized or
+// failed image leaves one image-resize row.
+export const IMAGES = { maxSide: 2000, load: piPackage };
+export function imageInputHandler(record, images = IMAGES) {
+  return async (event, ctx) => {
+    const list = event?.images;
+    if (!Array.isArray(list) || !list.length) return undefined;
+    let pi;
+    try { pi = await images.load(); } catch { record({ event: 'image-resize', outcome: 'unavailable', images: list.length }); return undefined; }
+    try {
+      if (!pi.SettingsManager.create(ctx.cwd, pi.getAgentDir(), { projectTrusted: ctx.isProjectTrusted() }).getImageAutoResize()) return undefined;
+    } catch {}
+    const out = [], notes = [];
+    let resized = 0, failed = 0;
+    for (const image of list) {
+      let result = null;
+      try {
+        result = await pi.resizeImage(Buffer.from(image.data, 'base64'), image.mimeType, { maxWidth: images.maxSide, maxHeight: images.maxSide });
+      } catch {}
+      if (!result) { failed++; out.push(image); continue; }
+      if (Math.max(result.originalWidth, result.originalHeight) <= images.maxSide || !result.wasResized) { out.push(image); continue; }
+      resized++;
+      out.push({ type: 'image', data: result.data, mimeType: result.mimeType });
+      const note = pi.formatDimensionNote(result);
+      if (note) notes.push(note);
+    }
+    if (resized || failed) record({ event: 'image-resize', images: list.length, resized, failed, source: event.source ?? null, streamingBehavior: event.streamingBehavior ?? null });
+    if (!resized) return undefined;
+    const text = event.text ?? '';
+    return { action: 'transform', text: notes.length ? `${text}\n\n${notes.join('\n')}` : text, images: out };
+  };
+}
 /** The configured values from <root>/runtime.json, each falling back to its default when absent or not valid. */
 export function compactionSettings(root = dirname(fileURLToPath(import.meta.url))) {
   let own = {};
@@ -1503,6 +1541,7 @@ export default function(pi) {
   // The last request's advisor state, and the runtime.json key at the advisor's rejection (null: not rejected).
   let sent = null, rejectedAt = null;
   pi.on('input', event => { limit.input(event?.text); });
+  pi.on('input', imageInputHandler(record));
   pi.on('message_end', (event, ctx) => limit.messageEnd(event, ctx));
   // Advisor results in the response now streaming (Pi drops those blocks). A call the model starts after a client
   // tool call gets no result in that response, so results are counted, not calls.
