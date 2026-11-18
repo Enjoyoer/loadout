@@ -5,7 +5,7 @@ import type { Config } from "./config.ts";
 import type { AgentSettingsPort } from "./daemon.ts";
 import { chainDecision, chainRefusal, CPA_STREAK, cpaSwapEvidence, cpaUnavailable, turnModel, enrollmentKey, fallbackIneligible, fallbackSinceMs, pqProbeOpensAt, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
 import { agentPool, type PoolQuota, type QuotaPool } from "./quota.ts";
-import { attemptCount, isActive, rebindRecord, type AgentSnapshot, type ResumeRecord } from "./model.ts";
+import { attemptCount, isActive, rebindRecord, transientDelaySeconds, type AgentSnapshot, type ResumeRecord } from "./model.ts";
 import type { ResumeStore } from "./store.ts";
 
 export type FallbackApi = PaseoApi & { agentSettings?: AgentSettingsPort };
@@ -122,6 +122,16 @@ export function createFallbackRunner(deps: FallbackDeps) {
     if (!active || (active.state !== "parked" && active.state !== "detected")) return;
     await records.update(active.recordId, (value) => value.state === "parked" || value.state === "detected"
       ? { ...value, cpaSend: attemptCount(value), notBefore: new Date(Math.min(Date.parse(value.notBefore), Date.now())).toISOString(), updatedAt: nowIso() } : value);
+  }
+
+  async function firstDelay(agentId: string, endedAt: string, config: Config): Promise<boolean> {
+    const active = await records.activeForAgent(agentId);
+    if (!active || (active.state !== "parked" && active.state !== "detected")) return false;
+    const due = Date.parse(endedAt) + transientDelaySeconds(config, 0) * 1000;
+    if (Date.parse(active.notBefore) <= due) return false;
+    const next = await records.update(active.recordId, (value) => (value.state === "parked" || value.state === "detected") && Date.parse(value.notBefore) > due
+      ? { ...value, notBefore: new Date(due).toISOString(), updatedAt: nowIso() } : value);
+    return !!next && Date.parse(next.notBefore) <= due;
   }
 
   // A live Pi PM's Claude turn refused by CPA's 503 is counted in a run; a completed turn or a failure of any other kind
@@ -481,6 +491,9 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // The second CPA 503 in a row of a live Pi PM's Claude turns moves it without asking pq (noteCpa).
       const cpa = await noteCpa(agentId, outcome, endedAt, turnId);
       if (cpa && cpa.count >= CPA_STREAK) { evidence = cpaSwapEvidence(cpa.message); why = "cpa-503-twice"; }
+      // The first CPA 503 of a run: the waiting record's resend is due after the first transient delay, not a later
+      // backoff step (its send also skips the pq hold, sendUnheld).
+      const freed = cpa?.count === 1 && config.pmFallback ? await firstDelay(agentId, endedAt, config) : false;
       // A failed turn on the final fallback of a return CPA's 503 made: no swap and no return come of it; the resume
       // engine handles its record as usual.
       const held = outcome.kind === "failed" ? await returns.get(agentId) : null;
@@ -502,7 +515,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       }
       if (await returns.get(agentId)) await locked(agentId, () => stepLocked(agentId, config, why, evidence));
       else if (config.pmFallback && isSwapEvidence(evidence)) await locked(agentId, () => swapLocked(agentId, config, why, evidence));
-      else return false;
+      else return freed;
       return true;
     },
 
