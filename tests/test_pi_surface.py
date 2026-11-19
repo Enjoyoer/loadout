@@ -687,7 +687,7 @@ const api='anthropic-messages',model={api,provider:'fleet',id:'claude-example-1'
 const ctx={model,thinkingLevel:'high',cwd:dir,sessionManager:{getSessionId:()=> 'sess'}};
 // Pi's runner: each message_end handler sees the previous handler's replacement.
 const end=async message=>{let current=message,modified=false;for(const f of h.message_end){const r=await f({type:'message_end',message:current},ctx);if(r?.message){current=r.message;modified=true;}}return modified?current:undefined;};
-const stream=async events=>{for(const data of events)for(const f of h.provider_stream_event)await f({type:'provider_stream_event',data,api,provider:'fleet',model:model.id});};
+const stream=async events=>{for(const data of events)for(const f of h.provider_stream_event)await f({type:'provider_stream_event',data,api,provider:'fleet',model:model.id},ctx);};
 const request=()=>h.before_provider_request[0]({payload:{model:model.id,system:[{type:'text',text:'s'}],messages:[],tools:[{name:'read'}]}},ctx);
 const exec=(cacheRead,output)=>({type:'message',input_tokens:3,output_tokens:output,cache_read_input_tokens:cacheRead,cache_creation_input_tokens:1000});
 const advice={type:'content_block_start',index:2,content_block:{type:'advisor_tool_result',tool_use_id:'t',content:{type:'advisor_redacted_result'}}};
@@ -718,21 +718,22 @@ assert.equal(await end(reply('m3',{stopReason:'error',errorMessage:'500 api_erro
 request();await stream(two('m4'));
 const rejected=await end(reply('m4',{stopReason:'error',errorMessage:`400 invalid_request_error: unknown anthropic-beta ${m.ADVISOR.beta}`}));
 assert.ok(rejected.errorMessage.startsWith(m.ADVISOR_RETRY));assert.deepEqual(rejected.usage,usage);
-// U4: a cache-warm request overlapping the main one, with or without iterations of its own, before or after the main
-// delta, leaves the main reply's corrected usage intact.
+// U4: a cache-warm request overlapping the main one, with or without iterations of its own, leaves the main reply's
+// corrected usage intact. When both streams were still waiting for their delta, whose delta is whose is unknown, and
+// the reply is left alone.
 const corrected={...usage,input:3,cacheRead:206000,cacheWrite:1000,totalTokens:3+206000+1000+300};
 const warmStart={type:'message_start',message:{id:'w',usage:{input_tokens:6,cache_read_input_tokens:204000,cache_creation_input_tokens:0,output_tokens:1}}};
 const warmDelta=iterations=>({type:'message_delta',delta:{stop_reason:'max_tokens'},usage:{output_tokens:1,...(iterations?{iterations}:{})}});
 const stop={type:'message_stop'};
 const warmSteps=[exec(250000,0),exec(250000,1)];
-for(const [i,order] of [
-  id=>[start(id),delta(advised),warmStart,warmDelta(),stop,stop],
-  id=>[start(id),delta(advised),warmStart,warmDelta(warmSteps),stop,stop],
-  id=>[start(id),warmStart,warmDelta(warmSteps),stop,delta(advised),stop],
-  id=>[warmStart,start(id),delta(advised),warmDelta(),stop,stop],
+for(const [i,[order,want]] of [
+  [id=>[start(id),delta(advised),warmStart,warmDelta(),stop,stop],corrected],
+  [id=>[start(id),delta(advised),warmStart,warmDelta(warmSteps),stop,stop],corrected],
+  [id=>[start(id),warmStart,warmDelta(warmSteps),stop,delta(advised),stop],undefined],
+  [id=>[warmStart,start(id),delta(advised),warmDelta(),stop,stop],undefined],
 ].entries()){
   await stream(order('u4-'+i));
-  assert.deepEqual((await end(reply('u4-'+i)))?.usage,corrected,'order '+i);
+  assert.deepEqual((await end(reply('u4-'+i)))?.usage,want,'order '+i);
 }
 // A warm delta whose iterations match no reply's counters supplies nothing: the next reply is left alone.
 await stream([start('u4-x'),warmStart,warmDelta(warmSteps)]);
@@ -754,6 +755,48 @@ assert.equal(await end(reply('u5-bad')),undefined);
 rmSync(dir,{recursive:true,force:true});
 """
         done = subprocess.run(['node', '--input-type=module', '-e', script, (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_shared_loader_sessions_keep_their_own_executor_steps(self):
+        # PM-specified case U6 (advisor-usage follow-up): SDK sessions sharing one resource loader share the extension's
+        # handlers. Plain A and B wait at once with equal counters, A ends, advised C streams, then B and C end: only C is
+        # corrected. Needs an installed Pi (LOADOUT_PI_APP, else the default fleet root); skipped without. Invented numbers.
+        app = Path(os.environ.get('LOADOUT_PI_APP') or Path.home()/'.local/share/loadout-pi-1.0.0/app')/'node_modules/@earendil-works/pi-coding-agent'
+        if not (app/'dist/bundle/index.js').is_file():
+            self.skipTest('no installed Pi package')
+        script=r"""
+import assert from 'node:assert/strict';import {copyFileSync,mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {fileURLToPath,pathToFileURL} from 'node:url';
+const pi=await import(process.argv[1]);
+const dir=mkdtempSync(join(tmpdir(),'advisor-shared-'));process.env.PI_CODING_AGENT_DIR=dir;
+const src=fileURLToPath(process.argv[2]);for(const name of ['fleet-routing.mjs','service-guard.mjs'])copyFileSync(join(src,'..',name),join(dir,name));
+const ext=(await import(pathToFileURL(join(dir,'fleet-routing.mjs')).href)).default;
+const api='anthropic-messages',model={id:'claude-example',name:'Example',api,provider:'fleet',baseUrl:'https://example.invalid',reasoning:false,input:['text'],contextWindow:400000,maxTokens:65536,cost:{input:5,output:25,cacheRead:.5,cacheWrite:6.25}};
+const usage={input:10,output:300,cacheRead:400000,cacheWrite:2000,totalTokens:402310,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}};
+const wire={input_tokens:10,output_tokens:300,cache_read_input_tokens:400000,cache_creation_input_tokens:2000};
+const steps=[{type:'message',input_tokens:5,cache_read_input_tokens:199000,cache_creation_input_tokens:2000,output_tokens:100},{type:'message',input_tokens:5,cache_read_input_tokens:201000,cache_creation_input_tokens:0,output_tokens:200}];
+const settingsManager=pi.SettingsManager.inMemory({cacheWarming:'off'});
+const resourceLoader=new pi.DefaultResourceLoader({cwd:dir,agentDir:dir,settingsManager,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true,extensionFactories:[ext]});
+await resourceLoader.reload();
+const sessions=[];
+async function instance(id){
+  const {session}=await pi.createAgentSession({cwd:dir,agentDir:dir,settingsManager,resourceLoader,model,sessionManager:pi.SessionManager.inMemory(dir),noTools:'all'});
+  sessions.push(session);
+  const message={role:'assistant',api,provider:model.provider,model:model.id,timestamp:0,content:[],responseId:id,usage:structuredClone(usage),stopReason:'stop'};
+  const event=data=>session.agent.onProviderStreamEvent(data,model);
+  return {runner:session._extensionRunner,start:()=>event({type:'message_start',message:{id,usage:wire}}),
+    delta:iterations=>event({type:'message_delta',delta:{stop_reason:'end_turn'},usage:{...wire,...(iterations?{iterations}:{})}}),
+    end:async()=>{await event({type:'message_stop'});const r=await session._extensionRunner.emitMessageEnd({type:'message_end',message});return (r??message).usage.totalTokens;}};
+}
+const [a,b,c]=await Promise.all(['plain-A','plain-B','advised-C'].map(instance));
+assert.notStrictEqual(a.runner,b.runner);
+await a.start();await b.start();await a.delta();await b.delta();
+const A=await a.end();
+await c.start();await c.delta(steps);
+const B=await b.end(),C=await c.end();
+assert.deepEqual({A,B,C},{A:402310,B:402310,C:5+201000+0+300});
+for(const session of sessions)session.dispose();rmSync(dir,{recursive:true,force:true});
+"""
+        done = subprocess.run(['node', '--input-type=module', '-e', script, (app/'dist/bundle/index.js').as_uri(), (PI/'fleet-routing.mjs').as_uri()], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_failed_compaction_writes_one_evidence_row(self):
