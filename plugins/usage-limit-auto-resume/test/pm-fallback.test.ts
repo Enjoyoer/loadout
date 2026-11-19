@@ -35,8 +35,8 @@ function fixture(home: string) {
   const sent = new Map<string, { text: string; messageId: string }>();
   let failApply = 0;
   // Race hooks (T9, T11): run before an agent read, after it with the snapshot it returns, and on a settings write.
-  // T12, T13: run before a send; a throw fails it.
-  let beforeSend: ((agent: AgentSnapshot) => void) | undefined;
+  // T12, T13, T15: run before a send; a throw fails it, and a promise holds it in flight.
+  let beforeSend: ((agent: AgentSnapshot) => void | Promise<void>) | undefined;
   let beforeFetch: ((id: string) => Promise<void>) | undefined;
   let afterFetch: ((agent: AgentSnapshot | undefined) => Promise<void>) | undefined;
   let onApply: (() => void) | undefined;
@@ -79,7 +79,7 @@ function fixture(home: string) {
       cancel: async () => { calls.cancels++; },
       send: async (prompt: string, options: { messageId: string }) => {
         const agent = agents.get(id)!;
-        beforeSend?.(agent);
+        await beforeSend?.(agent);
         calls.sends.push(`${id}:${agent.model}:${prompt.slice(0, 20)}`);
         sent.set(`resume-${calls.sends.length}`, { text: prompt, messageId: options.messageId });
         Object.assign(agent, { status: "running", activeTurn: { turnId: `resume-${calls.sends.length}` }, lastUserMessageAt: new Date().toISOString(), requiresAttention: false });
@@ -130,8 +130,8 @@ function fixture(home: string) {
     returns: new ReturnStore(path.join(home, "pm-return.json")), records: new ResumeStore(),
     failApplies: (n: number) => { failApply = n; },
     hooks: (set: { beforeFetch?: typeof beforeFetch; afterFetch?: typeof afterFetch; onApply?: typeof onApply; beforeSend?: typeof beforeSend }) => { ({ beforeFetch, afterFetch, onApply, beforeSend } = set); },
-    // Delivers a turn end as given (T13: a late event for an older turn).
-    emit: async (event: unknown) => { handlers.get("agent.turn_ended")!(event, { paseo: api }); await plugin!.idle(); },
+    // Delivers a turn end as given (T13, T15: a late event for an older turn); resolves when the plugin is idle.
+    emit: (event: unknown) => { handlers.get("agent.turn_ended")!(event, { paseo: api }); return plugin!.idle(); },
     setConfig: (patch: Partial<Config>) => { config = ConfigSchema.parse({ ...config, ...patch }); },
   };
 }
@@ -1039,4 +1039,67 @@ it("T14: the hour between a CPA chain's step backs counts from the step that lan
   assert.equal(f.agents.get("pm")!.model, SOL);
   while (Date.now() < landed + 61 * 60_000) await f.tick();
   assert.equal(f.agents.get("pm")!.model, OPUS, "the second step back once the hour from the landing is over");
+}));
+
+it("T15: an older turn's event that turns the owed Sol resend's record uncertain while its send is in flight spends nothing; after the send fails the newer input gets one Sol send", () => scenario(async (f, logs) => {
+  await cpaMovePending(f);
+  let reached!: () => void, release!: () => void, uncertain!: () => void;
+  const reachedP = new Promise<void>((resolve) => { reached = resolve; });
+  const releaseP = new Promise<void>((resolve) => { release = resolve; });
+  const uncertainP = new Promise<void>((resolve) => { uncertain = resolve; });
+  f.hooks({ beforeSend: async (agent) => { if (agent.model === SOL) { reached(); await releaseP; throw new Error("Transport not connected"); } } });
+  const update = ResumeStore.prototype.update;
+  ResumeStore.prototype.update = async function (id, apply) {
+    const next = await update.call(this, id, apply);
+    if (next?.state === "uncertain") uncertain();
+    return next;
+  };
+  const sweep = f.tick();
+  try {
+    await Promise.race([reachedP, within(3000, "the Sol send was not reached")]);
+    // An older turn's completed event arrives while the send is in flight: it turns the claimed record uncertain.
+    void f.emit({ agent: { id: "pm" }, turnId: "prior-completed", outcome: { kind: "completed" }, timeline: [{ type: "user_message", text: "old question", messageId: "old-user" }, { type: "assistant_message", text: "old reply" }] });
+    await Promise.race([uncertainP, within(3000, "the late event did not turn the record uncertain")]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal((await f.returns.get("pm"))?.cpaResend, true, "still owed while the send is in flight");
+  } finally {
+    ResumeStore.prototype.update = update;
+    release();
+    await sweep;
+  }
+  f.hooks({});
+  assert.equal((await f.returns.get("pm"))?.cpaResend, true, "still owed after the send reported non-delivery");
+  mock.timers.setTime(Date.now() + 1000);
+  Object.assign(f.agents.get("pm")!, { lastUserMessageAt: new Date().toISOString() });
+  await f.endTurn("pm", { kind: "failed", error: { message: "503 upstream unavailable (stopReason=error, model=fleet/gpt-6.2-sol)" } }, "user-3");
+  for (let n = 0; n < 5; n++) await f.tick();
+  assert.deepEqual(f.calls.sends, [`pm:${SOL}:continue`], "exactly one Sol send");
+  assert.equal(logs.filter((l) => l.includes("pm-cpa-resend-done agentId=pm")).length, 1);
+  assert.equal((await f.returns.get("pm"))?.cpaResend, false);
+}));
+
+it("T16: a Fable success while the CPA chain's step back to Opus is still pending returns the PM to Fable", () => scenario(async (f, logs) => {
+  f.setConfig({ pmFallbackThinking: "high", pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.pq.codex = { five: "out", week: "out" };
+  f.add("pm", "pm", { model: FABLE });
+  f.add("other", "worker");
+  const fail = (model: string, id?: string) => f.endTurn("pm", cpaOn(model), id ?? `resume-${f.calls.sends.length}`);
+  await fail(FABLE, "fable-1"); await fail(FABLE); await fail(OPUS); await fail(OPUS);
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  await f.tick();
+  await f.endTurn("other", { kind: "completed" }, "other-1", "Normal reply on Opus.");
+  // The step back to Opus starts; its settings write is rejected, so it stays pending.
+  f.failApplies(100);
+  await f.tick();
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  assert.equal((await f.returns.get("pm"))?.phase, "switching");
+  f.add("fable-peer", "worker", { model: FABLE });
+  await f.endTurn("fable-peer", { kind: "completed" }, "fable-ok", "A normal reply on Fable.");
+  await f.tick();
+  f.failApplies(0);
+  await f.tick();
+  assert.equal(f.agents.get("pm")!.model, FABLE, "back on Fable, not Opus");
+  assert.ok(logs.some((l) => l.includes("pm-restore-verified agentId=pm")));
+  assert.equal(await f.returns.get("pm"), null);
 }));

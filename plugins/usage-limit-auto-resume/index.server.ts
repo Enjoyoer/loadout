@@ -844,7 +844,11 @@ export default function contribute(server: PluginServerContext, openClient: () =
           let settled = await store.update(record.recordId, (value) => {
             const next = releaseClaim(value, record, claimed, claim);
             if (value.state === "resuming" && next.state === record.state) claim.released = true;
-            return next;
+            // A record another event moved on while the send was in flight keeps the attempt, known now as not delivered:
+            // a CPA move's owed resend is not spent by it (fallback resendOwed).
+            return next === value && value.state !== "resuming"
+              ? { ...value, attempts: value.attempts.map((attempt) => attempt.messageId === stableMessageId && attempt.result === "unknown" ? { ...attempt, result: "send-failed" } : attempt) }
+              : next;
           });
           // A turn that started while the rollback was being written was not visible to it; settle it before the claim ends.
           if (settled?.state === record.state && claim.turnId) settled = await store.update(record.recordId, (value) => applyClaimTurn(value, claim));

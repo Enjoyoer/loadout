@@ -98,8 +98,9 @@ export function createFallbackRunner(deps: FallbackDeps) {
 
   // A step back's 60-minute window (steppedBackAt) counts from when the PM is in place on the first stage, not from the
   // intent (stepBackPending): a rejected write applied later must not shorten it. A move that ends elsewhere only drops
-  // the intent.
-  const landedStep = (o: ReturnObligation, onFirst: boolean) => o.stepBackPending ? { stepBackPending: false, ...(onFirst ? { steppedBackAt: nowIso() } : {}) } : {};
+  // the intent. The first stage's proof clock (fallbackSince) starts at the landing too: until then the PM is still on
+  // the last stage, whose start the pending step keeps.
+  const landedStep = (o: ReturnObligation, onFirst: boolean) => o.stepBackPending ? { stepBackPending: false, ...(onFirst ? { steppedBackAt: nowIso(), fallbackSince: nowIso() } : {}) } : {};
 
   const quotaText = (quota: PoolQuota) => JSON.stringify(quota.status === "known" ? { available: quota.available, capacity: quota.capacity, exhausted: quota.exhausted, weekly: quota.weekly, ...(quota.scoped && Object.keys(quota.scoped).length ? { scoped: quota.scoped } : {}) } : quota.reason);
 
@@ -119,7 +120,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const from = obligation.stage;
     const back = from === "last" && stage === "first";
     const moved = await returns.update(obligation.obligationId, (o) => o.phase === "fallback" && o.stage === from
-      ? { ...o, phase: "switching", stage, fallback: o.stages![stage], fallbackSince: null, restoreDueAt: null, restoreReadback: null, ...(cpa ? { cpa503: true, cpaResend: true, cpaResendMessageId: null } : {}), ...(back ? { stepBackPending: true, cpaResend: false } : {}), updatedAt: nowIso() } : o);
+      ? { ...o, phase: "switching", stage, fallback: o.stages![stage], fallbackSince: back ? o.fallbackSince : null, restoreDueAt: null, restoreReadback: null, ...(cpa ? { cpa503: true, cpaResend: true, cpaResendMessageId: null } : {}), ...(back ? { stepBackPending: true, cpaResend: false } : {}), updatedAt: nowIso() } : o);
     if (cpa && moved?.stage === stage) await returns.clearCpa(obligation.agentId, cpa.run ?? null);
     if (moved?.stage === stage && moved.phase === "switching") log(`pm-stage-start agentId=${obligation.agentId} obligationId=${obligation.obligationId} from=${from} to=${stage} ${detail} profile=${show(moved.fallback)}`);
     return moved;
@@ -147,8 +148,12 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const obligation = await returns.get(agentId);
     if (!obligation?.cpa503 || !obligation.cpaResend || obligation.phase !== "fallback") return null;
     const taken = obligation.cpaResendMessageId;
+    // An unknown attempt whose send is still in flight in this process is not finished: an older turn's event may have
+    // turned its record uncertain before the RPC resolved. After a restart nothing is in flight, and an unknown claim
+    // counts as spent (no second pq-free send).
+    const inFlight = deps.sending(agentId);
     const spent = !!taken && (await records.read()).some((record) => record.agentId === agentId && record.attempts.some((attempt) =>
-      attempt.messageId === taken && (attempt.result === "sent" || attempt.result === "recovered" || (attempt.result === "unknown" && record.state !== "resuming"))));
+      attempt.messageId === taken && (attempt.result === "sent" || attempt.result === "recovered" || (attempt.result === "unknown" && record.state !== "resuming" && !inFlight))));
     if (!spent) return obligation;
     await clearResend(agentId, "sent");
     return null;
@@ -297,6 +302,22 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const agent = await fetchAgent(api, agentId);
     if (!agent) return once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=agent-missing`);
     if (!await gate(obligation, agent, config)) return;
+    // A step back not landed yet leaves the PM on the last stage: a success of the original seen since that stage began
+    // still returns it. The step back is dropped and the restore is due; the PM goes to the original, not the first stage.
+    if (obligation.phase === "switching" && obligation.stepBackPending) {
+      const seen = claudeSuccess.get(obligation.original.model);
+      if (seen && seen.at > fallbackSinceMs(obligation)) {
+        const on = stageOf(obligation, profileOf(agent)) ?? "last", at = nowIso();
+        const back = await returns.update(obligation.obligationId, (o) => o.phase === "switching" && o.stepBackPending
+          ? { ...o, phase: "fallback", stage: on, fallback: o.stages![on], stepBackPending: false, restoreDueAt: at, updatedAt: at } : o);
+        if (!back) return;
+        if (back.phase === "fallback" && back.restoreDueAt === at) {
+          log(`pm-stage-dropped agentId=${agentId} obligationId=${obligation.obligationId} reason=original-success stays=${on} profile=${show(back.fallback)}`);
+          log(`pm-restore-due agentId=${agentId} obligationId=${obligation.obligationId} reason=claude-success agent=${seen.agentId.slice(0, 8)} model=${obligation.original.model} at=${new Date(seen.at).toISOString()}`);
+        }
+        obligation = back;
+      }
+    }
     if (obligation.phase === "switching") {
       obligation = await recheckSwap(obligation, agent, config);
       if (!obligation) return;
@@ -542,7 +563,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
     async sendUnheld(record: ResumeRecord, agent: AgentSnapshot, config: Config): Promise<string | null> {
       if (record.provider !== "pi" || agent.labels?.role !== "pm") return null;
       const obligation = await resendOwed(record.agentId);
-      if (obligation && sameModel(record.model, obligation.fallback.model)) {
+      // Not while another send of the PM is in flight: it may be the one that takes the resend.
+      if (obligation && sameModel(record.model, obligation.fallback.model) && !deps.sending(record.agentId)) {
         // Named before the send is claimed: the receipt resendOwed reads after a restart.
         const id = messageId(record);
         const named = obligation.cpaResendMessageId === id ? obligation
@@ -590,7 +612,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // A normal reply on a Claude subscription model, from an agent with no return of its own, while some PM waits on
       // the fallback profile: proof for the return. The agent is read only then.
       if (outcome.kind === "completed" && normalReply && !await returns.get(agentId)) {
-        const waiting = (await returns.read()).obligations.some((o) => o.phase === "fallback");
+        const waiting = (await returns.read()).obligations.some((o) => o.phase === "fallback" || o.stepBackPending);
         const agent = waiting ? await fetchAgent(await deps.acquire(), agentId).catch(() => null) : null;
         const model = agent?.model ?? agent?.runtimeInfo?.model;
         if (agent && model && isSubscriptionClaude(agent.provider, model)) {
