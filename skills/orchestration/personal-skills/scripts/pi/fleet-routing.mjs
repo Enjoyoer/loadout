@@ -180,7 +180,7 @@ export function executorSteps(keep = 16) {
     },
   };
 }
-const sessionOf = ctx => { try { return ctx?.sessionManager; } catch { return undefined; } };
+const sessionOf = ctx => ctx?.sessionManager;
 const count = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 /**
  * The assistant message with its usage context read from the last executor step when it had more than one, else the
