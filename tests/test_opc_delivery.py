@@ -402,6 +402,7 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertIn("model=fleet/gpt-6-luna; effort=xhigh; Fast=on", built["brief"])
 
     def test_fresh_luna_watcher_needs_fast_on(self):
+        # An owner-named model always wins (Config ruling): an owner-named Luna watcher runs Fast on, as on main; Fast off is refused.
         luna = {"role": "worker", "source": "owner-explicit", "model": "fleet/gpt-6-luna", "effort": "xhigh", "fastMode": True}
         on = self.launch(self.task, "on-lane", json.dumps(luna), self.watcher_catalog(), record_lane="on-lane", task_class="watcher")
         self.assertEqual(on["request"].get("provider"), "pi/fleet/gpt-6-luna", on["request"])
@@ -412,6 +413,39 @@ class OpcDeliveryTest(unittest.TestCase):
             self.assertEqual(off[step].get("error"), "watcher lane refuses this Worker route: a watcher route on Luna runs Fast "
                                                      "on (owner 2026-11-17)", step)
         self.assertIn("a watcher route on Luna runs Fast on", off["record"].get("error", ""))
+
+    def test_recorded_sol_fast_on_plan_route_rebuilds(self):
+        sol = {"role": "worker", "source": "task-default", "kind": "research", "model": "fleet/gpt-6.2-sol", "effort": "high",
+               "fastMode": True, "reason": "research default Sol high, Fast on"}
+        self.write_routes(self.task, {"plan-lane": sol})
+        built = self.launch(self.task, "plan-lane", "recorded['plan-lane'].route", self.watcher_catalog(), task_class="plan")
+        self.assertEqual(built["request"].get("provider"), "pi/fleet/gpt-6.2-sol", built["request"])
+        self.assertEqual(built["request"]["settings"], {"thinkingOptionId": "high"})
+        self.assertIn("model=fleet/gpt-6.2-sol; effort=high; Fast=on", built["brief"])
+
+    def test_fresh_sol_plan_default_is_refused(self):
+        sol = {"role": "worker", "source": "task-default", "kind": "plan", "model": "fleet/gpt-6.2-sol", "effort": "high",
+               "fastMode": False, "reason": "plan default Sol high, Fast off"}
+        catalog = [*self.watcher_catalog(), {"id": "fleet/claude-fable-5-2", "label": "Fable", "thinkingOptions": [{"id": "high"}]}]
+        fresh = self.launch(self.task, "plan-lane", json.dumps(sol), catalog, record_lane="plan-lane",
+                            task_class="plan")
+        self.assertEqual(fresh["record"].get("error"), "recorded owner or task-default route required for worker; a Claude "
+                                                    "class never runs a GPT or web model")
+        self.assertEqual(fresh["request"].get("error"), "plan lane refuses this Worker route: fleet/gpt-6.2-sol is not the "
+                                                     "plan class's Fable model")
+        self.assertEqual(fresh["brief"].get("error"), "plan lane refuses this Worker route: fleet/gpt-6.2-sol does not name the "
+                                                   "plan class's Fable model")
+
+    def test_owner_named_route_with_object_prototype_class_matches_main(self):
+        catalog = self.watcher_catalog()
+        root = Path(self.task).parent.parent
+        (root / "catalog.json").write_text(json.dumps(catalog))
+        done = run("node", str(SCRIPTS / "route.mjs"), "--class", "constructor", "--owner-model", "fleet/gpt-6.2-sol",
+                   "--owner-effort", "high", "--catalog", str(root / "catalog.json"))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {"route": {"role": "worker", "source": "owner-explicit",
+                                                             "model": "fleet/gpt-6.2-sol", "effort": "high", "fastMode": False},
+                                                   "reason": "owner-named, never adjusted"})
 
     def test_watcher_task_kind_without_recorded_lane_never_maps_luna(self):
         done = run("node", "--input-type=module", "-e", f"""

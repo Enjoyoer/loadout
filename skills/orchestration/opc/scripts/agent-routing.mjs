@@ -122,8 +122,11 @@ function requireFableRule(route, rows = null) {
 }
 // A class that runs Fast on (the Luna classes, owner 2026-11-17) takes no route with Fast off, owner-named or not, and
 // neither does a route on a former Fast-on label of its class (a watcher on Luna).
-const formerClassRoute = (route, taskClass, rows) => (FORMER_CLASS_ROUTES[canonicalWorkerClass(taskClass)] ?? [])
-  .find(former => labelModel(route?.model, former.label, rows));
+const formerClassRoute = (route, taskClass, rows) => {
+  const kind = canonicalWorkerClass(taskClass);
+  return (Object.hasOwn(FORMER_CLASS_ROUTES, kind ?? '') ? FORMER_CLASS_ROUTES[kind] : [])
+    .find(former => labelModel(route?.model, former.label, rows));
+};
 function classFastProblem(route, taskClass, rows = null) {
   const kind = canonicalWorkerClass(taskClass), former = formerClassRoute(route, kind, rows);
   if (route?.fastMode === true) return null;
@@ -289,11 +292,13 @@ function validateRebuild(route, taskClass, rows) {
 }
 
 // A recorded task default of the lane's class that is exactly a former default of that class (FORMER_CLASS_ROUTES),
-// still served at its effort when a catalog is given. Only a lane with a recorded route may pass it.
+// still served at its effort when a catalog is given. Only a lane with a recorded route may pass it. Like any recorded
+// GPT default, a former GPT default recorded with Fast on keeps it.
 function recordedFormerDefault(route, taskClass, rows) {
   const kind = canonicalWorkerClass(taskClass), former = formerClassRoute(route, kind, rows);
   return Boolean(route?.source === 'task-default' && former && canonicalWorkerClass(route.kind) === kind &&
-    route.effort === former.effort && route.fastMode === former.fastMode &&
+    route.effort === former.effort &&
+    (route.fastMode === former.fastMode || (route.fastMode === true && GPT_WEB_LABELS.includes(former.label))) &&
     (!rows || rows.some(row => row.label === former.label && namesRow(row, route.model) &&
       row.thinkingOptions?.some(option => option.id === route.effort))));
 }
