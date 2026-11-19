@@ -861,14 +861,15 @@ assert.equal(h({toolName:'bash',content:[{type:'text',text:b64+' '+tokens['cloud
 // A handler error leaves the result unmasked and writes one row.
 const before=rows.length;const bad={toolName:'bash',get content(){throw Error('boom '+tokens.github);}};
 assert.equal(h(bad),undefined);assert.equal(rows.length,before+1);assert.deepEqual(rows.at(-1),{event:'redact',tool:'bash',status:'failed',error:'Error'});
-// 1 MB of back-to-back matches of each kind is masked in under 50 ms (best of 3), leaving no token.
+// 1 MB of back-to-back matches of each kind is masked in under 250 ms (best of 3), leaving no token. The bound only
+// catches a super-linear pattern (seconds on 1 MB); a loaded host runs 50-70 ms, so a tighter bound flaked.
 const MB=1<<20;
 for(const [kind,token] of [...Object.entries(tokens),['oauth-refresh-json',json]]){
   const unit=token+' ';const big=unit.repeat(Math.ceil(MB/unit.length)+1);
   let ms=Infinity,counts,masked;
   for(let i=0;i<3;i++){counts={};const t0=performance.now();masked=m.redactText(big,counts);ms=Math.min(ms,performance.now()-t0);}
   assert.ok(counts[kind]>=Math.floor(MB/unit.length),kind);assert.ok(!masked.includes(token.slice(0,-1)),kind);
-  assert.ok(ms<50,kind+' '+ms.toFixed(1)+' ms');
+  assert.ok(ms<250,kind+' '+ms.toFixed(1)+' ms');
 }
 // A refresh_token key in details or structuredContent is masked; an empty value is left.
 const rt=h({toolName:'mcp',content:[],structuredContent:{auth:{['refresh'+'_token']:r('n',24),access:'x'}},details:{['refresh'+'_token']:''}});
