@@ -40,9 +40,13 @@ Local code lanes default to Opus high, and `plan`, `ui-design` and `ui-check` ru
 
 The `reviewer` fixed role is separate: it is the one ChatGPT web lane (Web Pro) only for browser review explicitly enabled by the owner, not a Worker class, and the class table does not change it.
 
+## PMs
+
+This file is the one model map for OPC and OPN. Every PM, main and child, runs on Opus high (Pi `fleet/claude-opus-5-5`, thinking high; owner 2026-11-18), unless the owner names another model for it. Opus high counts as unavailable only when it is missing from the catalog, or the agent fails to start or returns a quota error; then the PM, or an OPN worker that would run on Opus high, starts on Sol high (Pi `fleet/gpt-6.2-sol`, thinking high). OPC's `code` and `review-security` lanes never take that fallback. A PM's own model never passes to its lanes or workers; each takes its class route.
+
 ## Fable
 
-Fable runs on the OPC `plan`, `ui-design` and `ui-check` lanes, or wherever the owner names it. Every PM, main and child, runs on Opus high (Pi `fleet/claude-opus-5-5`, thinking high; owner 2026-11-18). Implementers and reviewers use Opus or Sol, and no lane inherits Fable from its PM. At most 5 Fable agents run at once across the fleet, PMs and `plan` lanes included; before starting one, count the running Fable agents on every host. When the owner names Fable for a code lane, `buildDelegatedBrief` starts its brief with an ownership line (the owner and long-term maintainer of the codebase, its design up to it within the brief's permitted changes), per Anthropic's Fable 5.2 prompting guidance.
+Fable runs on the OPC `plan`, `ui-design` and `ui-check` lanes, or wherever the owner names it. Implementers and reviewers use Opus or Sol, and no lane inherits Fable from its PM. At most 5 Fable agents run at once across the fleet, PMs and `plan` lanes included; before starting one, count the running Fable agents on every host. When the owner names Fable for a code lane, `buildDelegatedBrief` starts its brief with an ownership line (the owner and long-term maintainer of the codebase, its design up to it within the brief's permitted changes), per Anthropic's Fable 5.2 prompting guidance.
 
 ## UI work
 
