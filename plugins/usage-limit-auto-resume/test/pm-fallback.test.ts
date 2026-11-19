@@ -34,12 +34,13 @@ function fixture(home: string) {
   // The plugin's own message per turn it started, which is that turn's newest user row.
   const sent = new Map<string, { text: string; messageId: string }>();
   let failApply = 0;
-  // Race hooks (T9, T11): run before an agent read, after it with the snapshot it returns, and on a settings write.
+  // Race hooks (T9, T11): run before an agent read, after it with the snapshot it returns, and on a settings write
+  // (T17: a promise holds the write in flight).
   // T12, T13, T15: run before a send; a throw fails it, and a promise holds it in flight.
   let beforeSend: ((agent: AgentSnapshot) => void | Promise<void>) | undefined;
   let beforeFetch: ((id: string) => Promise<void>) | undefined;
   let afterFetch: ((agent: AgentSnapshot | undefined) => Promise<void>) | undefined;
-  let onApply: (() => void) | undefined;
+  let onApply: ((agentId: string, model: string) => void | Promise<void>) | undefined;
   // What the daemon's stored record holds per agent: it follows memory unless the agent's background persist fails.
   const unpersisted = new Map<string, Profile[]>();
   const stored = async (id: string): Promise<Profile[]> => unpersisted.get(id) ?? (agents.has(id) ? [profileOf(agents.get(id)!)!] : []);
@@ -90,7 +91,7 @@ function fixture(home: string) {
       apply: async (agentId: string, settings: { modelId: string; thinkingOptionId: string | null }) => {
         calls.apply.push({ agentId, ...settings });
         if (failApply > 0) { failApply--; throw new Error("fixture apply rejected"); }
-        onApply?.();
+        await onApply?.(agentId, settings.modelId);
         Object.assign(agents.get(agentId)!, { model: settings.modelId, thinkingOptionId: settings.thinkingOptionId ?? "medium" });
       },
       setLabels: async (agentId: string, labels: Record<string, string>) => {
@@ -1101,5 +1102,48 @@ it("T16: a Fable success while the CPA chain's step back to Opus is still pendin
   await f.tick();
   assert.equal(f.agents.get("pm")!.model, FABLE, "back on Fable, not Opus");
   assert.ok(logs.some((l) => l.includes("pm-restore-verified agentId=pm")));
+  assert.equal(await f.returns.get("pm"), null);
+}));
+
+it("T17: a Fable success recorded while the CPA chain's step-back write to Opus is in flight returns the PM to Fable once the step lands", () => scenario(async (f, logs) => {
+  f.setConfig({ pmFallbackThinking: "high", pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.pq.codex = { five: "out", week: "out" };
+  f.add("pm", "pm", { model: FABLE });
+  f.add("other", "worker");
+  const fail = (model: string, id?: string) => f.endTurn("pm", cpaOn(model), id ?? `resume-${f.calls.sends.length}`);
+  await fail(FABLE, "fable-1"); await fail(FABLE); await fail(OPUS); await fail(OPUS);
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  await f.tick();
+  await f.endTurn("other", { kind: "completed" }, "other-1", "Normal reply on Opus.");
+  // The step back to Opus starts on the next sweep; its settings write is held in flight.
+  let entered!: () => void, release!: () => void, witnessRead!: () => void;
+  const inFlight = new Promise<void>((resolve) => { entered = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const read = new Promise<void>((resolve) => { witnessRead = resolve; });
+  f.add("fable-peer", "worker", { model: FABLE });
+  f.hooks({
+    onApply: async (agentId, model) => { if (agentId === "pm" && model === OPUS) { entered(); await released; } },
+    afterFetch: async (agent) => { if (agent?.id === "fable-peer") witnessRead(); },
+  });
+  const sweep = f.tick();
+  let peer: Promise<void> | undefined;
+  try {
+    await Promise.race([inFlight, within(3_000, "step-back write in flight")]);
+    assert.equal((await f.returns.get("pm"))?.stepBackPending, true);
+    assert.equal(f.agents.get("pm")!.model, SOL);
+    // A Fable worker's normal reply ends while the write is in flight; its hook reads the worker and records the success.
+    peer = f.endTurn("fable-peer", { kind: "completed" }, "fable-ok-in-flight", "A normal reply on Fable.");
+    await Promise.race([read, within(3_000, "Fable success read")]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    mock.timers.setTime(Date.now() + 1_000);
+  } finally {
+    release();
+    await sweep; await peer;
+    f.hooks({});
+  }
+  await f.tick(); await f.tick();
+  assert.equal(f.agents.get("pm")!.model, FABLE, "back on Fable, not left on Opus");
+  assert.equal(logs.filter((l) => l.includes("pm-restore-verified agentId=pm")).length, 1);
   assert.equal(await f.returns.get("pm"), null);
 }));

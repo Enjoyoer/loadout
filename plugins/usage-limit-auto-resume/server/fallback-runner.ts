@@ -99,8 +99,10 @@ export function createFallbackRunner(deps: FallbackDeps) {
   // A step back's 60-minute window (steppedBackAt) counts from when the PM is in place on the first stage, not from the
   // intent (stepBackPending): a rejected write applied later must not shorten it. A move that ends elsewhere only drops
   // the intent. The first stage's proof clock (fallbackSince) starts at the landing too: until then the PM is still on
-  // the last stage, whose start the pending step keeps.
-  const landedStep = (o: ReturnObligation, onFirst: boolean) => o.stepBackPending ? { stepBackPending: false, ...(onFirst ? { steppedBackAt: nowIso(), fallbackSince: nowIso() } : {}) } : {};
+  // the last stage, whose start the pending step keeps. A success of the original seen since then (while the step's
+  // settings write was in flight) keeps that start, so the usual proof check finds it and makes the restore due.
+  const originalSeen = (o: ReturnObligation) => (claudeSuccess.get(o.original.model)?.at ?? 0) > fallbackSinceMs(o);
+  const landedStep = (o: ReturnObligation, onFirst: boolean) => o.stepBackPending ? { stepBackPending: false, ...(onFirst ? { steppedBackAt: nowIso(), fallbackSince: originalSeen(o) ? o.fallbackSince ?? o.createdAt : nowIso() } : {}) } : {};
 
   const quotaText = (quota: PoolQuota) => JSON.stringify(quota.status === "known" ? { available: quota.available, capacity: quota.capacity, exhausted: quota.exhausted, weekly: quota.weekly, ...(quota.scoped && Object.keys(quota.scoped).length ? { scoped: quota.scoped } : {}) } : quota.reason);
 
