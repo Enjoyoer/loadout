@@ -46,7 +46,7 @@ Fable runs on the OPC `plan`, `ui-design` and `ui-check` lanes, or wherever the 
 
 ## UI work
 
-Fable designs and checks; Opus builds. Fable is only for real visual design: a new screen, a layout change, or a new component. Copy, labels, states, error text, renames, and guards with no layout change are `code` only, with no Fable lane.
+Fable designs and checks; Opus builds. In UI work, Fable is only for real visual design: a new screen, a layout change, or a new component. Copy, labels, states, error text, renames, and guards with no layout change are `code` only, with no Fable lane.
 
 1. `ui-design` (Fable high, Fast off, read-only) takes the current screens, as screenshots and code, and returns a short design spec plus a static mockup (HTML/CSS or images) at a scratch path the PM names. It makes no repository edits and opens no PR. At most one per task; a second needs the owner's OK.
 2. A normal `code` lane (Opus high) builds: it implements the spec and mockup exactly, plus the logic, and opens the PR with [before and after screenshots](pr-evidence.md "branch:evidence").
