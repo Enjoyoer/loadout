@@ -11,6 +11,7 @@ description: Ask the owner questions and read his answers in his preferred forma
 - The open list uses the same format as the Held list: a bold heading, **Open**, then one numbered line per item, `<stable number>. <short item> (<recommendation>)`. Options or sub-items go as a, b and c on that same line.
 - Each line is in plain words, answerable with a short reply: yes/no, a pick, or a value.
 - The list holds only decisions. The owner's own dated actions (pay, call, sign, post) stay in Todoist; show them at most as one line, "Due today in Todoist: N".
+- An item the owner tracks himself, as a Todoist task or in a Codex thread or task he works in directly, appears in neither the open list nor Held. The owning agent still follows up on it, and may send him a one-line FYI when its state changes.
 - Each item keeps one stable number in your scope across lists; never renumber it. Never nest a list inside the list.
 - Example:
 
@@ -31,7 +32,7 @@ description: Ask the owner questions and read his answers in his preferred forma
 - A line ending in "?" is a question about that item. Answer it, then re-ask only that item.
 - Fewer lines than items: the rest stay open.
 - For a batch of 4 or more answer lines, or a voice answer, start your reply with the mapping: "Read as: 36 yes, 112 hold, 113 ?". Act only on the clear items; ask about a line that could belong to two items, never guess.
-- A held item never leaves the list. Only "drop" or "stop mentioning" removes an item.
+- A held item never leaves the list. Only "drop" or "stop mentioning" removes an item, or the owner taking it into Todoist or a Codex thread or task he works in directly.
 
 ## /wo
 
