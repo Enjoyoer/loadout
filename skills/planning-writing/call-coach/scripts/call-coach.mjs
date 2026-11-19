@@ -38,7 +38,8 @@ Commands:
   next [--wait <s>]       Wait until new transcript lines exist or <s> seconds pass (default 20);
                           print only the new lines as "m:ss text". Empty output: nothing new.
       --settle <s>        Once new text arrives, wait until it stops growing for <s> seconds
-                          (default 1, at most 3 s in all) so one turn sees the whole sentence.
+                          (default 1) so one turn sees the whole sentence. The wait ends 3 s after
+                          the new text at most, and never past --wait.
   stop --project <dir>    Stop poller and server, save <dir>/calls/<date>/transcript.txt,
                           and drop the share link from state.
 `;
@@ -55,18 +56,28 @@ const SOURCES = {
     // The page loads the transcript once from /speech (each segment with its words and a signature),
     // then gets live words only as WebSocket "speech_pieces" deltas: per segment, word deletions and
     // insertions on top of the signature they were made from (bs). Apply them as the page does.
-    // Offsets are 16 kHz sample counts.
+    // Offsets are 16 kHz sample counts. Deltas apply only on top of a loaded transcript: ones that
+    // arrive first wait for it. A message index at or below the last one applied (or the loaded
+    // transcript's own index) is a repeat: the socket re-sends recent indexes. The index does not reset
+    // on a new socket: the page passes the loaded index when it connects, and the count carries on.
     reader() {
       const segs = new Map();
+      const EMPTY = /^1B2M2Y8AsgTpg/; // the signature of an empty segment (base64 MD5 of ""), plus a counter
+      let loaded = false, last = 0;
+      const early = [];
       const out = (s) => ({ id: s.uuid, start: Math.round(s.start / 16), end: Math.round(s.end / 16), text: s.words.join(" ").trim(), speaker: s.speaker });
       return {
         mismatch: false,
         read(body) {
           if (body?.type === "speech_pieces") {
+            if (!loaded) { if (early.length < 1000) early.push(body); return []; }
+            const index = Number(body.index);
+            if (Number.isFinite(index)) { if (index <= last) return []; last = index; }
             const changed = new Map();
             for (const p of body.speech_pieces?.transcript_pieces ?? []) {
               let s = segs.get(p.uuid);
-              if (s && s.sig !== p.bs) { this.mismatch = true; continue; }
+              if (s && s.sig === p.sig) continue; // already applied
+              if (s ? s.sig !== p.bs : !EMPTY.test(String(p.bs))) { this.mismatch = true; continue; }
               if (!s) segs.set(p.uuid, (s = { uuid: p.uuid, words: [] }));
               Object.assign(s, { sig: p.sig, start: Number(p.start_offset) || 0, end: Number(p.end_offset) || 0, speaker: p.speaker_id ?? null });
               for (const d of p.deletions ?? []) s.words.splice(d.begin, d.end - d.begin);
@@ -78,14 +89,20 @@ const SOURCES = {
           const list = body?.speech?.transcripts ?? body?.transcripts;
           if (!Array.isArray(list)) return null;
           this.mismatch = false;
-          return list
+          loaded = true;
+          last = Number(body?.speech?.pubsub_v2_index) || 0;
+          segs.clear();
+          const loadedSegs = list
             .filter((t) => t && (t.uuid ?? t.id) != null && typeof t.transcript === "string")
             .map((t) => {
               const s = { uuid: String(t.uuid ?? t.id), sig: t.sig, start: Number(t.start_offset) || 0, end: Number(t.end_offset) || 0, speaker: t.speaker_id ?? null,
                 words: Array.isArray(t.alignment) ? t.alignment.map((a) => a.word) : t.transcript.trim().split(/\s+/) };
               segs.set(s.uuid, s);
+              // The text printed is the page's transcript field; later deltas edit the alignment words. On a
+              // live capture (Nov 2026) the joined alignment words equalled the transcript for every segment.
               return { ...out(s), text: t.transcript.trim() };
             });
+          return [...loadedSegs, ...early.splice(0).flatMap((b) => this.read(b))];
         },
       };
     },
@@ -302,7 +319,7 @@ ${body}
 <script>
 const REV=${JSON.stringify(rev)};
 let last='',shown=null,ok=Date.now();
-const get=async(f)=>{const r=await fetch(f+'?'+Date.now(),{cache:'no-store',signal:AbortSignal.timeout(2000)});if(!r.ok)throw Error(r.status);return (await r.text()).trim();};
+const get=async(f)=>{const c=new AbortController(),t=setTimeout(()=>c.abort(),2000);try{const r=await fetch(f+'?'+Date.now(),{cache:'no-store',signal:c.signal});if(!r.ok)throw Error(r.status);return (await r.text()).trim();}finally{clearTimeout(t);}};
 const show=(h,off,vis)=>{const e=document.getElementById('live');if(shown===h)return;shown=h;e.classList.toggle('off',off);e.style.display=vis?'block':'none';e.innerHTML=h;};
 // Every 0.5 s, one request at a time. OFFLINE only after 4 s without an answer, so one slow request never flaps it.
 async function tick(){
@@ -499,8 +516,9 @@ async function cmdPoll(values, positionals) {
     const reader = source.reader(), sink = makeSink(p);
     let segs = 0, added = 0;
     for (const body of bodies) { const s = reader.read(body); if (s) { segs += s.length; added += sink.add(s); } }
-    if (!segs) die(`${values.replay} holds no ${sourceName} transcript`);
-    console.log(`replayed ${segs} segment updates through ${sourceName}, ${added} new or changed`);
+    const step = reader.mismatch ? "; a live update was out of step (the poller would reload)" : "";
+    if (!segs) die(`${values.replay} holds no ${sourceName} transcript${step}`);
+    console.log(`replayed ${segs} segment updates through ${sourceName}, ${added} new or changed${step}`);
     return;
   }
   // The link never appears in a command line (the agent's shell command included), since other users
@@ -573,7 +591,10 @@ async function runPoller(values) {
       report({ state: "listening", segments: sink.size, lastChange: new Date(lastChange).toISOString() });
     };
     page.on("websocket", (ws) => {
+      // A socket belongs to the page load that opened it; after a reload its late frames are dropped.
+      const owner = reader;
       ws.on("framereceived", ({ payload }) => {
+        if (owner !== reader) return;
         let msg;
         try { msg = JSON.parse(String(payload)); } catch { return; }
         take(msg);
@@ -624,8 +645,9 @@ async function cmdNext(values) {
   for (;;) {
     let size = sizeOf();
     if (size > cursor.offset && settle > 0) {
-      // Let a growing line finish: wait until the file stops growing for `settle`, at most 3 s in all.
-      const cap = Date.now() + Math.max(3000, settle);
+      // Let a growing line finish: wait until the file stops growing for `settle`, at most 3 s in all
+      // and never past the --wait deadline.
+      const cap = Math.min(Date.now() + 3000, deadline);
       let quietSince = Date.now();
       while (Date.now() - quietSince < settle && Date.now() < cap) {
         await sleep(100);
