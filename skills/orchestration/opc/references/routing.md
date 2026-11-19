@@ -47,7 +47,7 @@ The `reviewer` fixed role is separate: it is the one ChatGPT web lane (Web Pro) 
 
 ## PMs
 
-This file is the one model map for OPC and OPN. Every PM, main and child, runs on Opus high (Pi `fleet/claude-opus-5-5`, thinking high; owner 2026-11-18), unless the owner names another model for it. Opus high counts as unavailable only when it is missing from the catalog, or the agent fails to start or returns a quota error; then the PM starts on Sol high (Pi `fleet/gpt-6.2-sol`, thinking high), and so does an OPN worker on the `code` class. OPC `code` lanes and every `review-security` lane never take that fallback: they stop and report to their PM. A PM's own model never passes to its lanes or workers; each takes its class route.
+This file is the one model map for OPC and OPN. Every PM, main and child, runs on Opus high (Pi `fleet/claude-opus-5-5`, thinking high; owner 2026-11-18), unless the owner names another model for it, and has no fallback. Exactly two named starts fall back when Opus high is unavailable: the fresh PM that `unstuck` starts, and an OPN worker on the `code` class. Each then starts on Sol high (Pi `fleet/gpt-6.2-sol`, thinking high). Opus high counts as unavailable only when it is missing from the catalog, or the agent fails to start or returns a quota error. Every other PM stays on Opus high; OPC `code` lanes and every `review-security` lane never take that fallback: they stop and report to their PM. A PM's own model never passes to its lanes or workers; each takes its class route.
 
 ## Fable
 

@@ -31,7 +31,12 @@ def validate_links(documents: dict[str, str], errors: list[str]) -> None:
 
 
 MODEL_MAP_LINK = "](../opc/references/routing.md"
-MODEL_TERMS = re.compile(r"opus|sonnet|fable|luna|gpt-|xhigh|thinking high", re.IGNORECASE)
+# The canonical catalog labels (personal-skills scripts/pi/catalog.py CANONICAL) and Pi's thinking levels, as whole
+# words, plus a model id prefix.
+MODEL_LABELS = ("Opus", "Sonnet", "Fable", "Haiku", "Astra", "Sol", "Terra", "Luna", "Web Extra", "Web Pro")
+THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+MODEL_TERMS = re.compile(r"\b(?:" + "|".join(re.escape(term).replace(r"\ ", r"\s+") for term in MODEL_LABELS + THINKING_LEVELS) +
+                         r")\b|\b(?:gpt|claude|chatgpt)-", re.IGNORECASE)
 
 
 def validate_model_free(text: str, errors: list[str]) -> None:

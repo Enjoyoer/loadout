@@ -1519,6 +1519,17 @@ assert.deepEqual(r.resolveWorkerSurface({role:'scout',route:recorded,catalog}),{
 assert.match(r.buildDelegatedBrief({role:'scout',route:recorded,brief:'x'}),/model=Sol; effort=xhigh; Fast=off/);
 """ % json.dumps(self.TERRA_ROW))
 
+    def test_scout_route_that_is_neither_current_nor_former_is_refused(self):
+        self.run_routing(r"""
+import assert from 'node:assert/strict';
+const r=await import(process.argv[1]);
+const catalog=[{id:'fleet/gpt-6.2-sol',label:'Sol',thinkingOptions:[{id:'high'},{id:'xhigh'}]},{...%s,id:'fleet/gpt-6.1-terra'}];
+const unapproved={label:'Sol',fallbackProvider:'codex',effort:'high',fastMode:true};
+for(const provider of [undefined,'pi/fleet/gpt-6.2-sol'])
+ assert.throws(()=>r.resolveWorkerSurface({role:'scout',route:unapproved,provider,catalog}),/scout must use the exact fixed OPC role route/);
+assert.equal(r.materializeFixedRoute('scout',catalog,'pi',unapproved).model,'fleet/gpt-6.1-terra');
+""" % json.dumps(self.TERRA_ROW))
+
     def test_catalog_with_terra_row_builds_the_pi_catalog(self):
         sys.path.insert(0,str(PI));sys.path.insert(0,str(PI.parent))
         from catalog import derive

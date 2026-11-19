@@ -211,8 +211,13 @@ export function resolveCatalogLabel(catalog, label) {
   return matches[0];
 }
 
-export function materializeFixedRoute(role, catalog, surface = 'pi', rule = FIXED_ROLE_ROUTES[role]) {
-  if (!rule) throw Error(`unknown fixed role: ${role}`);
+export function materializeFixedRoute(role, catalog, surface = 'pi') {
+  if (!Object.hasOwn(FIXED_ROLE_ROUTES, role)) throw Error(`unknown fixed role: ${role}`);
+  return materializeRule(FIXED_ROLE_ROUTES[role], catalog, surface);
+}
+
+// Maps a fixed-role rule that validateFixedRoute returned (the current route or a former approved one) to the catalog.
+function materializeRule(rule, catalog, surface) {
   const provider = surface === 'pi' ? 'pi' : rule.fallbackProvider;
   const rows = Array.isArray(catalog) && surface === 'pi' ? catalog : catalog?.[provider];
   const row = resolveCatalogLabel(rows, rule.label);
@@ -546,7 +551,9 @@ export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'wor
       !(standingBrowser && String(provider).startsWith('codex/'))) {
     requireNativeAuthorization(String(provider), nativeAuthorization, `explicit provider ${provider}`);
   }
-  if (provider && !bound && !standingBrowser) return { provider, agentSettings };
+  // A fixed role passed with its route is validated and mapped like a bound Worker; with no route it passes through.
+  const fixedWithRoute = role !== 'worker' && route != null;
+  if (provider && !bound && !standingBrowser && !fixedWithRoute) return { provider, agentSettings };
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   const selected = role === 'worker' ? validateLaunchedWorkerRoute(route, { task, lane, taskClass, catalog: rows })
     : validateRoleRoute(role, route);
@@ -555,7 +562,7 @@ export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'wor
   const recordedFormer = bound && recordedLaneEntry(task, lane, route) != null &&
     recordedFormerDefault(selected, uiTaskLaneClass(task, taskClass), rows);
   const mapped = role === 'worker' ? mapRoute(selected, rows, { surface: target, nativeAuthorization, taskClass }, recordedFormer)
-    : materializeFixedRoute(role, catalog, surface, selected);
+    : materializeRule(selected, catalog, surface);
   if (role === 'worker' && mapped.provider.startsWith('codex/') && isClaudeModel(mapped.model)) {
     throw Error(`${mapped.model} is a Claude model and never runs as a native Codex Worker; an authorized native Claude ` +
       'Code Worker takes the claude surface');

@@ -38,6 +38,21 @@ class OpnStructureTests(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertTrue(any("phrase-presence" in error for error in errors))
 
+    def test_model_names_and_thinking_levels_outside_the_map_link_are_rejected(self) -> None:
+        text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        injected = ["Use Sol low.", "Use Terra high.", "Use Astra high.", "Use Haiku.", "Use thinking medium.",
+                    "Use thinking low.", "Start the worker on Pi `fleet/gpt-6.2-sol` thinking high."]
+        for line in injected:
+            with self.subTest(line=line):
+                errors: list[str] = []
+                VALIDATOR.validate_model_free(text + "\n" + line + "\n", errors)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("names a model or thinking level", errors[0])
+        # The map-link line may name them.
+        errors = []
+        VALIDATOR.validate_model_free(text.replace("[model map](", "[model map, Sol low and Terra high](", 1), errors)
+        self.assertEqual(errors, [])
+
 
 if __name__ == "__main__":
     unittest.main()
