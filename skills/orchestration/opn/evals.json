@@ -111,13 +111,13 @@
           "settings change on another host"
         ],
         "recorded_model_choice": null,
-        "pm_model": "the PM's own model and thinking"
+        "model_map": "OPC's shared model map, resolved with route.mjs"
       },
       "expected": {
         "workers": 2,
         "workspace": "the PM's own workspace, no new workspace",
         "remote_host": "the worker reaches it over ssh",
-        "model": "uses the PM's model and thinking",
+        "model": "each worker's class from the shared map (an inventory report is research, a settings change is code), resolved with route.mjs",
         "asks_owner_for_model": false,
         "acknowledgment_round": false,
         "notify_on_finish": true
@@ -129,7 +129,7 @@
         },
         {
           "criterion": "model",
-          "observable": "workers use the PM's model and thinking without asking the owner, unless the project or owner records a task-type exception"
+          "observable": "each worker runs the route route.mjs prints for its class from the shared map, without asking the owner, unless the project or owner records a task-type exception"
         },
         {
           "criterion": "brief",
