@@ -58,8 +58,19 @@ export type ReturnObligation = {
    * when the PM answers on its own. Absent: false.
    */
   cpaResend?: boolean;
-  /** When a CPA obligation last stepped back from its last stage to its first: at most once per PQ_PROBE_INTERVAL_MS. */
+  /**
+   * The message id of the send that takes the owed resend, written before that send is claimed (sendUnheld). The resend
+   * counts as gone out once a record of the PM holds that attempt as sent (or left unknown by a send no longer in
+   * flight), even if a restart lost the flag's clearing. Absent: none yet.
+   */
+  cpaResendMessageId?: string | null;
+  /**
+   * When a CPA obligation's PM last landed on the first stage on a step back from the last: at most one step back per
+   * PQ_PROBE_INTERVAL_MS, counted from the landing, not from the intent (stepBackPending).
+   */
   steppedBackAt?: string | null;
+  /** A step back from the last stage to the first is under way; steppedBackAt is set when it lands. Absent: false. */
+  stepBackPending?: boolean;
   attempts: number;
   lastAttemptAt: string | null;
   lastError: string | null;
@@ -330,6 +341,8 @@ function isObligation(value: unknown): value is ReturnObligation {
     (o.cpa503 === undefined || typeof o.cpa503 === "boolean") &&
     (o.cpaResend === undefined || typeof o.cpaResend === "boolean") &&
     (o.steppedBackAt === undefined || o.steppedBackAt === null || isTime(o.steppedBackAt)) &&
+    (o.stepBackPending === undefined || typeof o.stepBackPending === "boolean") &&
+    (o.cpaResendMessageId === undefined || isNullableString(o.cpaResendMessageId)) &&
     Number.isSafeInteger(o.attempts) && (o.lastAttemptAt === null || isTime(o.lastAttemptAt)) && isNullableString(o.lastError) &&
     isTime(o.createdAt) && isTime(o.updatedAt);
 }
