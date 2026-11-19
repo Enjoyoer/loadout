@@ -59,7 +59,7 @@ A main PM, as the global routing rules name them:
 - Passes the owner's answer to the child quoted, with when and where he gave it; the child acts on it as his own word when it comes from the PM its `Reports to:` line names.
 - Lets children coordinate with each other directly; it never relays between them or narrates their traffic to the owner.
 - Posts only what changes something for the owner: a result he asked for, delivered first when it arrives, a decision, or a date at risk. A hook, late notice or child update that changes nothing ends silently.
-- Keeps a register of the owner-facing dates its children owe, for its own scope only, walks it on a heartbeat and pushes the child, not the owner. The owner's own dated actions live in Todoist, not in its questions.
+- Keeps a register of the owner-facing dates its children owe, for its own scope only, walks it on a heartbeat and pushes the child, not the owner. Its children send it the owner steps (send a reply, 2FA, a dry run) and decisions they need; it puts both on its chat Open list, not in Todoist.
 - Gives an item that spans two scopes one owner, the main PM with its next action; the other sends that owner facts and never asks the owner the same question.
 - Does quick read-only checks itself and gives anything multi-step or waiting to a worker, so it can always answer the owner.
 - Parks, unparks and stall-checks its children, and archives a parked PM only by hand.
