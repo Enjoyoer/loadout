@@ -584,7 +584,7 @@ class OpcDeliveryTest(unittest.TestCase):
                          ("pi/fleet/claude-opus-5-5", {"thinkingOptionId": "xhigh"}), own["request"])
 
     def test_fixed_role_selector_cannot_build_a_worker_for_a_bound_lane(self):
-        catalog = [{"id": f"fleet/{model}", "label": label, "thinkingOptions": [{"id": "low"}, {"id": "medium"}, {"id": "xhigh"}]}
+        catalog = [{"id": f"fleet/{model}", "label": label, "thinkingOptions": [{"id": "low"}, {"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}
                    for model, label in (("claude-opus-5-5", "Opus"), ("gpt-6.1-sol", "Sol"))]
         self.record_code_lane(catalog)
         native = "{ enabled: true, status: 'available', modes: [{ id: 'full-access', isUnattended: true }], models }"
@@ -683,7 +683,7 @@ class OpcDeliveryTest(unittest.TestCase):
 
     def test_task_default_code_route_with_non_opus_claude_model_is_refused_without_catalog(self):
         sonnet = {**{key: value for key, value in PRE_730_CODE_ROUTE.items() if key != "pace"},
-                  "model": "fleet/claude-sonnet-5-5", "effort": "medium"}
+                  "model": "fleet/claude-sonnet-5-5", "effort": "high"}
         fresh = self.launch(self.task, "sonnet-lane", json.dumps(sonnet), None, record_lane="sonnet-lane", task_class="code")
         for step in ("record", "brief"):
             self.assertEqual(fresh[step].get("error"), "code lane refuses this Worker route: fleet/claude-sonnet-5-5 does not "
