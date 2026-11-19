@@ -16,7 +16,7 @@ import { endedReads, killAgent } from "./server/vendor/ended-read.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
 // Logged once at startup so a deploy can confirm what is running. Keep equal to package.json "version".
-const VERSION = "0.6.3";
+const VERSION = "0.6.4";
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 // Thrown before anything reaches the socket, so the message was never delivered.
 const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/.test(errorMessage(error));
