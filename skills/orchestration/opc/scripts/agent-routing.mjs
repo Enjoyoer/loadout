@@ -11,8 +11,14 @@ export function isValidModelId(value) {
 }
 
 export const FIXED_ROLE_ROUTES = Object.freeze({
-  scout: Object.freeze({ label: 'Sol', fallbackProvider: 'codex', effort: 'xhigh', fastMode: false }),
+  // Owner decision 277a: a one-week scout trial on Terra high, Fast off, until 2026-11-26.
+  scout: Object.freeze({ label: 'Terra', fallbackProvider: 'codex', effort: 'high', fastMode: false }),
   reviewer: Object.freeze({ label: 'Web Pro', fallbackProvider: 'codex', effort: null, fastMode: false }),
+});
+// Fixed routes a role ran before a change. A route recorded as one of them still validates and launches on it; a new
+// launch takes the current fixed route.
+const FORMER_FIXED_ROLE_ROUTES = Object.freeze({
+  scout: Object.freeze([Object.freeze({ label: 'Sol', fallbackProvider: 'codex', effort: 'xhigh', fastMode: false })]),
 });
 
 // Worker task classes when the owner names no model. Labels resolve through the target Pi catalog. Each class runs at
@@ -60,7 +66,7 @@ const FORMER_CLASS_ROUTES = Object.freeze({
   plan: Object.freeze([Object.freeze({ label: 'Sol', effort: 'high', fastMode: false })]),
 });
 // Each label draws on one provider's quota pool.
-export const LABEL_POOLS = Object.freeze({ Opus: 'claude', Sonnet: 'claude', Fable: 'claude', Sol: 'codex', Luna: 'codex', Astra: 'codex' });
+export const LABEL_POOLS = Object.freeze({ Opus: 'claude', Sonnet: 'claude', Fable: 'claude', Sol: 'codex', Terra: 'codex', Luna: 'codex', Astra: 'codex' });
 // Owner rules for whole lanes. They resolve to owner-explicit routes, so nothing adjusts them.
 // ui-design (read-only spec and static mockup) and ui-check (read-only compare of after-screenshots to the mockup) are
 // Fable lanes, like the plan class; the build goes to a code lane (owner rule).
@@ -72,7 +78,7 @@ export const OWNER_RULE_ROUTES = Object.freeze({
 export const UI_CLASSES = Object.freeze(Object.keys(OWNER_RULE_ROUTES));
 const uiClass = kind => UI_CLASSES.includes(canonicalWorkerClass(kind));
 // UI work never uses GPT models or the ChatGPT web lane (owner rule).
-export const GPT_WEB_LABELS = Object.freeze(['Sol', 'Luna', 'Astra', 'Web Pro', 'Web Extra']);
+export const GPT_WEB_LABELS = Object.freeze(['Sol', 'Terra', 'Luna', 'Astra', 'Web Pro', 'Web Extra']);
 const GPT_WEB_MODEL = /(?:^|\/)(?:gpt-|chatgpt-web\/)/i;
 export function isGptOrWebRoute(route, catalog = null) {
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
@@ -205,8 +211,7 @@ export function resolveCatalogLabel(catalog, label) {
   return matches[0];
 }
 
-export function materializeFixedRoute(role, catalog, surface = 'pi') {
-  const rule = FIXED_ROLE_ROUTES[role];
+export function materializeFixedRoute(role, catalog, surface = 'pi', rule = FIXED_ROLE_ROUTES[role]) {
   if (!rule) throw Error(`unknown fixed role: ${role}`);
   const provider = surface === 'pi' ? 'pi' : rule.fallbackProvider;
   const rows = Array.isArray(catalog) && surface === 'pi' ? catalog : catalog?.[provider];
@@ -381,12 +386,12 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog 
 }
 
 function validateFixedRoute(role, route) {
-  const fixed = FIXED_ROLE_ROUTES[role];
   const keys = ['label', 'fallbackProvider', 'effort', 'fastMode'];
-  if (!fixed || !route || typeof route !== 'object' || Array.isArray(route) ||
-      Object.keys(route).length !== keys.length || keys.some(key => route[key] !== fixed[key])) {
-    throw Error(`${role} must use the exact fixed OPC role route`);
-  }
+  const matches = rule => route && typeof route === 'object' && !Array.isArray(route) &&
+    Object.keys(route).length === keys.length && keys.every(key => route[key] === rule[key]);
+  const fixed = [FIXED_ROLE_ROUTES[role], ...(Object.hasOwn(FORMER_FIXED_ROLE_ROUTES, role) ? FORMER_FIXED_ROLE_ROUTES[role] : [])]
+    .find(rule => rule && matches(rule));
+  if (!fixed) throw Error(`${role} must use the exact fixed OPC role route`);
   return fixed;
 }
 
@@ -550,7 +555,7 @@ export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'wor
   const recordedFormer = bound && recordedLaneEntry(task, lane, route) != null &&
     recordedFormerDefault(selected, uiTaskLaneClass(task, taskClass), rows);
   const mapped = role === 'worker' ? mapRoute(selected, rows, { surface: target, nativeAuthorization, taskClass }, recordedFormer)
-    : materializeFixedRoute(role, catalog, surface);
+    : materializeFixedRoute(role, catalog, surface, selected);
   if (role === 'worker' && mapped.provider.startsWith('codex/') && isClaudeModel(mapped.model)) {
     throw Error(`${mapped.model} is a Claude model and never runs as a native Codex Worker; an authorized native Claude ` +
       'Code Worker takes the claude surface');

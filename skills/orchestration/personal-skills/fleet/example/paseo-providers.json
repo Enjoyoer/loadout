@@ -48,6 +48,34 @@
             }
           ],
           "isDefault": true
+        },
+        {
+          "id": "example-vision",
+          "label": "Terra",
+          "description": "Efficient model for visual understanding and computer use.",
+          "thinkingOptions": [
+            {
+              "id": "low",
+              "label": "low"
+            },
+            {
+              "id": "medium",
+              "label": "medium"
+            },
+            {
+              "id": "high",
+              "label": "high",
+              "isDefault": true
+            },
+            {
+              "id": "xhigh",
+              "label": "xhigh"
+            },
+            {
+              "id": "max",
+              "label": "max"
+            }
+          ]
         }
       ]
     }
