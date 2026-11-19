@@ -19,7 +19,7 @@ export const FIXED_ROLE_ROUTES = Object.freeze({
 // its default effort. ceiling is the highest effort an already recorded lane of the class may rebuild at (lanes
 // recorded before OPC 7.66 could sit above the default); null means the default.
 const workerClass = (label, effort, ceiling = null, fastMode = false) => Object.freeze({ label, effort, ceiling, fastMode });
-// Local code lanes default to Opus high (owner 2026-11-18); ui-design and ui-check stay Fable high. Routes are the minimum
+// Local code lanes default to Opus high (owner 2026-11-18); plan, ui-design and ui-check run Fable high. Routes are the minimum
 // (owner rule): nothing lowers a route. Every class runs Fast off (owner 2026-11-07) except the Luna classes, which run
 // Fast on (owner 2026-11-17); otherwise Fast is an owner-named exception per task.
 export const WORKER_DEFAULT_ROUTES = Object.freeze({
@@ -29,7 +29,9 @@ export const WORKER_DEFAULT_ROUTES = Object.freeze({
   // Security, credential and data-loss reviews run on Opus, never GPT (owner rule): GPT trips the cyber-safety filter.
   // Owner 2026-11-18: Opus high; ceiling xhigh keeps earlier xhigh lanes rebuildable.
   'review-security': workerClass('Opus', 'high', 'xhigh'),
-  plan: workerClass('Sol', 'high'),
+  // Owner 2026-11-18 (decision 244): plan and research run read-only on Fable high, Fast off; FORMER_CLASS_ROUTES keeps
+  // earlier Sol high lanes rebuildable.
+  plan: workerClass('Fable', 'high'),
   // Owner 2026-11-17: browser, including computer use and desktop application workflows (owner 2026-11-18), runs at Sol
   // low; ceiling high keeps earlier medium lanes rebuildable.
   browser: workerClass('Sol', 'low', 'high'),
@@ -55,12 +57,13 @@ const workerRule = kind => WORKER_DEFAULT_ROUTES[canonicalWorkerClass(kind)];
 // any route on that label in the class keeps its Fast rule, and no new task default takes it.
 const FORMER_CLASS_ROUTES = Object.freeze({
   watcher: Object.freeze([Object.freeze({ label: 'Luna', effort: 'xhigh', fastMode: true })]),
+  plan: Object.freeze([Object.freeze({ label: 'Sol', effort: 'high', fastMode: false })]),
 });
 // Each label draws on one provider's quota pool.
 export const LABEL_POOLS = Object.freeze({ Opus: 'claude', Sonnet: 'claude', Fable: 'claude', Sol: 'codex', Luna: 'codex', Astra: 'codex' });
 // Owner rules for whole lanes. They resolve to owner-explicit routes, so nothing adjusts them.
 // ui-design (read-only spec and static mockup) and ui-check (read-only compare of after-screenshots to the mockup) are
-// the only Fable lanes; the build goes to a code lane (owner rule).
+// Fable lanes, like the plan class; the build goes to a code lane (owner rule).
 const FABLE_RULE = Object.freeze({ label: 'Fable', effort: 'high', fastMode: false });
 export const OWNER_RULE_ROUTES = Object.freeze({
   'ui-design': Object.freeze({ ...FABLE_RULE, reason: 'ui-design: owner rule, Fable high, no GPT, read-only' }),

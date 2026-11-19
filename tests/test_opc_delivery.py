@@ -427,6 +427,18 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(json.loads(done.stdout), ["task-default Worker route must match its Pi catalog label",
                                                    "pi/fleet/gpt-6.2-sol"])
 
+    def test_route_cli_research_resolves_to_fable_high(self):
+        root = Path(self.task).parent.parent
+        catalog = [{"id": "fleet/claude-fable-5-2", "label": "Fable", "thinkingOptions": [{"id": "high"}]},
+                   {"id": "fleet/gpt-6.2-sol", "label": "Sol", "thinkingOptions": [{"id": "high"}, {"id": "xhigh"}]}]
+        (root / "catalog.json").write_text(json.dumps(catalog))
+        done = run("node", str(SCRIPTS / "route.mjs"), "--class", "research", "--catalog", str(root / "catalog.json"))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {"route": {"role": "worker", "source": "task-default", "kind": "plan",
+                                                             "model": "fleet/claude-fable-5-2", "effort": "high",
+                                                             "fastMode": False, "reason": "plan default Fable high, Fast off"},
+                                                   "reason": "plan default Fable high, Fast off"})
+
     def test_recorded_route_missing_from_catalog_is_refused(self):
         catalog = [{"id": "fleet/claude-opus-5-6", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "xhigh"}]}]
         self.write_routes(self.task, {"code-lane": PRE_730_CODE_ROUTE})

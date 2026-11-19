@@ -24,9 +24,11 @@ A round counts only when a score proves it. An estimate or a diff is not a resul
 ## 3. Judge ladder
 - Gate with the cheapest judge first (a test run, a script, a small model). Add the expensive judges only after it passes.
 - Judges follow the fleet's routing: `$opc` Worker classes, and its `review-security` class for security-sensitive work. Project rules on which models may read code still apply.
+- `$ask-fable` is not a judge: it cannot run checks or see screenshots.
 
 ## 4. Rounds
 - One builder per round, under `$opc` Worker rules. The brief gives the score definition, the last round's per-category scores and reasons, and the change to try. It does not give the bar.
+- When the PM picks the change to try, and always before it ends a climb on a plateau (2 rounds with no gain), it asks Fable once through `$ask-fable`. The question file holds the score definition, the round log with per-category scores and reasons, and the changes tried so far, and asks for the next single change and why. Fable sees only that file.
 - Make one change per round when possible, so the score change has one cause.
 - A change that does less work, skips a check or narrows coverage is a regression, even if the score rises.
 
