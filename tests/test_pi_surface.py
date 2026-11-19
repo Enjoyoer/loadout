@@ -1506,7 +1506,7 @@ const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:
 const plain=value=>JSON.parse(JSON.stringify(value));
 // Owner-approved task routes: Fast off by default, on for the Luna classes (owner 2026-11-17).
 assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','review','review-security','sites','smoke','ui-check','ui-design','watcher']);
-for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','high',false],['research','Sol','high',false],['review','Sol','high',false],['review-security','Opus','xhigh',false],['smoke','Luna','low',true],['sites','Luna','xhigh',true],['browser','Sol','low',false],['browser-hard','Sol','high',false],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Luna','xhigh',true]]){
+for(const [kind,label,effort,fastMode] of [['code','Opus','high',false],['plan','Sol','high',false],['research','Sol','high',false],['review','Sol','high',false],['review-security','Opus','high',false],['smoke','Luna','low',true],['sites','Luna','xhigh',true],['browser','Sol','low',false],['browser-hard','Sol','high',false],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Sol','low',false]]){
  const route=r.selectWorkerRoute({taskKind:kind,catalog});
  assert.equal(route.model,['browser','browser-hard','sites'].includes(kind)?r.resolveCatalogLabel(catalog,label).id.slice(6):r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
 }
@@ -1521,15 +1521,15 @@ for(const [alias,kind] of Object.entries(r.WORKER_CLASS_ALIASES)){
 }
 // Worker defaults are frozen.
 assert(Object.isFrozen(r.WORKER_DEFAULT_ROUTES)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.code)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.browser));
-// Code default: Opus at medium (owner rule for local lanes), Fast off, on Pi, recorded as a task default.
+// Code default: Opus at high (owner 2026-11-18), Fast off, on Pi, recorded as a task default.
 const code=r.selectWorkerRoute({taskKind:'code',catalog});
-assert.deepEqual(plain(code),{role:'worker',source:'task-default',kind:'code',model:'fleet/claude-opus-5-5',effort:'medium',fastMode:false,reason:'code default Opus medium, Fast off'});
+assert.deepEqual(plain(code),{role:'worker',source:'task-default',kind:'code',model:'fleet/claude-opus-5-5',effort:'high',fastMode:false,reason:'code default Opus high, Fast off'});
 const codeReq=build({route:code});
-assert.equal(codeReq.request.provider,'pi/fleet/claude-opus-5-5');assert.deepEqual(codeReq.request.settings,{thinkingOptionId:'medium'});
+assert.equal(codeReq.request.provider,'pi/fleet/claude-opus-5-5');assert.deepEqual(codeReq.request.settings,{thinkingOptionId:'high'});
 assert.equal(codeReq.request.labels['opc.route-source'],'task-default');
 for(const key of ['opc.service-tier','opc.fast-requested'])assert.equal(key in codeReq.request.labels,false);
 assert.equal(r.resolveAgentSurface('worker',{taskKind:'code'},catalog).provider,'pi/fleet/claude-opus-5-5');
-assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/claude-opus-5-5; effort=medium; Fast=off/);
+assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/claude-opus-5-5; effort=high; Fast=off/);
 // A Fable code lane owns the codebase; an Opus code lane and a Fable ui-design lane do not get that line.
 const ownerLine='You are the owner and long-term maintainer of this codebase';
 const fableCode={role:'worker',source:'owner-explicit',model:'fleet/claude-fable-5-1',effort:'high',fastMode:false};

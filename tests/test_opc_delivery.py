@@ -418,7 +418,7 @@ class OpcDeliveryTest(unittest.TestCase):
                              task_class="code")
         for step in ("request", "brief"):
             self.assertEqual(built[step].get("error"), "recorded code Worker route cannot rebuild: effort low is below the code "
-                                                       "minimum medium", step)
+                                                       "minimum high", step)
         self.assertIn("recorded owner or task-default route required for worker", built["record"].get("error", ""))
 
     def test_route_from_non_ui_task_cannot_launch_ui_task_lane(self):

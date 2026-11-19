@@ -19,21 +19,26 @@ export const FIXED_ROLE_ROUTES = Object.freeze({
 // its default effort. ceiling is the highest effort an already recorded lane of the class may rebuild at (lanes
 // recorded before OPC 7.66 could sit above the default); null means the default.
 const workerClass = (label, effort, ceiling = null, fastMode = false) => Object.freeze({ label, effort, ceiling, fastMode });
-// Local code lanes default to Opus medium (owner rule); ui-design and ui-check stay Fable high. Routes are the minimum
+// Local code lanes default to Opus high (owner 2026-11-18); ui-design and ui-check stay Fable high. Routes are the minimum
 // (owner rule): nothing lowers a route. Every class runs Fast off (owner 2026-11-07) except the Luna classes, which run
 // Fast on (owner 2026-11-17); otherwise Fast is an owner-named exception per task.
 export const WORKER_DEFAULT_ROUTES = Object.freeze({
-  code: workerClass('Opus', 'medium', 'xhigh'),
+  // Owner 2026-11-18: code runs at Opus high; ceiling xhigh keeps earlier xhigh lanes rebuildable.
+  code: workerClass('Opus', 'high', 'xhigh'),
   review: workerClass('Sol', 'high'),
   // Security, credential and data-loss reviews run on Opus, never GPT (owner rule): GPT trips the cyber-safety filter.
-  'review-security': workerClass('Opus', 'xhigh'),
+  // Owner 2026-11-18: Opus high; ceiling xhigh keeps earlier xhigh lanes rebuildable.
+  'review-security': workerClass('Opus', 'high', 'xhigh'),
   plan: workerClass('Sol', 'high'),
-  // Owner 2026-11-17: browser runs at Sol low; ceiling high keeps earlier medium lanes rebuildable.
+  // Owner 2026-11-17: browser, including computer use and desktop application workflows (owner 2026-11-18), runs at Sol
+  // low; ceiling high keeps earlier medium lanes rebuildable.
   browser: workerClass('Sol', 'low', 'high'),
-  // Owner 2026-11-18: browser-hard runs at Sol high, not Astra.
+  // Owner 2026-11-18: browser-hard runs at Sol high, not Astra, for fragile, ambiguous or repeatedly failing browser work.
   'browser-hard': workerClass('Sol', 'high'),
   smoke: workerClass('Luna', 'low', null, true),
-  watcher: workerClass('Luna', 'xhigh', null, true),
+  // Owner 2026-11-18: watchers, heartbeats and scheduled jobs run at Sol low, Fast off; ceiling xhigh and the former
+  // Luna label keep earlier Luna xhigh lanes rebuildable.
+  watcher: workerClass('Sol', 'low', 'xhigh'),
   // Hosted Codex Sites interaction: native Codex Luna xhigh, Fast on (owner 2026-11-17).
   sites: workerClass('Luna', 'xhigh', null, true),
 });
@@ -46,6 +51,8 @@ const OWNER_RULE_ALIASES = Object.freeze({ ui: 'ui-design' });
 export const canonicalWorkerClass = kind => Object.hasOwn(WORKER_CLASS_ALIASES, kind ?? '') ? WORKER_CLASS_ALIASES[kind]
   : Object.hasOwn(OWNER_RULE_ALIASES, kind ?? '') ? OWNER_RULE_ALIASES[kind] : kind;
 const workerRule = kind => WORKER_DEFAULT_ROUTES[canonicalWorkerClass(kind)];
+// Labels a class ran before a class-table change: a lane recorded on one still rebuilds, and no new lane takes it.
+const FORMER_CLASS_LABELS = Object.freeze({ watcher: Object.freeze(['Luna']) });
 // Each label draws on one provider's quota pool.
 export const LABEL_POOLS = Object.freeze({ Opus: 'claude', Sonnet: 'claude', Fable: 'claude', Sol: 'codex', Luna: 'codex', Astra: 'codex' });
 // Owner rules for whole lanes. They resolve to owner-explicit routes, so nothing adjusts them.
@@ -234,7 +241,8 @@ function validateWorkerRoute(route) {
 // A task default must also still be today's class: the class's catalog label (never a GPT or web model for a Claude
 // class), the class's Fast, and, as the allowances for what a class-table change left behind, Fast on for a GPT class
 // (recorded before GPT defaults went Fast off) and any effort from the class minimum up to its ceiling, which the Pi
-// catalog must still serve. A Luna class lane recorded with Fast off is refused (owner 2026-11-17).
+// catalog must still serve, on the class's label or a former one. A Luna class lane recorded with Fast off is refused
+// (owner 2026-11-17).
 function validateRebuild(route, taskClass, rows) {
   taskClass = canonicalWorkerClass(taskClass);
   const valid = validateRecordedWorkerRoute(route);
@@ -247,6 +255,7 @@ function validateRebuild(route, taskClass, rows) {
           : null);
   if (problem) throw Error(`recorded ${taskClass} Worker route cannot rebuild: ${problem}`);
   if (route.source !== 'task-default') return valid;
+  if (formerLabelRoute(route, taskClass, rows)) return valid;
   if (!rows) {
     const unnamed = defaultIdentityProblem(route, null);
     if (unnamed) throw Error(`recorded ${taskClass} Worker route cannot rebuild: ${unnamed}`);
@@ -263,6 +272,14 @@ function validateRebuild(route, taskClass, rows) {
     throw Error(`recorded ${route.kind} Worker route cannot rebuild: ${route.model} is not the ${route.kind} class's ${rule.label} model`);
   }
   return valid;
+}
+
+// A recorded task default on a label its class ran before (FORMER_CLASS_LABELS), still served at its effort when a
+// catalog is given.
+function formerLabelRoute(route, taskClass, rows) {
+  return route?.source === 'task-default' && (FORMER_CLASS_LABELS[canonicalWorkerClass(taskClass)] ?? []).some(label =>
+    rows ? rows.some(row => row.label === label && namesRow(row, route.model) &&
+      row.thinkingOptions?.some(option => option.id === route.effort)) : namesLabel(route.model, label));
 }
 
 // The Worker route a brief or request is built from, bound to its destination task (as readTask returns it), lane, and
@@ -437,7 +454,7 @@ export function mapRouteToPi(route, catalog, { fallbackProvider = 'codex', surfa
   const originalProvider = route.provider?.split('/')[0] ?? fallbackProvider;
   const original = { ...route, provider: route.provider ?? `${originalProvider}/${route.model}` };
   if (surface !== 'pi' && !NATIVE_WORKER_SURFACES.includes(surface)) throw Error('surface must be pi, codex, or claude');
-  if (route.source === 'task-default' && (!workerRule(route.kind) ||
+  if (route.source === 'task-default' && !formerLabelRoute(route, taskClass ?? route.kind, catalog) && (!workerRule(route.kind) ||
       classModelId(route.kind, resolveCatalogLabel(catalog, workerRule(route.kind).label).id) !== classModelId(route.kind, route.model))) {
     throw Error('task-default Worker route must match its Pi catalog label');
   }
