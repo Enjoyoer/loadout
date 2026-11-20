@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "9cab8de2017e6aee65c8819349aaa5496c4b2d91",
+  "source_commit": "47f876e4f107b8de12c3a263b5b72e19b38049e6",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -184,8 +184,8 @@
       "path": "skills/orchestration/hill-climb/SKILL.md",
       "category": "orchestration",
       "skill": "hill-climb",
-      "bytes": 6312,
-      "sha256": "e855faf2f44510c1dcf3e4f98bd6bc302759c4db8be6bb27937fcbe0fc5121be"
+      "bytes": 6736,
+      "sha256": "698cedf3695744a4bcf3abcd735d03beb7adcc1280e779de53210246197e26c3"
     },
     {
       "path": "skills/orchestration/hill-climb/agents/openai.yaml",
@@ -198,8 +198,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5080,
-      "sha256": "99179b3d80778dc564d99b84d5b611d0fe8f8e21b06c044096e87c46ad6a6337"
+      "bytes": 5082,
+      "sha256": "335ab3c4733ff3bf653efddea28885bb4c5a5757d951706a7a77c4f9cd3d18a3"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -212,15 +212,15 @@
       "path": "skills/orchestration/opc/references/codex-sites.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 3746,
-      "sha256": "ac0b6c87cab4aabc8bd93dd2c717aed7dba0b033f8b0b46b6e34f5956596fa35"
+      "bytes": 3708,
+      "sha256": "f5f5c9b81436de0a74b27dc9cba13446b6afb8b975b45e55cb566d39ba898fbb"
     },
     {
       "path": "skills/orchestration/opc/references/imp-execution.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4510,
-      "sha256": "b4fd59e8dbd2a0ffca0718751d7e620cf551f012fe129608286e71459a322843"
+      "bytes": 4934,
+      "sha256": "e0103a63d0373a882a131122162e64f00ebfebcab9bec14b4d6da70312a894b7"
     },
     {
       "path": "skills/orchestration/opc/references/pr-evidence.md",
@@ -240,15 +240,15 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 12508,
-      "sha256": "4b4dcd4272b7e87945082024570efed444342bff7156ca149b4fa1a81a5019e0"
+      "bytes": 15057,
+      "sha256": "153f4cb5ebae5b07cce8cdc576c308f2608015cd442f997a3624826e7cf5d666"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 2385,
-      "sha256": "557e63ed21d2aeb01955501448d06f52d4df19cc3c3cb9af0f77236f4d5f4f95"
+      "bytes": 2398,
+      "sha256": "3de626c8777b61c8f9761c73d029baa12611609fdc8ab0f2fa358d24476150c4"
     },
     {
       "path": "skills/orchestration/opc/references/web-lane.md",
@@ -275,8 +275,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 35163,
-      "sha256": "2134886bceb9736220302436da0aecb9d5ba659b93a12db4c758dfe06b8f0e20"
+      "bytes": 39435,
+      "sha256": "cfbf67df389dd88232067236e4fc0a9e9cc8536535943de62831baec5da93d26"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -324,8 +324,8 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 9021,
-      "sha256": "d1c52a379fc777516ca4507144d544eef01be885786fc00ce9d6f602abcb6214"
+      "bytes": 9348,
+      "sha256": "b75f55b49432fdfeb82199a7141fd4e16eb7150106d50239590ab0970af8d359"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
@@ -338,15 +338,15 @@
       "path": "skills/orchestration/opn/evals.json",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 13005,
-      "sha256": "45f1f54d94d422f34bbc54bb4d45c894a9b042a4fd278e9105f88a887b101d2c"
+      "bytes": 13154,
+      "sha256": "82a19e0e4dba59d80b39e76ca58ae45847a0067e9fa8a0e063caa73f3849c614"
     },
     {
       "path": "skills/orchestration/opn/references/host-adapters.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 1914,
-      "sha256": "cb583a715399ac0b04b08876424f151a2c2c5384b9952339ab202a7fc87911a5"
+      "bytes": 2099,
+      "sha256": "f1a71ab9b7c14ec822c7277334be79c3683fe459f46cad0f3517a11ca25cf431"
     },
     {
       "path": "skills/orchestration/opn/scripts/test_validate_opn.py",
@@ -380,8 +380,8 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 99827,
-      "sha256": "35bfa550c423a1e20ee0871b2a7b50ce16339f5b66e3a6dc10453b87f18f5045"
+      "bytes": 99834,
+      "sha256": "47278cc5785a48cba94a02598c38026e1d71d2dbdea0497caeba303b5d64b347"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -422,8 +422,8 @@
       "path": "skills/orchestration/personal-skills/fleet/example/paseo-providers.json",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 1647,
-      "sha256": "098ebe041e1c53a0017869c45227b10abbeba9918e62abf0499ff129b82b9fdf"
+      "bytes": 2329,
+      "sha256": "074509e93143ef3d585150c58658e4ecbd30cf0714df377790b598134b0899fc"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/pi-provider-overlay.json",
@@ -534,8 +534,8 @@
       "path": "skills/orchestration/personal-skills/scripts/pi/catalog.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 8048,
-      "sha256": "ad698246cc4a66b69b0e7376e7d410bedb3b0f339cf4be4a7d601baf33ffb9c6"
+      "bytes": 8056,
+      "sha256": "2841b083547b294eb258673df19ddea53dce0117071a34671b0f8605a0e4ae16"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/pi/configure.py",
@@ -646,8 +646,8 @@
       "path": "skills/orchestration/reassign-pm/SKILL.md",
       "category": "orchestration",
       "skill": "reassign-pm",
-      "bytes": 10667,
-      "sha256": "8d2c8aac8dc622eccce2f3a1af2a4f603223de0c6985d72777f343ea2631c205"
+      "bytes": 10685,
+      "sha256": "ba146dd0481941348a3b5a698be19f5459aae6013d28732484a2eb2cd89b52a2"
     },
     {
       "path": "skills/orchestration/reassign-pm/agents/openai.yaml",
@@ -695,8 +695,8 @@
       "path": "skills/orchestration/unstuck/SKILL.md",
       "category": "orchestration",
       "skill": "unstuck",
-      "bytes": 3893,
-      "sha256": "0ede3421fd8315d7a4606bfacec0e9531c36ddf36de624909f6906360bfa5beb"
+      "bytes": 3745,
+      "sha256": "2bc0cb181cfc3b2155e75f952a412f1a9019c3aa8540fe9915c8a6fcc51699b7"
     },
     {
       "path": "skills/orchestration/unstuck/agents/openai.yaml",
@@ -1597,8 +1597,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 47553,
-      "sha256": "88f658cfc5f4d2fc42324572ba6efea1d28bb81401f3561a5ae9a7013de0ce0e"
+      "bytes": 47552,
+      "sha256": "71de2baca585db96f90c9fd831141d78bbbc72f69fa243f74940fc1ad2cfc84c"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
@@ -1627,8 +1627,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/config.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 2893,
-      "sha256": "38d9390b84c325599e359d1d9bb2c0513ab1009e96442e499ba3ef98a7138e8b"
+      "bytes": 2892,
+      "sha256": "de0f0e7dff2e3092910914597926c3d38d736e93af99449db302b3cef72d222b"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/daemon-run.ts",
