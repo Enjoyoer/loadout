@@ -30,35 +30,81 @@ Commands:
       --wrap "<cmd>"      Start it through a wrapper command your fleet rules name.
       --playwright <dir>  playwright-core package folder (or CALL_COACH_PLAYWRIGHT).
       --browser <x>       Chromium executable path or channel such as chrome (or CALL_COACH_BROWSER).
-      --stale <s>         Reload the share page after this many quiet seconds (default 45).
-  poll --replay <file>    Test hook: feed one saved transcript response through the source.
+      --stale <s>         Reload the share page after this many quiet seconds (default 45). Live words
+                          arrive as the page's own WebSocket updates; the reload is a fallback.
+  poll --replay <file>    Test hook: feed one saved transcript response, or JSON lines of responses and
+                          WebSocket messages, through the source.
   poll --status           Print the poller state.
   next [--wait <s>]       Wait until new transcript lines exist or <s> seconds pass (default 20);
                           print only the new lines as "m:ss text". Empty output: nothing new.
+      --settle <s>        Once new text arrives, wait until it stops growing for <s> seconds
+                          (default 1) so one turn sees the whole sentence. The wait ends 3 s after
+                          the new text at most, and never past --wait.
   stop --project <dir>    Stop poller and server, save <dir>/calls/<date>/transcript.txt,
                           and drop the share link from state.
 `;
 
 // ---------- transcript sources: one small interface, Otter only for now ----------
 // A source says which share links it reads (match), which responses may hold the transcript
-// (wants), how to turn one response body into segments (parse), and whether the page was sent
-// to a sign-in wall (revoked).
+// (wants), and whether the page was sent to a sign-in wall (revoked). reader() starts the state for
+// one page load; its read(body) takes each JSON response body and each JSON WebSocket message the
+// page receives, and returns the segments that changed (or null when the body is not its kind).
 const SOURCES = {
   otter: {
     match: (url) => /^https:\/\/([a-z0-9-]+\.)?otter\.ai\//i.test(url),
     wants: (url) => /\/speech\b|transcript/i.test(url),
-    parse(body) {
-      const list = body?.speech?.transcripts ?? body?.transcripts;
-      if (!Array.isArray(list)) return null;
-      return list
-        .filter((t) => t && t.id != null && typeof t.transcript === "string")
-        .map((t) => ({
-          id: String(t.id),
-          start: Number(t.start_offset) || 0,
-          end: Number(t.end_offset) || 0,
-          text: t.transcript.trim(),
-          speaker: t.speaker_id ?? null,
-        }));
+    // The page loads the transcript once from /speech (each segment with its words and a signature),
+    // then gets live words only as WebSocket "speech_pieces" deltas: per segment, word deletions and
+    // insertions on top of the signature they were made from (bs). Apply them as the page does.
+    // Offsets are 16 kHz sample counts. Deltas apply only on top of a loaded transcript: ones that
+    // arrive first wait for it. A message index at or below the last one applied (or the loaded
+    // transcript's own index) is a repeat: the socket re-sends recent indexes. The index does not reset
+    // on a new socket: the page passes the loaded index when it connects, and the count carries on.
+    reader() {
+      const segs = new Map();
+      const EMPTY = /^1B2M2Y8AsgTpg/; // the signature of an empty segment (base64 MD5 of ""), plus a counter
+      let loaded = false, last = 0;
+      const early = [];
+      const out = (s) => ({ id: s.uuid, start: Math.round(s.start / 16), end: Math.round(s.end / 16), text: s.words.join(" ").trim(), speaker: s.speaker });
+      return {
+        mismatch: false,
+        read(body) {
+          if (body?.type === "speech_pieces") {
+            if (!loaded) { if (early.length < 1000) early.push(body); return []; }
+            const index = Number(body.index);
+            if (Number.isFinite(index)) { if (index <= last) return []; last = index; }
+            const changed = new Map();
+            for (const p of body.speech_pieces?.transcript_pieces ?? []) {
+              let s = segs.get(p.uuid);
+              if (s && s.sig === p.sig) continue; // already applied
+              if (s ? s.sig !== p.bs : !EMPTY.test(String(p.bs))) { this.mismatch = true; continue; }
+              if (!s) segs.set(p.uuid, (s = { uuid: p.uuid, words: [] }));
+              Object.assign(s, { sig: p.sig, start: Number(p.start_offset) || 0, end: Number(p.end_offset) || 0, speaker: p.speaker_id ?? null });
+              for (const d of p.deletions ?? []) s.words.splice(d.begin, d.end - d.begin);
+              for (const i of p.insertions ?? []) s.words.splice(i.at, 0, ...i.pieces.map((x) => x.t));
+              changed.set(p.uuid, s);
+            }
+            return [...changed.values()].map(out);
+          }
+          const list = body?.speech?.transcripts ?? body?.transcripts;
+          if (!Array.isArray(list)) return null;
+          this.mismatch = false;
+          loaded = true;
+          last = Number(body?.speech?.pubsub_v2_index) || 0;
+          segs.clear();
+          const loadedSegs = list
+            .filter((t) => t && (t.uuid ?? t.id) != null && typeof t.transcript === "string")
+            .map((t) => {
+              const s = { uuid: String(t.uuid ?? t.id), sig: t.sig, start: Number(t.start_offset) || 0, end: Number(t.end_offset) || 0, speaker: t.speaker_id ?? null,
+                words: Array.isArray(t.alignment) ? t.alignment.map((a) => a.word) : t.transcript.trim().split(/\s+/) };
+              segs.set(s.uuid, s);
+              // The text printed is the page's transcript field; later deltas edit the alignment words. On a
+              // live capture (Nov 2026) the joined alignment words equalled the transcript for every segment.
+              return { ...out(s), text: t.transcript.trim() };
+            });
+          return [...loadedSegs, ...early.splice(0).flatMap((b) => this.read(b))];
+        },
+      };
     },
     revoked(pageUrl) {
       try { return new URL(pageUrl).pathname.startsWith("/signin"); } catch { return false; }
@@ -272,14 +318,16 @@ ${body}
 <div id="live"></div>
 <script>
 const REV=${JSON.stringify(rev)};
-let last='';
+let last='',shown=null,ok=Date.now();
+const get=async(f)=>{const c=new AbortController(),t=setTimeout(()=>c.abort(),2000);try{const r=await fetch(f+'?'+Date.now(),{cache:'no-store',signal:c.signal});if(!r.ok)throw Error(r.status);return (await r.text()).trim();}finally{clearTimeout(t);}};
+const show=(h,off,vis)=>{const e=document.getElementById('live');if(shown===h)return;shown=h;e.classList.toggle('off',off);e.style.display=vis?'block':'none';e.innerHTML=h;};
+// Every 0.5 s, one request at a time. OFFLINE only after 4 s without an answer, so one slow request never flaps it.
 async function tick(){
-  const e=document.getElementById('live');
-  try{const r=await fetch('live.txt?'+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);last=(await r.text()).trim();e.classList.remove('off');e.style.display=last?'block':'none';e.innerHTML='<b>LIVE:</b> '+last;}
-  catch(x){e.classList.add('off');e.style.display='block';e.innerHTML='<b>OFFLINE:</b> the coach page is not answering; this line may be stale.'+(last?' Last: '+last:'');}
-  try{const r=await fetch('rev.txt?'+Date.now(),{cache:'no-store'});if(r.ok&&(await r.text()).trim()!==REV)location.reload();}catch(e){}
+  try{last=await get('live.txt');ok=Date.now();show('<b>LIVE:</b> '+last,false,!!last);if(await get('rev.txt')!==REV)location.reload();}
+  catch(x){if(Date.now()-ok>4000)show('<b>OFFLINE:</b> the coach page is not answering; this line may be stale.'+(last?' Last: '+last:''),true,true);}
+  setTimeout(tick,500);
 }
-tick();setInterval(tick,4000);
+tick();
 </script></body></html>
 `;
 }
@@ -293,7 +341,7 @@ function cmdPage(values, positionals) {
   writeAtomic(p.rev, rev + "\n");
   if (!fs.existsSync(p.live)) writeAtomic(p.live, "");
   console.log(`page written: ${p.page}`);
-  if (state.url && ours(state.serverPid, "_server", p.dir)) console.log(`open pages reload within 4 s: ${state.url}`);
+  if (state.url && ours(state.serverPid, "_server", p.dir)) console.log(`open pages reload within 1 s: ${state.url}`);
 }
 
 // ---------- live bar ----------
@@ -461,10 +509,16 @@ async function cmdPoll(values, positionals) {
   const source = SOURCES[sourceName];
   if (!source) die(`unknown source ${sourceName}; known: ${Object.keys(SOURCES).join(", ")}`);
   if (values.replay) {
-    const segs = source.parse(JSON.parse(fs.readFileSync(values.replay, "utf8")));
-    if (!segs) die(`${values.replay} is not a ${sourceName} transcript response`);
-    const added = makeSink(p).add(segs);
-    console.log(`replayed ${segs.length} segments through ${sourceName}, ${added} new or changed`);
+    // One saved response body, or JSON lines of response bodies and WebSocket messages in order.
+    const text = fs.readFileSync(values.replay, "utf8");
+    let bodies;
+    try { bodies = [JSON.parse(text)]; } catch { bodies = text.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l)); }
+    const reader = source.reader(), sink = makeSink(p);
+    let segs = 0, added = 0;
+    for (const body of bodies) { const s = reader.read(body); if (s) { segs += s.length; added += sink.add(s); } }
+    const step = reader.mismatch ? "; a live update was out of step (the poller would reload)" : "";
+    if (!segs) die(`${values.replay} holds no ${sourceName} transcript${step}`);
+    console.log(`replayed ${segs} segment updates through ${sourceName}, ${added} new or changed${step}`);
     return;
   }
   // The link never appears in a command line (the agent's shell command included), since other users
@@ -501,7 +555,9 @@ async function runPoller(values) {
   const source = SOURCES[state.source];
   const status = { pid: process.pid, state: "starting", segments: 0 };
   // Error text from the browser can quote the share link; keep it out of every log and status line.
-  const secrets = [state.shareUrl, state.shareUrl && new URL(state.shareUrl).pathname].filter((s) => s && s.length > 3);
+  // The share id alone too: the page's transcript and socket URLs carry it as a query value.
+  const sharePath = state.shareUrl && new URL(state.shareUrl).pathname;
+  const secrets = [state.shareUrl, sharePath, sharePath && sharePath.split("/").filter(Boolean).pop()].filter((s) => s && s.length > 3);
   const scrub = (s) => secrets.reduce((acc, x) => acc.split(x).join("<share link>"), String(s));
   const report = (patch) => {
     if (patch.message) patch.message = scrub(patch.message);
@@ -524,33 +580,53 @@ async function runPoller(values) {
     const sink = makeSink(p);
     let lastChange = Date.now(), lastReload = Date.now();
     const page = await browser.newPage({ viewport: { width: 1280, height: 2000 } });
+    // Every JSON response the source wants and every JSON WebSocket message goes through one reader,
+    // which starts afresh with each page load. Live words arrive as socket messages, within about a second.
+    let reader = source.reader();
+    const take = (body) => {
+      const segs = reader.read(body);
+      if (!segs) return;
+      const added = sink.add(segs);
+      if (added) { lastChange = Date.now(); log(`+${added} segments`); }
+      report({ state: "listening", segments: sink.size, lastChange: new Date(lastChange).toISOString() });
+    };
+    page.on("websocket", (ws) => {
+      // A socket belongs to the page load that opened it; after a reload its late frames are dropped.
+      const owner = reader;
+      ws.on("framereceived", ({ payload }) => {
+        if (owner !== reader) return;
+        let msg;
+        try { msg = JSON.parse(String(payload)); } catch { return; }
+        take(msg);
+      });
+    });
     page.on("response", async (r) => {
       if (!source.wants(r.url())) return;
       if (!(r.headers()["content-type"] || "").includes("json")) return;
       let body;
       try { body = JSON.parse(await r.text()); } catch { return; }
-      const segs = source.parse(body);
-      if (!segs) return;
-      const added = sink.add(segs);
-      if (added) { lastChange = Date.now(); log(`+${added} segments`); }
-      report({ state: "listening", segments: sink.size, lastChange: new Date(lastChange).toISOString() });
+      take(body);
     });
+    const reload = async (why) => {
+      lastReload = Date.now();
+      reader = source.reader();
+      try { await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 }); log(`reload (${why})`); } catch (e) { log(`reload failed: ${String(e.message).split("\n")[0]}`); }
+    };
     await page.goto(state.shareUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
     report({ state: "listening", segments: sink.size });
     const stale = Number(values.stale) * 1000 || 45000;
     const started = Date.now();
     for (;;) {
-      await sleep(5000);
+      await sleep(1000);
       if (source.revoked(page.url())) {
         report({ state: "revoked", message: source.revokedMessage });
         log("share link revoked");
         return finish(3);
       }
       if (Date.now() - started > TTL_HOURS * 3600e3) { report({ state: "stopped", message: `ended after ${TTL_HOURS} h` }); return finish(0); }
-      if (Date.now() - lastChange > stale && Date.now() - lastReload > stale) {
-        lastReload = Date.now();
-        try { await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 }); log("reload"); } catch (e) { log(`reload failed: ${String(e.message).split("\n")[0]}`); }
-      }
+      // A live update that does not fit the words held (a missed message) is fixed by loading the page again.
+      if (reader.mismatch && Date.now() - lastReload > 10000) await reload("live update out of step");
+      else if (Date.now() - lastChange > stale && Date.now() - lastReload > stale) await reload(`${stale / 1000} s quiet`);
     }
   } catch (e) {
     report({ state: "error", message: String(e.message).split("\n")[0] });
@@ -564,9 +640,21 @@ async function cmdNext(values) {
   const { p, state } = openCall(values);
   const cursor = readJson(p.cursor, { offset: 0, printed: {} });
   const deadline = Date.now() + (Number(values.wait ?? 20) || 20) * 1000;
+  const settle = Number(values.settle ?? 1) * 1000;
+  const sizeOf = () => { try { return fs.statSync(p.lines).size; } catch (e) { if (e.code !== "ENOENT") throw e; return 0; } };
   for (;;) {
-    let size = 0;
-    try { size = fs.statSync(p.lines).size; } catch (e) { if (e.code !== "ENOENT") throw e; }
+    let size = sizeOf();
+    if (size > cursor.offset && settle > 0) {
+      // Let a growing line finish: wait until the file stops growing for `settle`, at most 3 s in all
+      // and never past the --wait deadline.
+      const cap = Math.min(Date.now() + 3000, deadline);
+      let quietSince = Date.now();
+      while (Date.now() - quietSince < settle && Date.now() < cap) {
+        await sleep(100);
+        const now = sizeOf();
+        if (now !== size) { size = now; quietSince = Date.now(); }
+      }
+    }
     if (size > cursor.offset) {
       const fd = fs.openSync(p.lines, "r");
       const buf = Buffer.alloc(size - cursor.offset);
@@ -588,7 +676,7 @@ async function cmdNext(values) {
       if (out.length) { console.log(out.join("\n")); return; }
     }
     if (Date.now() >= deadline) break;
-    await sleep(500);
+    await sleep(200);
   }
   const s = readJson(p.poll, null);
   if (s && (s.state === "revoked" || s.state === "error")) die(`poller ${s.state}: ${s.message}`, 3);
@@ -655,7 +743,7 @@ const { values, positionals } = parseArgs({
     call: { type: "string" }, dir: { type: "string" }, host: { type: "string" },
     clear: { type: "boolean" }, wrap: { type: "string" }, playwright: { type: "string" },
     browser: { type: "string" }, stale: { type: "string" }, replay: { type: "string" },
-    status: { type: "boolean" }, source: { type: "string" }, wait: { type: "string" },
+    status: { type: "boolean" }, source: { type: "string" }, wait: { type: "string" }, settle: { type: "string" },
     project: { type: "string" },
   },
 });
