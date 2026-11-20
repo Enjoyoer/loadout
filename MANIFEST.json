@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "90bac7b26eb0257a305e34cac3f5b3de0f812b90",
+  "source_commit": "393f929853f5615b6d41b1264063783db35d619b",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -709,8 +709,8 @@
       "path": "skills/orchestration/wo/SKILL.md",
       "category": "orchestration",
       "skill": "wo",
-      "bytes": 3820,
-      "sha256": "143b494e876b87daf1315b4ed2331e2c851c1bbd655caef2a7da04cf5ac9ed66"
+      "bytes": 4010,
+      "sha256": "ab18708fd99f36c1f97f18f89d123f80ebfa12821d961e3e2328354d77ad3624"
     },
     {
       "path": "skills/orchestration/wo/agents/openai.yaml",
