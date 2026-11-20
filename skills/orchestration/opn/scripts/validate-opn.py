@@ -47,7 +47,7 @@ _LABEL = "(?-i:" + _words(MODEL_LABELS) + ")"
 _KEY = (r"(?:\b|(?<=[_-])|(?-i:(?<=[a-z])(?=[A-Z])))(?:"
         + "|".join(re.escape(key).replace(r"\ ", "[_-]?") for key in ROUTING_KEYS) + r")(?:[\s_-]?level)?")
 _VALUE = r"(?<![\w-])(?:" + "|".join(THINKING_LEVELS) + r")(?![\w-])"
-_TO = rf"(?:(?:set\s+)?(?:to|at)\s+(?={_VALUE}\W*(?:$|[.,;:)]|\s(?:for|on|in)\b)))"
+_TO = rf"(?:(?:set\s+)?(?:to|at)\s+[`\"'*]*(?={_VALUE}[`\"'*]*\W*(?:$|[.,;:)]|\s(?:for|on|in)\b)))"
 _SETTING = rf"(?:{_LABEL}|{_KEY})[\s\"'`:=*|]+{_TO}?{_VALUE}"
 MODEL_TERMS = re.compile(rf"{_SETTING}|\bxhigh\b|{_LABEL}|\b(?:gpt|claude|chatgpt)-", re.IGNORECASE)
 
