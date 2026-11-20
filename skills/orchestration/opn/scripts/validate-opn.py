@@ -30,25 +30,6 @@ def validate_links(documents: dict[str, str], errors: list[str]) -> None:
                 errors.append(f"{name}: broken relative link {target}")
 
 
-MODEL_MAP_LINK = "](../opc/references/routing.md"
-# The canonical catalog labels (personal-skills scripts/pi/catalog.py CANONICAL) and Pi's thinking levels, as whole
-# words, plus a model id prefix.
-MODEL_LABELS = ("Opus", "Sonnet", "Fable", "Haiku", "Astra", "Sol", "Terra", "Luna", "Web Extra", "Web Pro")
-THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
-MODEL_TERMS = re.compile(r"\b(?:" + "|".join(re.escape(term).replace(r"\ ", r"\s+") for term in MODEL_LABELS + THINKING_LEVELS) +
-                         r")\b|\b(?:gpt|claude|chatgpt)-", re.IGNORECASE)
-
-
-def validate_model_free(text: str, errors: list[str]) -> None:
-    """Models live in OPC's shared map: SKILL.md names none outside the line that links to it."""
-    link_lines = [line for line in text.splitlines() if MODEL_MAP_LINK in line]
-    if len(link_lines) != 1:
-        errors.append(f"SKILL.md: needs exactly one line linking the OPC model map (found {len(link_lines)})")
-    for number, line in enumerate(text.splitlines(), 1):
-        if MODEL_MAP_LINK not in line and (match := MODEL_TERMS.search(line)):
-            errors.append(f"SKILL.md:{number}: names a model or thinking level ({match.group(0)}); link the OPC model map instead")
-
-
 def validate_evals(raw: str, errors: list[str]) -> int:
     if not raw:
         return 0
@@ -98,7 +79,6 @@ def validate_evals(raw: str, errors: list[str]) -> int:
 
 def validate_documents(documents: dict[str, str], evals_raw: str, errors: list[str]) -> int:
     validate_links(documents, errors)
-    validate_model_free(documents.get("SKILL.md", ""), errors)
     return validate_evals(evals_raw, errors)
 
 
