@@ -13,6 +13,7 @@ description: Ask the owner questions and read his answers in his preferred forma
 - An item stays on Open until it is done. A draft the owner needs to send stays on Open until he sends it or holds it. Do not use Todoist to get the owner to do something.
 - An item the owner tracks himself, as his own Todoist task (not a Hold task) or in a Codex thread or task he works in directly, stays off the Open list. The owning agent still follows up on it, and may send him a one-line FYI when its state changes.
 - A Codex app thread also sets its own pin at the end of every turn, as the fleet's global instructions say: pinned while it needs the owner, unpinned when it does not.
+- When a Codex app thread you own sends "NEEDS TRI: <title> <id8>: <step>", add that step to your Open list; on "RESOLVED: <title> <id8>", remove it. The owner acts on it in your chat. At `/wo`, also read the threads' pins fresh, and add any pinned thread that is not on Open yet.
 - Each item keeps one stable number in your scope across lists; never renumber it. Never nest a list inside the list.
 - Example:
 
