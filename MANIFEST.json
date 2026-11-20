@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "e389e0b370b26d24b2fb39a3e547392e84963693",
+  "source_commit": "90bac7b26eb0257a305e34cac3f5b3de0f812b90",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -352,15 +352,15 @@
       "path": "skills/orchestration/opn/scripts/test_validate_opn.py",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 1596,
-      "sha256": "5e19f30568f4f6923950677f31e09f57d30869540318fd42fb65a624f428be35"
+      "bytes": 3891,
+      "sha256": "0ec74fcf67317c713e3390887bff5bad8d09dbfeaf97b99f5c7f019048e85112"
     },
     {
       "path": "skills/orchestration/opn/scripts/validate-opn.py",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 4158,
-      "sha256": "4229dcda734d00620fe16303eff3e5f73c5a52356a49a523e9bb00ab12f431ec"
+      "bytes": 6721,
+      "sha256": "f133d21cf0581e22f413af72e7990318584e7f4f622d1749ea6bbc651a50c3e4"
     },
     {
       "path": "skills/orchestration/personal-skills/SKILL.md",

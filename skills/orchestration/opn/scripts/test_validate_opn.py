@@ -38,6 +38,38 @@ class OpnStructureTests(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertTrue(any("phrase-presence" in error for error in errors))
 
+    def test_model_names_and_thinking_levels_outside_the_map_link_are_rejected(self) -> None:
+        text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        injected = ["Use Sol low.", "Use Terra high.", "Use Astra high.", "Use Haiku.", "Use thinking medium.",
+                    "Use thinking low.", "Set thinkingOptionId: low on OPN workers.",
+                    "Default to reasoning_effort: medium for review workers.", "Use `effort`: `low` for watchers.",
+                    '{"effort": "low"}', '"defaultThinkingLevel": "high"', "`thinkingLevel`: `xhigh`",
+                    "thinking_level=high", "Set the thinking level to high for audits",
+                    "set reasoning to high for reviews", "Set effort to xhigh", "Keep effort set to high for reviews",
+                    "Use xhigh effort for reviews", "| effort | xhigh |", "effort: **high**", "| thinking | high |",
+                    "Set `effort` to `high`", "Set effort to `high` for reviews", 'Set effort to "high"',
+                    "Set effort to **high**"]
+        for line in injected:
+            with self.subTest(line=line):
+                errors: list[str] = []
+                VALIDATOR.validate_model_free(text + "\n" + line + "\n", errors)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("names a model or thinking level", errors[0])
+        prose = ["Follow up on high priority issues.", "Turn the monitor off before leaving.",
+                 "Keep the noise low during the call.", "Use minimal effort to remove stale labels.",
+                 "Put high effort into the first draft.", "Capture their thinking on high-priority issues.",
+                 "Direct effort to high priority issues.", "Limit effort to max 3 retries.", "Write a haiku.",
+                 "Direct effort to `high` priority issues"]
+        for line in prose:
+            with self.subTest(line=line):
+                errors = []
+                VALIDATOR.validate_model_free(text + "\n" + line + "\n", errors)
+                self.assertEqual(errors, [])
+        # The map-link line may name them.
+        errors = []
+        VALIDATOR.validate_model_free(text.replace("[model map](", "[model map, Sol low and Terra high](", 1), errors)
+        self.assertEqual(errors, [])
+
 
 if __name__ == "__main__":
     unittest.main()
