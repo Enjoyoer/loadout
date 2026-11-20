@@ -4,7 +4,7 @@ Codex Sites is OpenAI's hosted deployed-web-app surface in Codex, invoked with `
 
 ## Route and model
 
-Resolve the route with `node scripts/route.mjs --class sites` (the `sites` class; never `browser` or `browser-hard`). Sites interaction runs as a durable, separately scheduled Codex agent that survives the PM being steered, at `gpt-6-luna`, `xhigh` reasoning, Fast on (owner 2026-11-17: Fast must be on for all Luna calls), via Paseo `create_agent` with `settings.features.fast_mode: true` and explicit `settings.modeId` (a Pi parent cannot pass its mode to a native Codex child). When it may edit repository files, launch it under the managed worktree, unattended permission, and notification requirements in the [Worker placement](imp-execution.md#worker-placement "runtime"). This fixed contract applies only to Sites interaction.
+Resolve the route with `node scripts/route.mjs --class sites` (the `sites` class; never `browser` or `browser-hard`). Sites interaction runs as a durable, separately scheduled Codex agent that survives the PM being steered, on the route that command prints (Fast on, owner 2026-11-17), via Paseo `create_agent` with `settings.features.fast_mode: true` and explicit `settings.modeId` (a Pi parent cannot pass its mode to a native Codex child). When it may edit repository files, launch it under the managed worktree, unattended permission, and notification requirements in the [Worker placement](imp-execution.md#worker-placement "runtime"). This fixed contract applies only to Sites interaction.
 
 ## Fallback boundary
 

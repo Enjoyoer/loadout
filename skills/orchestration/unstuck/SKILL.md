@@ -5,7 +5,7 @@ description: Review a stalled project with a fresh PM and get it unstuck. Use wh
 
 # Unstuck
 
-A fresh PM on Opus (pi, fleet/claude-opus-5-5), thinking high; if Opus high is unavailable, Sol (pi, fleet/gpt-6.2-sol), thinking high; unless the owner names another model. Opus high counts as unavailable only when it is missing from the catalog, or the agent fails to start or returns a quota error. Where the advisor tool is on, that PM calls it once before it settles its main findings. That PM reviews a stalled project and returns a plan the owner can approve in one reply. The usual cause is a design or process loop, such as fail-closed code plus a review loop that rewards finding new refusals, so the core cycle never runs.
+A fresh PM, on the PM model and the named `unstuck` fallback in OPC's [model map](../opc/references/routing.md#pms) unless the owner names another model. Where the advisor tool is on, that PM calls it once before it settles its main findings. That PM reviews a stalled project and returns a plan the owner can approve in one reply. The usual cause is a design or process loop, such as fail-closed code plus a review loop that rewards finding new refusals, so the core cycle never runs.
 
 ## 1. Review only
 

@@ -1452,8 +1452,8 @@ server.close();
 import assert from 'node:assert/strict';
 const after=await import(process.argv[1]);
 // Owner-approved fixed roles follow catalog labels.
-const baseline={scout:{model:'gpt-6.1-sol',effort:'xhigh',fastMode:false,label:'Sol'},reviewer:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'}};
-const source=[['gpt-6-astra','Astra'],['gpt-6.1-sol','Sol'],['gpt-6-luna','Luna'],['chatgpt-web/extra-high','Web Extra'],['chatgpt-web/pro','Web Pro'],['claude-fable-5-1[1m]','Fable'],['claude-opus-5-5[1m]','Opus']].map(([id,label])=>({id,label,thinkingOptions:['low','medium','high','xhigh','max'].map(id=>({id}))}));
+const baseline={scout:{model:'gpt-6.1-terra',effort:'high',fastMode:false,label:'Terra'},reviewer:{model:'chatgpt-web/pro',effort:null,fastMode:false,label:'Web Pro'}};
+const source=[['gpt-6-astra','Astra'],['gpt-6.1-sol','Sol'],['gpt-6.1-terra','Terra'],['gpt-6-luna','Luna'],['chatgpt-web/extra-high','Web Extra'],['chatgpt-web/pro','Web Pro'],['claude-fable-5-1[1m]','Fable'],['claude-opus-5-5[1m]','Opus']].map(([id,label])=>({id,label,thinkingOptions:['low','medium','high','xhigh','max'].map(id=>({id}))}));
 const catalog=source.map(row=>({...row,id:'route/'+row.id}));
 let count=0;
 for(const [role,before] of Object.entries(baseline)){
@@ -1486,18 +1486,67 @@ for(const model of ['gpt-6-astra','gpt-6.1-sol','gpt-6-luna','gpt-5.6-luna','cha
  }
 assert.equal(count,62);
 assert.throws(()=>after.resolveCatalogLabel([{id:'a',label:'Sol'},{id:'b',label:'Sol'}],'Sol'),/exactly one/);
-const next=catalog.map(row=>row.label==='Sol'?{...row,id:'route/new-catalog-id'}:row);
+const next=catalog.map(row=>row.label==='Terra'?{...row,id:'route/new-catalog-id'}:row);
 assert.equal(after.resolveAgentSurface('scout',{},next).model,'route/new-catalog-id');
 """
         done=subprocess.run(['node','--input-type=module','-e',script,(ROOT/'skills/orchestration/opc/scripts/agent-routing.mjs').as_uri()],capture_output=True,text=True)
         self.assertEqual(done.returncode,0,done.stderr)
+
+    TERRA_ROW={'id':'gpt-6.1-terra','label':'Terra','description':'Efficient model for visual understanding and computer use.',
+               'thinkingOptions':[{'id':level,'label':level,**({'isDefault':True} if level=='high' else {})}
+                                  for level in ('low','medium','high','xhigh','max')]}
+
+    def run_routing(self,script):
+        done=subprocess.run(['node','--input-type=module','-e',script,(ROOT/'skills/orchestration/opc/scripts/agent-routing.mjs').as_uri()],capture_output=True,text=True)
+        self.assertEqual(done.returncode,0,done.stderr)
+
+    def test_scout_resolves_to_terra_high_fast_off(self):
+        self.run_routing(r"""
+import assert from 'node:assert/strict';
+const r=await import(process.argv[1]);
+const catalog=[{id:'fleet/gpt-6.2-sol',label:'Sol',thinkingOptions:[{id:'xhigh'}]},{...%s,id:'fleet/gpt-6.1-terra'}];
+const scout=r.resolveAgentSurface('scout',{},catalog);
+assert.deepEqual([scout.model,scout.provider,scout.effort,scout.fastMode],['fleet/gpt-6.1-terra','pi/fleet/gpt-6.1-terra','high',false]);
+""" % json.dumps(self.TERRA_ROW))
+
+    def test_recorded_sol_xhigh_scout_route_still_rebuilds(self):
+        self.run_routing(r"""
+import assert from 'node:assert/strict';
+const r=await import(process.argv[1]);
+const catalog=[{id:'fleet/gpt-6.2-sol',label:'Sol',thinkingOptions:[{id:'xhigh'}]},{...%s,id:'fleet/gpt-6.1-terra'}];
+const recorded={label:'Sol',fallbackProvider:'codex',effort:'xhigh',fastMode:false};
+assert.deepEqual(r.resolveWorkerSurface({role:'scout',route:recorded,catalog}),{provider:'pi/fleet/gpt-6.2-sol',agentSettings:{thinkingOptionId:'xhigh'}});
+assert.match(r.buildDelegatedBrief({role:'scout',route:recorded,brief:'x'}),/model=Sol; effort=xhigh; Fast=off/);
+""" % json.dumps(self.TERRA_ROW))
+
+    def test_scout_route_that_is_neither_current_nor_former_is_refused(self):
+        self.run_routing(r"""
+import assert from 'node:assert/strict';
+const r=await import(process.argv[1]);
+const catalog=[{id:'fleet/gpt-6.2-sol',label:'Sol',thinkingOptions:[{id:'high'},{id:'xhigh'}]},{...%s,id:'fleet/gpt-6.1-terra'}];
+const unapproved={label:'Sol',fallbackProvider:'codex',effort:'high',fastMode:true};
+for(const provider of [undefined,'pi/fleet/gpt-6.2-sol'])
+ assert.throws(()=>r.resolveWorkerSurface({role:'scout',route:unapproved,provider,catalog}),/scout must use the exact fixed OPC role route/);
+assert.equal(r.materializeFixedRoute('scout',catalog,'pi',unapproved).model,'fleet/gpt-6.1-terra');
+""" % json.dumps(self.TERRA_ROW))
+
+    def test_catalog_with_terra_row_builds_the_pi_catalog(self):
+        sys.path.insert(0,str(PI));sys.path.insert(0,str(PI.parent))
+        from catalog import derive
+        source={'codex':{'models':[{'id':'gpt-6.2-sol','label':'Sol','isDefault':True,'thinkingOptions':[{'id':'high','label':'high','isDefault':True}]},
+                                   {'id':'gpt-6-luna','label':'Luna','thinkingOptions':[{'id':'low','label':'low','isDefault':True}]},self.TERRA_ROW]}}
+        pi={'root':'/tmp/pi','runtime':{'baseUrl':'https://router.example.test/v1','credential':{'kind':'env','name':'EXISTING_KEY'}}}
+        built=derive(source,pi)
+        self.assertEqual([(row['id'],row['label']) for row in built['provider']['models']],
+                         [('fleet/gpt-6.2-sol','Sol'),('fleet/gpt-6-luna','Luna'),('fleet/gpt-6.1-terra','Terra')])
+        self.assertIn('Terra',[model['name'] for model in built['runtime']['models']])
 
     def test_worker_task_defaults_owner_precedence_and_native_gate(self):
         script=r"""
 import assert from 'node:assert/strict';
 const r=await import(process.argv[1]);const w=await import(process.argv[2]);
 const levels=ids=>ids.map(id=>({id}));
-const catalog=[['claude-opus-5-5','Opus'],['claude-fable-5-1','Fable'],['gpt-6.1-sol','Sol'],['gpt-6-luna','Luna'],['gpt-6-astra','Astra'],['chatgpt-web/pro','Web Pro']]
+const catalog=[['claude-opus-5-5','Opus'],['claude-fable-5-1','Fable'],['gpt-6.1-sol','Sol'],['gpt-6.1-terra','Terra'],['gpt-6-luna','Luna'],['gpt-6-astra','Astra'],['chatgpt-web/pro','Web Pro']]
  .map(([id,label])=>({id:'fleet/'+id,label,thinkingOptions:levels(['low','medium','high','xhigh','max'])}));
 const piCaps={enabled:true,status:'available',modes:[],models:catalog};
 const nativeCaps={enabled:true,status:'available',modes:[{id:'full-access',isUnattended:true}],models:catalog};
@@ -1506,7 +1555,7 @@ const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:
 const plain=value=>JSON.parse(JSON.stringify(value));
 // Owner-approved task routes: Fast off by default, on for the Luna classes (owner 2026-11-17).
 assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','review','review-security','sites','smoke','ui-check','ui-design','watcher']);
-for(const [kind,label,effort,fastMode] of [['code','Opus','medium',false],['plan','Sol','high',false],['research','Sol','high',false],['review','Sol','high',false],['review-security','Opus','xhigh',false],['smoke','Luna','low',true],['sites','Luna','xhigh',true],['browser','Sol','low',false],['browser-hard','Sol','high',false],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Luna','xhigh',true]]){
+for(const [kind,label,effort,fastMode] of [['code','Opus','high',false],['plan','Fable','high',false],['research','Fable','high',false],['review','Sol','high',false],['review-security','Opus','high',false],['smoke','Luna','low',true],['sites','Luna','xhigh',true],['browser','Sol','low',false],['browser-hard','Sol','high',false],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Sol','low',false]]){
  const route=r.selectWorkerRoute({taskKind:kind,catalog});
  assert.equal(route.model,['browser','browser-hard','sites'].includes(kind)?r.resolveCatalogLabel(catalog,label).id.slice(6):r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
 }
@@ -1521,15 +1570,15 @@ for(const [alias,kind] of Object.entries(r.WORKER_CLASS_ALIASES)){
 }
 // Worker defaults are frozen.
 assert(Object.isFrozen(r.WORKER_DEFAULT_ROUTES)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.code)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.browser));
-// Code default: Opus at medium (owner rule for local lanes), Fast off, on Pi, recorded as a task default.
+// Code default: Opus at high (owner 2026-11-18), Fast off, on Pi, recorded as a task default.
 const code=r.selectWorkerRoute({taskKind:'code',catalog});
-assert.deepEqual(plain(code),{role:'worker',source:'task-default',kind:'code',model:'fleet/claude-opus-5-5',effort:'medium',fastMode:false,reason:'code default Opus medium, Fast off'});
+assert.deepEqual(plain(code),{role:'worker',source:'task-default',kind:'code',model:'fleet/claude-opus-5-5',effort:'high',fastMode:false,reason:'code default Opus high, Fast off'});
 const codeReq=build({route:code});
-assert.equal(codeReq.request.provider,'pi/fleet/claude-opus-5-5');assert.deepEqual(codeReq.request.settings,{thinkingOptionId:'medium'});
+assert.equal(codeReq.request.provider,'pi/fleet/claude-opus-5-5');assert.deepEqual(codeReq.request.settings,{thinkingOptionId:'high'});
 assert.equal(codeReq.request.labels['opc.route-source'],'task-default');
 for(const key of ['opc.service-tier','opc.fast-requested'])assert.equal(key in codeReq.request.labels,false);
 assert.equal(r.resolveAgentSurface('worker',{taskKind:'code'},catalog).provider,'pi/fleet/claude-opus-5-5');
-assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/claude-opus-5-5; effort=medium; Fast=off/);
+assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/claude-opus-5-5; effort=high; Fast=off/);
 // A Fable code lane owns the codebase; an Opus code lane and a Fable ui-design lane do not get that line.
 const ownerLine='You are the owner and long-term maintainer of this codebase';
 const fableCode={role:'worker',source:'owner-explicit',model:'fleet/claude-fable-5-1',effort:'high',fastMode:false};

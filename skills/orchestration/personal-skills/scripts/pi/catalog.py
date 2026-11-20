@@ -3,7 +3,7 @@ import copy
 import re
 from configure import LEVELS, direct_providers
 
-CANONICAL = {'Opus','Sonnet','Fable','Haiku','Astra','Sol','Luna','Web Extra','Web Pro'}
+CANONICAL = {'Opus','Sonnet','Fable','Haiku','Astra','Sol','Terra','Luna','Web Extra','Web Pro'}
 LEVEL_LABELS = {'off':'Off','minimal':'Minimal','low':'Low','medium':'Medium','high':'High','xhigh':'Extra High','max':'Max'}
 # The Pi provider command. The providers step replaces ${LOADOUT_PI_ROOT} with the host's expanded pi.root, and the
 # Pi deploy builds the same command inside an mcp-env.cjs wrapper (deploy.launch_command).

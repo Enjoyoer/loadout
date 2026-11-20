@@ -2,7 +2,7 @@
 name: opc
 description: "Run a code project as its PM: workers, review and verified delivery. Use when a PM owns a code repository or the owner names OPC."
 metadata:
-  version: "7.66.1"
+  version: "7.67.0"
 ---
 
 # OPC
@@ -23,11 +23,11 @@ Default to one scout; add another only for an independent question expected to t
 
 ## 3. Worker
 
-Resolve every route via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted.
+Resolve every route, PMs included, via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted.
 
 Default to one implementer Worker for the whole task, building its items in sequence: server, UI and docs together, with tests only when the owner or the PM names the cases. Never split by work type (frontend, backend, tests) or file. Use parallel lanes only when the pieces are independent (no shared files or ordering) and each is expected to take 30+ minutes; one owner per file, and the PM writes any shared contract (flags, schemas, shared docs) before those lanes start. Use fresh agents only where fresh context helps: a reviewer given only the spec and diff, a verifier given only the user flows, and research needing no project context. One Worker lineage per lane; shared live resources serialize only live checks.
 
-Visual design (new screen, layout, component) gets one read-only Fable `high` `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`.
+Visual design (new screen, layout, component) gets one read-only `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`.
 
 When no Worker holds the checkout, the PM does work under about 20 tool calls itself. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work, read [Sites](references/codex-sites.md "branch:sites") and route it with `route.mjs --class sites`. For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
