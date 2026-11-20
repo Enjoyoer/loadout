@@ -31,22 +31,25 @@ def validate_links(documents: dict[str, str], errors: list[str]) -> None:
 
 
 MODEL_MAP_LINK = "](../opc/references/routing.md"
-# Outside the map-link line, a canonical catalog label (personal-skills scripts/pi/catalog.py CANONICAL) or a model id
-# prefix is flagged anywhere. A Pi thinking level is flagged only as the value of a routing key: a model label, the
-# setting words thinking, effort or reasoning, or an identifier key such as thinkingOptionId or reasoning_effort, followed
-# by the level with only spaces, quotes, backticks, ":" or "=" between them. A level inside a compound such as
-# "high-priority", a level before the key ("high effort") or a key followed by another word ("thinking on") is prose.
+# Outside the map-link line, a canonical catalog label (personal-skills scripts/pi/catalog.py CANONICAL, matched with
+# its capital so "haiku" or "magnum opus" stay prose), a model id prefix or xhigh is flagged anywhere. Any other Pi
+# thinking level is flagged only as the value of a routing key: a model label, the setting words thinking, effort or
+# reasoning, or an identifier key such as thinkingOptionId, reasoning_effort or thinkingLevel, then the level with only
+# spaces, quotes, backticks, markdown marks, ":" or "=" between them, or "(set) to" or "at" when the level ends the
+# phrase. A level in a compound ("high-priority"), a level before a key ("high effort", "high reasoning") or a key
+# followed by another word ("thinking on") is prose.
 MODEL_LABELS = ("Opus", "Sonnet", "Fable", "Haiku", "Astra", "Sol", "Terra", "Luna", "Web Extra", "Web Pro")
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 # Identifier keys in camelCase, snake_case or kebab-case, also as the tail of a longer identifier.
 ROUTING_KEYS = ("thinking option id", "reasoning effort", "thinking", "effort", "reasoning", "model")
 _words = lambda terms: r"\b(?:" + "|".join(re.escape(term).replace(r"\ ", r"\s+") for term in terms) + r")\b"
-_LABEL = _words(MODEL_LABELS)
+_LABEL = "(?-i:" + _words(MODEL_LABELS) + ")"
 _KEY = (r"(?:\b|(?<=[_-])|(?-i:(?<=[a-z])(?=[A-Z])))(?:"
-        + "|".join(re.escape(key).replace(r"\ ", "[_-]?") for key in ROUTING_KEYS) + r")")
+        + "|".join(re.escape(key).replace(r"\ ", "[_-]?") for key in ROUTING_KEYS) + r")(?:[\s_-]?level)?")
 _VALUE = r"(?<![\w-])(?:" + "|".join(THINKING_LEVELS) + r")(?![\w-])"
-_SETTING = rf"(?:{_LABEL}|{_KEY})[\s\"'`:=]+{_VALUE}"
-MODEL_TERMS = re.compile(rf"{_SETTING}|{_LABEL}|\b(?:gpt|claude|chatgpt)-", re.IGNORECASE)
+_TO = rf"(?:(?:set\s+)?(?:to|at)\s+(?={_VALUE}\W*(?:$|[.,;:)]|\s(?:for|on|in)\b)))"
+_SETTING = rf"(?:{_LABEL}|{_KEY})[\s\"'`:=*|]+{_TO}?{_VALUE}"
+MODEL_TERMS = re.compile(rf"{_SETTING}|\bxhigh\b|{_LABEL}|\b(?:gpt|claude|chatgpt)-", re.IGNORECASE)
 
 
 def validate_model_free(text: str, errors: list[str]) -> None:
