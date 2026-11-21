@@ -165,14 +165,15 @@ async function swapPm(f: ReturnType<typeof fixture>, id = "pm") {
   await f.endTurn(id, { kind: "failed", error: { message: USAGE } }, `${id}-turn-1`);
 }
 
-it("PM fallback swaps exactly and resumes the same session on Sol; a worker on the same failure is untouched", () => scenario(async (f, logs) => {
+// Decision 302 a: a worker on the same failure swaps and resumes the same way as a PM.
+it("PM fallback swaps exactly and resumes the same session on Sol; a worker on the same failure swaps too", () => scenario(async (f, logs) => {
   f.add("worker", "worker");
   await f.endTurn("worker", { kind: "failed", error: { message: USAGE } }, "worker-turn-1");
   await swapPm(f);
-  assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }]);
-  assert.deepEqual(f.calls.labels, [{ "opc.service-tier": "standard" }]);
-  assert.equal(f.agents.get("worker")!.model, OPUS);
-  const [obligation] = (await f.returns.read()).obligations;
+  assert.deepEqual(f.calls.apply, [{ agentId: "worker", modelId: SOL, thinkingOptionId: "medium" }, { agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }]);
+  assert.deepEqual(f.calls.labels, [{ "opc.service-tier": "standard" }, { "opc.service-tier": "standard" }]);
+  assert.equal(f.agents.get("worker")!.model, SOL);
+  const obligation = await f.returns.get("pm");
   assert.deepEqual(obligation!.original, { model: OPUS, thinkingOptionId: "high", serviceTier: null });
   assert.equal(obligation!.phase, "fallback");
   assert.deepEqual(f.calls.sends.filter((s) => s.startsWith("pm:")).map((s) => s.split(":")[1]), [SOL]);
@@ -180,11 +181,10 @@ it("PM fallback swaps exactly and resumes the same session on Sol; a worker on t
   const pmRecord = (await f.records.read()).find((r) => r.agentId === "pm")!;
   assert.equal(pmRecord.model, SOL);
   assert.equal(pmRecord.persistenceSessionId, "pm-session");
-  // The worker's record stays on its own model and quota hold: no swap, no send.
-  const workerRecord = (await f.records.read()).find((r) => r.agentId === "worker")!;
-  assert.equal(workerRecord.model, OPUS);
-  assert.ok(workerRecord.quotaHold);
-  assert.ok(!f.calls.sends.some((s) => s.startsWith("worker:")));
+  // The worker's record follows it to Sol and is resent there once, as the PM's is.
+  assert.deepEqual((await f.returns.get("worker"))!.original, { model: OPUS, thinkingOptionId: "high", serviceTier: null });
+  assert.equal((await f.records.read()).find((r) => r.agentId === "worker")!.model, SOL);
+  assert.deepEqual(f.calls.sends.filter((s) => s.startsWith("worker:")).map((s) => s.split(":")[1]), [SOL]);
 }));
 
 it("quota release restores the exact original profile, also mid-turn without interrupting it", () => scenario(async (f, logs) => {
@@ -354,7 +354,7 @@ it("a persisted swap intent is re-checked before it is applied; one that already
   const original = { model: OPUS, thinkingOptionId: "high", serviceTier: null };
   const fallback = { model: SOL, thinkingOptionId: "medium", serviceTier: "fast" };
   const cases: Array<[string, Partial<AgentSnapshot>, () => void]> = [
-    ["worker", { labels: { role: "worker" } }, () => undefined],
+    ["archived", { archivedAt: "2026-01-02T09:00:00.000Z" }, () => undefined],
     ["nonclaude", { model: "local/qwen3.8-27b" }, () => undefined],
     ["freed", {}, () => { f.pq.claude = { five: "ok", week: "ok" }; }],
     ["unknown", {}, () => { f.pq.stale = true; }],
@@ -668,8 +668,9 @@ it("a repeated 429 rate_limit_error with pool capacity keeps retrying on the bac
       assert.equal(logs.filter((l) => l.includes("retry-scheduled agentId=agent")).length, end === "success" ? 6 : 7, label);
       assert.equal(logs.filter((l) => l.includes("send-skipped agentId=agent")).length, end === "success" ? 6 : 7, `${label}: each wait is logged once`);
       assert.ok(!logs.some((l) => l.includes("retry-stopped") || l.includes("exhausted")), label);
-      // A PM is considered for a swap on every quota failure; with Claude capacity it is held, and said once.
-      assert.equal(logs.filter((l) => l.includes("pm-fallback-held agentId=agent")).length, role === "pm" ? 1 : 0, label);
+      // Any Pi agent (a PM or, since decision 302 a, a worker) is considered for a swap on every quota failure; with
+      // Claude capacity it is held, and said once.
+      assert.equal(logs.filter((l) => l.includes("pm-fallback-held agentId=agent")).length, 1, label);
       assert.deepEqual(f.calls.apply, []);
     });
   }
@@ -707,17 +708,17 @@ it("T1: an Opus PM refused twice in a row by CPA's 503 moves to Sol high on the 
   assert.equal((await f.records.read()).find((r) => r.agentId === "pm")?.model, SOL, "its resume record follows it to Sol");
 }));
 
-it("T2: a non-PM agent with the same two failures retries on the backoff and never swaps", () => scenario(async (f, logs) => {
+// Decision 302 a replaces decision 236's T2 (a non-PM never swapped): a worker moves exactly as a PM does.
+it("T2: a worker with the same two failures moves to Sol on the second, as a PM does", () => scenario(async (f, logs) => {
   f.pq.claude = { five: "ok", week: "ok" };
   f.pq.codex = { five: "out", week: "out" };
   f.add("worker", "worker");
   await cpaTwice(f, "worker", "worker-turn-1");
-  for (let n = 0; n < 5; n++) await f.tick();
-  assert.deepEqual(f.calls.apply, []);
-  assert.deepEqual(f.calls.sends, [`worker:${OPUS}:continue`, `worker:${OPUS}:continue`], "transient retries, now, then after 120 s");
-  assert.deepEqual((await f.returns.read()).obligations, []);
-  assert.equal((await f.returns.read()).cpaStreaks, undefined, "nothing is counted for a non-PM");
-  assert.ok(!logs.some((l) => l.includes("pm-")));
+  assert.deepEqual(f.calls.apply, [{ agentId: "worker", modelId: SOL, thinkingOptionId: "medium" }]);
+  assert.equal((await f.returns.get("worker"))?.cpa503, true);
+  assert.equal((await f.returns.read()).cpaStreaks?.worker, undefined, "the run ends with the move");
+  assert.ok(logs.some((l) => l.includes("pm-swap-start agentId=worker") && l.includes("trigger=cpa-503-twice evidence=cpa-503")));
+  assert.equal((await f.records.read()).find((r) => r.agentId === "worker")?.model, SOL, "its resume record follows it to Sol");
 }));
 
 it("T3: a failed turn on Sol after the CPA swap changes no model and starts no return", () => scenario(async (f, logs) => {

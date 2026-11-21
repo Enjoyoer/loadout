@@ -101,11 +101,11 @@ export function storedMatches(stored: readonly Profile[], profile: Profile): boo
 }
 
 /**
- * Why an agent may not be moved to the fallback profile, or null when it may: a live Pi PM whose original model
- * (by default its current one) is a Claude model. No label opts a PM out (since 0.3.0).
+ * Why an agent may not be moved to the fallback profile, or null when it may: a live Pi agent with a session whose
+ * original model (by default its current one) is a Claude model. Any role counts since 0.7.0 (PMs only before); no
+ * label opts an agent out (since 0.3.0).
  */
 export function fallbackIneligible(agent: AgentSnapshot, originalModel = agent.model): string | null {
-  if (agent.labels?.role !== "pm") return "not-pm";
   if (agent.provider !== "pi") return "not-pi";
   if (agent.archivedAt) return "archived";
   if (!agent.persistence?.sessionId) return "no-session";

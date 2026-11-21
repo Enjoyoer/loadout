@@ -1,4 +1,4 @@
-// Drives PM quota fallback from the plugin's existing triggers: a turn ending, and the poll sweep as a backstop. It
+// Drives PM quota fallback (since 0.7.0 for every live Pi agent on a Claude model; the pm- names stay) from the plugin's existing triggers: a turn ending, and the poll sweep as a backstop. It
 // has no timer or retry queue of its own; a failed or unverified change is simply tried again on the next trigger.
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config.ts";
@@ -472,7 +472,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
     dropped.delete(agentId);
     const ineligible = fallbackIneligible(agent);
     if (ineligible) {
-      if (agent.labels?.role === "pm") once(agentId, `pm-fallback-skipped agentId=${agentId} reason=${ineligible}`);
+      // Logged only for Pi agents: any other provider is out of scope, as non-PMs were before 0.7.0.
+      if (agent.provider === "pi") once(agentId, `pm-fallback-skipped agentId=${agentId} reason=${ineligible}`);
       return;
     }
     const configured: Profile = { model: config.pmFallbackModel, thinkingOptionId: config.pmFallbackThinking, serviceTier: config.pmFallbackServiceTier };
@@ -534,7 +535,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       const api = await deps.acquire();
       const agent = await fetchAgent(api, entry.agentId);
       if (!agent || agent.archivedAt) { await reject(agent ? "archived" : "agent-missing"); continue; }
-      if (agent.labels?.role !== "pm" || agent.provider !== "pi") { await reject("not-a-pi-pm"); continue; }
+      if (agent.provider !== "pi") { await reject("not-pi"); continue; }
       if (agentPool("pi", entry.model) !== "claude") { await reject("original-not-claude"); continue; }
       // An unset thinking option is stored as the catalog default, so the restore can be verified exactly.
       const original = await inCatalog(api, { model: entry.model, thinkingOptionId: entry.thinkingOptionId, serviceTier: entry.serviceTier });
@@ -563,7 +564,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
      * 503 of a run (pmFallback on), and the one resend on the profile a CPA move put in place.
      */
     async sendUnheld(record: ResumeRecord, agent: AgentSnapshot, config: Config): Promise<string | null> {
-      if (record.provider !== "pi" || agent.labels?.role !== "pm") return null;
+      if (record.provider !== "pi") return null;
       const obligation = await resendOwed(record.agentId);
       // Not while another send of the PM is in flight: it may be the one that takes the resend.
       if (obligation && sameModel(record.model, obligation.fallback.model) && !deps.sending(record.agentId)) {
