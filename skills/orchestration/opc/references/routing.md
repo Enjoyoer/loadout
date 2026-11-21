@@ -63,6 +63,17 @@ Fable designs and checks; Opus builds. In UI work, Fable is only for real visual
 
 The `ui-design` and `ui-check` lanes run in a UI task (the Fable `plan` lane does not), created with `createTask({..., ui: true})`; pass `ui: true` to `selectTopology`. Its lanes take only `ui-design` (the default when no `taskClass` is given) or `ui-check`, and the build runs in a separate normal `code` task. Both classes resolve to owner-explicit routes with reasons `ui-design: owner rule, Fable high, no GPT, read-only` `ui-check: owner rule, Fable high, no GPT, read-only`; `buildDelegatedBrief` marks them read-only. UI work never uses a GPT or web model: no Sol, Luna, or Astra Worker, no Sol scouts, and no web reviewer in `ui-design` or `ui-check`. The UI task refuses browser review, `recordWorkerRoute` and the Worker builders given the task refuse any other class and anything but Fable high, Fast off, with a Fable model id, and the topology runs no scouts. An owner-named route still wins inside these rules; one for `ui-design` or `ui-check` other than Fable high, Fast off is refused, so ask the owner to use the class instead. The old `ui` class name is an alias of `ui-design`.
 
+## Cursor overflow
+
+Owner rule (2026-11-21). When the Claude pool is at its cap and a `code` or review Worker must stay on Claude, a PM may start it on provider `cursor` with model `claude-opus-5-5`. A PM may also choose `cursor` with `gemini-4-neon` on purpose; it spends the same small monthly Other Models pool.
+
+- Always pass `--model` explicitly and keep the defaults: 300k context, Fast off, no 1M or Max mode. Never fall back to `Auto` for Claude-only work.
+- Before starting either, check that the Other Models pool has room on `cursor.com/dashboard/spending`. If it is spent, wait for the Claude reset instead.
+- Give each Cursor Worker one bounded task, label it `lane=cursor-overflow`, and archive it when done. Afterwards, restore the `~/.cursor/cli-config.json` model to `default` if it changed.
+- If a create fails in under 2 seconds with `Authentication required`, refresh the `cursor` provider snapshot and retry once. Never run `cursor-agent login`.
+- Never use Cursor for a PM, for Fable (no zero data retention), for a main lane, or for a payment-data project.
+- Never turn on on-demand spending, and never accept a plan switch or a unify offer. A reply saying "Upgrade your plan to continue" means stop; do not retry.
+
 ## Settings
 
 OPC reads no settings file: `~/.config/opc/routing.json` has no OPC use, and its `pq` key belongs to other readers.
