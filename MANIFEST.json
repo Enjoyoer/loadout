@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "393f929853f5615b6d41b1264063783db35d619b",
+  "source_commit": "3a9f38e3af1d340aaf740ea8d61ca37681ce75a2",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -240,8 +240,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 15057,
-      "sha256": "153f4cb5ebae5b07cce8cdc576c308f2608015cd442f997a3624826e7cf5d666"
+      "bytes": 16296,
+      "sha256": "b2cb37a2c3d86b1332596d068adb4e1f8217c03f2005e55682229b5baced609d"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
