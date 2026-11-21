@@ -763,12 +763,25 @@ export default function contribute(server: PluginServerContext, openClient: () =
       logOnce(record, "agent-closed", `send-held agentId=${record.agentId} recordId=${record.recordId} reason=agent-closed`);
       return;
     }
+    // A send claim and a fallback profile change exclude each other. The runner takes its lock only while no send is in
+    // flight (sending), and this check runs in the same synchronous step that marks the send in flight, so from here on
+    // no swap or restore can start. One that started during the awaits above, or that left its change unverified, defers
+    // the send and leaves the record as it is; the change's own settlement rebinds the record, and the claim below
+    // takes only a record still on the model the checks saw.
+    if (fallback.isBusy(record.agentId)) {
+      logOnce(record, "pm-profile-change-pending", `send-deferred agentId=${record.agentId} recordId=${record.recordId} reason=pm-profile-change-pending`);
+      return;
+    }
     inFlight.set(record.agentId, claim);
     try {
+      if (await fallback.blocksSend(record.agentId)) {
+        logOnce(record, "pm-profile-change-pending", `send-deferred agentId=${record.agentId} recordId=${record.recordId} reason=pm-profile-change-pending`);
+        return;
+      }
       // Claim only the record the gates checked: still in that state, unwritten since, at the same attempt generation.
       // A decision another handler stored stands; one seen but not stored yet is stored here instead of the claim.
       const claimed = await store.update(record.recordId, (value) => {
-        if (value.state !== record.state || value.updatedAt !== record.updatedAt || attemptCount(value) !== attemptCount(record)) return value;
+        if (value.state !== record.state || value.updatedAt !== record.updatedAt || value.model !== record.model || attemptCount(value) !== attemptCount(record)) return value;
         if (claim.cancelled) return claim.cancelled.hold ? value : { ...value, state: claim.cancelled.state, terminalReason: claim.cancelled.reason, updatedAt: new Date().toISOString() };
         return {
           ...value,

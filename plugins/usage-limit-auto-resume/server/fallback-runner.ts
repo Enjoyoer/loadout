@@ -536,6 +536,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       const agent = await fetchAgent(api, entry.agentId);
       if (!agent || agent.archivedAt) { await reject(agent ? "archived" : "agent-missing"); continue; }
       if (agent.provider !== "pi") { await reject("not-pi"); continue; }
+      if (!agent.persistence?.sessionId) { await reject("no-session"); continue; }
       if (agentPool("pi", entry.model) !== "claude") { await reject("original-not-claude"); continue; }
       // An unset thinking option is stored as the catalog default, so the restore can be verified exactly.
       const original = await inCatalog(api, { model: entry.model, thinkingOptionId: entry.thinkingOptionId, serviceTier: entry.serviceTier });

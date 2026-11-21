@@ -102,14 +102,14 @@ export function storedMatches(stored: readonly Profile[], profile: Profile): boo
 
 /**
  * Why an agent may not be moved to the fallback profile, or null when it may: a live Pi agent with a session whose
- * original model (by default its current one) is a Claude model. Any role counts since 0.7.0 (PMs only before); no
- * label opts an agent out (since 0.3.0).
+ * original model (by default its current one) is a Claude subscription model (API-billed `fleet/api/...` routes are
+ * never moved). Any role counts since 0.7.0 (PMs only before); no label opts an agent out (since 0.3.0).
  */
 export function fallbackIneligible(agent: AgentSnapshot, originalModel = agent.model): string | null {
   if (agent.provider !== "pi") return "not-pi";
   if (agent.archivedAt) return "archived";
   if (!agent.persistence?.sessionId) return "no-session";
-  if (agentPool(agent.provider, originalModel) !== "claude") return "not-claude";
+  if (!isSubscriptionClaude(agent.provider, originalModel)) return "not-claude-subscription";
   return null;
 }
 
@@ -223,11 +223,12 @@ export function stageOf(obligation: ReturnObligation, live: Profile | null): "fi
 
 /**
  * Why the plugin must not change this agent's settings for this obligation now, or null. Checked before every write,
- * repair or completion, on every path: an owner cancel, or an archived agent.
+ * repair or completion, on every path: an owner cancel, an archived agent, or an agent with no session.
  */
-export function writeBlocked(obligation: ReturnObligation, agent: AgentSnapshot, config: { pmFallbackCancel: readonly string[] }): "cancelled" | "archived" | null {
+export function writeBlocked(obligation: ReturnObligation, agent: AgentSnapshot, config: { pmFallbackCancel: readonly string[] }): "cancelled" | "archived" | "no-session" | null {
   if (config.pmFallbackCancel.includes(obligation.obligationId)) return "cancelled";
   if (agent.archivedAt) return "archived";
+  if (!agent.persistence?.sessionId) return "no-session";
   return null;
 }
 
