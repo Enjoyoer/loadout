@@ -1,3 +1,7 @@
+import { execFileSync } from 'node:child_process';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 const effortOrder = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
@@ -152,10 +156,14 @@ function laneProblem(route, taskClass, rows) {
   const ownerRule = fableProblem(route, rows) ?? classFastProblem(route, taskClass, rows);
   if (ownerRule) return ownerRule;
   const rule = WORKER_DEFAULT_ROUTES[taskClass];
-  if (CLAUDE_ONLY_CLASSES.includes(taskClass) && isGptOrWebModel(route.model, rows)) {
+  // The one GPT exception: the exact off-pace backup in a code lane, which records only while off pace and launches only
+  // from its own recorded lane (owner decisions 310 and 316). Reviews, review-security and every other class never take it.
+  const backup = route.source === 'pace-backup' && taskClass === 'code' && !unapprovedBackup(route);
+  if (CLAUDE_ONLY_CLASSES.includes(taskClass) && isGptOrWebModel(route.model, rows) && !backup) {
     return `${route.model} is a GPT or web model and the ${taskClass} class runs ${rule.label}`;
   }
-  return effortOrder.indexOf(route.effort) < effortOrder.indexOf(rule.effort)
+  // The backup's medium is the owner's own level for it (2026-11-21), below the code minimum by decision.
+  return !backup && effortOrder.indexOf(route.effort) < effortOrder.indexOf(rule.effort)
     ? `effort ${route.effort} is below the ${taskClass} minimum ${rule.effort}` : null;
 }
 const knownClass = taskClass => Object.hasOwn(WORKER_DEFAULT_ROUTES, canonicalWorkerClass(taskClass) ?? '') || uiClass(taskClass);
@@ -227,6 +235,171 @@ function materializeRule(rule, catalog, surface) {
   return { ...rule, model: row.id, provider: `${provider}/${row.id}` };
 }
 
+// While Claude is off pace (owner decision 314a, 2026-11-21), a new code Worker lane on the Opus high, Fast off default
+// runs instead on the generic ACP provider Config names agy-opc, on exactly this model and thinking, in agy's native auto
+// mode with the generic ACP auto_accept feature on, the unattended equivalent the owner authorized; never default,
+// accept-edits, plan, another mode or another feature. route.mjs admits it; a lane records it with a receipt binding
+// task, lane, target and placement, never the routing.json state; it launches only from that recorded lane, and only
+// while the record is exactly this runtime.
+export const REPLACEMENT_RUNTIME = Object.freeze({ provider: 'agy-opc', extends: 'acp', model: 'gemini-4-neon-high',
+  effort: 'high', fastMode: false, mode: 'auto' });
+export const REPLACEMENT_REASON = 'code replacement for Opus high, Fast off while Claude is off pace: Neon high on the verified ACP runtime';
+const RECEIPT_KEYS = ['provider', 'mode', 'target', 'task', 'lane', 'placement'];
+// The off-pace backup when Neon cannot launch (owner decisions 310 and 316, medium per owner 2026-11-21): Pi Sol medium, Fast off, the one GPT route a
+// code lane may run, and only as a lane recorded with this source and reason while off pace (route.mjs).
+export const PACE_BACKUP_RUNTIME = Object.freeze({ model: 'fleet/gpt-6.2-sol', label: 'Sol', effort: 'medium', fastMode: false });
+export const PACE_BACKUP_REASON = 'code backup while Claude is off pace and Neon cannot launch: Sol medium, Fast off';
+const BACKUP_RECEIPT_KEYS = ['task', 'lane', 'placement'];
+// Whether already-parsed JSON text repeats a key in any object, with escaped spellings decoded.
+function repeatsKey(text) {
+  const objects = [];
+  let expectKey = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      let end = i + 1;
+      while (text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+      const keys = objects.at(-1);
+      if (keys && expectKey) {
+        const key = JSON.parse(text.slice(i, end + 1));
+        if (keys.has(key)) return true;
+        keys.add(key);
+        expectKey = false;
+      }
+      i = end;
+    } else if (c === '{') { objects.push(new Set()); expectKey = true; }
+    else if (c === '[') { objects.push(null); expectKey = false; }
+    else if (c === '}' || c === ']') { objects.pop(); expectKey = false; }
+    else if (c === ',') expectKey = objects.at(-1) != null;
+  }
+  return false;
+}
+// The user's local OPC routing file, ~/.config/opc/routing.json, parsed, or null: read only on a Mac, from a regular file
+// (no symlink) owned by this user and writable by no one else, at most 1 MiB, with no repeated key anywhere.
+export function readLocalRouting() {
+  if (process.platform !== 'darwin' || typeof process.getuid !== 'function') return null;
+  const path = join(homedir(), '.config', 'opc', 'routing.json');
+  let text;
+  try {
+    const link = lstatSync(path);
+    if (!link.isFile()) return null;
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.ino !== link.ino || stat.dev !== link.dev || stat.uid !== process.getuid() ||
+          (stat.mode & 0o022) !== 0 || stat.size > 1 << 20) return null;
+      text = readFileSync(fd, 'utf8');
+    } finally { closeSync(fd); }
+    const doc = JSON.parse(text);
+    return doc && typeof doc === 'object' && !Array.isArray(doc) && !repeatsKey(text) ? doc : null;
+  } catch { return null; } // probe-ok: fails closed, an unreadable routing file allows no off-pace route; expires 2027-05-22
+}
+
+// Excluded launchers, listed locally in the routing file as replacementExcludedLaunchers (agent id prefixes), never take
+// an off-pace route, nor does anything they launch: the launching agent (PASEO_AGENT_ID) and its ParentAgentId chain on
+// the local daemon, at most 16 agents, must all be readable and none may match. A missing or malformed list, or a chain
+// that cannot be read in full, allows no off-pace route.
+const MAX_LAUNCHER_CHAIN = 16;
+function launcherChain() {
+  const env = { ...process.env };
+  delete env.PASEO_HOST;
+  const chain = [];
+  for (let id = process.env.PASEO_AGENT_ID; chain.length < MAX_LAUNCHER_CHAIN;) {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9-]{8,128}$/.test(id)) return null;
+    chain.push(id);
+    let agent;
+    try {
+      agent = JSON.parse(execFileSync('paseo', ['inspect', id, '--json'],
+        { env, timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', maxBuffer: 16 << 20 }));
+    } catch { return null; } // probe-ok: fails closed, an unreadable launcher chain allows no off-pace route; expires 2027-05-22
+    if (agent?.Id !== id) return null;
+    if (agent.ParentAgentId === '' || agent.ParentAgentId === null) return chain;
+    id = agent.ParentAgentId;
+  }
+  return null;
+}
+export function offPaceLaunchAllowed(doc = readLocalRouting()) {
+  const prefixes = doc?.replacementExcludedLaunchers;
+  if (!Array.isArray(prefixes) || prefixes.some(prefix => typeof prefix !== 'string' || !prefix || prefix.length > 128)) return false;
+  const chain = launcherChain();
+  return chain != null && !chain.some(id => prefixes.some(prefix => id.startsWith(prefix)));
+}
+export const isReplacementMode = mode => mode === REPLACEMENT_RUNTIME.mode;
+// The request settings of every replacement launch, fixed: thinking and the one generic ACP feature, auto_accept, set
+// explicitly so nothing depends on what the launching parent would pass on; a caller cannot change or add to them.
+export const replacementSettings = () => ({ thinkingOptionId: REPLACEMENT_RUNTIME.effort, features: { auto_accept: true } });
+// A record or route that is not exactly the approved runtime (provider, model, thinking, Fast, reason, mode).
+const unapprovedReplacement = route => route.model !== REPLACEMENT_RUNTIME.model || route.effort !== REPLACEMENT_RUNTIME.effort ||
+  route.fastMode !== REPLACEMENT_RUNTIME.fastMode || route.reason !== REPLACEMENT_REASON ||
+  route.receipt?.provider !== REPLACEMENT_RUNTIME.provider || !isReplacementMode(route.receipt?.mode);
+// A record or route that is not exactly the off-pace backup (model, thinking, Fast, reason).
+const unapprovedBackup = route => route.model !== PACE_BACKUP_RUNTIME.model || route.effort !== PACE_BACKUP_RUNTIME.effort ||
+  route.fastMode !== PACE_BACKUP_RUNTIME.fastMode || route.reason !== PACE_BACKUP_REASON;
+const unapprovedOffPace = route => route.source === 'replacement' ? unapprovedReplacement(route) : unapprovedBackup(route);
+export const OFF_PACE_SOURCES = Object.freeze(['replacement', 'pace-backup']);
+const offPaceRoute = route => OFF_PACE_SOURCES.includes(route?.source);
+export const isTargetId = value => typeof value === 'string' && /^[\x21-\x7e]{1,256}$/.test(value);
+const exactKeys = (value, keys) => value != null && typeof value === 'object' && !Array.isArray(value) &&
+  isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort());
+const validBinding = receipt => /^[A-Za-z0-9-]{8,128}$/.test(receipt.task ?? '') &&
+  /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(receipt.lane ?? '') && receipt.lane.length <= 40 &&
+  /^opc\/[a-z0-9-]+-[0-9a-f]{16}$/.test(receipt.placement ?? '');
+function validReceipt(source, receipt) {
+  if (source === 'pace-backup') return exactKeys(receipt, BACKUP_RECEIPT_KEYS) && validBinding(receipt);
+  return exactKeys(receipt, RECEIPT_KEYS) && receipt.provider === REPLACEMENT_RUNTIME.provider &&
+    typeof receipt.mode === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(receipt.mode) &&
+    isTargetId(receipt.target) && validBinding(receipt);
+}
+// A recorded off-pace route (the replacement or the backup) is checked for shape, like any record, so it stays readable;
+// a launch also requires it to be exactly its approved runtime (validateLaunchedWorkerRoute).
+function validateRecordedOffPace(route) {
+  if (!exactKeys(route, ['role', 'source', 'kind', 'model', 'effort', 'fastMode', 'reason', 'receipt']) ||
+      route.role !== 'worker' || route.kind !== 'code' || !isValidModelId(route.model) || !efforts.has(route.effort) ||
+      route.fastMode !== false || typeof route.reason !== 'string' || !route.reason.trim() || /[\r\n]/.test(route.reason) ||
+      !validReceipt(route.source, route.receipt)) {
+    throw Error(`recorded ${route?.source} route required for worker`);
+  }
+  return Object.freeze({ model: route.model, effort: route.effort, fastMode: false, source: route.source, kind: 'code',
+    reason: route.reason, receipt: Object.freeze({ ...route.receipt }) });
+}
+
+// A recorded replacement rebuilds on the same runtime as the target serves it now, never by the routing.json state: the
+// launch target is the recorded local Mac target and is the server the managed workspace was created on (its serverId),
+// capabilities are MCP inspect_provider's for exactly the replacement provider with MCP list_models rows as models, and
+// they serve exactly the recorded model at its thinking and advertise the pinned mode. Otherwise the lane stops.
+function replacementMode(route, capabilities, target, serverId) {
+  const { receipt } = route;
+  if (!exactKeys(target, ['daemon', 'local', 'platform']) || target.daemon !== receipt.target || target.local !== true ||
+      target.platform !== 'darwin') throw Error('replacement launch target is not the recorded local Mac target; the lane stops');
+  if (!isTargetId(serverId) || serverId !== receipt.target) {
+    throw Error('the managed workspace is not on the recorded target server; the replacement lane stops');
+  }
+  if (capabilities?.provider !== receipt.provider || capabilities.enabled !== true || capabilities.status !== 'available' ||
+      !Array.isArray(capabilities.models) || !Array.isArray(capabilities.modes)) {
+    throw Error('available inspect_provider capabilities of the replacement provider required; the lane stops');
+  }
+  const rows = capabilities.models.filter(row => row?.id === route.model);
+  if (rows.length !== 1 || !Array.isArray(rows[0].thinkingOptions) || !rows[0].thinkingOptions.some(option => option?.id === route.effort)) {
+    throw Error(`the target does not serve exactly ${route.model} at ${route.effort} thinking; the replacement lane stops`);
+  }
+  // Only the pinned mode, advertised exactly once by the target.
+  const modes = capabilities.modes.filter(mode => mode?.id === receipt.mode);
+  if (!isReplacementMode(receipt.mode) || modes.length !== 1) {
+    throw Error(`the target does not advertise the pinned ${REPLACEMENT_RUNTIME.mode} mode for this record; the replacement lane stops`);
+  }
+  // The capabilities are the inspect_provider draft of exactly these settings: its selected model, and each fixed feature
+  // advertised once as a toggle holding the fixed value.
+  const fixed = replacementSettings().features;
+  if (capabilities.selectedModel !== route.model || !Array.isArray(capabilities.features) ||
+      Object.entries(fixed).some(([id, value]) => {
+        const advertised = capabilities.features.filter(feature => feature?.id === id);
+        return advertised.length !== 1 || advertised[0].type !== 'toggle' || advertised[0].value !== value;
+      })) {
+    throw Error('the target\'s inspect_provider draft does not advertise the fixed replacement settings; the replacement lane stops');
+  }
+  return receipt.mode;
+}
+
 const routeText = route => `model=${route.model ?? route.label}; effort=${route.effort ?? 'model-fixed'}; Fast=${route.fastMode ? 'on' : 'off'}`;
 
 // A recorded Worker route comes from the owner or from a task-class default with its reason.
@@ -235,6 +408,7 @@ const routeText = route => `model=${route.model ?? route.label}; effort=${route.
 const RETIRED_DEFAULT_KEY = 'pace';
 export function validateRecordedWorkerRoute(route) {
   requireWorkerModel(route?.model);
+  if (offPaceRoute(route)) return validateRecordedOffPace(route);
   const taskDefault = route?.source === 'task-default';
   const retired = taskDefault && Object.hasOwn(route, RETIRED_DEFAULT_KEY) ? [RETIRED_DEFAULT_KEY] : [];
   const keys = ['role', 'source', 'model', 'effort', 'fastMode', ...(taskDefault ? ['kind', 'reason', ...retired] : [])];
@@ -255,6 +429,10 @@ export function validateRecordedWorkerRoute(route) {
 function validateWorkerRoute(route) {
   const valid = validateRecordedWorkerRoute(route);
   requireFableRule(route);
+  if (offPaceRoute(route)) {
+    if (unapprovedOffPace(route)) throw Error(`a new ${route.source} route must be exactly its approved runtime`);
+    return valid;
+  }
   const rule = workerRule(route.kind);
   if (route.source === 'task-default' && (!rule || route.fastMode !== rule.fastMode ||
       Object.hasOwn(route, RETIRED_DEFAULT_KEY) || route.effort !== rule.effort)) {
@@ -328,6 +506,16 @@ function validateLaunchedWorkerRoute(route, { task = null, lane = null, taskClas
     throw Error(`UI task: a ${laneClass} lane launches only Fable high, Fast off (owner rule); the build goes to a code task`);
   }
   requireFableRule(route, rows);
+  if (offPaceRoute(route)) {
+    const { receipt } = validateRecordedWorkerRoute(route);
+    if (task == null || canonicalWorkerClass(laneClass) !== 'code' || receipt.task !== task.id || receipt.lane !== lane ||
+        !recordedLaneEntry(task, lane, route)) throw Error(`a ${route.source} route launches only from its own recorded code lane`);
+    if (!offPaceLaunchAllowed()) {
+      throw Error(`no ${route.source} launch: the launcher is excluded, or the excluded-launcher list or launcher chain is unreadable`);
+    }
+    // Every launch and rebuild: the record must still be exactly its approved runtime, or the lane stops (no switch).
+    if (unapprovedOffPace(route)) throw Error(`recorded ${route.source} is not its approved runtime; the lane stops`);
+  }
   if (recordedLaneEntry(task, lane, route)) return validateRebuild(route, laneClass, rows);
   const valid = validateWorkerRoute(route);
   if (laneClass != null) validateLaneClass(route, laneClass, rows);
@@ -446,6 +634,9 @@ export function buildDelegatedBrief({ role, route, brief, reason = null, task = 
   if (reason != null && (typeof reason !== 'string' || !reason.trim() || /[\r\n]/.test(reason))) throw Error('route reason must be one line');
   const resolved = route == null ? resolveAgentRoute(role)
     : role === 'worker' ? validateLaunchedWorkerRoute(route, { task, lane, taskClass, catalog }) : validateRoleRoute(role, route);
+  if (offPaceRoute(resolved) && reason != null && reason !== resolved.reason) {
+    throw Error(`a ${resolved.source} lane takes only its recorded reason`);
+  }
   // A UI task's lane is ui-design or ui-check even when the caller names no class and the route carries no kind.
   const kind = canonicalWorkerClass((role === 'worker' ? uiTaskLaneClass(task, taskClass) : taskClass) ?? route?.kind);
   if (role === 'worker' && ['plan', 'review', 'review-security', ...UI_CLASSES].includes(kind)) {
@@ -485,6 +676,7 @@ export function mapRouteToPi(route, catalog, options = {}) {
 function mapRoute(route, catalog, { fallbackProvider = 'codex', surface = 'pi', nativeAuthorization = null, taskClass = null } = {},
   recordedFormer) {
   if (!route || !isValidModelId(route.model)) throw Error('selected OPC route required');
+  if (offPaceRoute(route)) throw Error(`a ${route.source} route maps only from its recorded lane (resolveWorkerSurface)`);
   requireWorkerModel(route.model, catalog);
   if (!Array.isArray(catalog)) throw Error('target Pi catalog required');
   const originalProvider = route.provider?.split('/')[0] ?? fallbackProvider;
@@ -539,8 +731,14 @@ const isClaudeModel = model => /(?:^|\/)claude-/i.test(model ?? '') || CLAUDE_LA
 // A Worker bound to a task record is validated in full (binding, class, rebuild rules, UI rule, minimum) before any
 // explicit provider, which must then be exactly the provider its validated route maps to, with that route's settings.
 // An explicit native provider (codex/ or claude/) selects that native surface for the mapping.
+// A replacement route (source replacement) also needs capabilities, the target's capabilities for the replacement
+// provider, target, the launch target {daemon, local, platform}, and serverId, the managed workspace's server; it maps to
+// that provider and returns its modeId.
 export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'worker', route, catalog, surface = 'pi',
-  nativeAuthorization = null, task = null, lane = null, taskClass = null } = {}) {
+  nativeAuthorization = null, task = null, lane = null, taskClass = null, capabilities = null, target = null,
+  serverId = null } = {}) {
+  const replacement = role === 'worker' && route?.source === 'replacement';
+  const backup = role === 'worker' && route?.source === 'pace-backup';
   if (role === 'worker') {
     requireWorkerModel(route?.model, catalog);
     requireWorkerModel(String(provider ?? '').replace(/^(?:pi|codex|claude)\//, ''), catalog);
@@ -548,20 +746,42 @@ export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'wor
   const bound = role === 'worker' && task != null;
   const standingBrowser = role === 'worker' && browserClass(routeClass(route, taskClass)) && route != null;
   if (provider && !String(provider).startsWith('pi/') && role === 'worker' &&
-      !(standingBrowser && String(provider).startsWith('codex/'))) {
+      !(standingBrowser && String(provider).startsWith('codex/')) &&
+      !(replacement && String(provider).startsWith(`${REPLACEMENT_RUNTIME.provider}/`))) {
     requireNativeAuthorization(String(provider), nativeAuthorization, `explicit provider ${provider}`);
   }
   // A fixed role passed with its route is validated and mapped like a bound Worker; with no route it passes through.
   const fixedWithRoute = role !== 'worker' && route != null;
-  if (provider && !bound && !standingBrowser && !fixedWithRoute) return { provider, agentSettings };
+  if (provider && !bound && !standingBrowser && !fixedWithRoute && !replacement && !backup) return { provider, agentSettings };
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   const selected = role === 'worker' ? validateLaunchedWorkerRoute(route, { task, lane, taskClass, catalog: rows })
     : validateRoleRoute(role, route);
+  if (selected.source === 'replacement') {
+    const modeId = replacementMode(selected, capabilities, target, serverId);
+    const mapped = `${selected.receipt.provider}/${selected.model}`, settings = replacementSettings();
+    if (provider && (provider !== mapped || (Object.keys(agentSettings).length && !isDeepStrictEqual(agentSettings, settings)))) {
+      throw Error(`explicit provider ${provider} is not what this lane's validated route maps to (${mapped})`);
+    }
+    if (!provider && Object.keys(agentSettings).length) throw Error('materialize settings from the selected rule or pass an explicit provider');
+    return { provider: mapped, agentSettings: settings, modeId };
+  }
+  // The off-pace backup runs only on Pi, on its exact catalog row at its thinking; never native or unserved.
+  if (selected.source === 'pace-backup') {
+    const served = (rows ?? []).filter(row => row?.id === selected.model && row.label === PACE_BACKUP_RUNTIME.label &&
+      row.thinkingOptions?.some(option => option?.id === selected.effort));
+    if (served.length !== 1) throw Error(`the Pi catalog does not serve exactly ${selected.model} at ${selected.effort}; the backup lane stops`);
+    const mapped = `pi/${selected.model}`, settings = { thinkingOptionId: selected.effort };
+    if (provider && (provider !== mapped || (Object.keys(agentSettings).length && !isDeepStrictEqual(agentSettings, settings)))) {
+      throw Error(`explicit provider ${provider} is not what this lane's validated route maps to (${mapped})`);
+    }
+    if (!provider && Object.keys(agentSettings).length) throw Error('materialize settings from the selected rule or pass an explicit provider');
+    return { provider: mapped, agentSettings: settings };
+  }
   const native = String(provider ?? '').split('/')[0];
-  const target = surface === 'pi' && NATIVE_WORKER_SURFACES.includes(native) ? native : surface;
+  const nativeSurface = surface === 'pi' && NATIVE_WORKER_SURFACES.includes(native) ? native : surface;
   const recordedFormer = bound && recordedLaneEntry(task, lane, route) != null &&
     recordedFormerDefault(selected, uiTaskLaneClass(task, taskClass), rows);
-  const mapped = role === 'worker' ? mapRoute(selected, rows, { surface: target, nativeAuthorization, taskClass }, recordedFormer)
+  const mapped = role === 'worker' ? mapRoute(selected, rows, { surface: nativeSurface, nativeAuthorization, taskClass }, recordedFormer)
     : materializeRule(selected, catalog, surface);
   if (role === 'worker' && mapped.provider.startsWith('codex/') && isClaudeModel(mapped.model)) {
     throw Error(`${mapped.model} is a Claude model and never runs as a native Codex Worker; an authorized native Claude ` +

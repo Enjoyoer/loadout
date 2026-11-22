@@ -5,17 +5,109 @@ import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { promisify } from 'node:util';
-import { canonicalWorkerClass, isUiRoute, OWNER_RULE_ROUTES, recordedLaneEntry, routeReason, selectWorkerRoute,
-  uiTaskLaneClass, validateLaneClass, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
+import { isDeepStrictEqual, promisify } from 'node:util';
+import { canonicalWorkerClass, isReplacementMode, isTargetId, isUiRoute, OFF_PACE_SOURCES, offPaceLaunchAllowed, OWNER_RULE_ROUTES,
+  PACE_BACKUP_REASON, PACE_BACKUP_RUNTIME, recordedLaneEntry, REPLACEMENT_REASON, REPLACEMENT_RUNTIME, routeReason, selectWorkerRoute, uiTaskLaneClass, validateLaneClass,
+  readLocalRouting, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
+import { managedWorkerNames } from './paseo-worker.mjs';
 import { readTask, updateTask } from './task-state.mjs';
 
 const usage = 'usage: route.mjs --class <class> [--catalog FILE] ' +
   '[--owner-model ID --owner-effort LEVEL [--owner-fast on|off]] [--task TASK_JSON --lane SLUG]';
 
+// Replacement opt-in: the antigravityFallback namespace of the user's ~/.config/opc/routing.json, written only by Config's
+// pace job and read strictly (readLocalRouting), never reported. Other keys (pq) are not read.
+const RFC3339_UTC = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,3}))?Z$/;
+function utcTime(value) {
+  const m = typeof value === 'string' ? RFC3339_UTC.exec(value) : null;
+  if (!m) return null;
+  const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number);
+  const time = Date.UTC(year, month - 1, day, hour, minute, second, Number((m[7] ?? '0').padEnd(3, '0')));
+  const date = new Date(time);
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day &&
+    date.getUTCHours() === hour && date.getUTCMinutes() === minute && date.getUTCSeconds() === second ? time : null;
+}
+const exactKeys = (value, keys) => value != null && typeof value === 'object' && !Array.isArray(value) &&
+  isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort());
+// The switch, from the strictly read local routing file (readLocalRouting): exactly {enabled: true, state: {off_pace:
+// true, as_of, expires_at}} with RFC 3339 UTC times and as_of <= now < expires_at. Anything else is off.
+function switchOn(doc, now) {
+  const fallback = doc?.antigravityFallback;
+  if (!exactKeys(fallback, ['enabled', 'state']) || fallback.enabled !== true) return false;
+  const { state } = fallback;
+  if (!exactKeys(state, ['off_pace', 'as_of', 'expires_at']) || state.off_pace !== true) return false;
+  const asOf = utcTime(state.as_of), expiresAt = utcTime(state.expires_at);
+  return asOf != null && expiresAt != null && asOf < expiresAt && asOf <= now && now < expiresAt;
+}
+
+// The runtime proof the PM verified on the target, independent of the opt-in, may be at most this old.
+const REPLACEMENT_PROOF_MAX_AGE_MS = 60 * 60 * 1000;
+// Whether proof and target show the replacement runtime verified on the local Mac target within the window.
+function neonReady(proof, target, now) {
+  const runtime = REPLACEMENT_RUNTIME, verifiedAt = utcTime(proof?.verified_at);
+  return exactKeys(target, ['daemon', 'local', 'platform']) && isTargetId(target.daemon) && target.local === true &&
+    target.platform === 'darwin' &&
+    exactKeys(proof, ['provider', 'extends', 'model', 'thinking', 'mode', 'sandboxed', 'write', 'target', 'verified_at']) &&
+    proof.provider === runtime.provider && proof.extends === runtime.extends && proof.model === runtime.model &&
+    proof.thinking === runtime.effort && isReplacementMode(proof.mode) && proof.sandboxed === true && proof.write === true &&
+    isDeepStrictEqual(proof.target, target) && verifiedAt != null && verifiedAt <= now &&
+    now - verifiedAt <= REPLACEMENT_PROOF_MAX_AGE_MS;
+}
+// The off-pace route for a code Worker lane, or null to keep the class default. context is the PM's structured launch
+// context, never prompt text, a label, an alias, or a record: task (readTask) and lane, and, for Neon, target
+// {daemon, local: true, platform: 'darwin'}, the local daemon it will launch on, and proof {provider, extends, model,
+// thinking, mode, sandboxed: true, write: true, target, verified_at}, the PM-verified capability on that target.
+// Only a Worker lane of the code class on the Opus high, Fast off default is eligible (never a review, review-security,
+// another class or a PM), never one from an excluded launcher (offPaceLaunchAllowed), and only a fresh lane (a recorded lane keeps its route). With
+// unavailable, the PM's evidence that Neon cannot launch on the target (newer than any fresh proof), it takes the Sol
+// backup when the catalog serves it; else with a fresh proof it takes Neon; else (no proof, no evidence) the Opus default. The opt-in is read last.
+const REPLACEMENT_CONTEXT_KEYS = ['task', 'lane', 'proof', 'target', 'unavailable'];
+// unavailable {provider: 'agy-opc', target, checked_at, finding}: what MCP inspect_provider (with list_models) showed on
+// the same local target within the last hour: agy-opc missing, disabled, not available, or not serving the model at
+// high with mode auto.
+const UNAVAILABLE_FINDINGS = ['missing', 'disabled', 'not-available', 'not-serving'];
+const validTarget = target => exactKeys(target, ['daemon', 'local', 'platform']) && isTargetId(target.daemon) &&
+  target.local === true && target.platform === 'darwin';
+const recent = (value, now) => { const at = utcTime(value); return at != null && at <= now && now - at <= REPLACEMENT_PROOF_MAX_AGE_MS; };
+function neonUnavailable(unavailable, target, now) {
+  return validTarget(target) && exactKeys(unavailable, ['provider', 'target', 'checked_at', 'finding']) &&
+    unavailable.provider === REPLACEMENT_RUNTIME.provider && isDeepStrictEqual(unavailable.target, target) &&
+    UNAVAILABLE_FINDINGS.includes(unavailable.finding) && recent(unavailable.checked_at, now);
+}
+function admitReplacement(context, { taskClass, catalog }) {
+  try {
+    const { task, lane, proof, target, unavailable } = context ?? {};
+    const rule = WORKER_DEFAULT_ROUTES.code, now = Date.now();
+    if (context == null || typeof context !== 'object' || Object.keys(context).some(key => !REPLACEMENT_CONTEXT_KEYS.includes(key)) ||
+        canonicalWorkerClass(taskClass) !== 'code' ||
+        rule.label !== 'Opus' || rule.effort !== 'high' || rule.fastMode !== false) return null;
+    const base = selectWorkerRoute({ taskKind: 'code', catalog });
+    if (base.effort !== 'high' || base.fastMode !== false || !task || typeof task !== 'object' || task.ui === true ||
+        typeof task.id !== 'string' || typeof lane !== 'string' || (task.routes && Object.hasOwn(task.routes, lane))) return null;
+    const ready = neonReady(proof, target, now);
+    // Both fresh: the newer one decides.
+    const down = neonUnavailable(unavailable, target, now) &&
+      (!ready || utcTime(unavailable.checked_at) > utcTime(proof.verified_at));
+    const neon = !down && ready;
+    const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
+    const backup = down && rows?.filter(row => row?.id === PACE_BACKUP_RUNTIME.model && row.label === PACE_BACKUP_RUNTIME.label &&
+      row.thinkingOptions?.some(option => option?.id === PACE_BACKUP_RUNTIME.effort)).length === 1;
+    if (!neon && !backup) return null;
+    const { branchName } = managedWorkerNames({ taskId: task.id, lane });
+    const doc = readLocalRouting();
+    if (!switchOn(doc, now) || !offPaceLaunchAllowed(doc)) return null;
+    const runtime = neon ? REPLACEMENT_RUNTIME : PACE_BACKUP_RUNTIME;
+    return Object.freeze({ role: 'worker', source: neon ? 'replacement' : 'pace-backup', kind: 'code', model: runtime.model,
+      effort: runtime.effort, fastMode: runtime.fastMode, reason: neon ? REPLACEMENT_REASON : PACE_BACKUP_REASON,
+      receipt: Object.freeze(neon ? { provider: runtime.provider, mode: proof.mode, target: target.daemon, task: task.id, lane,
+        placement: branchName } : { task: task.id, lane, placement: branchName }) });
+  } catch { return null; } // probe-ok: fails closed, any error resolves no off-pace route; expires 2027-05-22
+}
+
 // An owner route is returned unchanged; owner-rule classes (ui-design, ui-check) carry their rule's reason, and every
-// other class runs at its table default.
-export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, catalog } = {}) {
+// other class runs at its table default. With a replacement context a code lane may resolve to an off-pace route
+// (admitReplacement); every other case returns exactly what it returns without one.
+export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, catalog, replacement = null } = {}) {
   taskClass = canonicalWorkerClass(taskClass);
   if (ownerRoute) {
     const route = selectWorkerRoute({ ownerRoute, taskKind: taskClass, catalog });
@@ -26,8 +118,10 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
   }
   if (!Object.hasOwn(WORKER_DEFAULT_ROUTES, taskClass ?? '')) throw workerRouteUnresolved();
   const route = selectWorkerRoute({ taskKind: taskClass, catalog });
-  return Object.freeze({ route, reason: routeReason(route),
+  const resolved = Object.freeze({ route, reason: routeReason(route),
     ...(['browser', 'browser-hard', 'sites'].includes(taskClass) ? { provider: `codex/${route.model}` } : {}) });
+  const replaced = replacement == null ? null : admitReplacement(replacement, { taskClass, catalog });
+  return replaced ? Object.freeze({ route: replaced, reason: replaced.reason }) : resolved;
 }
 
 // One route per lane. Repairs and resumes reuse the recorded entry; a different route for the lane is refused, as the
@@ -35,7 +129,7 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
 // (taskClass, or a task default's own class): the owner rules, and a task default's model by its catalog row when a
 // catalog is given, else by name. That happens here, once; later reads check only its shape. A UI task records only its
 // ui-design and ui-check lanes, on Fable high, Fast off.
-function recordLane(task, { lane, route, reason, taskClass = null, catalog = null }) {
+function recordLane(task, { lane, route, reason, taskClass = null, catalog = null, replacement = null }) {
   if (task.ui) {
     taskClass = uiTaskLaneClass(task, taskClass);
     if (!isUiRoute(route)) throw Error(`UI task: a ${taskClass} lane records only Fable high, Fast off (owner rule); the build goes to a code task`);
@@ -45,6 +139,11 @@ function recordLane(task, { lane, route, reason, taskClass = null, catalog = nul
     if (recorded.reason !== reason) throw Error(`lane ${lane} already has a recorded route; repairs and resumes reuse it`);
     return recorded;
   }
+  // A fresh off-pace route records only as its admission resolves now, against this locked record.
+  if (OFF_PACE_SOURCES.includes(route?.source) && (reason !== route.reason ||
+      !isDeepStrictEqual(admitReplacement(replacement && { ...replacement, task, lane }, { taskClass, catalog }), route))) {
+    throw Error(`a ${route.source} route records only through its admitted resolution for this task and lane`);
+  }
   validateRoleRoute('worker', route);
   const laneClass = taskClass ?? (route.source === 'task-default' ? route.kind : null);
   if (laneClass != null) validateLaneClass(route, laneClass, catalog);
@@ -52,9 +151,9 @@ function recordLane(task, { lane, route, reason, taskClass = null, catalog = nul
   return task.routes[lane];
 }
 
-export function recordWorkerRoute(taskPath, { lane, route, reason, taskClass = null, catalog = null }) {
+export function recordWorkerRoute(taskPath, { lane, route, reason, taskClass = null, catalog = null, replacement = null }) {
   let entry;
-  updateTask(taskPath, task => { entry = recordLane(task, { lane, route, reason, taskClass, catalog }); });
+  updateTask(taskPath, task => { entry = recordLane(task, { lane, route, reason, taskClass, catalog, replacement }); });
   return entry;
 }
 
@@ -69,7 +168,10 @@ function differingLaneFlags(stored, flags, ownerRoute) {
     if (ownerRoute.fastMode !== stored.fastMode) differ.push('owner-fast');
   }
   if (flags.class != null) {
-    let fits = stored.source === 'task-default' ? canonicalWorkerClass(stored.kind) === canonicalWorkerClass(flags.class) : ownerRoute != null || Object.hasOwn(OWNER_RULE_ROUTES, canonicalWorkerClass(flags.class));
+    // An off-pace record (replacement or pace-backup) is a code lane's, so --class code resumes it.
+    let fits = stored.source === 'task-default' ? canonicalWorkerClass(stored.kind) === canonicalWorkerClass(flags.class)
+      : OFF_PACE_SOURCES.includes(stored.source) ? canonicalWorkerClass(flags.class) === 'code'
+        : ownerRoute != null || Object.hasOwn(OWNER_RULE_ROUTES, canonicalWorkerClass(flags.class));
     if (fits && stored.source !== 'task-default') {
       try { validateLaneClass(stored, flags.class); } catch { fits = false; }
     }
@@ -115,7 +217,8 @@ async function main(argv) {
   const ownerRoute = flags['owner-model'] ? { role: 'worker', source: 'owner-explicit', model: flags['owner-model'],
     effort: flags['owner-effort'], fastMode: flags['owner-fast'] === 'on' } : null;
   // A recorded lane resumes on its route: plainly, or with route flags that select exactly that route.
-  const recorded = flags.task && flags.lane ? readTask(resolve(flags.task)).routes?.[flags.lane] : null;
+  const task = flags.task && flags.lane ? readTask(resolve(flags.task)) : null;
+  const recorded = task?.routes?.[flags.lane] ?? null;
   if (recorded) {
     const differ = differingLaneFlags(recorded.route, flags, ownerRoute);
     if (differ.length) {
@@ -126,8 +229,10 @@ async function main(argv) {
   }
   if (!ownerRoute && !flags.class) throw Error(usage);
   const catalog = ownerRoute ? null : await readCatalog(flags.catalog);
-  const resolved = await resolveWorkerRoute({ taskClass: flags.class ?? null, ownerRoute, catalog });
-  if (flags.task) recordWorkerRoute(resolve(flags.task), { lane: flags.lane, ...resolved, taskClass: flags.class ?? null, catalog });
+  // A task lane carries its task and lane as off-pace context; with no proof or evidence it stays on the default.
+  const replacement = task ? { task, lane: flags.lane } : null;
+  const resolved = await resolveWorkerRoute({ taskClass: flags.class ?? null, ownerRoute, catalog, replacement });
+  if (flags.task) recordWorkerRoute(resolve(flags.task), { lane: flags.lane, ...resolved, taskClass: flags.class ?? null, catalog, replacement });
   return resolved;
 }
 

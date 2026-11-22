@@ -1,5 +1,6 @@
-import { isGptOrWebRoute, resolveWorkerSurface } from './agent-routing.mjs';
+import { isGptOrWebRoute, OFF_PACE_SOURCES, replacementSettings, resolveWorkerSurface } from './agent-routing.mjs';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 const lanePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const idPattern = /^[A-Za-z0-9-]{8,128}$/;
@@ -38,6 +39,11 @@ function settings(value) {
         Object.values(value.features).some(item => typeof item !== 'boolean')))) {
     throw Error('Worker settings may contain only thinkingOptionId and boolean fast_mode');
   }
+  return structuredClone(value);
+}
+// A replacement launch's settings are exactly its fixed ones (agent-routing.mjs replacementSettings), nothing added.
+function replacementRequestSettings(value) {
+  if (!isDeepStrictEqual(value, replacementSettings())) throw Error('replacement Worker settings must be exactly its fixed settings');
   return structuredClone(value);
 }
 
@@ -99,18 +105,25 @@ export function buildManagedWorkspaceRequest({ taskId, lane, sourcePath, baseBra
 
 // task is the destination task record (readTask) whose id is taskId, and taskClass the lane's intended class; with them
 // a recorded lane takes only its recorded route and every route meets the class's owner rules (agent-routing.mjs
-// validateLaunchedWorkerRoute). The request always creates a Worker, so it is routed and gated only as one.
+// validateLaunchedWorkerRoute). The request always creates a Worker, so it is routed and gated only as one. A replacement
+// lane (route source replacement, recorded by route.mjs) also takes target, the launch target {daemon, local, platform},
+// whose daemon is the create_workspace result's serverId, and capabilities, MCP inspect_provider's result for the
+// replacement provider on it with MCP list_models rows as models. An off-pace lane runs only on its recorded branch.
 export function buildManagedWorkerRequest({ taskId, lane, title, provider, initialPrompt,
   agentSettings = {}, workerLabels = {}, workspace, capabilities, role = 'worker', route, surface = 'pi',
-  nativeAuthorization = null, task = null, taskClass = null }) {
+  nativeAuthorization = null, task = null, taskClass = null, target = null }) {
   if (role !== 'worker') throw Error(`buildManagedWorkerRequest builds only Workers (role worker), not ${String(role)}`);
   const names = managedWorkerNames({ taskId, lane });
   const agentTitle = required(title, 'Worker title');
   if (task != null && task.id !== taskId) throw Error('Worker task id must be the bound task record id');
   const mappedRoute = resolveWorkerSurface({ provider, agentSettings, role, route, surface, nativeAuthorization,
-    catalog: capabilities?.models, task, lane, taskClass });
+    catalog: capabilities?.models, task, lane, taskClass, capabilities, target, serverId: workspace?.serverId });
+  const replacement = route?.source === 'replacement';
+  if (OFF_PACE_SOURCES.includes(route?.source) && route.receipt?.placement !== names.branchName) {
+    throw Error(`${route.source} receipt placement is not this lane's branch`);
+  }
   const agentProvider = mappedRoute.provider;
-  const requestedSettings = settings(mappedRoute.agentSettings);
+  const requestedSettings = replacement ? replacementRequestSettings(mappedRoute.agentSettings) : settings(mappedRoute.agentSettings);
   if (!workspace?.workspaceId || typeof workspace.workspaceId !== 'string' ||
       !workspace.cwd || typeof workspace.cwd !== 'string') {
     throw Error('Paseo create_workspace returned no managed workspace identity');
@@ -118,10 +131,8 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
   // Pi exposes no modes and executes its tools without a permission-mode selector.
   // This exception applies only to advertised, available Pi, never other providers.
   const pi = agentProvider.split('/')[0] === 'pi';
-  const modeId = pi ? selectPiMode(capabilities) : selectUnattendedMode(capabilities);
-  const prompt = managedPrompt(initialPrompt, {
-    workspaceId: workspace.workspaceId, worktreePath: workspace.cwd, branchName: names.branchName,
-  });
+  const modeId = replacement ? mappedRoute.modeId : pi ? selectPiMode(capabilities) : selectUnattendedMode(capabilities);
+  const prompt = managedPrompt(initialPrompt, { workspaceId: workspace.workspaceId, worktreePath: workspace.cwd, branchName: names.branchName });
   return Object.freeze({
     workspaceId: workspace.workspaceId,
     worktreePath: workspace.cwd,
