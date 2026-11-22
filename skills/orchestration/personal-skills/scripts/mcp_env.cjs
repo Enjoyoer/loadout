@@ -163,6 +163,162 @@ function mcpHeader(servers, client, name) {
   if (!/^[\x21-\x7e]+$/.test(value)) throw Error('MCP env file value for ' + s.bearerTokenEnvVar + ' is not a bearer token');
   return client === 'pi' ? 'Bearer ' + value : JSON.stringify({ Authorization: 'Bearer ' + value });
 }
+// `--mcp-stdio <server>`: a stdio MCP server for a harness that can neither run a header command nor keep a bearer
+// out of its config and environment (Antigravity). It forwards each newline-delimited JSON-RPC message on stdin to
+// the enabled server's Streamable HTTP url and writes each JSON-RPC message the server sends back, from a JSON or an
+// event-stream body, to stdout, one per line; diagnostics go to stderr. The bearer is read from the server's env file
+// at each request, so a rotation reaches the next one; a missing or unsafe file answers that request with a JSON-RPC
+// error and sends nothing, never falling back to an environment variable. The token is never on the command line,
+// in the environment, on stdout or stderr. Redirects are refused, so the bearer cannot reach another origin. Requests
+// run concurrently with no client timeout, as a tool call can run many minutes. The session id from the initialize
+// response, and the protocol version it negotiated, go on later requests; a 404 on a session re-sends the cached
+// initialize (and notifications/initialized) for a new session and retries that request once. On stdin EOF it waits
+// for open requests, ends the session with a DELETE (best effort) and exits 0.
+function mcpStdio(servers, name) {
+  const s = servers.find(s => s.name === name && s.enabled);
+  if (!s) throw Error('no enabled MCP server ' + (/^[A-Za-z0-9_-]+$/.test(name || '') ? name : '') + ' in mcp-env.json');
+  bearerNames([s]);
+  let url = null;
+  try { url = new URL(s.url); } catch {}
+  if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:'))
+    throw Error('MCP server ' + name + ' has no http or https url in mcp-env.json');
+  const http = require(url.protocol === 'https:' ? 'node:https' : 'node:http');
+  const agent = new http.Agent({ keepAlive: true });
+  const say = text => process.stderr.write('mcp-stdio ' + name + ': ' + text + '\n');
+  // U+2028 and U+2029 are escaped so a reader that also splits lines on them sees one message per line.
+  const out = m => process.stdout.write(JSON.stringify(m).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029') + '\n');
+  process.stdout.on('error', () => process.exit(0));
+  const visible = v => typeof v === 'string' && /^[\x21-\x7e]+$/.test(v);
+  let session = null, protocol = null, init = null, initialized = null, renewing = null;
+  const bearer = () => {
+    const value = envFileValue(s);
+    if (!visible(value)) throw Error('MCP env file value for ' + s.bearerTokenEnvVar + ' is not a bearer token');
+    return value;
+  };
+  // One HTTP exchange. Resolves {status, sent, text} once the body ends: sent is the session id it carried, text the
+  // start of a non-2xx body. Each JSON-RPC message of a 2xx body goes to deliver as it arrives.
+  const exchange = (method, body, deliver, initializing) => new Promise((resolve, reject) => {
+    const headers = { Accept: 'application/json, text/event-stream', Authorization: 'Bearer ' + bearer() };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const sent = initializing ? null : session;
+    if (sent) headers['Mcp-Session-Id'] = sent;
+    if (!initializing && protocol) headers['MCP-Protocol-Version'] = protocol;
+    const req = http.request(url, { method, headers, agent }, res => {
+      const status = res.statusCode, type = String(res.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      res.setEncoding('utf8');
+      res.on('error', reject);
+      res.on('close', () => reject(Error('response ended early')));
+      if (status < 200 || status > 299) {
+        let text = '';
+        res.on('data', chunk => { if (text.length < 4096) text += chunk; });
+        res.on('end', () => resolve({ status, sent, text }));
+        return;
+      }
+      if (initializing && visible(res.headers['mcp-session-id'])) session = res.headers['mcp-session-id'];
+      const message = data => {
+        let m;
+        try { m = JSON.parse(data); } catch { say('dropped a message that is not JSON'); return; }
+        if (initializing && m && m.result && visible(m.result.protocolVersion)) protocol = m.result.protocolVersion;
+        deliver(m);
+      };
+      let buf = '';
+      if (type === 'text/event-stream') {
+        let data = [], event = '';
+        const field = line => {
+          if (line === '') {
+            // An event with empty data (a priming event carrying only an id) dispatches nothing, as in EventSource.
+            if (data.join('\n') && (event === '' || event === 'message')) message(data.join('\n'));
+            data = []; event = '';
+          } else if (!line.startsWith(':')) {
+            const at = line.indexOf(':'), key = at < 0 ? line : line.slice(0, at);
+            const value = at < 0 ? '' : line.slice(at + 1).replace(/^ /, '');
+            if (key === 'data') data.push(value); else if (key === 'event') event = value;
+          }
+        };
+        res.on('data', chunk => {
+          buf += chunk;
+          for (let m; (m = /\r\n|\n|\r(?=[^\n])/.exec(buf));) { field(buf.slice(0, m.index)); buf = buf.slice(m.index + m[0].length); }
+        });
+        res.on('end', () => { if (buf) field(buf.replace(/\r$/, '')); field(''); resolve({ status, sent }); });
+      } else {
+        res.on('data', chunk => { buf += chunk; });
+        res.on('end', () => {
+          if (buf.trim()) {
+            if (type === 'application/json') message(buf); else say('dropped a ' + (type || 'untyped') + ' body');
+          }
+          resolve({ status, sent });
+        });
+      }
+    });
+    req.on('error', reject);
+    if (method === 'DELETE') req.setTimeout(5000, () => req.destroy(Error('timed out')));
+    req.end(body);
+  });
+  const failure = r => 'HTTP ' + r.status + (r.status > 299 && r.status < 400 ? ' redirect refused' : '') + (() => {
+    try { const e = JSON.parse(r.text).error; return e && typeof e.message === 'string' ? ': ' + e.message.slice(0, 200) : ''; }
+    catch { return ''; }
+  })();
+  // A new session after the server forgot one, shared by every request that saw that session expire.
+  const renew = stale => {
+    if (renewing) return renewing;
+    if (session !== stale) return Promise.resolve();
+    renewing = (async () => {
+      if (!init) throw Error('session expired before an initialize');
+      const r = await exchange('POST', init, () => {}, true);
+      if (r.status < 200 || r.status > 299) throw Error('re-initialize failed: ' + failure(r));
+      if (initialized) await exchange('POST', initialized, () => {}, false);
+    })().finally(() => { renewing = null; });
+    return renewing;
+  };
+  const forward = async line => {
+    let msg;
+    try { msg = JSON.parse(line); }
+    catch { out({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
+    const list = (Array.isArray(msg) ? msg : [msg]).filter(m => m && typeof m === 'object');
+    const ids = list.filter(m => typeof m.method === 'string' && m.id !== undefined && m.id !== null).map(m => m.id);
+    const initializing = list.some(m => m.method === 'initialize');
+    if (initializing) { init = line; initialized = null; }
+    if (list.some(m => m.method === 'notifications/initialized')) initialized = line;
+    const answered = new Set();
+    const deliver = m => {
+      for (const one of Array.isArray(m) ? m : [m]) if (one && one.method === undefined) answered.add(one.id);
+      out(m);
+    };
+    const fail = text => {
+      say(text);
+      for (const id of ids) if (!answered.has(id)) out({ jsonrpc: '2.0', id, error: { code: -32000, message: text } });
+    };
+    try {
+      if (renewing && !initializing) await renewing.catch(() => {});
+      let r = await exchange('POST', line, deliver, initializing);
+      if (r.status === 404 && r.sent) { await renew(r.sent); r = await exchange('POST', line, deliver, false); }
+      if (r.status < 200 || r.status > 299) fail(failure(r));
+      else if (ids.some(id => !answered.has(id))) fail('the server ended its answer without a response');
+    } catch (e) { fail(e.message); }
+  };
+  const pending = new Set();
+  // Lines split only at \n (readline would also split inside a string at U+2028), decoded as UTF-8 across chunks.
+  const take = line => {
+    line = line.replace(/\r$/, '');
+    if (!line.trim()) return;
+    const p = forward(line);
+    pending.add(p);
+    p.finally(() => pending.delete(p));
+  };
+  let rest = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => {
+    rest += chunk;
+    for (let at; (at = rest.indexOf('\n')) >= 0;) { take(rest.slice(0, at)); rest = rest.slice(at + 1); }
+  });
+  process.stdin.on('end', async () => {
+    take(rest);
+    await Promise.allSettled([...pending]);
+    if (session) await exchange('DELETE', undefined, () => {}, false).catch(() => {});
+    agent.destroy();
+    process.exitCode = 0;
+  });
+}
 function parents(dir) {
   const out = [];
   for (;;) { out.push(dir); const next = path.dirname(dir); if (next === dir) return out; dir = next; }
@@ -275,6 +431,9 @@ if (require.main === module) {
     if (args[0] === '--mcp-header') {
       if (args.length !== 3) throw Error('usage: node mcp-env.cjs --mcp-header pi|claude <server>');
       process.stdout.write(mcpHeader(descriptor.servers || [], args[1], args[2]));
+    } else if (args[0] === '--mcp-stdio') {
+      if (args.length !== 2) throw Error('usage: node mcp-env.cjs --mcp-stdio <server>');
+      mcpStdio(descriptor.servers || [], args[1]);
     } else {
       let id = null;
       if (args[0] === '--provider') { args.shift(); id = args.shift(); }

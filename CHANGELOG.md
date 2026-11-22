@@ -8,6 +8,10 @@ All notable changes are listed here. Loadout follows [semantic versioning](https
 
 - `dispatching-parallel-agents`: the skill is retired. It restated rules that OPC section 3 and OPN already carry (independent scopes, one integrator, verify returned work). It is gone from the `loadout-orchestration` Claude Code plugin and the README skill table, which now lists 24 skills. The skills sync retires an installed copy on its next run; git history keeps the files.
 
+### Added
+
+- personal-skills: `node mcp-env.cjs --mcp-stdio <server>`, a stdio MCP server that forwards to an enabled fleet server's Streamable HTTP URL and adds its bearer itself, for a harness such as Antigravity that has no header command and must not hold a raw bearer in its MCP config or environment. Only the server name is on its command line; the URL and env file come from `mcp-env.json`. It reads the bearer from the owner-only env file at every request (a missing or unsafe file answers that request with a JSON-RPC error and sends no header), refuses redirects, accepts JSON and event-stream answers, keeps the session id and protocol version, re-initializes once on a 404 for an expired session, runs requests concurrently with no client timeout, and ends the session on stdin EOF. See `fleet/README.md` "Stdio proxy".
+
 ### Changed
 
 - opn 2.2.7 and repo-lessons: every PM's `STATUS.html` carries a `Reports to: <PM>` line under its title, naming the role PM the global routing rules assign (the owner for a top-level role PM); a PM sends questions and decisions only there.
