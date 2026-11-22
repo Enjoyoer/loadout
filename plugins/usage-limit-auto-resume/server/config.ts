@@ -40,6 +40,21 @@ const ConfigObjectSchema = z.object({
     serviceTier: z.string().min(1).nullable(),
   }).strict()).max(50).default([]),
   pmFallbackCancel: z.array(z.string().min(1)).max(50).default([]),
+  // Pace mode: while this host's pq reading shows the listed Claude accounts off pace, a live Pi PM on a Claude
+  // subscription model moves in place to the profile below, and returns to its exact original once a fresh reading
+  // shows them on pace. Off by default; turning it off stops new pace swaps, never a pending pace return.
+  paceFallback: z.boolean().default(false),
+  paceFallbackModel: z.string().min(1).default("fleet/gpt-6.2-sol"),
+  paceFallbackThinking: z.string().min(1).default("medium"),
+  paceFallbackServiceTier: z.string().min(1).default("standard"),
+  // The pq account labels whose pace decides. Empty: pace cannot be decided and nothing moves. Real labels belong only
+  // in the host settings file.
+  pacePoolAccounts: z.array(z.string().min(1)).max(50).default([]),
+  // PMs pace mode never moves: by `project` label, in addition to the built-in main PM projects (config, work,
+  // personal), which no setting removes; and by agent id prefix. The prefixes belong only in the host settings file;
+  // while that list is empty (or pacePoolAccounts is), the host is unconfigured and pace mode moves nothing.
+  paceFallbackExcludedProjects: z.array(z.string().min(1)).max(50).default([]),
+  paceFallbackExcludedAgents: z.array(z.string().min(1)).max(50).default([]),
 });
 
 export const ConfigSchema = ConfigObjectSchema.strict();

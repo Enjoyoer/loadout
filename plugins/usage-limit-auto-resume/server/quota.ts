@@ -101,6 +101,52 @@ export function poolQuota(document: unknown, pool: QuotaPool | null, now = Date.
 }
 
 /**
+ * Pace mode's reading of the listed Claude accounts: `off` (behind pace, or a listed account out), `on`, or `undecided`
+ * when it cannot tell. `reason` is a word for the log, never a figure.
+ */
+export type Pace = { state: "on" | "off" | "undecided"; reason: string };
+
+const WEEK_HOURS = 168;
+// The pool may run this many points ahead of its even weekly spend before it counts as off pace.
+const PACE_TOLERANCE = 5;
+
+/**
+ * The pace of the listed pq accounts (by label, provider claude), from one parsed pq document. For each listed account
+ * with a fresh weekly window (`seven_day`, numeric `usedPct` and `resetInSeconds`), the expected use is the share of the
+ * week gone, E = 100 * (168 - hours to the reset, clamped to 0..168) / 168, and the use is U = `usedPct`. The pool gap
+ * is the sum of E - U over those accounts divided by their number: a listed account with no fresh weekly reading
+ * changes neither the sum nor the divisor. With at least one such reading, off pace when the gap is below -5, or a
+ * listed account has a `five_hour` or `seven_day` window with nothing left whose reset is still ahead. Undecided on an
+ * empty list, an unparseable, other-schema or stale snapshot, or no fresh weekly reading at all.
+ */
+export function paceOf(document: unknown, labels: readonly string[], now = Date.now()): Pace {
+  const undecided = (reason: string): Pace => ({ state: "undecided", reason });
+  if (!labels.length) return undecided("no-pool-accounts");
+  if (!document || typeof document !== "object" || Array.isArray(document)) return undecided("pq-unparseable");
+  const data = document as Record<string, unknown>;
+  if (data.schemaVersion !== 1) return undecided("pq-schema");
+  if (!Array.isArray(data.accounts)) return undecided("pq-no-accounts");
+  if (data.snapshotStale !== false) return undecided("pq-stale");
+  let gap = 0, readings = 0, out = false;
+  for (const label of labels) {
+    const account = data.accounts.find((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object" &&
+      (entry as Record<string, unknown>).provider === "claude" && (entry as Record<string, unknown>).label === label);
+    const windows = (Array.isArray(account?.windows) ? account.windows : []).filter((window): window is Record<string, unknown> => !!window && typeof window === "object");
+    // Out as the pool reader counts it: nothing left, and its reset still ahead.
+    if (windows.some((window) => WINDOWS.includes(window.id as QuotaWindow) && num(window.leftPct) && window.leftPct <= 0 && num(window.resetAt) && window.resetAt * 1000 > now)) out = true;
+    const week = windows.find((window) => window.id === "seven_day");
+    if (!week || week.fresh === false || !num(week.usedPct) || !num(week.resetInSeconds)) continue;
+    const hours = Math.min(WEEK_HOURS, Math.max(0, week.resetInSeconds / 3600));
+    gap += 100 * (WEEK_HOURS - hours) / WEEK_HOURS - week.usedPct;
+    readings++;
+  }
+  if (!readings) return undecided("no-fresh-weekly");
+  if (out) return { state: "off", reason: "account-out" };
+  if (gap / readings < -PACE_TOLERANCE) return { state: "off", reason: "behind-pace" };
+  return { state: "on", reason: "on-pace" };
+}
+
+/**
  * Whether the pool reads as out. `refused` means the provider just refused this pool's request for quota (a usage limit,
  * a 429 rate limit, a 402 credit balance): then an account pq cannot show with quota left, such as a stale or rolled-over
  * reading, counts as out too, and only a fresh reading with quota left is capacity.
@@ -216,5 +262,12 @@ export class QuotaReader {
     if (!pool) return { status: "unknown", pool, reason: "agent draws on no pq pool" };
     const result = await this.read(options.ttlMs, options.timeoutMs);
     return "error" in result ? { status: "unknown", pool, reason: result.error } : poolQuota(result.document, pool, now, options.bufferMs);
+  }
+
+  /** Pace mode's reading of the listed accounts, from the same shared pq reading. A failed pq run is undecided. */
+  async pace(labels: readonly string[], options: { ttlMs: number; timeoutMs: number }): Promise<Pace> {
+    if (!labels.length) return { state: "undecided", reason: "no-pool-accounts" };
+    const result = await this.read(options.ttlMs, options.timeoutMs);
+    return "error" in result ? { state: "undecided", reason: "pq-unavailable" } : paceOf(result.document, labels, this.clock());
   }
 }

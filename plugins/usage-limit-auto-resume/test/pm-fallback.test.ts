@@ -30,7 +30,9 @@ function fixture(home: string) {
   // `unproven` adds a second Claude account pq cannot read as out or as having quota: a rolled-over 5-hour window, or a
   // stale reading that still shows quota left.
   // `codexUnproven` adds the same kind of account to the codex pool.
-  const pq: { claude: Pool; codex: Pool; stale: boolean; unproven: "rolled_over" | "stale" | null; codexUnproven: boolean } = { claude: { five: "out", week: "out" }, codex: { five: "ok", week: "ok" }, stale: false, unproven: null, codexUnproven: false };
+  // `pace` replaces the Claude accounts with labelled ones for pace mode: weekly use and hours to the weekly reset, and a
+  // five-hour window's left percentage (null: no five-hour window).
+  const pq: { claude: Pool; codex: Pool; stale: boolean; unproven: "rolled_over" | "stale" | null; codexUnproven: boolean; pace: Array<{ label: string; usedPct: number; resetHours: number; five?: number | null }> | null } = { claude: { five: "out", week: "out" }, codex: { five: "ok", week: "ok" }, stale: false, unproven: null, codexUnproven: false, pace: null };
   // The plugin's own message per turn it started, which is that turn's newest user row.
   const sent = new Map<string, { text: string; messageId: string }>();
   let failApply = 0;
@@ -60,8 +62,12 @@ function fixture(home: string) {
       { id: "five_hour", state: "stale", fresh: false, leftPct: 30, resetAt: now() + 3600 },
       { id: "seven_day", state: "stale", fresh: false, leftPct: 40, resetAt: now() + 86400 },
     ] };
+  const paced = () => pq.pace!.map(({ label, usedPct, resetHours, five = 60 }) => ({ provider: "claude", label, fresh: true, windows: [
+    ...(five === null ? [] : [{ id: "five_hour", fresh: true, leftPct: five, usedPct: 100 - five, resetAt: now() + 3600, resetInSeconds: 3600 }]),
+    { id: "seven_day", fresh: true, leftPct: 100 - usedPct, usedPct, resetAt: now() + resetHours * 3600, resetInSeconds: resetHours * 3600 },
+  ] }));
   const document = () => ({ schemaVersion: 1, snapshotStale: pq.stale, accounts: [
-    { provider: "claude", fresh: true, windows: windows(pq.claude) },
+    ...(pq.pace ? paced() : [{ provider: "claude", fresh: true, windows: windows(pq.claude) }]),
     ...(pq.unproven ? [unproven()] : []),
     ...(pq.codexUnproven ? [{ ...unproven(), provider: "codex" }] : []),
     { provider: "codex", fresh: true, windows: windows(pq.codex) },
@@ -69,7 +75,10 @@ function fixture(home: string) {
   const api = {
     getConnectionState: () => ({ status: "connected" }), close: async () => undefined,
     providers: { listModels: async () => ({ models: [OPUS, SOL, FABLE].map((id) => ({ id, defaultThinkingOptionId: id === OPUS ? "medium" : "high", thinkingOptions: ["low", "medium", "high"].map((t) => ({ id: t })) })) }) },
-    agents: { ref: (id: string) => ({
+    agents: { list: async (options?: { filter?: { labels?: Record<string, string> } }) => ({
+      entries: [...agents.values()].filter((agent) => !agent.archivedAt && Object.entries(options?.filter?.labels ?? {}).every(([key, value]) => agent.labels?.[key] === value)).map((agent) => ({ agent: structuredClone(agent) })),
+      pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
+    }), ref: (id: string) => ({
       refresh: async () => {
         await beforeFetch?.(id);
         const agent = agents.has(id) ? structuredClone(agents.get(id)!) : undefined;
@@ -165,14 +174,15 @@ async function swapPm(f: ReturnType<typeof fixture>, id = "pm") {
   await f.endTurn(id, { kind: "failed", error: { message: USAGE } }, `${id}-turn-1`);
 }
 
-it("PM fallback swaps exactly and resumes the same session on Sol; a worker on the same failure is untouched", () => scenario(async (f, logs) => {
+// Decision 302 a: a worker on the same failure swaps and resumes the same way as a PM.
+it("PM fallback swaps exactly and resumes the same session on Sol; a worker on the same failure swaps too", () => scenario(async (f, logs) => {
   f.add("worker", "worker");
   await f.endTurn("worker", { kind: "failed", error: { message: USAGE } }, "worker-turn-1");
   await swapPm(f);
-  assert.deepEqual(f.calls.apply, [{ agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }]);
-  assert.deepEqual(f.calls.labels, [{ "opc.service-tier": "standard" }]);
-  assert.equal(f.agents.get("worker")!.model, OPUS);
-  const [obligation] = (await f.returns.read()).obligations;
+  assert.deepEqual(f.calls.apply, [{ agentId: "worker", modelId: SOL, thinkingOptionId: "medium" }, { agentId: "pm", modelId: SOL, thinkingOptionId: "medium" }]);
+  assert.deepEqual(f.calls.labels, [{ "opc.service-tier": "standard" }, { "opc.service-tier": "standard" }]);
+  assert.equal(f.agents.get("worker")!.model, SOL);
+  const obligation = await f.returns.get("pm");
   assert.deepEqual(obligation!.original, { model: OPUS, thinkingOptionId: "high", serviceTier: null });
   assert.equal(obligation!.phase, "fallback");
   assert.deepEqual(f.calls.sends.filter((s) => s.startsWith("pm:")).map((s) => s.split(":")[1]), [SOL]);
@@ -180,11 +190,10 @@ it("PM fallback swaps exactly and resumes the same session on Sol; a worker on t
   const pmRecord = (await f.records.read()).find((r) => r.agentId === "pm")!;
   assert.equal(pmRecord.model, SOL);
   assert.equal(pmRecord.persistenceSessionId, "pm-session");
-  // The worker's record stays on its own model and quota hold: no swap, no send.
-  const workerRecord = (await f.records.read()).find((r) => r.agentId === "worker")!;
-  assert.equal(workerRecord.model, OPUS);
-  assert.ok(workerRecord.quotaHold);
-  assert.ok(!f.calls.sends.some((s) => s.startsWith("worker:")));
+  // The worker's record follows it to Sol and is resent there once, as the PM's is.
+  assert.deepEqual((await f.returns.get("worker"))!.original, { model: OPUS, thinkingOptionId: "high", serviceTier: null });
+  assert.equal((await f.records.read()).find((r) => r.agentId === "worker")!.model, SOL);
+  assert.deepEqual(f.calls.sends.filter((s) => s.startsWith("worker:")).map((s) => s.split(":")[1]), [SOL]);
 }));
 
 it("quota release restores the exact original profile, also mid-turn without interrupting it", () => scenario(async (f, logs) => {
@@ -354,7 +363,7 @@ it("a persisted swap intent is re-checked before it is applied; one that already
   const original = { model: OPUS, thinkingOptionId: "high", serviceTier: null };
   const fallback = { model: SOL, thinkingOptionId: "medium", serviceTier: "fast" };
   const cases: Array<[string, Partial<AgentSnapshot>, () => void]> = [
-    ["worker", { labels: { role: "worker" } }, () => undefined],
+    ["archived", { archivedAt: "2026-01-02T09:00:00.000Z" }, () => undefined],
     ["nonclaude", { model: "local/qwen3.8-27b" }, () => undefined],
     ["freed", {}, () => { f.pq.claude = { five: "ok", week: "ok" }; }],
     ["unknown", {}, () => { f.pq.stale = true; }],
@@ -668,8 +677,9 @@ it("a repeated 429 rate_limit_error with pool capacity keeps retrying on the bac
       assert.equal(logs.filter((l) => l.includes("retry-scheduled agentId=agent")).length, end === "success" ? 6 : 7, label);
       assert.equal(logs.filter((l) => l.includes("send-skipped agentId=agent")).length, end === "success" ? 6 : 7, `${label}: each wait is logged once`);
       assert.ok(!logs.some((l) => l.includes("retry-stopped") || l.includes("exhausted")), label);
-      // A PM is considered for a swap on every quota failure; with Claude capacity it is held, and said once.
-      assert.equal(logs.filter((l) => l.includes("pm-fallback-held agentId=agent")).length, role === "pm" ? 1 : 0, label);
+      // Any Pi agent (a PM or, since decision 302 a, a worker) is considered for a swap on every quota failure; with
+      // Claude capacity it is held, and said once.
+      assert.equal(logs.filter((l) => l.includes("pm-fallback-held agentId=agent")).length, 1, label);
       assert.deepEqual(f.calls.apply, []);
     });
   }
@@ -707,17 +717,17 @@ it("T1: an Opus PM refused twice in a row by CPA's 503 moves to Sol high on the 
   assert.equal((await f.records.read()).find((r) => r.agentId === "pm")?.model, SOL, "its resume record follows it to Sol");
 }));
 
-it("T2: a non-PM agent with the same two failures retries on the backoff and never swaps", () => scenario(async (f, logs) => {
+// Decision 302 a replaces decision 236's T2 (a non-PM never swapped): a worker moves exactly as a PM does.
+it("T2: a worker with the same two failures moves to Sol on the second, as a PM does", () => scenario(async (f, logs) => {
   f.pq.claude = { five: "ok", week: "ok" };
   f.pq.codex = { five: "out", week: "out" };
   f.add("worker", "worker");
   await cpaTwice(f, "worker", "worker-turn-1");
-  for (let n = 0; n < 5; n++) await f.tick();
-  assert.deepEqual(f.calls.apply, []);
-  assert.deepEqual(f.calls.sends, [`worker:${OPUS}:continue`, `worker:${OPUS}:continue`], "transient retries, now, then after 120 s");
-  assert.deepEqual((await f.returns.read()).obligations, []);
-  assert.equal((await f.returns.read()).cpaStreaks, undefined, "nothing is counted for a non-PM");
-  assert.ok(!logs.some((l) => l.includes("pm-")));
+  assert.deepEqual(f.calls.apply, [{ agentId: "worker", modelId: SOL, thinkingOptionId: "medium" }]);
+  assert.equal((await f.returns.get("worker"))?.cpa503, true);
+  assert.equal((await f.returns.read()).cpaStreaks?.worker, undefined, "the run ends with the move");
+  assert.ok(logs.some((l) => l.includes("pm-swap-start agentId=worker") && l.includes("trigger=cpa-503-twice evidence=cpa-503")));
+  assert.equal((await f.records.read()).find((r) => r.agentId === "worker")?.model, SOL, "its resume record follows it to Sol");
 }));
 
 it("T3: a failed turn on Sol after the CPA swap changes no model and starts no return", () => scenario(async (f, logs) => {
@@ -1146,4 +1156,138 @@ it("T17: a Fable success recorded while the CPA chain's step-back write to Opus 
   assert.equal(f.agents.get("pm")!.model, FABLE, "back on Fable, not left on Opus");
   assert.equal(logs.filter((l) => l.includes("pm-restore-verified agentId=pm")).length, 1);
   assert.equal(await f.returns.get("pm"), null);
+}));
+
+// Pace mode (owner decision, 2026-11-21). Fixture account labels only. 84 hours to the weekly reset puts the even spend
+// at 50%: a use of 80% is off pace, 30% on pace.
+const PACE_ACCOUNTS = ["acct-a", "acct-b"];
+const paceAt = (usedPct: number, five: number | null = 60) => PACE_ACCOUNTS.map((label) => ({ label, usedPct, resetHours: 84, five }));
+const SOL_MEDIUM: Profile = { model: SOL, thinkingOptionId: "medium", serviceTier: "standard" };
+const OPUS_HIGH: Profile = { model: OPUS, thinkingOptionId: "high", serviceTier: null };
+// A configured host: both lists set. The excluded prefix is made up.
+const PACE_ON = { paceFallback: true, pacePoolAccounts: PACE_ACCOUNTS, paceFallbackExcludedAgents: ["excl0001"] };
+const later = (minutes: number) => mock.timers.setTime(Date.now() + minutes * 60_000);
+
+it("P1: off pace, an eligible PM moves in place to Sol medium and returns to its exact original on a fresh on-pace reading", () => scenario(async (f, logs) => {
+  f.setConfig(PACE_ON);
+  f.pq.pace = paceAt(80);
+  f.add("pm-a", "pm", { labels: { role: "pm", project: "fixture" } });
+  await f.tick();
+  assert.deepEqual(profileOf(f.agents.get("pm-a")!), SOL_MEDIUM);
+  const obligation = await f.returns.get("pm-a");
+  assert.equal(obligation?.pace, true);
+  assert.deepEqual(obligation?.original, OPUS_HIGH);
+  assert.ok(logs.some((l) => /pm-swap-start agentId=pm-a \S+ trigger=pace/.test(l)));
+  assert.ok(logs.some((l) => /pm-swap-verified agentId=pm-a \S+ trigger=pace/.test(l)));
+  f.pq.pace = paceAt(30);
+  later(31);
+  await f.tick();
+  assert.deepEqual(profileOf(f.agents.get("pm-a")!), OPUS_HIGH);
+  assert.equal(await f.returns.get("pm-a"), null);
+  assert.ok(logs.some((l) => /pm-restore-verified agentId=pm-a \S+ trigger=pace/.test(l)));
+  // Booleans, reasons and times only: no account label or figure.
+  for (const line of logs.filter((l) => /pace/.test(l))) assert.doesNotMatch(line, /acct-|usedPct|gap|%/);
+}));
+
+it("P2: pace mode leaves a main PM, an excluded id prefix, a noresume PM, a worker and an API-billed Claude PM where they are", () => scenario(async (f, logs) => {
+  // A host list adds to the main PM projects and never drops them.
+  f.setConfig({ ...PACE_ON, paceFallbackExcludedProjects: ["fixture-other"] });
+  f.pq.pace = paceAt(80);
+  f.add("main", "pm", { labels: { role: "pm", project: "config" } });
+  f.add("excl0001-fixture", "pm", { labels: { role: "pm", project: "fixture-held" } });
+  f.add("quiet", "pm", { labels: { role: "pm", project: "fixture", noresume: "true" } });
+  f.add("worker", "worker", { labels: { role: "worker", project: "fixture" } });
+  f.add("api", "pm", { model: "fleet/api/claude-opus-5-5", labels: { role: "pm", project: "fixture" } });
+  await f.tick(); await f.tick();
+  assert.equal(f.calls.apply.length, 0);
+  assert.deepEqual((await f.returns.read()).obligations, []);
+  for (const [id, reason] of [["main", "excluded-project"], ["excl0001-fixture", "excluded-agent"], ["quiet", "excluded-label"]]) {
+    assert.ok(logs.some((l) => l.includes(`pm-pace-held agentId=${id} reason=${reason}`)), `${id} ${reason}`);
+  }
+}));
+
+it("P3: an undecided pq reading makes neither a pace swap nor a pace return", () => scenario(async (f, logs) => {
+  f.setConfig(PACE_ON);
+  f.add("pm-a", "pm", { labels: { role: "pm", project: "fixture" } });
+  f.pq.pace = paceAt(80);
+  f.pq.stale = true;
+  await f.tick();
+  assert.equal(f.calls.apply.length, 0);
+  assert.ok(logs.some((l) => l === "[usage-limit-auto-resume] pm-pace-held reason=undecided"));
+  f.pq.stale = false;
+  await f.tick();
+  assert.equal(f.agents.get("pm-a")!.model, SOL);
+  // Past the flap guard: a stale snapshot, then no fresh weekly reading at all, keep the PM where it is.
+  later(31);
+  f.pq.pace = paceAt(30);
+  f.pq.stale = true;
+  await f.tick();
+  f.pq.stale = false;
+  f.pq.pace = [];
+  await f.tick();
+  assert.equal(f.agents.get("pm-a")!.model, SOL);
+  assert.equal((await f.returns.get("pm-a"))?.pace, true);
+  assert.ok(logs.some((l) => /pm-pace-held agentId=pm-a \S+ reason=undecided/.test(l)));
+}));
+
+it("P4: the flap guard holds a pace return for 30 minutes after the swap landed, and the next pace swap for 30 minutes after the return, across a restart", () => scenario(async (f, logs) => {
+  f.setConfig(PACE_ON);
+  f.pq.pace = paceAt(80);
+  f.add("pm-a", "pm", { labels: { role: "pm", project: "fixture" } });
+  await f.tick();
+  assert.equal(f.agents.get("pm-a")!.model, SOL);
+  f.pq.pace = paceAt(30);
+  later(10);
+  await f.tick();
+  assert.equal(f.agents.get("pm-a")!.model, SOL, "return held by the flap guard");
+  assert.ok(logs.some((l) => /pm-pace-held agentId=pm-a obligationId=\S+ reason=flap-guard/.test(l)));
+  later(21);
+  await f.tick();
+  assert.deepEqual(profileOf(f.agents.get("pm-a")!), OPUS_HIGH);
+  f.pq.pace = paceAt(80);
+  await f.stop();
+  await f.start();
+  await f.tick();
+  assert.equal(f.agents.get("pm-a")!.model, OPUS, "next swap held by the flap guard after a restart");
+  assert.ok(logs.some((l) => /pm-pace-held agentId=pm-a reason=flap-guard/.test(l)));
+  later(31);
+  await f.tick();
+  assert.deepEqual(profileOf(f.agents.get("pm-a")!), SOL_MEDIUM);
+}));
+
+it("P5: a PM on a Claude-out return is not returned on an on-pace reading alone, nor on Claude proof while off pace", () => scenario(async (f, logs) => {
+  // Every listed account out on its five-hour window: Claude is out, and the PM takes the usual Claude-out swap.
+  f.pq.pace = paceAt(80, 0);
+  await swapPm(f);
+  const obligation = await f.returns.get("pm");
+  assert.ok(obligation && !obligation.pace);
+  assert.deepEqual(profileOf(f.agents.get("pm")!), { model: SOL, thinkingOptionId: "medium", serviceTier: "standard" });
+  f.setConfig(PACE_ON);
+  // On pace, but no account proves Claude capacity (no five-hour reading): the return keeps waiting.
+  f.pq.pace = paceAt(30, null);
+  await f.tick(); await f.tick();
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  // Claude capacity proven, but off pace: still held.
+  f.pq.pace = paceAt(80);
+  await f.tick();
+  assert.equal(f.agents.get("pm")!.model, SOL);
+  assert.ok(logs.some((l) => /pm-return-waiting agentId=pm obligationId=\S+ reason=off-pace/.test(l)));
+  // Both hold: the usual verified restore.
+  f.pq.pace = paceAt(30);
+  await f.tick();
+  assert.deepEqual(profileOf(f.agents.get("pm")!), OPUS_HIGH);
+  assert.equal(await f.returns.get("pm"), null);
+}));
+
+it("P6: an unconfigured host, with no excluded agent prefix or no pool accounts, moves nothing", () => scenario(async (f, logs) => {
+  f.pq.pace = paceAt(80);
+  f.add("pm-a", "pm", { labels: { role: "pm", project: "fixture" } });
+  for (const patch of [{ paceFallbackExcludedAgents: [] }, { pacePoolAccounts: [] }]) {
+    f.setConfig({ ...PACE_ON, ...patch });
+    const before = logs.filter((l) => l.endsWith("pm-pace-held reason=unconfigured")).length;
+    await f.tick(); await f.tick();
+    assert.equal(f.calls.apply.length, 0);
+    assert.deepEqual((await f.returns.read()).obligations, []);
+    assert.equal(logs.filter((l) => l.endsWith("pm-pace-held reason=unconfigured")).length, before + 2, "once per sweep");
+  }
 }));

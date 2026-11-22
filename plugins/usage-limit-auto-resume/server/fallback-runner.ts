@@ -1,10 +1,10 @@
-// Drives PM quota fallback from the plugin's existing triggers: a turn ending, and the poll sweep as a backstop. It
+// Drives PM quota fallback (since 0.7.0 for every live Pi agent on a Claude model; the pm- names stay) from the plugin's existing triggers: a turn ending, and the poll sweep as a backstop. It
 // has no timer or retry queue of its own; a failed or unverified change is simply tried again on the next trigger.
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config.ts";
 import type { AgentSettingsPort } from "./daemon.ts";
-import { chainDecision, chainRefusal, CPA_STREAK, cpaSwapEvidence, cpaUnavailable, turnModel, enrollmentKey, fallbackIneligible, fallbackSinceMs, pqProbeOpensAt, PQ_PROBE_INTERVAL_MS, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type CpaStreak, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
-import { agentPool, type PoolQuota, type QuotaPool } from "./quota.ts";
+import { chainDecision, chainRefusal, CPA_STREAK, cpaSwapEvidence, cpaUnavailable, turnModel, enrollmentKey, fallbackIneligible, fallbackSinceMs, pqProbeOpensAt, PQ_PROBE_INTERVAL_MS, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, PACE_FLAP_MS, paceIneligible, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type CpaStreak, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
+import { agentPool, poolOut, type Pace, type PoolQuota, type QuotaPool } from "./quota.ts";
 import { isActive, messageId, rebindRecord, transientDelaySeconds, type AgentSnapshot, type ResumeRecord } from "./model.ts";
 import type { ResumeStore } from "./store.ts";
 
@@ -16,6 +16,8 @@ export type FallbackDeps = {
   acquire: () => Promise<FallbackApi>;
   /** One pool's quota; `fresh` skips the shared cached reading and asks pq now. */
   quota: (pool: QuotaPool, config: Config, options?: { fresh?: boolean }) => Promise<PoolQuota>;
+  /** Pace mode's reading of the listed accounts; `fresh` skips the shared cached reading and asks pq now. */
+  pace: (config: Config, options?: { fresh?: boolean }) => Promise<Pace>;
   /** Every stored copy of the agent's profile: what a daemon reload or restart would load. */
   stored: (agentId: string) => Promise<Profile[]>;
   /** How long a settled change may take to reach the stored record before the next trigger tries again. */
@@ -28,6 +30,8 @@ export type FallbackDeps = {
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const show = (profile: Profile) => JSON.stringify(profile);
+// The field pace mode adds to the shared pm-swap-* and pm-restore-* lines.
+const paced = (obligation: Pick<ReturnObligation, "pace">) => obligation.pace ? " trigger=pace" : "";
 
 export function createFallbackRunner(deps: FallbackDeps) {
   const { returns, records, log } = deps;
@@ -87,12 +91,13 @@ export function createFallbackRunner(deps: FallbackDeps) {
     }
     if (goal === "swap") {
       await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), lastError: null, ...landedStep(o, o.stage === "first"), updatedAt: nowIso() }));
-      log(`pm-swap-verified agentId=${agent.id} obligationId=${obligation.obligationId}${obligation.stage ? ` stage=${obligation.stage}` : ""} profile=${show(obligation.fallback)}`);
+      log(`pm-swap-verified agentId=${agent.id} obligationId=${obligation.obligationId}${paced(obligation)}${obligation.stage ? ` stage=${obligation.stage}` : ""} profile=${show(obligation.fallback)}`);
       // A CPA move whose marked resend was parked again before the move was verified: due now (dueFreeResend).
       if (obligation.cpa503) await dueFreeResend(agent.id);
     } else {
-      await returns.remove(obligation.obligationId);
-      log(`pm-restore-verified agentId=${agent.id} obligationId=${obligation.obligationId} profile=${show(obligation.original)}`);
+      // A pace return stamps its landing in the same write: the flap guard before the next pace swap.
+      await returns.remove(obligation.obligationId, obligation.pace ? nowIso() : undefined);
+      log(`pm-restore-verified agentId=${agent.id} obligationId=${obligation.obligationId}${paced(obligation)} profile=${show(obligation.original)}`);
     }
   }
 
@@ -241,6 +246,104 @@ export function createFallbackRunner(deps: FallbackDeps) {
     return false;
   }
 
+  // In `fallback`, the live profile. An explicit model change (owner or another agent) ends the return: nothing is
+  // written over it, and null is returned, as for an unknown profile. A PM already back on its original profile settles
+  // as a restore.
+  async function liveOrDropped(obligation: ReturnObligation, agent: AgentSnapshot): Promise<Profile | null> {
+    const live = profileOf(agent);
+    if (!live) { once(agent.id, `pm-return-waiting agentId=${agent.id} obligationId=${obligation.obligationId} reason=profile-unknown`); return null; }
+    if (!profileChanged(obligation, live)) return live;
+    if (!await returns.remove(obligation.obligationId)) return null;
+    dropped.set(agent.id, live);
+    log(`pm-return-dropped agentId=${agent.id} obligationId=${obligation.obligationId}${paced(obligation)} reason=profile-changed live=${show(live)} original=${show(obligation.original)}`);
+    return null;
+  }
+
+  // Pace mode. Whether a pace return may be made now: an on-pace reading (the shared reading, cached for
+  // quotaCacheSeconds, so pending returns share one pq run), at least PACE_FLAP_MS since the swap landed, and Claude not
+  // out by the existing rule. Undecided keeps the PM where it is.
+  // Turning paceFallback off does not strand it: the return keeps its own condition.
+  async function paceReturnDue(obligation: ReturnObligation, config: Config): Promise<boolean> {
+    const id = obligation.agentId, at = `agentId=${id} obligationId=${obligation.obligationId}`;
+    if (paceUnconfigured(config)) { once(id, `pm-pace-held ${at} reason=unconfigured`); return false; }
+    const pace = await deps.pace(config);
+    if (pace.state === "undecided") { once(id, `pm-pace-held ${at} reason=undecided`); return false; }
+    if (pace.state === "off") { once(id, `pm-return-waiting ${at} trigger=pace reason=off-pace`); return false; }
+    const opensAt = fallbackSinceMs(obligation) + PACE_FLAP_MS;
+    if (Date.now() < opensAt) { once(id, `pm-pace-held ${at} reason=flap-guard next=${new Date(opensAt).toISOString()}`); return false; }
+    if (poolOut(await deps.quota(agentPool("pi", obligation.original.model) ?? "claude", config))) { once(id, `pm-return-waiting ${at} trigger=pace reason=claude-out`); return false; }
+    return true;
+  }
+
+  // A Claude-out return of a PM pace mode would move: while the reading is off pace (never on undecided), it is held, so
+  // the PM is not put back on Claude only to be moved again.
+  async function offPace(agent: AgentSnapshot, obligation: ReturnObligation, config: Config): Promise<boolean> {
+    if (!config.paceFallback || paceUnconfigured(config) || paceIneligible(agent, config, obligation.original.model)) return false;
+    return (await deps.pace(config)).state === "off";
+  }
+
+  // Pace mode fails closed on a host not configured for it: no excluded agent prefix or no pool account set.
+  const paceUnconfigured = (config: Config) => !config.paceFallbackExcludedAgents.length || !config.pacePoolAccounts.length;
+
+  // The live PMs, by their `role=pm` label; a page cap keeps one sweep bounded.
+  async function livePms(api: FallbackApi): Promise<AgentSnapshot[]> {
+    const agents: AgentSnapshot[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const result = await api.agents.list({ filter: { labels: { role: "pm" }, includeBackground: true }, page: { limit: 200, ...(cursor ? { cursor } : {}) } });
+      agents.push(...result.entries.map((entry) => entry.agent as AgentSnapshot));
+      if (!result.pageInfo.hasMore || !result.pageInfo.nextCursor) break;
+      cursor = result.pageInfo.nextCursor;
+    }
+    return agents;
+  }
+
+  // While the reading is off pace, every eligible PM with no obligation of its own takes a pace swap. A PM with any
+  // obligation keeps it and its rules: no double swap.
+  async function paceSweep(config: Config) {
+    if (!config.paceFallback) return;
+    if (paceUnconfigured(config)) return log("pm-pace-held reason=unconfigured");
+    const pace = await deps.pace(config);
+    if (pace.state !== "off") {
+      if (pace.state === "undecided") once("pace", "pm-pace-held reason=undecided");
+      else quiet.delete("pace");
+      return;
+    }
+    quiet.delete("pace");
+    const held = new Set((await returns.read()).obligations.map((o) => o.agentId));
+    for (const agent of await livePms(await deps.acquire())) {
+      if (held.has(agent.id)) continue;
+      const ineligible = paceIneligible(agent, config);
+      if (ineligible?.startsWith("excluded-")) once(agent.id, `pm-pace-held agentId=${agent.id} reason=${ineligible}`);
+      if (!ineligible) await locked(agent.id, () => paceSwapLocked(agent.id, config));
+    }
+  }
+
+  // A pace swap: the same obligation, intent, write gate and verified readback as a Claude-out swap, to the pace profile
+  // (a Fable PM too: no first stage). The intent is re-decided by recheckSwap before it is applied.
+  async function paceSwapLocked(agentId: string, config: Config) {
+    if (await returns.get(agentId)) return;
+    const api = await deps.acquire();
+    const agent = await fetchAgent(api, agentId);
+    if (!agent || paceIneligible(agent, config)) return;
+    const live = profileOf(agent)!;
+    const wasDropped = dropped.get(agentId);
+    if (wasDropped && sameProfile(live, wasDropped)) return once(agentId, `pm-fallback-skipped agentId=${agentId} trigger=pace reason=return-dropped profile=${show(wasDropped)}`);
+    dropped.delete(agentId);
+    const returnedAt = (await returns.read()).paceReturns?.[agentId];
+    const opensAt = returnedAt ? Date.parse(returnedAt) + PACE_FLAP_MS : 0;
+    if (Date.now() < opensAt) return once(agentId, `pm-pace-held agentId=${agentId} reason=flap-guard next=${new Date(opensAt).toISOString()}`);
+    const wanted: Profile = { model: config.paceFallbackModel, thinkingOptionId: config.paceFallbackThinking, serviceTier: config.paceFallbackServiceTier };
+    const target = await inCatalog(api, wanted);
+    if (!target) return once(agentId, `pm-fallback-skipped agentId=${agentId} trigger=pace reason=fallback-not-in-catalog profile=${show(wanted)}`);
+    const original = await inCatalog(api, live);
+    if (!original) return once(agentId, `pm-fallback-skipped agentId=${agentId} trigger=pace reason=original-not-in-catalog profile=${show(live)}`);
+    const stored = await returns.add({ ...newObligation(agentId, original, target, "auto", "switching"), pace: true });
+    if (!stored) return reconcileLocked(agentId, config);
+    log(`pm-swap-start agentId=${agentId} obligationId=${stored.obligationId} trigger=pace original=${show(original)} fallback=${show(target)}`);
+    await reconcileLocked(agentId, config);
+  }
+
   // A persisted swap intent is re-decided before it is applied (after a crash or restart the agent, its labels or the
   // quota may have changed): the agent must still be an eligible PM on its original model, and a fresh reading must
   // still confirm the original pool out, or the intent is dropped. Once the fallback model is in place the swap has
@@ -253,6 +356,19 @@ export function createFallbackRunner(deps: FallbackDeps) {
       if (!ineligible) return obligation;
       log(`pm-swap-not-completed agentId=${agent.id} obligationId=${obligation.obligationId} reason=${ineligible} return=kept`);
       return returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), ...landedStep(o, o.stage === "first"), updatedAt: nowIso() }));
+    }
+    // A pace intent is re-decided by pace mode's own rule: still an eligible PM on its original model, the mode on, and a
+    // fresh reading off pace. On pace or undecided, no pace swap is made.
+    if (obligation.pace) {
+      let reason = agent.model !== obligation.original.model ? "model-changed" : paceIneligible(agent, config, obligation.original.model) ?? (!config.paceFallback ? "paceFallback-off" : paceUnconfigured(config) ? "unconfigured" : null);
+      if (!reason) {
+        const pace = await deps.pace(config, { fresh: true });
+        if (pace.state !== "off") reason = pace.state === "on" ? "on-pace" : "undecided";
+      }
+      if (!reason) return obligation;
+      await returns.remove(obligation.obligationId);
+      log(`pm-swap-dropped agentId=${agent.id} obligationId=${obligation.obligationId} trigger=pace reason=${reason} profile=${show(profileOf(agent) ?? obligation.original)}`);
+      return null;
     }
     const fresh = async () => [await deps.quota(agentPool("pi", obligation.original.model) ?? "claude", config, { fresh: true }), await deps.quota(agentPool("pi", obligation.fallback.model) ?? "codex", config, { fresh: true })] as const;
     // A move between the chain's stages: back toward the original it needs no re-check; onward it is re-decided like a
@@ -325,17 +441,22 @@ export function createFallbackRunner(deps: FallbackDeps) {
       if (!obligation) return;
     }
     let goal: "swap" | "restore" | null = obligation.phase === "switching" ? "swap" : null;
-    if (obligation.phase === "fallback") {
-      // An explicit model change (owner or another agent) ends the return: nothing is written over it. A PM already
-      // back on its original profile settles below as a restore.
-      const live = profileOf(agent);
-      if (!live) return once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=profile-unknown`);
-      if (profileChanged(obligation, live)) {
-        if (!await returns.remove(obligation.obligationId)) return;
-        dropped.set(agentId, live);
-        log(`pm-return-dropped agentId=${agentId} obligationId=${obligation.obligationId} reason=profile-changed live=${show(live)} original=${show(obligation.original)}`);
-        return;
+    if (obligation.phase === "fallback" && obligation.pace) {
+      // A pace return: due on a fresh on-pace reading (paceReturnDue), or once the PM is back on its original by hand.
+      const live = await liveOrDropped(obligation, agent);
+      if (!live) return;
+      const home = onOriginal(obligation, live);
+      const due = home || await paceReturnDue(obligation, config);
+      if (due !== (obligation.restoreDueAt !== null)) {
+        const at = nowIso();
+        obligation = await returns.update(obligation.obligationId, (o) => ({ ...o, restoreDueAt: due ? at : null, updatedAt: at }));
+        if (!obligation) return;
+        log(`pm-restore-${due ? "due" : "deferred"} agentId=${agentId} obligationId=${obligation.obligationId} trigger=pace reason=${due ? home ? "already-on-original" : "on-pace" : "pace-unproven"}`);
       }
+      if (due) goal = "restore";
+    } else if (obligation.phase === "fallback") {
+      const live = await liveOrDropped(obligation, agent);
+      if (!live) return;
       // Put on the chain's other stage by hand: that stage is the one the return now waits on.
       const onStage = stageOf(obligation, live);
       if (onStage && onStage !== obligation.stage) {
@@ -369,12 +490,14 @@ export function createFallbackRunner(deps: FallbackDeps) {
       const success = successOf(obligation.original.model);
       const reason = success && (distrusted || !proven(reading)) ? successText(success, obligation.original.model)
         : proven(reading) ? `${distrusted ? window ? "pq-fable-probe" : "pq-probe" : "pq-capacity"} quota=${quotaText(reading)}` : null;
+      // Pace mode on and this PM off pace: Claude proof neither returns it nor steps it back to a Claude stage.
+      const paceOff = reason !== null || stepping ? await offPace(agent, obligation, config) : false;
       // Back on the original by hand: settled as a restore, which also writes the original's tier label.
-      const due = reason !== null || onOriginal(obligation, live);
+      const due = reason !== null && !paceOff || onOriginal(obligation, live);
       // On the chain's last stage without proof for the original: proof for the first stage's model (the account windows
       // by pq, or a success of that model) steps the PM back to the first stage, from where the original's proof
       // finishes the return.
-      if (!due && stepping) {
+      if (!due && stepping && !paceOff) {
         const first = obligation.stages!.first;
         const firstSuccess = successOf(first.model);
         const step = stepOnPq(reading) ? `pq-capacity quota=${quotaText(reading)}` : firstSuccess ? successText(firstSuccess, first.model) : null;
@@ -394,6 +517,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
         log(`pm-restore-${due ? "due" : "deferred"} agentId=${agentId} obligationId=${obligation.obligationId} ${due ? `reason=${reason ?? "already-on-original"}` : `quota=${quotaText(reading)}`}`);
       }
       if (due) goal = "restore";
+      else if (paceOff) once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=off-pace${obligation.stage ? ` stage=${obligation.stage}` : ""}`);
       else once(agentId, `pm-return-waiting agentId=${agentId} obligationId=${obligation.obligationId} reason=${distrusted && (window ? scopedCapacity(reading, window) : hasCapacity(reading)) ? `pq-${window ? "fable-" : ""}contradicted next-probe=${new Date(probeOpensAt).toISOString()}` : "no-claude-proof"}${obligation.stage ? ` stage=${obligation.stage}` : ""} pq=${quotaText(reading)}`);
     }
     if (!goal) return;
@@ -404,7 +528,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
     if (!api.agentSettings) return once(agentId, `pm-${goal}-unsupported agentId=${agentId} reason=no-agent-settings-port`);
     const attempt = await returns.update(obligation.obligationId, (o) => ({ ...o, attempts: o.attempts + 1, lastAttemptAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
     if (!attempt) return;
-    log(`pm-${goal}-apply agentId=${agentId} obligationId=${obligation.obligationId} attempt=${attempt.attempts} status=${agent.status} profile=${show(target)}`);
+    log(`pm-${goal}-apply agentId=${agentId} obligationId=${obligation.obligationId}${paced(obligation)} attempt=${attempt.attempts} status=${agent.status} profile=${show(target)}`);
     try {
       // Model and thinking travel in one request. The Fast label, the only label this feature writes, is always
       // written too, so the stored record is rewritten even when memory already held it.
@@ -414,7 +538,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // What a failed restore left in place is ours, not an owner change: kept so the next trigger retries over it.
       const left = goal === "restore" ? await fetchAgent(api, agentId).then((a) => a ? profileOf(a) : null).catch(() => null) : null;
       await returns.update(obligation.obligationId, (o) => ({ ...o, ...(left ? { restoreReadback: left } : {}), lastError: errorText(error), updatedAt: new Date().toISOString() }));
-      log(`pm-${goal}-failed agentId=${agentId} obligationId=${obligation.obligationId} reason=${JSON.stringify(errorText(error))} retry=next-trigger`);
+      log(`pm-${goal}-failed agentId=${agentId} obligationId=${obligation.obligationId}${paced(obligation)} reason=${JSON.stringify(errorText(error))} retry=next-trigger`);
       return;
     }
     const after = await fetchAgent(api, agentId);
@@ -424,7 +548,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const kind = inMemory ? "unpersisted" : "mismatch";
     const readback = goal === "restore" && after ? profileOf(after) : null;
     await returns.update(obligation.obligationId, (o) => ({ ...o, ...(readback ? { restoreReadback: readback } : {}), lastError: `readback-${kind} ${JSON.stringify(seen)}`, updatedAt: new Date().toISOString() }));
-    log(`pm-${goal}-${kind} agentId=${agentId} obligationId=${obligation.obligationId} readback=${JSON.stringify(seen)} retry=next-trigger`);
+    log(`pm-${goal}-${kind} agentId=${agentId} obligationId=${obligation.obligationId}${paced(obligation)} readback=${JSON.stringify(seen)} retry=next-trigger`);
   }
 
   // A live Pi PM on Claude whose pool pq confirms out moves to the fallback profile. The obligation, with the exact
@@ -472,7 +596,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
     dropped.delete(agentId);
     const ineligible = fallbackIneligible(agent);
     if (ineligible) {
-      if (agent.labels?.role === "pm") once(agentId, `pm-fallback-skipped agentId=${agentId} reason=${ineligible}`);
+      // Logged only for Pi agents: any other provider is out of scope, as non-PMs were before 0.7.0.
+      if (agent.provider === "pi") once(agentId, `pm-fallback-skipped agentId=${agentId} reason=${ineligible}`);
       return;
     }
     const configured: Profile = { model: config.pmFallbackModel, thinkingOptionId: config.pmFallbackThinking, serviceTier: config.pmFallbackServiceTier };
@@ -534,7 +659,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
       const api = await deps.acquire();
       const agent = await fetchAgent(api, entry.agentId);
       if (!agent || agent.archivedAt) { await reject(agent ? "archived" : "agent-missing"); continue; }
-      if (agent.labels?.role !== "pm" || agent.provider !== "pi") { await reject("not-a-pi-pm"); continue; }
+      if (agent.provider !== "pi") { await reject("not-pi"); continue; }
+      if (!agent.persistence?.sessionId) { await reject("no-session"); continue; }
       if (agentPool("pi", entry.model) !== "claude") { await reject("original-not-claude"); continue; }
       // An unset thinking option is stored as the catalog default, so the restore can be verified exactly.
       const original = await inCatalog(api, { model: entry.model, thinkingOptionId: entry.thinkingOptionId, serviceTier: entry.serviceTier });
@@ -563,7 +689,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
      * 503 of a run (pmFallback on), and the one resend on the profile a CPA move put in place.
      */
     async sendUnheld(record: ResumeRecord, agent: AgentSnapshot, config: Config): Promise<string | null> {
-      if (record.provider !== "pi" || agent.labels?.role !== "pm") return null;
+      if (record.provider !== "pi") return null;
       const obligation = await resendOwed(record.agentId);
       // Not while another send of the PM is in flight: it may be the one that takes the resend.
       if (obligation && sameModel(record.model, obligation.fallback.model) && !deps.sending(record.agentId)) {
@@ -643,6 +769,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
           await swapLocked(agentId, config, "cpa-503-held", { ...cpaSwapEvidence(""), named: streak.model });
         });
       }
+      // Pace mode's swaps, after every outstanding return was handled above.
+      await paceSweep(config).catch((error) => deps.failed("pm-pace-sweep-failed", error));
       if (!config.pmFallback) return;
       for (const record of await records.read()) {
         const evidence = recordSwapEvidence(record);
