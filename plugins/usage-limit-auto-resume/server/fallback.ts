@@ -71,6 +71,11 @@ export type ReturnObligation = {
   steppedBackAt?: string | null;
   /** A step back from the last stage to the first is under way; steppedBackAt is set when it lands. Absent: false. */
   stepBackPending?: boolean;
+  /**
+   * Since 0.8.0: made by pace mode (paceFallback), not by a Claude refusal. Its return is due on a fresh on-pace reading
+   * (no Claude success or capacity proof alone), at least PACE_FLAP_MS after the swap landed. Absent: false.
+   */
+  pace?: boolean;
   attempts: number;
   lastAttemptAt: string | null;
   lastError: string | null;
@@ -100,16 +105,38 @@ export function storedMatches(stored: readonly Profile[], profile: Profile): boo
   return stored.length > 0 && stored.every((copy) => sameProfile(copy, profile));
 }
 
+/** The least time between a pace swap landing and its pace return, and between a pace return and the next pace swap. */
+export const PACE_FLAP_MS = 30 * 60_000;
+
+/** The main PMs' projects, which pace mode never moves. A host setting adds to them and can never remove one. */
+export const MAIN_PM_PROJECTS: readonly string[] = ["config", "work", "personal"];
+
 /**
- * Why an agent may not be moved to the fallback profile, or null when it may: a live Pi PM whose original model
- * (by default its current one) is a Claude model. No label opts a PM out (since 0.3.0).
+ * Why pace mode may not move this agent, or null: it must be fallback-eligible (a live Pi agent with a session on a
+ * Claude subscription model, by default its current one), labelled `role=pm`, not of a main PM project or another
+ * excluded project, not matching an excluded agent id prefix, and carry no excluded label (`noresume`).
+ */
+export function paceIneligible(agent: AgentSnapshot, config: { paceFallbackExcludedProjects: readonly string[]; paceFallbackExcludedAgents: readonly string[]; excludedLabels: readonly string[] }, originalModel = agent.model): string | null {
+  const base = fallbackIneligible(agent, originalModel);
+  if (base) return base;
+  const labels = agent.labels ?? {};
+  if (labels.role !== "pm") return "excluded-role";
+  if (labels.project && (MAIN_PM_PROJECTS.includes(labels.project) || config.paceFallbackExcludedProjects.includes(labels.project))) return "excluded-project";
+  if (config.paceFallbackExcludedAgents.some((prefix) => agent.id.startsWith(prefix))) return "excluded-agent";
+  if (config.excludedLabels.some((label) => labels[label] === "true")) return "excluded-label";
+  return null;
+}
+
+/**
+ * Why an agent may not be moved to the fallback profile, or null when it may: a live Pi agent with a session whose
+ * original model (by default its current one) is a Claude subscription model (API-billed `fleet/api/...` routes are
+ * never moved). Any role counts since 0.7.0 (PMs only before); no label opts an agent out (since 0.3.0).
  */
 export function fallbackIneligible(agent: AgentSnapshot, originalModel = agent.model): string | null {
-  if (agent.labels?.role !== "pm") return "not-pm";
   if (agent.provider !== "pi") return "not-pi";
   if (agent.archivedAt) return "archived";
   if (!agent.persistence?.sessionId) return "no-session";
-  if (agentPool(agent.provider, originalModel) !== "claude") return "not-claude";
+  if (!isSubscriptionClaude(agent.provider, originalModel)) return "not-claude-subscription";
   return null;
 }
 
@@ -223,11 +250,12 @@ export function stageOf(obligation: ReturnObligation, live: Profile | null): "fi
 
 /**
  * Why the plugin must not change this agent's settings for this obligation now, or null. Checked before every write,
- * repair or completion, on every path: an owner cancel, or an archived agent.
+ * repair or completion, on every path: an owner cancel, an archived agent, or an agent with no session.
  */
-export function writeBlocked(obligation: ReturnObligation, agent: AgentSnapshot, config: { pmFallbackCancel: readonly string[] }): "cancelled" | "archived" | null {
+export function writeBlocked(obligation: ReturnObligation, agent: AgentSnapshot, config: { pmFallbackCancel: readonly string[] }): "cancelled" | "archived" | "no-session" | null {
   if (config.pmFallbackCancel.includes(obligation.obligationId)) return "cancelled";
   if (agent.archivedAt) return "archived";
+  if (!agent.persistence?.sessionId) return "no-session";
   return null;
 }
 
@@ -311,7 +339,8 @@ export function newObligation(agentId: string, original: Profile, fallback: Prof
 export type Enrollment = { agentId: string; model: string; thinkingOptionId: string | null; serviceTier: string | null };
 export const enrollmentKey = (entry: Enrollment) => `enroll:${createHash("sha256").update(JSON.stringify([entry.agentId, entry.model, entry.thinkingOptionId, tier(entry.serviceTier)])).digest("hex").slice(0, 24)}`;
 
-type State = { version: 1; obligations: ReturnObligation[]; consumed: string[]; cpaStreaks?: Record<string, CpaStreak> };
+/** `paceReturns`: per agent, when its last pace return landed (the flap guard before its next pace swap). */
+type State = { version: 1; obligations: ReturnObligation[]; consumed: string[]; cpaStreaks?: Record<string, CpaStreak>; paceReturns?: Record<string, string> };
 const MAX_CONSUMED = 500;
 
 const isTime = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value));
@@ -343,6 +372,7 @@ function isObligation(value: unknown): value is ReturnObligation {
     (o.steppedBackAt === undefined || o.steppedBackAt === null || isTime(o.steppedBackAt)) &&
     (o.stepBackPending === undefined || typeof o.stepBackPending === "boolean") &&
     (o.cpaResendMessageId === undefined || isNullableString(o.cpaResendMessageId)) &&
+    (o.pace === undefined || typeof o.pace === "boolean") &&
     Number.isSafeInteger(o.attempts) && (o.lastAttemptAt === null || isTime(o.lastAttemptAt)) && isNullableString(o.lastError) &&
     isTime(o.createdAt) && isTime(o.updatedAt);
 }
@@ -364,6 +394,7 @@ export class ReturnStore {
       if (!state.consumed.every((key) => typeof key === "string")) throw new Error("invalid consumed keys");
       if (new Set(state.obligations.map((o) => o.agentId)).size !== state.obligations.length) throw new Error("two obligations for one agent");
       if (state.cpaStreaks !== undefined && (typeof state.cpaStreaks !== "object" || state.cpaStreaks === null || !Object.values(state.cpaStreaks).every(isStreak))) throw new Error("invalid cpa streaks");
+      if (state.paceReturns !== undefined && (typeof state.paceReturns !== "object" || state.paceReturns === null || !Object.values(state.paceReturns).every(isTime))) throw new Error("invalid pace returns");
       return state;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, obligations: [], consumed: [] };
@@ -413,11 +444,20 @@ export class ReturnStore {
     });
   }
 
-  remove(obligationId: string): Promise<ReturnObligation | null> {
+  /**
+   * Removes the obligation. A verified pace return passes `paceReturnedAt`: it is stored in the same write, so the flap
+   * guard survives a restart. Stamps older than the guard are pruned then.
+   */
+  remove(obligationId: string, paceReturnedAt?: string): Promise<ReturnObligation | null> {
     return this.change((state) => {
       const found = state.obligations.find((o) => o.obligationId === obligationId);
       if (!found) return null;
-      return { state: { ...state, obligations: state.obligations.filter((o) => o !== found) }, result: found };
+      const next = { ...state, obligations: state.obligations.filter((o) => o !== found) };
+      if (paceReturnedAt) {
+        const since = Date.parse(paceReturnedAt) - PACE_FLAP_MS;
+        next.paceReturns = { ...Object.fromEntries(Object.entries(state.paceReturns ?? {}).filter(([, at]) => Date.parse(at) > since)), [found.agentId]: paceReturnedAt };
+      }
+      return { state: next, result: found };
     });
   }
 

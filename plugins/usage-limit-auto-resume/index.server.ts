@@ -9,14 +9,14 @@ import { ReturnStore, type Profile } from "./server/fallback.ts";
 import { readStoredProfiles, readStoredUserMessageAt } from "./server/stored-agent.ts";
 import { daemonRun, sameDaemonRun } from "./server/daemon-run.ts";
 import { createFallbackRunner } from "./server/fallback-runner.ts";
-import { agentPool, QuotaReader, type PoolQuota, type QuotaPool } from "./server/quota.ts";
+import { agentPool, QuotaReader, type Pace, type PoolQuota, type QuotaPool } from "./server/quota.ts";
 import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, boundUser, cancelClaim, closeDecision, failureSignature, restartSettle, resumeInterrupted, holdsClaim, isActive, RESTART_SETTLE_MS, isExpectedUser, isOwnLatestMessage, isRpcTimeoutWaiting, lastInput, endedTurnRows, turnInput, verifyUsageInput, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, isPark, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, rpcTimeoutDecision, runsOwnTurn, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, USAGE_ENDING_GATES, verificationDecision, verifyTransientTimeline, staleFailure, type AgentClose, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim, type TimelineEntry, type TurnInput } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError, TurnLedger, TurnsUnreadableError, type RunningTurn } from "./server/store.ts";
 import { endedReads, killAgent } from "./server/vendor/ended-read.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
 // Logged once at startup so a deploy can confirm what is running. Keep equal to package.json "version".
-const VERSION = "0.6.4";
+const VERSION = "0.8.0";
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 // Thrown before anything reaches the socket, so the message was never delivered.
 const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/.test(errorMessage(error));
@@ -226,11 +226,31 @@ export default function contribute(server: PluginServerContext, openClient: () =
     quota: (pool: QuotaPool, currentConfig: Config, options?: { fresh?: boolean }): Promise<PoolQuota> => currentConfig.quotaAware
       ? quota.pool(pool, { ...quotaOptions(currentConfig), ...(options?.fresh ? { ttlMs: 0 } : {}) })
       : Promise.resolve({ status: "unknown", pool, reason: "quotaAware off" }),
+    // Pace mode reads the same shared pq reading; with quota awareness off it cannot decide.
+    pace: (currentConfig: Config, options?: { fresh?: boolean }): Promise<Pace> => currentConfig.quotaAware
+      ? quota.pace(currentConfig.pacePoolAccounts, { ttlMs: options?.fresh ? 0 : currentConfig.quotaCacheSeconds * 1000, timeoutMs: currentConfig.pqTimeoutSeconds * 1000 })
+      : Promise.resolve({ state: "undecided", reason: "quotaAware-off" }),
     stored,
     sending: (agentId) => inFlight.has(agentId),
     log,
     failed,
   });
+
+  // A profile-sensitive decision (an identity change) reads the record and then the agent, across awaits, before any
+  // send is claimed. A plugin-owned profile change (a fallback swap, a stage step or a restore) can land in between:
+  // the agent then shows the new profile while the record still holds the old one, or the change's settlement has
+  // already rebound the record. Such a decision is stale. It is deferred, and the active record is left for the rebind
+  // or the next sweep. True when stale: a change is in progress or unverified, or the stored record changed since it
+  // was read.
+  async function profileRaced(record: ResumeRecord): Promise<boolean> {
+    if (fallback.isBusy(record.agentId) || await fallback.blocksSend(record.agentId)) return true;
+    const current = (await store.read()).find((value) => value.recordId === record.recordId);
+    return !current || current.updatedAt !== record.updatedAt || !sameBinding(record)(current);
+  }
+  // A decision a read record leads to is written only while the record still holds the profile it was read on: a
+  // rebind landed since then wins.
+  const sameBinding = (record: ResumeRecord) => (value: ResumeRecord) => value.model === record.model && value.configFingerprint === record.configFingerprint;
+  const deferRaced = (record: ResumeRecord) => logOnce(record, "pm-profile-change-raced", `decision-deferred agentId=${record.agentId} recordId=${record.recordId} reason=pm-profile-change-raced`);
 
   // The pool's quota for a record's provider and model, from one cached pq reading. Unknown when quota awareness is
   // off, pq is missing, slow, failing, or speaks another schema: the callers then behave exactly as without it.
@@ -541,7 +561,11 @@ export default function contribute(server: PluginServerContext, openClient: () =
     }
     if (record.terminalReason === "retry-turn-canceled") { await settle("superseded", "retry-turn-canceled"); return null; }
     if (agent.archivedAt) { await settle("superseded", "agent-archived"); return null; }
-    if (!isSameAgentAndSession(record, agent)) { await settle("superseded", "identity-changed"); return null; }
+    if (!isSameAgentAndSession(record, agent)) {
+      if (await profileRaced(record)) { deferRaced(record); return null; }
+      await settle("superseded", "identity-changed");
+      return null;
+    }
     if (agent.status === "running" || agent.activeTurn) return null;
     // "closed" is an agent whose runtime is not loaded, as every agent is after a daemon restart: the timeline read below
     // loads it, and the next sweep sees it live.
@@ -603,6 +627,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
     const unchanged = (value: ResumeRecord) => value.state === record.state && value.updatedAt === record.updatedAt;
     const gate = shouldResume({ ...next, notBefore: new Date(0).toISOString() }, fresh, currentConfig);
     if (!gate.ok) {
+      if (gate.reason === "identity-changed" && await profileRaced(record)) { deferRaced(record); return null; }
       if (["opted-out", "identity-changed", "archived", "newer-user-message"].includes(gate.reason)) await settle(gate.reason === "opted-out" ? "exhausted" : "superseded", gate.reason);
       return null;
     }
@@ -656,15 +681,16 @@ export default function contribute(server: PluginServerContext, openClient: () =
     }
     const gate = shouldResume(record, agent, currentConfig);
     if (!gate.ok) {
+      if (gate.reason === "identity-changed" && await profileRaced(record)) return deferRaced(record);
       logOnce(record, gate.reason, `send-skipped agentId=${record.agentId} recordId=${record.recordId} reason=${gate.reason}${gate.reason === "not-due" ? ` notBefore=${record.notBefore}` : ""}`);
       // An immediate retry can race the agent settling after its turn ends; keep the record and retry on the next sweep.
       const settling = gate.reason === "active-turn" || gate.reason === "agent-status=running";
       if (record.kind === "transient" && gate.reason !== "not-due" && !settling) {
-        await store.update(record.recordId, (value) => ({ ...value, state: transientRejectionState(gate.reason), terminalReason: gate.reason, updatedAt: new Date().toISOString() }));
+        await store.update(record.recordId, (value) => sameBinding(record)(value) ? { ...value, state: transientRejectionState(gate.reason), terminalReason: gate.reason, updatedAt: new Date().toISOString() } : value);
       } else if (USAGE_ENDING_GATES.includes(gate.reason)) {
         // These end a usage record. Anything else, such as an attention request or a pending permission, only holds it
         // until a later sweep.
-        await store.update(record.recordId, (value) => ({ ...value, state: gate.reason === "newer-user-message" ? "superseded" : "exhausted", terminalReason: gate.reason, updatedAt: new Date().toISOString() }));
+        await store.update(record.recordId, (value) => !sameBinding(record)(value) ? value : { ...value, state: gate.reason === "newer-user-message" ? "superseded" : "exhausted", terminalReason: gate.reason, updatedAt: new Date().toISOString() });
       }
       return;
     }
@@ -701,7 +727,8 @@ export default function contribute(server: PluginServerContext, openClient: () =
         gated = freshAgent!;
       } catch (error) {
         const reason = errorMessage(error);
-        await store.update(record.recordId, (value) => ({ ...value, state: transientRejectionState(reason), terminalReason: reason, updatedAt: new Date().toISOString() }));
+        if (reason === "identity-changed" && await profileRaced(record)) return deferRaced(record);
+        await store.update(record.recordId, (value) => sameBinding(record)(value) ? { ...value, state: transientRejectionState(reason), terminalReason: reason, updatedAt: new Date().toISOString() } : value);
         log(`retry-uncertain agentId=${record.agentId} recordId=${record.recordId} reason=${JSON.stringify(reason)}`);
         return;
       }
@@ -763,12 +790,25 @@ export default function contribute(server: PluginServerContext, openClient: () =
       logOnce(record, "agent-closed", `send-held agentId=${record.agentId} recordId=${record.recordId} reason=agent-closed`);
       return;
     }
+    // A send claim and a fallback profile change exclude each other. The runner takes its lock only while no send is in
+    // flight (sending), and this check runs in the same synchronous step that marks the send in flight, so from here on
+    // no swap or restore can start. One that started during the awaits above, or that left its change unverified, defers
+    // the send and leaves the record as it is; the change's own settlement rebinds the record, and the claim below
+    // takes only a record still on the model the checks saw.
+    if (fallback.isBusy(record.agentId)) {
+      logOnce(record, "pm-profile-change-pending", `send-deferred agentId=${record.agentId} recordId=${record.recordId} reason=pm-profile-change-pending`);
+      return;
+    }
     inFlight.set(record.agentId, claim);
     try {
+      if (await fallback.blocksSend(record.agentId)) {
+        logOnce(record, "pm-profile-change-pending", `send-deferred agentId=${record.agentId} recordId=${record.recordId} reason=pm-profile-change-pending`);
+        return;
+      }
       // Claim only the record the gates checked: still in that state, unwritten since, at the same attempt generation.
       // A decision another handler stored stands; one seen but not stored yet is stored here instead of the claim.
       const claimed = await store.update(record.recordId, (value) => {
-        if (value.state !== record.state || value.updatedAt !== record.updatedAt || attemptCount(value) !== attemptCount(record)) return value;
+        if (value.state !== record.state || value.updatedAt !== record.updatedAt || value.model !== record.model || attemptCount(value) !== attemptCount(record)) return value;
         if (claim.cancelled) return claim.cancelled.hold ? value : { ...value, state: claim.cancelled.state, terminalReason: claim.cancelled.reason, updatedAt: new Date().toISOString() };
         return {
           ...value,
@@ -895,18 +935,20 @@ export default function contribute(server: PluginServerContext, openClient: () =
     }
     const decision = verificationDecision(current, agent);
     if (decision.state === "pending") return;
+    if (decision.reason === "identity-changed" && await profileRaced(current)) return deferRaced(current);
     if (decision.state === "done" && !record.resumeTurnId) {
       await store.update(record.recordId, (value) => ({ ...value, state: "uncertain", terminalReason: "resume-turn-not-observed", updatedAt: new Date().toISOString() }));
       return;
     }
     const terminalState: ResumeState = decision.state;
-    await store.update(record.recordId, (value) => ({
+    let written = false;
+    await store.update(record.recordId, (value) => !sameBinding(current)(value) ? value : (written = true, {
       ...value,
       state: terminalState,
       terminalReason: decision.reason,
       updatedAt: new Date().toISOString(),
     }));
-    log(`resume-${decision.state} agentId=${record.agentId} reason=${decision.reason}`);
+    if (written) log(`resume-${decision.state} agentId=${record.agentId} reason=${decision.reason}`);
   }
 
   async function sweep() {
@@ -1499,7 +1541,7 @@ export default function contribute(server: PluginServerContext, openClient: () =
   track(resumeCloseChecks().catch((error) => failed("close-recheck-failed", error)));
   track(config().catch(() => null).then((currentConfig) => {
     if (stopped) return;
-    log(`started version=${VERSION} armed=${currentConfig?.armed ?? "unknown"} pmFallback=${currentConfig?.pmFallback ?? "unknown"}`);
+    log(`started version=${VERSION} armed=${currentConfig?.armed ?? "unknown"} pmFallback=${currentConfig?.pmFallback ?? "unknown"} paceFallback=${currentConfig?.paceFallback ?? "unknown"}`);
     track(inspectDaemonAtStartup());
     timer = setInterval(() => { if (!stopped) track(sweep()); }, (currentConfig ?? ConfigSchema.parse({})).pollIntervalSeconds * 1000);
     timer.unref?.();

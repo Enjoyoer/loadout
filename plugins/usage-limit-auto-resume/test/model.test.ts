@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import { MAX_KEPT_ATTEMPTS, afterTransientFailure, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, endedTurnRows, isTransientErrorMessage, configFingerprint, continuationPrompt, failureSignature, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, shouldResume, transientDelaySeconds, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { quotaDecision, scheduleUsage } from "../server/model.ts";
-import { agentPool, poolQuota, QuotaReader, runPq, type PqResult } from "../server/quota.ts";
+import { agentPool, paceOf, poolQuota, QuotaReader, runPq, type PqResult } from "../server/quota.ts";
 
 const NOW = Date.parse("2026-09-25T12:00:00.000Z");
 const config: ResumeConfig = {
@@ -481,5 +481,46 @@ describe("quota-aware timing", () => {
     assert.deepEqual(await failing.pool("claude", options), { status: "unknown", pool: "claude", reason: "pq failed (boom)" });
     assert.equal((await failing.pool("claude", options)).status, "unknown");
     assert.equal(runs, 3);
+  });
+});
+
+// Pace mode's off-pace rule on fixture pq documents. 84 hours to the weekly reset puts the even spend at 50%.
+describe("pace mode rule", () => {
+  const weekly = (label: string, usedPct: number, resetHours: number, extra: unknown[] = []) => ({ provider: "claude", label, fresh: true,
+    windows: [{ id: "seven_day", fresh: true, usedPct, leftPct: 100 - usedPct, resetInSeconds: resetHours * 3600 }, ...extra] });
+  const doc = (accounts: unknown[]) => ({ schemaVersion: 1, snapshotStale: false, accounts });
+
+  it("is off pace when the pool gap is below -5, and on pace at -5", () => {
+    // ((50 - 60) + (50 - 52)) / 2 = -6.
+    assert.equal(paceOf(doc([weekly("a", 60, 84), weekly("b", 52, 84)]), ["a", "b"]).state, "off");
+    assert.equal(paceOf(doc([weekly("a", 55, 84), weekly("b", 55, 84)]), ["a", "b"]).state, "on");
+    // Hours to the reset clamp to the week: 200 hours is a fresh week, so a 6% use is behind.
+    assert.equal(paceOf(doc([weekly("a", 6, 200)]), ["a"]).state, "off");
+  });
+
+  it("is off pace when a listed account has a five-hour window at 0% left before its reset, even ahead of pace", () => {
+    assert.equal(paceOf(doc([weekly("a", 10, 84)]), ["a"]).state, "on");
+    assert.equal(paceOf(doc([weekly("a", 10, 84, [{ id: "five_hour", fresh: true, usedPct: 100, leftPct: 0, resetAt: Math.floor(Date.now() / 1000) + 600, resetInSeconds: 600 }])]), ["a"]).state, "off");
+    // Once its reset has passed, a window at 0% no longer counts as out.
+    assert.equal(paceOf(doc([weekly("a", 10, 84, [{ id: "five_hour", fresh: true, usedPct: 100, leftPct: 0, resetAt: Math.floor(Date.now() / 1000) - 60, resetInSeconds: 0 }])]), ["a"]).state, "on");
+  });
+
+  it("leaves a listed account with no fresh weekly reading out of the sum and the divisor; none at all is undecided", () => {
+    // A lone fresh account trips at more than 5 points over: 50 - 56 = -6 is off pace, 50 - 55 = -5 on pace.
+    assert.equal(paceOf(doc([weekly("a", 56, 84)]), ["a"]).state, "off");
+    assert.equal(paceOf(doc([weekly("a", 55, 84)]), ["a"]).state, "on");
+    // b listed but missing, or with a stale weekly reading: a alone still decides (-6, off pace).
+    assert.equal(paceOf(doc([weekly("a", 56, 84)]), ["a", "b"]).state, "off");
+    assert.equal(paceOf(doc([weekly("a", 56, 84), { provider: "claude", label: "b", fresh: true, windows: [{ id: "seven_day", fresh: false, usedPct: 0, resetInSeconds: 3600 }] }]), ["a", "b"]).state, "off");
+    assert.equal(paceOf(doc([]), ["a"]).state, "undecided");
+    assert.equal(paceOf(doc([{ ...weekly("a", 58, 84), provider: "codex" }]), ["a"]).state, "undecided");
+    assert.equal(paceOf(doc([{ provider: "claude", label: "a", fresh: true, windows: [{ id: "seven_day", fresh: false, usedPct: 58, resetInSeconds: 3600 }] }]), ["a"]).state, "undecided");
+  });
+
+  it("is undecided on an empty list, a stale snapshot or another schema", () => {
+    assert.equal(paceOf(doc([weekly("a", 58, 84)]), []).state, "undecided");
+    assert.equal(paceOf({ ...doc([weekly("a", 58, 84)]), snapshotStale: true }, ["a"]).state, "undecided");
+    assert.equal(paceOf({ ...doc([weekly("a", 58, 84)]), schemaVersion: 2 }, ["a"]).state, "undecided");
+    assert.equal(paceOf(null, ["a"]).state, "undecided");
   });
 });
