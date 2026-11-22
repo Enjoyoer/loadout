@@ -452,7 +452,7 @@ class OpcDeliveryTest(unittest.TestCase):
             import {{ resolveAgentSurface }} from {json.dumps((SCRIPTS / 'agent-routing.mjs').as_uri())};
             const catalog = {json.dumps(self.watcher_catalog())};
             const luna = kind => ({{ role: 'worker', source: 'task-default', kind, model: 'fleet/gpt-6-luna', effort: 'high',
-              fastMode: false, reason: 'x' }});
+              fastMode: true, reason: 'x' }});
             const attempt = make => {{ try {{ return make().provider; }} catch (error) {{ return error.message; }} }};
             console.log(JSON.stringify([attempt(() => resolveAgentSurface('worker', {{ explicitRoute: luna('review'),
               taskKind: 'watcher' }}, catalog)), attempt(() => resolveAgentSurface('worker', {{ taskKind: 'watcher' }}, catalog))]));
