@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "3cba761a224f2e52fee4bc9d9d38780163fa1e90",
+  "source_commit": "f4c407395533a096d07bb2cabaeff6ed0d48d5ee",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -345,8 +345,8 @@
       "path": "skills/orchestration/opn/references/host-adapters.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 2099,
-      "sha256": "f1a71ab9b7c14ec822c7277334be79c3683fe459f46cad0f3517a11ca25cf431"
+      "bytes": 2240,
+      "sha256": "61bd7057c054dbfe43f5215d09ab6870a0b9dbb0faf4916a42b82da3925d0a69"
     },
     {
       "path": "skills/orchestration/opn/scripts/test_validate_opn.py",
