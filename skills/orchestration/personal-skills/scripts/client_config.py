@@ -177,7 +177,7 @@ def describe(name: str, result: dict) -> list:
     if result.get('mcp_launcher'):
         lines.append(f"{name}: MCP launcher {result['mcp_launcher']['status']}; "
                      "a real run refuses this host until that step has installed it")
-    for client in ('claude_mcp', 'pi_mcp'):
+    for client in ('claude_mcp', 'pi_mcp', 'antigravity_mcp'):
         if client in result:
             entry = result[client]
             lines.append(f"{name}: {client} {entry['status']}" +
@@ -195,7 +195,7 @@ def describe(name: str, result: dict) -> list:
 
 
 def status_of(result: dict, dry_run: bool) -> str:
-    changed = any(result.get(k, {}).get("status") == "changed" for k in ("codex", "claude", "claude_mcp", "pi_mcp"))
+    changed = any(result.get(k, {}).get("status") == "changed" for k in ("codex", "claude", "claude_mcp", "pi_mcp", "antigravity_mcp"))
     if not changed:
         return "same"
     return "would update" if dry_run else "updated"
