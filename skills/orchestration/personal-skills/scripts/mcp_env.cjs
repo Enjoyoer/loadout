@@ -172,8 +172,8 @@ function mcpHeader(servers, client, name) {
 // in the environment, on stdout or stderr. Redirects are refused, so the bearer cannot reach another origin. Requests
 // run concurrently with no client timeout, as a tool call can run many minutes. The session id from the initialize
 // response, and the protocol version it negotiated, go on later requests; a 404 on a session re-sends the cached
-// initialize (and notifications/initialized) for a new session and retries that request once. On stdin EOF it waits
-// for open requests, ends the session with a DELETE (best effort) and exits 0.
+// initialize (and notifications/initialized) for a new session and retries that request once. On stdin EOF it gives
+// open requests 5 seconds, ends the rest, ends the session with a DELETE (best effort) and exits 0.
 function mcpStdio(servers, name) {
   const s = servers.find(s => s.name === name && s.enabled);
   if (!s) throw Error('no enabled MCP server ' + (/^[A-Za-z0-9_-]+$/.test(name || '') ? name : '') + ' in mcp-env.json');
@@ -183,13 +183,16 @@ function mcpStdio(servers, name) {
   if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:'))
     throw Error('MCP server ' + name + ' has no http or https url in mcp-env.json');
   const http = require(url.protocol === 'https:' ? 'node:https' : 'node:http');
-  const agent = new http.Agent({ keepAlive: true });
+  // A fresh connection per request: a pooled socket the server closed while idle would fail a POST that cannot be
+  // retried safely, such as a tool call that dials.
+  const agent = new http.Agent({ keepAlive: false });
   const say = text => process.stderr.write('mcp-stdio ' + name + ': ' + text + '\n');
   // U+2028 and U+2029 are escaped so a reader that also splits lines on them sees one message per line.
   const out = m => process.stdout.write(JSON.stringify(m).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029') + '\n');
   process.stdout.on('error', () => process.exit(0));
   const visible = v => typeof v === 'string' && /^[\x21-\x7e]+$/.test(v);
-  let session = null, protocol = null, init = null, initialized = null, renewing = null;
+  const requests = new Set();
+  let closing = false, session = null, protocol = null, init = null, initialized = null, renewing = null, opening = Promise.resolve();
   const bearer = () => {
     const value = envFileValue(s);
     if (!visible(value)) throw Error('MCP env file value for ' + s.bearerTokenEnvVar + ' is not a bearer token');
@@ -198,6 +201,7 @@ function mcpStdio(servers, name) {
   // One HTTP exchange. Resolves {status, sent, text} once the body ends: sent is the session id it carried, text the
   // start of a non-2xx body. Each JSON-RPC message of a 2xx body goes to deliver as it arrives.
   const exchange = (method, body, deliver, initializing) => new Promise((resolve, reject) => {
+    if (closing && method !== 'DELETE') throw Error('the client closed stdin');
     const headers = { Accept: 'application/json, text/event-stream', Authorization: 'Bearer ' + bearer() };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const sent = initializing ? null : session;
@@ -251,10 +255,14 @@ function mcpStdio(servers, name) {
       }
     });
     req.on('error', reject);
+    requests.add(req);
+    req.on('close', () => requests.delete(req));
     if (method === 'DELETE') req.setTimeout(5000, () => req.destroy(Error('timed out')));
     req.end(body);
   });
+  // A 401 or 403 body is never repeated, in case a server echoes the credential.
   const failure = r => 'HTTP ' + r.status + (r.status > 299 && r.status < 400 ? ' redirect refused' : '') + (() => {
+    if (r.status === 401 || r.status === 403) return '';
     try { const e = JSON.parse(r.text).error; return e && typeof e.message === 'string' ? ': ' + e.message.slice(0, 200) : ''; }
     catch { return ''; }
   })();
@@ -277,8 +285,15 @@ function mcpStdio(servers, name) {
     const list = (Array.isArray(msg) ? msg : [msg]).filter(m => m && typeof m === 'object');
     const ids = list.filter(m => typeof m.method === 'string' && m.id !== undefined && m.id !== null).map(m => m.id);
     const initializing = list.some(m => m.method === 'initialize');
+    const open = initializing || list.some(m => m.method === 'notifications/initialized');
     if (initializing) { init = line; initialized = null; }
-    if (list.some(m => m.method === 'notifications/initialized')) initialized = line;
+    else if (open) initialized = line;
+    // Every later message waits until the server has the initialize and notifications/initialized POSTs, which a
+    // client sends without waiting for the second; the opening POSTs themselves keep their order.
+    const before = opening;
+    let done;
+    if (open) opening = Promise.all([before, new Promise(r => { done = r; })]);
+    try { await before; } catch {}
     const answered = new Set();
     const deliver = m => {
       for (const one of Array.isArray(m) ? m : [m]) if (one && one.method === undefined) answered.add(one.id);
@@ -295,6 +310,7 @@ function mcpStdio(servers, name) {
       if (r.status < 200 || r.status > 299) fail(failure(r));
       else if (ids.some(id => !answered.has(id))) fail('the server ended its answer without a response');
     } catch (e) { fail(e.message); }
+    finally { if (done) done(); }
   };
   const pending = new Set();
   // Lines split only at \n (readline would also split inside a string at U+2028), decoded as UTF-8 across chunks.
@@ -313,7 +329,12 @@ function mcpStdio(servers, name) {
   });
   process.stdin.on('end', async () => {
     take(rest);
-    await Promise.allSettled([...pending]);
+    // The client is gone: open requests get a short grace, never a many-minute wait, before the session ends.
+    const all = Promise.allSettled([...pending]);
+    await Promise.race([all, new Promise(r => setTimeout(r, 5000).unref())]);
+    closing = true;
+    for (const req of requests) req.destroy();
+    await all;
     if (session) await exchange('DELETE', undefined, () => {}, false).catch(() => {});
     agent.destroy();
     process.exitCode = 0;
