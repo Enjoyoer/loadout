@@ -349,17 +349,26 @@ function claudeVersion() {
   } catch (e) { return null; }
 }
 
-function mergeMcp(bytes, servers, pi = false) {
-  const cfg = bytes ? JSON.parse(bytes.toString('utf8')) : {};
+// Antigravity runs each server as the launcher's stdio proxy, the bearer staying out of its config and environment;
+// the shape is the one `agy mcp add` writes, and a disabled server stays listed as disabled, as for Pi.
+const agyEntry = s => ({ args: [path.join(loadoutDir(path, os), 'mcp-env.cjs'), '--mcp-stdio', s.name],
+                         command: process.execPath, disabled: !s.enabled });
+// kind: 'claude', 'pi' or 'agy'. A missing file counts as empty, and for Antigravity a 0-byte one too (a fresh install
+// leaves it).
+function mergeMcp(bytes, servers, kind) {
+  const pi = kind === 'pi', agy = kind === 'agy';
+  if (agy) for (const s of servers) if (!/^[A-Za-z0-9_-]+$/.test(s.name)) throw Error('invalid MCP server name: ' + s.name);
+  const cfg = bytes && !(agy && bytes.length === 0) ? JSON.parse(bytes.toString('utf8')) : {};
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw Error('the file is not a JSON object, nothing written');
   const changes = [];
   if (cfg.mcpServers !== undefined && (!cfg.mcpServers || typeof cfg.mcpServers !== 'object' || Array.isArray(cfg.mcpServers)))
     throw Error('mcpServers must be an object, nothing written there');
   for (const s of servers) {
-    if (!pi && !s.enabled) {
+    if (kind === 'claude' && !s.enabled) {
       if (cfg.mcpServers && s.name in cfg.mcpServers) { delete cfg.mcpServers[s.name]; changes.push('-' + s.name); }
       continue;
     }
-    const want = mcpEntry(path, os, s, pi);
+    const want = agy ? agyEntry(s) : mcpEntry(path, os, s, pi);
     cfg.mcpServers ||= {};
     if (JSON.stringify(cfg.mcpServers[s.name]) !== JSON.stringify(want)) {
       cfg.mcpServers[s.name] = want; changes.push(s.name);
@@ -388,18 +397,25 @@ try {
     const claudeMcp = path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json');
     // probe(), not existsSync: an unreadable path throws instead of reading as absent.
     if (probe(fs, path.join(os.homedir(), '.claude'), true))
-      mcpPlans.push(['claude_mcp', claudeMcp, false]);
+      mcpPlans.push(['claude_mcp', claudeMcp, 'claude']);
     else result.claude_mcp = { status: 'absent' };
     const config = path.join(process.env.PASEO_HOME || path.join(os.homedir(), '.paseo'), 'config.json');
     checkConfigPath(fs, path, os, config);
     const providers = probe(fs, config, true) ? JSON.parse(fs.readFileSync(config, 'utf8')).agents?.providers : null;
     const launch = providers?.pi?.command?.find(arg => path.basename(arg) === 'launch.mjs');
-    if (launch) mcpPlans.push(['pi_mcp', path.join(path.dirname(launch), 'agent/mcp.json'), true]);
+    if (launch) mcpPlans.push(['pi_mcp', path.join(path.dirname(launch), 'agent/mcp.json'), 'pi']);
     else result.pi_mcp = { status: 'absent' };
+    // Antigravity on a host whose daemon has its provider row enabled, and only once agy has made its config folder.
+    const agyDir = path.join(os.homedir(), '.gemini', 'config');
+    if (providers?.antigravity && providers.antigravity.enabled !== false) {
+      checkConfigPath(fs, path, os, path.join(agyDir, 'mcp_config.json'));
+      if (probe(fs, agyDir, true)) mcpPlans.push(['antigravity_mcp', path.join(agyDir, 'mcp_config.json'), 'agy']);
+      else result.antigravity_mcp = { status: 'absent' };
+    }
     // Validate new MCP destinations before any client file changes.
-    for (const [, file, pi] of mcpPlans) {
+    for (const [, file, kind] of mcpPlans) {
       checkConfigPath(fs, path, os, file);
-      mergeMcp(probe(fs, file, true) ? fs.readFileSync(file) : null, servers, pi);
+      mergeMcp(probe(fs, file, true) ? fs.readFileSync(file) : null, servers, kind);
     }
   }
 
@@ -451,8 +467,8 @@ try {
              after: changes.length ? JSON.stringify(cfg, null, 2) + "\n" : null };
   });
 
-  for (const [client, file, pi] of mcpPlans)
-    result[client] = update(p, file, bytes => mergeMcp(bytes, servers, pi));
+  for (const [client, file, kind] of mcpPlans)
+    result[client] = update(p, file, bytes => mergeMcp(bytes, servers, kind));
 
   if (p.claude.minVersion && result.claude.status !== "absent") {
     const have = claudeVersion();

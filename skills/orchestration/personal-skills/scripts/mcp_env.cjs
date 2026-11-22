@@ -163,6 +163,231 @@ function mcpHeader(servers, client, name) {
   if (!/^[\x21-\x7e]+$/.test(value)) throw Error('MCP env file value for ' + s.bearerTokenEnvVar + ' is not a bearer token');
   return client === 'pi' ? 'Bearer ' + value : JSON.stringify({ Authorization: 'Bearer ' + value });
 }
+// `--mcp-stdio <server>`: a stdio MCP server for a harness that can neither run a header command nor keep a bearer
+// out of its config and environment (Antigravity). It forwards each newline-delimited JSON-RPC message on stdin to
+// the enabled server's Streamable HTTP url and writes each JSON-RPC message the server sends back, from a JSON or an
+// event-stream body, to stdout, one per line; diagnostics go to stderr. The bearer is read from the server's env file
+// at each request, so a rotation reaches the next one; a missing or unsafe file answers that request with a JSON-RPC
+// error and sends nothing, never falling back to an environment variable. The token is never on the command line,
+// in the environment, on stdout or stderr. Redirects are refused, so the bearer cannot reach another origin. Requests
+// run concurrently with no client timeout, as a tool call can run many minutes. The session id from the initialize
+// response, and the protocol version it negotiated, go on later requests; a 404 on a session re-sends the cached
+// initialize (and notifications/initialized) for a new session and retries that request once. On stdin EOF it gives
+// open requests 5 seconds, ends the rest, ends the session with a DELETE (best effort) and exits 0.
+function mcpStdio(servers, name) {
+  const s = servers.find(s => s.name === name && s.enabled);
+  if (!s) throw Error('no enabled MCP server ' + (/^[A-Za-z0-9_-]+$/.test(name || '') ? name : '') + ' in mcp-env.json');
+  bearerNames([s]);
+  let url = null;
+  try { url = new URL(s.url); } catch {}
+  if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:'))
+    throw Error('MCP server ' + name + ' has no http or https url in mcp-env.json');
+  const http = require(url.protocol === 'https:' ? 'node:https' : 'node:http');
+  // A fresh connection per request: a pooled socket the server closed while idle would fail a POST that cannot be
+  // retried safely, such as a tool call that dials.
+  const agent = new http.Agent({ keepAlive: false });
+  const say = text => process.stderr.write('mcp-stdio ' + name + ': ' + text + '\n');
+  // U+2028 and U+2029 are escaped so a reader that also splits lines on them sees one message per line.
+  const out = m => process.stdout.write(JSON.stringify(m).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029') + '\n');
+  process.stdout.on('error', () => process.exit(0));
+  const visible = v => typeof v === 'string' && /^[\x21-\x7e]+$/.test(v);
+  const requests = new Set();
+  let closing = false, session = null, protocol = null, init = null, initialized = null, renewing = null, opening = Promise.resolve();
+  // One stdin line, one JSON body and one event-stream event are each held to this many characters; a larger one
+  // fails its request instead of growing memory without bound.
+  const MAX = 32 * 1024 * 1024, tooBig = 'over 32 MiB';
+  // The Windows owner check runs PowerShell synchronously, so a value read there is reused for 5 seconds rather than
+  // stalling every concurrent request; a rotation still reaches requests after that. Only a good read is kept.
+  let cached = null;
+  const bearer = () => {
+    if (windows && cached && Date.now() - cached.at < 5000) return cached.value;
+    const value = envFileValue(s);
+    if (!visible(value)) throw Error('MCP env file value for ' + s.bearerTokenEnvVar + ' is not a bearer token');
+    if (windows) cached = { value, at: Date.now() };
+    return value;
+  };
+  // One HTTP exchange. Resolves {status, sent, text} once the body ends: sent is the session id it carried, text the
+  // start of a non-2xx body. Each JSON-RPC message of a 2xx body goes to deliver as it arrives.
+  // limit, when set, is an idle timeout in ms: only the opening POSTs and the DELETE have one, never a tool call.
+  const exchange = (method, body, deliver, initializing, limit) => new Promise((resolve, reject) => {
+    if (closing && method !== 'DELETE') throw Error('the client closed stdin');
+    const token = bearer();
+    const headers = { Accept: 'application/json, text/event-stream', Authorization: 'Bearer ' + token };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const sent = initializing ? null : session;
+    if (sent) headers['Mcp-Session-Id'] = sent;
+    if (!initializing && protocol) headers['MCP-Protocol-Version'] = protocol;
+    const req = http.request(url, { method, headers, agent }, res => {
+      const status = res.statusCode, type = String(res.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      res.setEncoding('utf8');
+      res.on('error', reject);
+      res.on('close', () => reject(Error('response ended early')));
+      const over = () => { reject(Error('the answer is ' + tooBig)); req.destroy(); };
+      if (status < 200 || status > 299) {
+        // The start of the body, with any copy of the bearer taken out before it can be quoted in an error.
+        let text = '';
+        res.on('data', chunk => { if (text.length < 4096 + token.length) text += chunk; });
+        res.on('end', () => resolve({ status, sent, text: text.split(token).join('').slice(0, 4096) }));
+        return;
+      }
+      // A server that answers initialize without a session id is stateless: an older id must not linger.
+      if (initializing) session = visible(res.headers['mcp-session-id']) ? res.headers['mcp-session-id'] : null;
+      const message = data => {
+        let m;
+        try { m = JSON.parse(data); } catch { say('dropped a message that is not JSON'); return; }
+        if (initializing && m && m.result && visible(m.result.protocolVersion)) protocol = m.result.protocolVersion;
+        deliver(m);
+      };
+      // Chunks are kept in a list and joined once, so a long line or body costs linear time.
+      let parts = [], size = 0;
+      if (type === 'text/event-stream') {
+        let data = [], dataSize = 0, event = '', cr = false;
+        const field = line => {
+          if (line === '') {
+            // An event with empty data (a priming event carrying only an id) dispatches nothing, as in EventSource.
+            if (data.join('\n') && (event === '' || event === 'message')) message(data.join('\n'));
+            data = []; dataSize = 0; event = '';
+          } else if (!line.startsWith(':')) {
+            const at = line.indexOf(':'), key = at < 0 ? line : line.slice(0, at);
+            const value = at < 0 ? '' : line.slice(at + 1).replace(/^ /, '');
+            if (key === 'data') { data.push(value); dataSize += value.length + 1; } else if (key === 'event') event = value;
+          }
+        };
+        const add = piece => { parts.push(piece); size += piece.length; return size + dataSize <= MAX; };
+        // Lines end at CRLF, LF or CR; a CR that ends one chunk may pair with an LF that starts the next.
+        const ends = /\r\n|\r|\n/g;
+        res.on('data', chunk => {
+          let from = cr && chunk.startsWith('\n') ? 1 : 0;
+          cr = false;
+          ends.lastIndex = from;
+          for (let m; (m = ends.exec(chunk));) {
+            if (!add(chunk.slice(from, m.index))) return over();
+            field(parts.join('')); parts = []; size = 0;
+            from = ends.lastIndex;
+            if (m[0] === '\r' && from === chunk.length) cr = true;
+          }
+          if (!add(chunk.slice(from))) over();
+        });
+        res.on('end', () => { if (size) field(parts.join('')); field(''); resolve({ status, sent }); });
+      } else {
+        res.on('data', chunk => { parts.push(chunk); size += chunk.length; if (size > MAX) over(); });
+        res.on('end', () => {
+          const text = parts.join('');
+          if (text.trim()) {
+            if (type === 'application/json') message(text); else say('dropped a ' + (type || 'untyped') + ' body');
+          }
+          resolve({ status, sent });
+        });
+      }
+    });
+    req.on('error', reject);
+    requests.add(req);
+    req.on('close', () => requests.delete(req));
+    // TCP keepalive finds a peer that vanished during a long tool call; the agent keeps no pooled sockets.
+    req.on('socket', socket => socket.setKeepAlive(true, 30000));
+    if (limit) req.setTimeout(limit, () => req.destroy(Error('timed out')));
+    req.end(body);
+  });
+  // A 401 or 403 body is never repeated, in case a server echoes the credential.
+  const failure = r => 'HTTP ' + r.status + (r.status > 299 && r.status < 400 ? ' redirect refused' : '') + (() => {
+    if (r.status === 401 || r.status === 403) return '';
+    let e;
+    // A body that is not JSON carries no message to quote.
+    try { e = JSON.parse(r.text)?.error; } catch (err) { if (!(err instanceof SyntaxError)) throw err; }
+    return e && typeof e.message === 'string' ? ': ' + e.message.slice(0, 200) : '';
+  })();
+  const OPEN_LIMIT = 60000;
+  // A new session after the server forgot one, shared by every request that saw that session expire.
+  const renew = stale => {
+    if (renewing) return renewing;
+    if (session !== stale) return Promise.resolve();
+    renewing = (async () => {
+      if (!init) throw Error('session expired before an initialize');
+      const r = await exchange('POST', init, () => {}, true, OPEN_LIMIT);
+      if (r.status < 200 || r.status > 299) throw Error('re-initialize failed: ' + failure(r));
+      if (initialized) await exchange('POST', initialized, () => {}, false, OPEN_LIMIT);
+    })().finally(() => { renewing = null; });
+    return renewing;
+  };
+  const forward = async line => {
+    let msg;
+    try { msg = JSON.parse(line); }
+    catch { out({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
+    const list = (Array.isArray(msg) ? msg : [msg]).filter(m => m && typeof m === 'object');
+    const ids = list.filter(m => typeof m.method === 'string' && m.id !== undefined && m.id !== null).map(m => m.id);
+    const initializing = list.some(m => m.method === 'initialize');
+    const open = initializing || list.some(m => m.method === 'notifications/initialized');
+    if (initializing) { init = line; initialized = null; }
+    else if (open) initialized = line;
+    // Every later message waits until the server has the initialize and notifications/initialized POSTs, which a
+    // client sends without waiting for the second; the opening POSTs themselves keep their order.
+    const before = opening;
+    let done;
+    if (open) opening = Promise.all([before, new Promise(r => { done = r; })]);
+    try { await before; } catch {}
+    const answered = new Set();
+    const deliver = m => {
+      for (const one of Array.isArray(m) ? m : [m]) if (one && one.method === undefined) answered.add(one.id);
+      out(m);
+    };
+    const fail = text => {
+      say(text);
+      for (const id of ids) if (!answered.has(id)) out({ jsonrpc: '2.0', id, error: { code: -32000, message: text } });
+    };
+    try {
+      if (renewing && !initializing) await renewing.catch(() => {});
+      // The opening POSTs hold every later message, so they alone have an idle timeout.
+      const limit = open ? OPEN_LIMIT : 0;
+      let r = await exchange('POST', line, deliver, initializing, limit);
+      if (r.status === 404 && r.sent) { await renew(r.sent); r = await exchange('POST', line, deliver, false, limit); }
+      if (r.status < 200 || r.status > 299) fail(failure(r));
+      else if (ids.some(id => !answered.has(id))) fail('the server ended its answer without a response');
+    } catch (e) { fail(e.message); }
+    finally { if (done) done(); }
+  };
+  const pending = new Set();
+  // Lines split only at \n (readline would also split inside a string at U+2028), decoded as UTF-8 across chunks.
+  const take = line => {
+    line = line.replace(/\r$/, '');
+    if (!line.trim()) return;
+    const p = forward(line);
+    pending.add(p);
+    p.finally(() => pending.delete(p));
+  };
+  // A line over the cap is skipped to its end and answered once with an error; its id is unknown, so id is null.
+  let parts = [], size = 0, skipping = false;
+  const oversized = () => {
+    say('dropped a message ' + tooBig);
+    out({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'message ' + tooBig } });
+  };
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => {
+    let from = 0;
+    for (let at; (at = chunk.indexOf('\n', from)) >= 0; from = at + 1) {
+      const piece = chunk.slice(from, at);
+      if (skipping) skipping = false;
+      else if (size + piece.length > MAX) oversized();
+      else take(parts.join('') + piece);
+      parts = []; size = 0;
+    }
+    const tail = chunk.slice(from);
+    if (skipping || !tail) return;
+    if (size + tail.length > MAX) { oversized(); skipping = true; parts = []; size = 0; }
+    else { parts.push(tail); size += tail.length; }
+  });
+  process.stdin.on('end', async () => {
+    if (!skipping) take(parts.join(''));
+    // The client is gone: open requests get a short grace, never a many-minute wait, before the session ends.
+    const all = Promise.allSettled([...pending]);
+    await Promise.race([all, new Promise(r => setTimeout(r, 5000).unref())]);
+    closing = true;
+    for (const req of requests) req.destroy();
+    await all;
+    if (session) await exchange('DELETE', undefined, () => {}, false, 5000).catch(() => {});
+    agent.destroy();
+    process.exitCode = 0;
+  });
+}
 function parents(dir) {
   const out = [];
   for (;;) { out.push(dir); const next = path.dirname(dir); if (next === dir) return out; dir = next; }
@@ -275,6 +500,9 @@ if (require.main === module) {
     if (args[0] === '--mcp-header') {
       if (args.length !== 3) throw Error('usage: node mcp-env.cjs --mcp-header pi|claude <server>');
       process.stdout.write(mcpHeader(descriptor.servers || [], args[1], args[2]));
+    } else if (args[0] === '--mcp-stdio') {
+      if (args.length !== 2) throw Error('usage: node mcp-env.cjs --mcp-stdio <server>');
+      mcpStdio(descriptor.servers || [], args[1]);
     } else {
       let id = null;
       if (args[0] === '--provider') { args.shift(); id = args.shift(); }
