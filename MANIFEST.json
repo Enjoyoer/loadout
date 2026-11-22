@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "94e27a4bdde3e8a59970e10b46c75b0600722435",
+  "source_commit": "0cca666ff9258aaeadcfb7b5ae283d5ae14f3830",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -275,8 +275,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 54897,
-      "sha256": "16ec63c2d04af3d601f6c47abb49d3f36e4f423a4c20fd88cbc16c261cd790e6"
+      "bytes": 55097,
+      "sha256": "fed541d99088fd68d7edf6ec60a53bdbad5fc63392551bb285ea034b315b2ebf"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -296,8 +296,8 @@
       "path": "skills/orchestration/opc/scripts/route.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 16790,
-      "sha256": "58c19922bcec5850727e67fb031d838587c05a4b5feed71fa8ef8e6a5483e578"
+      "bytes": 16874,
+      "sha256": "690228d288dca78761e558b61b938eb04f10b33f9365e004d570baf082e73817"
     },
     {
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
