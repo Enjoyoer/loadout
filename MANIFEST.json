@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "1ea59767e7739dd57f972eede9fd07c22e75ee46",
+  "source_commit": "bf49860be0322f88658863685639dc598d32936d",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -478,8 +478,8 @@
       "path": "skills/orchestration/personal-skills/scripts/mcp_env.cjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 32447,
-      "sha256": "a0fd864e7b54300217b8f80bdba1ee6286fb92e16e6ac07840365151b78a748f"
+      "bytes": 32554,
+      "sha256": "f81b382b3508eb09cf74be5750fe11ffae11cfa5cf75ab416e2a3477de0bfe89"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/new_token_file.ps1",
