@@ -291,8 +291,10 @@ function mcpStdio(servers, name) {
   // A 401 or 403 body is never repeated, in case a server echoes the credential.
   const failure = r => 'HTTP ' + r.status + (r.status > 299 && r.status < 400 ? ' redirect refused' : '') + (() => {
     if (r.status === 401 || r.status === 403) return '';
-    try { const e = JSON.parse(r.text).error; return e && typeof e.message === 'string' ? ': ' + e.message.slice(0, 200) : ''; }
-    catch { return ''; }
+    let e;
+    // A body that is not JSON carries no message to quote.
+    try { e = JSON.parse(r.text)?.error; } catch (err) { if (!(err instanceof SyntaxError)) throw err; }
+    return e && typeof e.message === 'string' ? ': ' + e.message.slice(0, 200) : '';
   })();
   const OPEN_LIMIT = 60000;
   // A new session after the server forgot one, shared by every request that saw that session expire.
