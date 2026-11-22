@@ -65,10 +65,12 @@ The `ui-design` and `ui-check` lanes run in a UI task (the Fable `plan` lane doe
 
 ## Cursor overflow
 
-Owner rule (2026-11-21). When the Claude pool is at its cap and a `code` or review Worker must stay on Claude, a PM may start it on provider `cursor` with model `claude-opus-5-5`. A PM may also choose `cursor` with `gemini-4-neon` on purpose; it spends the same small monthly Other Models pool.
+Owner rule (2026-11-21). Cursor's small monthly Other Models pool is overflow only, so it is never spent on work native Antigravity covers.
 
+- The default overflow model is provider `cursor` with model `gemini-4-neon`. Use it only when native Antigravity is capped or unavailable.
+- Use `cursor` with `claude-opus-5-5` only for a task that strictly requires Claude (a `code` or review Worker that must stay on Claude) while the Claude pool is at its cap.
 - Always pass `--model` explicitly and keep the defaults: 300k context, Fast off, no 1M or Max mode. Never fall back to `Auto` for Claude-only work.
-- Before starting either, check that the Other Models pool has room on `cursor.com/dashboard/spending`. If it is spent, wait for the Claude reset instead.
+- Before starting either, check that the Other Models pool has room on `cursor.com/dashboard/spending`. If it is spent, wait for the Claude or Antigravity reset instead.
 - Give each Cursor Worker one bounded task, label it `lane=cursor-overflow`, and archive it when done. Afterwards, restore the `~/.cursor/cli-config.json` model to `default` if it changed.
 - If a create fails in under 2 seconds with `Authentication required`, refresh the `cursor` provider snapshot and retry once. Never run `cursor-agent login`.
 - Never use Cursor for a PM, for Fable (no zero data retention), for a main lane, or for a payment-data project.
