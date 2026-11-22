@@ -101,7 +101,7 @@ function admitReplacement(context, { taskClass, catalog }) {
       effort: runtime.effort, fastMode: runtime.fastMode, reason: neon ? REPLACEMENT_REASON : PACE_BACKUP_REASON,
       receipt: Object.freeze(neon ? { provider: runtime.provider, mode: proof.mode, target: target.daemon, task: task.id, lane,
         placement: branchName } : { task: task.id, lane, placement: branchName }) });
-  } catch { return null; }
+  } catch { return null; } // probe-ok: fails closed, any error resolves no off-pace route; expires 2027-05-22
 }
 
 // An owner route is returned unchanged; owner-rule classes (ui-design, ui-check) carry their rule's reason, and every

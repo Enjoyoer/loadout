@@ -292,7 +292,7 @@ export function readLocalRouting() {
     } finally { closeSync(fd); }
     const doc = JSON.parse(text);
     return doc && typeof doc === 'object' && !Array.isArray(doc) && !repeatsKey(text) ? doc : null;
-  } catch { return null; }
+  } catch { return null; } // probe-ok: fails closed, an unreadable routing file allows no off-pace route; expires 2027-05-22
 }
 
 // Excluded launchers, listed locally in the routing file as replacementExcludedLaunchers (agent id prefixes), never take
@@ -311,7 +311,7 @@ function launcherChain() {
     try {
       agent = JSON.parse(execFileSync('paseo', ['inspect', id, '--json'],
         { env, timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', maxBuffer: 16 << 20 }));
-    } catch { return null; }
+    } catch { return null; } // probe-ok: fails closed, an unreadable launcher chain allows no off-pace route; expires 2027-05-22
     if (agent?.Id !== id) return null;
     if (agent.ParentAgentId === '' || agent.ParentAgentId === null) return chain;
     id = agent.ParentAgentId;
