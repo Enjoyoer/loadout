@@ -31,11 +31,12 @@ const FORMER_FIXED_ROLE_ROUTES = Object.freeze({
 const workerClass = (label, effort, ceiling = null, fastMode = false) => Object.freeze({ label, effort, ceiling, fastMode });
 // Local code lanes default to Opus high (owner 2026-11-18); plan, ui-design and ui-check run Fable high. Routes are the minimum
 // (owner rule): nothing lowers a route. Every class runs Fast off (owner 2026-11-07) except the Luna classes, which run
-// Fast on (owner 2026-11-17); otherwise Fast is an owner-named exception per task.
+// Fast on (owner 2026-11-17), and review, browser and browser-hard, which run Fast on by default (owner decision 327,
+// 2026-11-22); otherwise Fast is an owner-named exception per task.
 export const WORKER_DEFAULT_ROUTES = Object.freeze({
   // Owner 2026-11-18: code runs at Opus high; ceiling xhigh keeps earlier xhigh lanes rebuildable.
   code: workerClass('Opus', 'high', 'xhigh'),
-  review: workerClass('Sol', 'high'),
+  review: workerClass('Sol', 'high', null, true),
   // Security, credential and data-loss reviews run on Opus, never GPT (owner rule): GPT trips the cyber-safety filter.
   // Owner 2026-11-18: Opus high; ceiling xhigh keeps earlier xhigh lanes rebuildable.
   'review-security': workerClass('Opus', 'high', 'xhigh'),
@@ -44,9 +45,9 @@ export const WORKER_DEFAULT_ROUTES = Object.freeze({
   plan: workerClass('Fable', 'high'),
   // Owner 2026-11-17: browser, including computer use and desktop application workflows (owner 2026-11-18), runs at Sol
   // low; ceiling high keeps earlier medium lanes rebuildable.
-  browser: workerClass('Sol', 'low', 'high'),
+  browser: workerClass('Sol', 'low', 'high', true),
   // Owner 2026-11-18: browser-hard runs at Sol high, not Astra, for fragile, ambiguous or repeatedly failing browser work.
-  'browser-hard': workerClass('Sol', 'high'),
+  'browser-hard': workerClass('Sol', 'high', null, true),
   smoke: workerClass('Luna', 'low', null, true),
   // Owner 2026-11-18: watchers, heartbeats and scheduled jobs run at Sol low, Fast off; FORMER_CLASS_ROUTES keeps
   // earlier Luna xhigh lanes rebuildable.
@@ -130,8 +131,9 @@ function requireFableRule(route, rows = null) {
   const problem = fableProblem(route, rows);
   if (problem) throw Error(`${problem} (owner rule)`);
 }
-// A class that runs Fast on (the Luna classes, owner 2026-11-17) takes no route with Fast off, owner-named or not, and
-// neither does a route on a former Fast-on label of its class (a watcher on Luna).
+// A Luna class (Fast on, owner 2026-11-17) takes no route with Fast off, owner-named or not, and neither does a route
+// on a former Fast-on Luna label of its class (a watcher on Luna). The Sol Fast-on defaults (decision 327) refuse nothing.
+const FAST_REQUIRED_LABEL = 'Luna';
 const formerClassRoute = (route, taskClass, rows) => {
   const kind = canonicalWorkerClass(taskClass);
   return (Object.hasOwn(FORMER_CLASS_ROUTES, kind ?? '') ? FORMER_CLASS_ROUTES[kind] : [])
@@ -140,8 +142,9 @@ const formerClassRoute = (route, taskClass, rows) => {
 function classFastProblem(route, taskClass, rows = null) {
   const kind = canonicalWorkerClass(taskClass), former = formerClassRoute(route, kind, rows);
   if (route?.fastMode === true) return null;
-  if (WORKER_DEFAULT_ROUTES[kind]?.fastMode) return `the ${kind} class runs Fast on (owner 2026-11-17)`;
-  return former?.fastMode ? `a ${kind} route on ${former.label} runs Fast on (owner 2026-11-17)` : null;
+  const rule = WORKER_DEFAULT_ROUTES[kind];
+  if (rule?.fastMode && rule.label === FAST_REQUIRED_LABEL) return `the ${kind} class runs Fast on (owner 2026-11-17)`;
+  return former?.fastMode && former.label === FAST_REQUIRED_LABEL ? `a ${kind} route on ${former.label} runs Fast on (owner 2026-11-17)` : null;
 }
 
 // The owner's hard rules for a lane class bind every route, whatever its source says: ui-design and ui-check are exactly
@@ -444,10 +447,11 @@ function validateWorkerRoute(route) {
 
 // A recorded route rebuilds (repair, restart) only inside the owner's hard rules for the lane's class, whatever its source.
 // A task default must also still be today's class: the class's catalog label (never a GPT or web model for a Claude
-// class), the class's Fast, and, as the allowances for what a class-table change left behind, Fast on for a GPT class
-// (recorded before GPT defaults went Fast off) and any effort from the class minimum up to its ceiling, which the Pi
-// catalog must still serve, or exactly a former default of the class (FORMER_CLASS_ROUTES). A Luna class lane recorded
-// with Fast off is refused (owner 2026-11-17).
+// class), the class's Fast, and, as the allowances for what a class-table change left behind, either Fast for a GPT
+// class (Fast on recorded before GPT defaults went Fast off, Fast off recorded before decision 327 turned review and
+// browser Fast on) and any effort from the class minimum up to its ceiling, which the Pi catalog must still serve, or
+// exactly a former default of the class (FORMER_CLASS_ROUTES). A Luna class lane recorded with Fast off is refused
+// (owner 2026-11-17).
 function validateRebuild(route, taskClass, rows) {
   taskClass = canonicalWorkerClass(taskClass);
   const valid = validateRecordedWorkerRoute(route);
@@ -455,7 +459,7 @@ function validateRebuild(route, taskClass, rows) {
   const ceiling = rule && (rule.ceiling ?? rule.effort);
   const former = recordedFormerDefault(route, taskClass, rows);
   const problem = laneProblem(route, taskClass, rows) ?? (route.source !== 'task-default' || former ? null
-    : route.fastMode !== rule.fastMode && !(route.fastMode && GPT_WEB_LABELS.includes(rule.label)) ? `Fast ${route.fastMode ? 'on' : 'off'} does not match the ${taskClass} class`
+    : route.fastMode !== rule.fastMode && !GPT_WEB_LABELS.includes(rule.label) ? `Fast ${route.fastMode ? 'on' : 'off'} does not match the ${taskClass} class`
       : effortOrder.indexOf(route.effort) > effortOrder.indexOf(ceiling) ? `effort ${route.effort} is above the ${taskClass} ceiling ${ceiling}`
         : claudeClassOnGptModel(rule, route) ? `${route.model} is a GPT or web model and the ${taskClass} class runs ${rule.label}`
           : null);

@@ -1553,9 +1553,9 @@ const nativeCaps={enabled:true,status:'available',modes:[{id:'full-access',isUna
 const workspace={workspaceId:'wks-example',cwd:'/tmp/example-worktree'};
 const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:'lane',title:'Worker',initialPrompt:'Do it',workspace,capabilities:piCaps,...extra});
 const plain=value=>JSON.parse(JSON.stringify(value));
-// Owner-approved task routes: Fast off by default, on for the Luna classes (owner 2026-11-17).
+// Owner-approved task routes: Fast off by default, on for the Luna classes (owner 2026-11-17) and for review, browser and browser-hard (decision 327).
 assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','review','review-security','sites','smoke','ui-check','ui-design','watcher']);
-for(const [kind,label,effort,fastMode] of [['code','Opus','high',false],['plan','Fable','high',false],['research','Fable','high',false],['review','Sol','high',false],['review-security','Opus','high',false],['smoke','Luna','low',true],['sites','Luna','xhigh',true],['browser','Sol','low',false],['browser-hard','Sol','high',false],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Sol','low',false]]){
+for(const [kind,label,effort,fastMode] of [['code','Opus','high',false],['plan','Fable','high',false],['research','Fable','high',false],['review','Sol','high',true],['review-security','Opus','high',false],['smoke','Luna','low',true],['sites','Luna','xhigh',true],['browser','Sol','low',true],['browser-hard','Sol','high',true],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Sol','low',false]]){
  const route=r.selectWorkerRoute({taskKind:kind,catalog});
  assert.equal(route.model,['browser','browser-hard','sites'].includes(kind)?r.resolveCatalogLabel(catalog,label).id.slice(6):r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
 }
@@ -1585,11 +1585,11 @@ const fableCode={role:'worker',source:'owner-explicit',model:'fleet/claude-fable
 assert(r.buildDelegatedBrief({role:'worker',route:fableCode,taskClass:'code',catalog,brief:'x'}).includes(ownerLine));
 assert(!r.buildDelegatedBrief({role:'worker',route:code,catalog,brief:'x'}).includes(ownerLine));
 assert(!r.buildDelegatedBrief({role:'worker',route:fableCode,taskClass:'ui-design',catalog,brief:'x'}).includes(ownerLine));
-// Browser default: Sol at medium, Fast off.
+// Browser default: Sol at low, Fast on (decision 327).
 const browser=r.selectWorkerRoute({taskKind:'browser',catalog:{pi:catalog}});
-assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'gpt-6.1-sol',effort:'low',fastMode:false,reason:'browser default Sol low, Fast off, native Codex authorized by owner 2026-10-14'});
+assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'gpt-6.1-sol',effort:'low',fastMode:true,reason:'browser default Sol low, Fast on, native Codex authorized by owner 2026-10-14'});
 const browserReq=build({route:browser,capabilities:nativeCaps});
-assert.equal(browserReq.request.provider,'codex/gpt-6.1-sol');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'low',features:{fast_mode:false},modeId:'full-access'});
+assert.equal(browserReq.request.provider,'codex/gpt-6.1-sol');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'low',features:{fast_mode:true},modeId:'full-access'});
 assert.equal(r.resolveAgentSurface('worker',{taskKind:'browser'},catalog).effort,'low');
 // An owner-named route wins; its Fast is the Pi Fast toggle label, never native fast_mode.
 const owner={role:'worker',source:'owner-explicit',model:'gpt-6.1-sol',effort:'high',fastMode:true};

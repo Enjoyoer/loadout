@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "0cca666ff9258aaeadcfb7b5ae283d5ae14f3830",
+  "source_commit": "f4c407395533a096d07bb2cabaeff6ed0d48d5ee",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -240,8 +240,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 21157,
-      "sha256": "207cbf2291cf960521c290796f85d371e8e67a17f6101f084a850b2c1502a984"
+      "bytes": 21603,
+      "sha256": "a1992c784b2cb5fb4f7499ed8d97914ff55bf8303bd69bc68394467c39bb17e6"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -275,8 +275,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 55097,
-      "sha256": "fed541d99088fd68d7edf6ec60a53bdbad5fc63392551bb285ea034b315b2ebf"
+      "bytes": 55473,
+      "sha256": "8ab260f954280f04b3069dee4cc44029be200dac5960b819f5a29c6283d530cb"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -345,8 +345,8 @@
       "path": "skills/orchestration/opn/references/host-adapters.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 2099,
-      "sha256": "f1a71ab9b7c14ec822c7277334be79c3683fe459f46cad0f3517a11ca25cf431"
+      "bytes": 2240,
+      "sha256": "61bd7057c054dbfe43f5215d09ab6870a0b9dbb0faf4916a42b82da3925d0a69"
     },
     {
       "path": "skills/orchestration/opn/scripts/test_validate_opn.py",
