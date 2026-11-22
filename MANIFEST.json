@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "69f45f695682046873ef44293dd92fced183cdf6",
+  "source_commit": "b86425a13d5dfbc8d7ebf238550ad6b5cfaa54e2",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -1597,26 +1597,26 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 47552,
-      "sha256": "71de2baca585db96f90c9fd831141d78bbbc72f69fa243f74940fc1ad2cfc84c"
+      "bytes": 52217,
+      "sha256": "8e3d31452d7b34e07ea01a10d0ff625cfea410ac2ab19c22837e62d6f5e7576d"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 104630,
-      "sha256": "5bec6203aa093d0f5504faef2258a4b2ae1f16e73b2f478e791e4825d8ebf794"
+      "bytes": 108367,
+      "sha256": "84889d09becb9ecf28e042d667fc8a9df43749452d44f9a13c3aa899f9788094"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package-lock.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 23597,
-      "sha256": "941dc53a9ff46093b0da18ec4da2f025aa4bf72dbe84b36d9e56aa5222490dab"
+      "sha256": "bbeccfa4bcee35cc0c62a0ed19b8c99102e92843eb2223bf415606d236c06607"
     },
     {
       "path": "plugins/usage-limit-auto-resume/package.json",
       "plugin": "usage-limit-auto-resume",
       "bytes": 890,
-      "sha256": "2c94df4a21bbc7c2cd15c33c421ca8fd45e3a3975d1137926ace6ac314ab7590"
+      "sha256": "2d2e85a18c02baeefb48e369a9ba97b7f78e89a2928b343ca882c59a803cc76e"
     },
     {
       "path": "plugins/usage-limit-auto-resume/paseo-plugin.json",
@@ -1627,8 +1627,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/config.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 2892,
-      "sha256": "de0f0e7dff2e3092910914597926c3d38d736e93af99449db302b3cef72d222b"
+      "bytes": 4186,
+      "sha256": "2fa716ae3e8b25a7da5e2d9996acc3652ddebdf65435ab2c77fe87ed64215976"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/daemon-run.ts",
@@ -1645,14 +1645,14 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/fallback-runner.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 50302,
-      "sha256": "824c2528cbfe7834d18c11878083259d0a64082996609236e8655cefb58710a4"
+      "bytes": 59622,
+      "sha256": "921971609bb08c3be5b5d3ec77ae9adf2fe696a0641eef818a41bbe554e33329"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/fallback.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 27895,
-      "sha256": "8fda61e3c9f4c63c1164952a026ed8c56cfcad2eae7f95448a2c8bb1cf42cc36"
+      "bytes": 30806,
+      "sha256": "6b421b45cf943b3590db40754ac155736d2e0bd88500eb4611b642ec7cd47944"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/model.ts",
@@ -1663,8 +1663,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/quota.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 13085,
-      "sha256": "fd77caf4c39cfd980762e64ff0e4da2c38bf8da05a6221b526d70658d18f89f5"
+      "bytes": 16784,
+      "sha256": "65c4c9c12e7c0f9e206f746c8710923115d2646081418eecb405b7844d033281"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/store.ts",
@@ -1729,14 +1729,14 @@
     {
       "path": "plugins/usage-limit-auto-resume/test/model.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 34580,
-      "sha256": "9a8711932604325a51b1b7e471f6dc68bafe2e5e00de52d27abcbfc30c796233"
+      "bytes": 37842,
+      "sha256": "50a42bc2fa1f36b107224303848960ac8ccc4c5974e90fb593b7209cee3c86f2"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/pm-fallback.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 73136,
-      "sha256": "7a151abf0a19e997abd9499890c969490d442b9d96145269270173a242527955"
+      "bytes": 81908,
+      "sha256": "c9980914238fc0cf7e36310416f0ee7474f32c8d6832dc15cb70eb6da674673b"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/rpc-timeout.test.ts",
