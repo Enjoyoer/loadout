@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b1ff419ef83f62be7071db64b5e7a4426bd3113e",
+  "source_commit": "9287db12b7c80cb4b78cacd28e8fc80cb2a16450",
   "skill_count": 25,
   "file_count": 151,
   "files": [
@@ -513,8 +513,8 @@
       "path": "skills/orchestration/personal-skills/scripts/auto-update/auto-update.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 69493,
-      "sha256": "418c172792837524e51bc602c058aca605a060d6f829216763b6debc1d09cfec"
+      "bytes": 69690,
+      "sha256": "48ea086f83e40e3ef76f21c91ddb280147e01fd375b216999ad4634ce0b45342"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/com.loadout.auto-update.plist",
