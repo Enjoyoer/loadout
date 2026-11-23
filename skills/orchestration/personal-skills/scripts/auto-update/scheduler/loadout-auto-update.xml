@@ -1,16 +1,17 @@
 <?xml version="1.0" encoding="UTF-16"?>
-<!-- INERT TEMPLATE (Task Scheduler). Not registered by any sync. Replace @NODE@, @RUNNER@, @HOST@ and @USER@
-     (DOMAIN\user), save as UTF-16, and register only when Config approves. It runs in the user's interactive
-     session (InteractiveToken) so the idle and full-screen probe can see input; it never wakes the PC, never
-     catches up a missed slot, and fires at :15 of 01:00 to 04:00 local time. The runner enforces each host's window
-     (a daily-use PC: Sunday 03:00-05:00 America/New_York) and the Sunday 05:00-07:00 blackout. -->
+<!-- INERT TEMPLATE (Task Scheduler), for an idle-gated Windows host. Not registered by any sync. Replace @NODE@,
+     @RUNNER@, @HOST@ and @USER@ (DOMAIN\user), save as UTF-16, and register only when Config approves. A periodic
+     tick every 10 minutes while the user is logged on (InteractiveToken); it never wakes the host and never catches
+     up a missed tick. The runner samples the host idle gates and enforces the Sunday 05:00-07:00 blackout. A
+     daily-use PC uses loadout-auto-update-pc.xml instead. -->
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>Loadout fleet auto-update runner</Description></RegistrationInfo>
   <Triggers>
-    <CalendarTrigger><StartBoundary>2026-01-04T01:15:00</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>
-    <CalendarTrigger><StartBoundary>2026-01-04T02:15:00</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>
-    <CalendarTrigger><StartBoundary>2026-01-04T03:15:00</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>
-    <CalendarTrigger><StartBoundary>2026-01-04T04:15:00</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>
+    <CalendarTrigger>
+      <StartBoundary>2026-01-04T00:00:00</StartBoundary>
+      <Repetition><Interval>PT10M</Interval><Duration>P1D</Duration><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
+    </CalendarTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author"><UserId>@USER@</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal>

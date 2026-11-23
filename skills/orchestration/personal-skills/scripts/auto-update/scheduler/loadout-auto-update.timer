@@ -1,12 +1,14 @@
 # INERT TEMPLATE (systemd --user). Enable only when Config approves phase 1.
-# Fires at :15 of 01:00 to 04:00 America/New_York (DST-aware), never in the Sunday 05:00-07:00 blackout.
-# Persistent=false: a missed slot is not caught up; the runner enforces windows and blackouts itself as well.
+# A periodic tick every 10 minutes; the runner samples the host idle gates and applies at most one change when
+# every gate is open. Persistent=false: a missed tick is not caught up; the runner enforces the Sunday
+# 05:00-07:00 blackout and every window itself.
 [Unit]
-Description=Loadout fleet auto-update runner schedule
+Description=Loadout fleet auto-update runner tick
 
 [Timer]
-OnCalendar=*-*-* 01,02,03,04:15:00 America/New_York
+OnCalendar=*:00/10
 Persistent=false
+AccuracySec=30s
 RandomizedDelaySec=0
 
 [Install]

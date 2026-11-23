@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!-- INERT TEMPLATE (Task Scheduler), for a daily-use PC. Not registered by any sync. Replace @NODE@, @RUNNER@,
+     @HOST@ and @USER@ (DOMAIN\user), save as UTF-16, and register only when Config approves. Ticks every 10 minutes
+     from Sunday 03:00 to 05:00 local time only, in the user's interactive session (InteractiveToken) so the idle and
+     full-screen probe can see input; it never wakes the PC or catches up. conhost headless keeps a console window
+     from appearing over a game (check on the PC before registering). The runner also enforces the PC's window, the
+     15-minute idle and full-screen gate before each apply, and the Sunday 05:00-07:00 blackout. -->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>Loadout fleet auto-update runner</Description></RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-01-04T03:00:00</StartBoundary>
+      <Repetition><Interval>PT10M</Interval><Duration>PT2H</Duration><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+      <ScheduleByWeek><DaysOfWeek><Sunday /></DaysOfWeek><WeeksInterval>1</WeeksInterval></ScheduleByWeek>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author"><UserId>@USER@</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <WakeToRun>false</WakeToRun>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <Enabled>false</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec><Command>%SystemRoot%\System32\conhost.exe</Command><Arguments>--headless "@NODE@" "@RUNNER@" run --host @HOST@</Arguments></Exec>
+  </Actions>
+</Task>
