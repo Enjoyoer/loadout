@@ -455,7 +455,12 @@ class AutoUpdate(unittest.TestCase):
         self.assertEqual(self.version_of("tool-a"), "1.3.0", "a dead owner's lock is stale")
 
     def test_example_registry_validates(self):
-        env = dict(self.env, LOADOUT_FLEET=str(EXAMPLE.parent))
+        # A copy, private as the runner requires whatever the checkout's umask was.
+        fleet = self.tmp / "example-fleet"
+        shutil.copytree(EXAMPLE, fleet / "auto-update")
+        for p in (fleet / "auto-update").iterdir():
+            p.chmod(0o600)
+        env = dict(self.env, LOADOUT_FLEET=str(fleet))
         done = subprocess.run([NODE, str(RUNNER), "validate"], env=env, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("desktop windows: claude-code(t1,hold) codex-cli(t1,hold)", done.stdout)
