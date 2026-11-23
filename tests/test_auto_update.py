@@ -76,11 +76,11 @@ class AutoUpdate(unittest.TestCase):
              "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "bounds": {"max_bump": "minor"},
              "window": ALWAYS, "soak_hours": 24,
              "adapters": {OS: {"check": {"argv": fake + ["version"], "regex": f"^{name} ([0-9.]+)$"},
-                               "stage": [fake + ["stage", "{version}"]], "precheck": [fake + ["precheck", "{version}"]],
+                               "stage": [fake + ["stage", "{version}", "{txn}"]], "precheck": [fake + ["precheck", "{version}"]],
                                "apply": fake + ["apply", "{version}"], "health": [fake + ["health"]],
                                "rollback": fake + ["rollback", "{installed}"]}}}
-        if tier == 2:
-            r.update(exclusive_group="access", watchdog_seconds=600)
+        if tier == 2:  # a watchdog budget above apply + health + check (5 s each) and the 10 s margin
+            r.update(exclusive_group="access", watchdog_seconds=30, timeouts={"apply": 5, "health": 5, "check": 5})
         r.update(extra)
         return r
 
@@ -139,6 +139,9 @@ class AutoUpdate(unittest.TestCase):
         p = self.state / "state.json"
         return json.loads(p.read_text())["attempts"] if p.exists() else {}
 
+    def sent_reset(self):
+        (self.fx / "sent.log").unlink(missing_ok=True)
+
     def sent(self):
         p = self.fx / "sent.log"
         return p.read_text().splitlines() if p.exists() else []
@@ -158,6 +161,9 @@ class AutoUpdate(unittest.TestCase):
             if not WINDOWS:
                 x.chmod(0o700)
         self.write(d / ("available.json" if name == "feed" else name.split("/", 1)[1] + ".json"), w)
+
+    def blackouts_off(self):
+        self.registry["blackouts"] = []
 
     def gate(self, name, **extra):
         return {"name": name, "max_age_seconds": 120, "argv": [NODE, str(FAKE), str(self.fx), "probe", name], **extra}
@@ -332,25 +338,20 @@ class AutoUpdate(unittest.TestCase):
         head, _ = self.plan(host="src")  # the source host still reads its own file
         self.assertEqual(head["feed"], "ok")
 
-    def test_diagnostic_signals_never_open_or_block(self):
-        self.registry["hosts"]["h1"]["preconditions"] = [self.gate("paseo-idle"), self.gate("cpu", diagnostic=True)]
-        self.probes(NOW, **{"paseo-idle": True, "cpu": False})
-        head, rows = self.plan()
-        self.assertEqual((head["gates"], rows["tool-a"]["decision"]), ("open", "would-apply"), "diagnostic never blocks")
-        self.probes(NOW, **{"paseo-idle": {"diagnostic": True}, "cpu": True})
-        head, rows = self.plan()
-        self.assertIn("paseo-idle: diagnostic-only signal cannot open a gate", rows["tool-a"]["reason"])
-        self.switch("stopped")
-        self.run_and_wait()
-        day = self.gate_days()["2026-11-24"]
-        self.assertEqual(day["ticks"][-1][3]["cpu"], {"open": 1})
-
     def test_homebrew_rows_cannot_be_set_to_apply(self):
         self.registry["hosts"]["h1"]["allow"].append("brew.fd")
         self.registry["components"].append(self.row("brew.fd", 1))
         done = self.cli("validate", now=None)
         self.assertEqual(done.returncode, 2)
         self.assertIn("Homebrew rows stay hold or observe", done.stderr)
+        rg = self.row("rg", 1)  # an id without the prefix, run through brew
+        rg["adapters"][OS]["check"]["argv"] = ["/opt/homebrew/bin/brew", "list", "--versions", "ripgrep"]
+        self.registry["components"] = [self.row("tool-a", 1), rg]
+        done = self.cli("validate", now=None)
+        self.assertIn("Homebrew rows stay hold or observe", done.stderr)
+        self.registry["components"] = [self.row("tool-a", 1), self.row("paseo", 1)]
+        done = self.cli("validate", now=None)
+        self.assertIn("paseo is shared by every agent on the host; never automatic", done.stderr)
 
     def test_windows_transaction_must_fit_the_scheduler_task(self):
         row = self.registry["components"][0]
@@ -487,60 +488,16 @@ class AutoUpdate(unittest.TestCase):
         self.assertEqual(day["ticks"][-1][:3], ["03:50", 1, ""])
         self.assertEqual(day["ticks"][0][:3], ["03:00", 0, "paseo-idle"])
 
-    def test_quiet_gate_needs_two_readings_over_minutes(self):
-        quiet = {"min_seconds": 300, "max_gap_seconds": 1500, "max_per_minute": {"proxy": 30, "bridge": 30}}
-        self.registry["hosts"]["h1"]["preconditions"] = [self.gate("traffic", quiet=quiet)]
-        self.registry["components"] = [self.row("tool-a", 1, window={**ALWAYS, "end": "24:00"})]
-        reading = lambda proxy, bridge=500, ident="proxy:11,bridge:12": {"counters": {"proxy": proxy, "bridge": bridge}, "identity": ident}
-        steps = [  # (time, proxy counter, identity, expected reason or None for open)
-            ("2026-11-24T08:00:00Z", 1000, None, "no earlier reading yet"),
-            ("2026-11-24T08:02:00Z", 1001, None, "earlier reading too recent"),   # keeps the 08:00 reading
-            ("2026-11-24T08:10:00Z", 9000, None, "busy (proxy"),                  # 8000 cs over 10 min
-            ("2026-11-24T08:20:00Z", 9100, "proxy:99,bridge:12", "process changed"),
-            ("2026-11-24T09:00:00Z", 9100, "proxy:99,bridge:12", "earlier reading too old"),
-            ("2026-11-24T09:10:00Z", 9050, "proxy:99,bridge:12", "went back"),
-        ]
-        self.switch("stopped")  # ticks sample the gates even while the switch is off
-        for now, proxy, ident, reason in steps:
-            with self.subTest(now):
-                self.probes(now, traffic=reading(proxy, ident=ident or "proxy:11,bridge:12"))
-                self.feed["generated_at"] = now
-                head, _ = self.plan(now=now)
-                self.assertEqual(head["gates"], "closed")
-                self.assertIn(reason, " ".join(head["blocked"]))
-                self.run_and_wait(now=now)
-        self.switch("allowed")
-        for now, proxy in (("2026-11-24T09:20:00Z", 9100), ("2026-11-24T09:30:00Z", 9200)):
-            self.probes(now, traffic=reading(proxy, ident="proxy:99,bridge:12"))
-            self.feed["generated_at"] = now
-            head, rows = self.plan(now=now)
-            self.run_and_wait(now=now)
-        self.assertEqual(head["gates"], "open", head)  # 100 cs over 10 min: 10/min, under 30
-        self.assertEqual(self.version_of("tool-a"), "1.3.0")
-        day = self.gate_days()["2026-11-24"]
-        self.assertEqual((day["samples"], day["open"]), (8, 2))
-        self.assertNotIn("proxy:99", json.dumps(day), "samples keep codes, not process ids")
-        self.assertEqual(day["ticks"][-1][3]["traffic"], {"proxy_per_min": 10.0, "bridge_per_min": 0.0})
-
     def test_gate_closing_during_stage_stops_before_apply(self):
-        quiet = {"min_seconds": 300, "max_gap_seconds": 1500, "max_per_minute": {"proxy": 30}}
-        self.registry["hosts"]["h1"]["preconditions"] = [self.gate("paseo-idle"), self.gate("traffic", quiet=quiet)]
+        self.registry["hosts"]["h1"]["preconditions"] = [self.gate("paseo-idle"), self.gate("host-load")]
         self.registry["components"] = [self.row("tool-a", 1, window={**ALWAYS, "end": "24:00"})]
-        traffic = lambda n: {"counters": {"proxy": n}, "identity": "proxy:11"}
-        races = {"agent turn starts": {"paseo-idle": {"ok": False}},
-                 "model traffic starts": {"traffic": traffic(1000 + 30 * 5 + 500)}}
-        t0 = "2026-11-24T08:00:00Z"
-        self.probes(t0, **{"paseo-idle": True, "traffic": traffic(1000)})
-        self.switch("stopped")
-        self.run_and_wait(now=t0)  # the earlier quiet reading
-        self.switch("allowed")
-        for i, (name, change) in enumerate(races.items()):
+        races = {"agent turn starts": "paseo-idle", "a build starts": "host-load"}
+        for i, (name, gate) in enumerate(races.items()):
             with self.subTest(name):
                 now = f"2026-11-24T08:{10 * (i + 1)}:00Z"
                 self.feed["generated_at"] = now
-                self.probes(now, **{"paseo-idle": True, "traffic": traffic(1000)})
-                stamped = {k: {**v, "observed_at": now} for k, v in change.items()}
-                self.behavior["components"]["tool-a"] = {"stage_probes": {k: {**self.behavior["probes"][k], **v} for k, v in stamped.items()}}
+                self.probes(now, **{"paseo-idle": True, "host-load": True})
+                self.behavior["components"]["tool-a"] = {"stage_probes": {gate: {"ok": False, "observed_at": now}}}
                 _, rows = self.plan(now=now)
                 self.assertEqual(rows["tool-a"]["decision"], "would-apply", rows["tool-a"])
                 self.run_and_wait(now=now)
@@ -552,10 +509,49 @@ class AutoUpdate(unittest.TestCase):
         self.behavior["components"]["tool-a"] = {}
         now = "2026-11-24T08:40:00Z"
         self.feed["generated_at"] = now
-        self.probes(now, **{"paseo-idle": True, "traffic": traffic(1000)})
+        self.probes(now, **{"paseo-idle": True, "host-load": True})
         self.run_and_wait(now=now)
         self.assertEqual(self.version_of("tool-a"), "1.3.0")
         self.assertEqual(self.sent(), [])
+
+    def test_stop_switch_or_hold_during_stage_never_applies(self):
+        reg = self.fleet / "auto-update" / "registry.json"
+        sw = self.fleet / "auto-update" / "switch.json"
+        held = copy.deepcopy(self.registry)
+        held["components"] = [self.row("tool-a", 1, mode="hold")]
+        changes = {"local STOP": [[str(self.state / "STOP"), ""]],
+                   "switch stopped": [[str(sw), json.dumps({"schema": "loadout.auto-update.switch/1", "apply": "stopped"})]],
+                   "row now hold": [[str(reg), json.dumps(held)]],
+                   "registry unreadable": [[str(reg), "{not json"]]}
+        for name, writes in changes.items():
+            with self.subTest(name):
+                (self.state / "STOP").unlink(missing_ok=True)
+                self.switch("allowed")
+                self.registry["components"] = [self.row("tool-a", 1)]
+                self.behavior["components"]["tool-a"] = {"stage_write": writes, "stage_artifact": True}
+                self.run_and_wait()
+                self.assertEqual(self.version_of("tool-a"), "1.2.0")
+                self.assertNotIn("tool-a apply", (self.fx / "calls.log").read_text())
+                self.assertEqual(self.attempts(), {}, "not now: no attempt, no hold")
+                self.assertEqual(self.sent(), [])
+                logs = " ".join(p.read_text() for p in self.state.glob("txn/*/log.txt"))
+                self.assertIn("before apply: ", logs)
+                self.assertEqual(list(self.state.glob("txn/*/staged.bin")), [], "the staged download is gone")
+        (self.state / "STOP").unlink(missing_ok=True)
+        self.switch("allowed")
+        self.behavior["components"]["tool-a"] = {}
+        self.run_and_wait()
+        self.assertEqual(self.version_of("tool-a"), "1.3.0", "the next allowed tick applies")
+
+    def test_live_run_rechecks_on_the_real_clock(self):
+        self.registry["components"] = [self.row("tool-a", 1, window={**ALWAYS, "end": "24:00"}, soak_hours=0)]
+        self.feed["generated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self.blackouts_off()
+        done = self.cli("run", now=None)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.wait_idle()
+        plan = json.loads(next(self.state.glob("txn/*/plan.json")).read_text())
+        self.assertEqual(plan["clock_offset_ms"], 0)
 
     def test_all_day_window_keeps_the_sunday_blackout(self):
         self.registry["components"] = [self.row("tool-a", 1, window={**ALWAYS, "end": "24:00"})]
@@ -585,37 +581,188 @@ class AutoUpdate(unittest.TestCase):
         # A second run while the transaction lives does nothing.
         self.assertEqual(self.cli("run").returncode, 0)
         self.assertEqual(len([l for l in (self.fx / "calls.log").read_text().splitlines() if "tool-a stage" in l]), 1)
-        os.kill(a["txn_pid"], signal.SIGKILL if not WINDOWS else signal.SIGTERM)
+        os.kill(a["txn_proc"]["pid"], signal.SIGKILL if not WINDOWS else signal.SIGTERM)
         time.sleep(1)
         self.run_and_wait()
         self.run_and_wait()
         a = self.attempts()["h1/tool-a@1.3.0"]
         self.assertEqual((a["status"], a["interrupted_in"]), ("interrupted", "applying"))
         self.assertEqual(len(self.sent()), 1)
-        self.assertIn("interrupted during applying", self.sent()[0])
+        self.assertIn("interrupted during applying; nothing was rolled back", self.sent()[0])
         self.assertEqual(len([l for l in (self.fx / "calls.log").read_text().splitlines() if "tool-a stage" in l]), 1)
 
-    def test_rollback_timer_fires_when_not_confirmed(self):
-        self.behavior["components"]["tool-a"] = {"health_sleep": 20}
-        self.registry["components"] = [self.row("tool-a", 2, watchdog_seconds=10)]
+    def wait_status(self, want, timeout=30):
+        until = time.time() + timeout
+        while True:
+            a = self.attempts().get("h1/tool-a@1.3.0", {})
+            if a.get("status") == want:
+                return a
+            self.assertLess(time.time(), until, a)
+            time.sleep(0.1)
+
+    def test_watchdog_budget_covers_apply_health_and_check(self):
+        for name, row in {"too short": self.row("tool-a", 2, watchdog_seconds=20),
+                          "default timeouts": dict(self.row("tool-a", 2, watchdog_seconds=900), timeouts={}),
+                          "windows": dict(self.row("tool-a", 2), adapters={"windows": self.row("tool-a", 1)["adapters"][OS]})}.items():
+            with self.subTest(name):
+                self.registry["components"] = [row]
+                done = self.cli("validate", now=None)
+                self.assertEqual(done.returncode, 2)
+                self.assertIn("watchdog", done.stderr)
+
+    @unittest.skipIf(WINDOWS, "the rollback watchdog is POSIX only")
+    def test_watchdog_rolls_back_a_crashed_transaction_once(self):
+        self.behavior["components"]["tool-a"] = {"health_sleep": 3}
+        self.registry["components"] = [self.row("tool-a", 2)]
         self.assertEqual(self.cli("run").returncode, 0)
+        a = self.wait_status("health")
+        os.kill(a["txn_proc"]["pid"], signal.SIGKILL)
         self.wait_idle(timeout=90)
         a = self.attempts()["h1/tool-a@1.3.0"]
         self.assertEqual(a["status"], "rolled-back-by-watchdog")
         self.assertEqual(self.version_of("tool-a"), "1.2.0")
-        self.assertEqual(len(self.sent()), 1)
-        self.assertIn("watchdog rolled back", self.sent()[0])
-        calls = (self.fx / "calls.log").read_text()
-        self.assertEqual(calls.count("tool-a rollback"), 1, "only the watchdog rolls back")
+        self.run_and_wait()
+        self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "rolled-back-by-watchdog", "an ended attempt stays ended")
+        self.assertEqual(len(self.sent()), 1, "one alert")
+        self.assertIn("watchdog rolled back to 1.2.0", self.sent()[0])
+        self.assertEqual((self.fx / "calls.log").read_text().count("tool-a rollback"), 1)
 
+    @unittest.skipIf(WINDOWS, "the rollback watchdog is POSIX only")
+    def test_watchdog_stops_a_stuck_transaction_before_restoring(self):
+        self.behavior["components"]["tool-a"] = {"apply_sleep": 2}
+        self.registry["components"] = [self.row("tool-a", 2)]
+        self.assertEqual(self.cli("run").returncode, 0)
+        a = self.wait_status("applying")
+        os.kill(a["txn_proc"]["pid"], signal.SIGSTOP)  # stuck: alive, never deciding; its apply step still finishes
+        self.wait_idle(timeout=90)
+        a = self.attempts()["h1/tool-a@1.3.0"]
+        self.assertEqual(a["status"], "rolled-back-by-watchdog")
+        self.assertEqual(self.version_of("tool-a"), "1.2.0", "restored after the late apply, not before it")
+        log = next(self.state.glob("txn/*/log.txt")).read_text()
+        self.assertIn("stopping the transaction's process group", log)
+        self.assertLess(log.index("stopping the transaction"), log.index('"rollback"'), "stopped first, then restored")
+        self.run_and_wait()
+        self.assertEqual(len(self.sent()), 1, "one alert, no interrupted line after it")
+        self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "rolled-back-by-watchdog")
+
+    @unittest.skipIf(WINDOWS, "the rollback watchdog is POSIX only")
     def test_confirmed_change_disarms_the_watchdog(self):
-        self.registry["components"] = [self.row("tool-a", 2, watchdog_seconds=10)]
+        self.registry["components"] = [self.row("tool-a", 2)]
         self.cli("run")
         self.wait_idle(timeout=90)
         self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "applied")
         self.assertEqual(self.version_of("tool-a"), "1.3.0")
         self.assertNotIn("rollback", (self.fx / "calls.log").read_text())
 
+    def test_error_after_apply_rolls_back_without_a_watchdog(self):
+        state, saved = self.state / "state.json", self.fx / "state.saved"
+        # The apply step breaks the state file (an error in the runner right after apply), the rollback mends it.
+        self.behavior["components"]["tool-a"] = {"apply_copy": [[str(state), str(saved)]], "apply_write": [[str(state), "{broken"]],
+                                                 "rollback_copy": [[str(saved), str(state)]]}
+        self.registry["components"] = [self.row("tool-a", 1)]
+        self.run_and_wait()
+        self.assertEqual(self.version_of("tool-a"), "1.2.0")
+        a = self.attempts()["h1/tool-a@1.3.0"]
+        self.assertEqual(a["status"], "rolled-back")
+        self.assertEqual(len(self.sent()), 1)
+        self.assertIn("transaction error after apply; rolled back to 1.2.0", self.sent()[0])
+
+    def test_pre_apply_artifacts_go_and_recovery_files_stay(self):
+        self.registry["components"] = [self.row("tool-a", 1)]
+        self.behavior["components"]["tool-a"] = {"stage_artifact": True, "stage_exit": 75}  # busy: not now after the download
+        self.run_and_wait()
+        self.assertEqual(self.attempts(), {})
+        dirs = list(self.state.glob("txn/*"))
+        self.assertEqual(len(dirs), 1)
+        self.assertEqual(sorted(p.name for p in dirs[0].iterdir()), ["log.txt", "plan.json", "txn.out"])
+        # Interrupted while staging: the next tick holds it and removes the download.
+        self.behavior["components"]["tool-a"] = {"stage_artifact": True, "stage_sleep": 60}
+        self.assertEqual(self.cli("run").returncode, 0)
+        a = self.wait_status("staging")
+        os.kill(a["txn_proc"]["pid"], signal.SIGKILL if not WINDOWS else signal.SIGTERM)
+        time.sleep(1)
+        self.run_and_wait()
+        self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "interrupted")
+        self.assertEqual(list(self.state.glob("txn/*/staged.bin")), [])
+        # A week on, the dropped attempt's directory goes; the held one's stays.
+        old = time.time() - 8 * 86400
+        for d in self.state.glob("txn/*"):
+            os.utime(d, (old, old))
+        self.run_and_wait()
+        kept = [d.name for d in self.state.glob("txn/*")]
+        self.assertEqual(kept, [self.attempts()["h1/tool-a@1.3.0"]["txn"]])
+
+    def sleeper(self):
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+        self.addCleanup(p.kill)
+        return p.pid
+
+    def test_reused_pid_or_restart_is_interrupted_not_a_stall(self):
+        dirname = "20261120T080000Z-tool-a-0a0b0c"
+        txn = self.state / "txn" / dirname
+        txn.mkdir(parents=True)
+        for name, boot_delta, words in (("pid reused", 0, "interrupted during applying"), ("host restarted", -86400e3, "the host restarted during applying")):
+            with self.subTest(name):
+                (self.state / "state.json").unlink(missing_ok=True)
+                self.sent_reset()
+                pid = self.sleeper()  # an unrelated process that now has the transaction's PID
+                rec = {"pid": pid, "marks": [str(RUNNER), "txn", str(txn)]}
+                (self.state / "lock").mkdir(exist_ok=True)
+                (self.state / "lock" / "owner.json").write_text(json.dumps({"procs": [rec], "at": "2026-11-20T08:00:00Z"}))
+                real_boot = json.loads(subprocess.run([NODE, "-e", "const os=require('os');console.log(JSON.stringify(Math.round(Date.now()-os.uptime()*1000)))"],
+                                                      capture_output=True, text=True).stdout)
+                self.write(self.state / "state.json", {"schema": "loadout.auto-update.state/1", "applied": [], "alerts": {},
+                    "attempts": {"h1/tool-a@1.3.0": {"status": "applying", "host": "h1", "component": "tool-a", "group": None,
+                                 "local_date": "2026-11-20", "txn": dirname, "boot": real_boot + boot_delta, "txn_proc": rec, "watchdog_proc": None}}})
+                self.run_and_wait()
+                self.run_and_wait()
+                a = self.attempts()["h1/tool-a@1.3.0"]
+                self.assertEqual(a["status"], "interrupted")
+                self.assertEqual(len(self.sent()), 1)
+                self.assertIn(words, self.sent()[0])
+                self.assertIn("nothing was rolled back", self.sent()[0])
+                self.assertEqual(self.version_of("tool-a"), "1.2.0", "a held version is not retried")
+
+    def test_lock_of_an_unidentifiable_process_alerts_once_when_it_outlives_any_transaction(self):
+        self.state.mkdir(parents=True)
+        (self.state / "lock").mkdir()
+        owner = self.state / "lock" / "owner.json"
+        ago = lambda hours: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - hours * 3600))
+        pid = self.sleeper()
+        owner.write_text(json.dumps({"pids": [pid], "at": ago(1)}))
+        self.assertEqual(self.cli("run").returncode, 0)
+        self.assertEqual(self.sent(), [], "an hour-old lock: busy, silent")
+        since = ago(9)
+        owner.write_text(json.dumps({"pids": [pid], "at": since}))
+        for _ in range(2):
+            self.assertEqual(self.cli("run").returncode, 0)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertIn(f"host lock held since {since} by a process that cannot be identified", self.sent()[0])
+        self.assertEqual(self.version_of("tool-a"), "1.2.0", "never taken over on a guess")
+
+    def test_windows_host_notifier_is_an_executable(self):
+        self.registry["hosts"]["win"] = {"os": "windows", "tz": "America/New_York", "allow": []}
+        done = self.cli("validate", now=None)
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("registry.hosts.win.notify_command: on Windows", done.stderr)
+        self.registry["hosts"]["win"]["notify_command"] = ["{node}", "~/AppData/Local/example/paseo"]
+        self.assertEqual(self.cli("validate", now=None).returncode, 0)
+        # One held failure reaches the PM through the host's own notifier (node and the CLI's script, no shell).
+        own = self.tmp / "own-notify"
+        own.mkdir()
+        (own / "behavior.json").write_text("{}")
+        del self.registry["hosts"]["win"]
+        self.registry["hosts"]["h1"]["notify_command"] = ["{node}", str(FAKE), str(own), "paseo"]
+        self.behavior["components"]["tool-a"] = {"health_exit": 1}
+        self.registry["components"] = [self.row("tool-a", 1)]
+        self.run_and_wait()
+        self.run_and_wait()
+        got = (own / "sent.log").read_text().splitlines()
+        self.assertEqual(len(got), 1)
+        self.assertIn("auto-update HOLD h1/tool-a@1.3.0", got[0])
+        self.assertEqual(self.sent(), [], "not through the fleet-wide command")
+
+    @unittest.skipIf(WINDOWS, "tier 2 needs the POSIX-only rollback watchdog")
     def test_tier2_exclusive_per_host_and_day(self):
         self.registry["components"] = [self.row("tool-a", 2), self.row("tool-b", 2)]
         self.run_and_wait()
@@ -628,6 +775,7 @@ class AutoUpdate(unittest.TestCase):
         _, rows = self.plan(now="2026-11-25T08:00:00Z")
         self.assertEqual(rows["tool-b"]["decision"], "would-apply")
 
+    @unittest.skipIf(WINDOWS, "tier 2 needs the POSIX-only rollback watchdog")
     def test_tier2_failed_attempt_also_blocks_the_other_access_path_today(self):
         self.behavior["components"]["tool-a"] = {"health_exit": 1}
         self.registry["components"] = [self.row("tool-a", 2), self.row("tool-b", 2)]

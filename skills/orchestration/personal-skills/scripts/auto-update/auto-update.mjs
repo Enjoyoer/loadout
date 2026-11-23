@@ -46,6 +46,9 @@ const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const TXN_RE = /^\d{8}T\d{6}Z-[a-z0-9][a-z0-9.@+-]{0,63}-[0-9a-f]{6}$/;
 // A Windows scheduler task waits for the transaction (run --wait); its time limit must outlast the longest one.
 const WINDOWS_TXN_MAX_SECONDS = 4 * 3600;
+const WATCHDOG_MARGIN_S = 10;
+// Shared by every agent on a host: never automatic, whatever a registry says.
+const PROTECTED = ["paseo", "node", "nodejs", "npm", "python", "python3", "homebrew", "git", "openssh", "ssh"];
 const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const OSES = ["macos", "linux", "windows"];
 const STEPS = ["check", "stage", "precheck", "apply", "health", "rollback"];
@@ -199,7 +202,13 @@ function validateRegistry(r) {
   for (const [name, h] of Object.entries(r.hosts)) {
     const where = `registry.hosts.${name}`;
     if (!HOST_RE.test(name)) throw new Refusal(`${where}: invalid host name`);
-    exactKeys(h, where, ["os", "tz", "allow"], ["preconditions", "deny_tiers", "notify_host", "ssh"]);
+    exactKeys(h, where, ["os", "tz", "allow"], ["preconditions", "deny_tiers", "notify_host", "notify_command", "ssh"]);
+    if (h.notify_command !== undefined) validateArgv(h.notify_command, `${where}.notify_command`, new Set(["node"]));
+    // A process started without a shell cannot run a .cmd shim; on Windows the notifier is node or a real .exe.
+    const notifyArgv0 = (h.notify_command || r.notify.command)[0];
+    if (h.os === "windows" && notifyArgv0 !== "{node}" && !/\.exe$/i.test(notifyArgv0)) {
+      throw new Refusal(`${where}.notify_command: on Windows give {node} with the CLI's script, or an .exe`);
+    }
     if (h.ssh !== undefined) str(h.ssh, `${where}.ssh`, /^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$/);
     if (h.notify_host !== undefined) str(h.notify_host, `${where}.notify_host`, /^ssh:\/\/[A-Za-z0-9._-]+$/);
     if (!OSES.includes(h.os)) throw new Refusal(`${where}.os: macos, linux or windows`);
@@ -207,19 +216,11 @@ function validateRegistry(r) {
     if (!Array.isArray(h.allow) || h.allow.some((c) => !ID_RE.test(c))) throw new Refusal(`${where}.allow: component ids`);
     for (const [i, p] of (h.preconditions || []).entries()) {
       const pw = `${where}.preconditions[${i}]`;
-      exactKeys(p, pw, ["name", "argv", "max_age_seconds"], ["timeout_seconds", "quiet", "diagnostic"]);
-      if (p.diagnostic !== undefined && typeof p.diagnostic !== "boolean") throw new Refusal(`${pw}.diagnostic: true or false`);
+      exactKeys(p, pw, ["name", "argv", "max_age_seconds"], ["timeout_seconds"]);
       str(p.name, `${pw}.name`, ID_RE);
       validateArgv(p.argv, `${pw}.argv`, new Set(["adapters", "node"]));
       num(p.max_age_seconds, `${pw}.max_age_seconds`, 1, 3600);
       if (p.timeout_seconds !== undefined) num(p.timeout_seconds, `${pw}.timeout_seconds`, 1, 300);
-      if (p.quiet !== undefined) {
-        exactKeys(p.quiet, `${pw}.quiet`, ["min_seconds", "max_gap_seconds", "max_per_minute"]);
-        num(p.quiet.min_seconds, `${pw}.quiet.min_seconds`, 60, 3600);
-        num(p.quiet.max_gap_seconds, `${pw}.quiet.max_gap_seconds`, p.quiet.min_seconds, 4 * 3600);
-        if (!isObj(p.quiet.max_per_minute) || !Object.keys(p.quiet.max_per_minute).length) throw new Refusal(`${pw}.quiet.max_per_minute: counter limits`);
-        for (const [k, v] of Object.entries(p.quiet.max_per_minute)) { str(k, `${pw}.quiet.max_per_minute key`, ID_RE); num(v, `${pw}.quiet.max_per_minute.${k}`, 0, 1e12); }
-      }
     }
     if (h.deny_tiers !== undefined && (!Array.isArray(h.deny_tiers) || h.deny_tiers.some((t) => ![1, 2, 3].includes(t)))) {
       throw new Refusal(`${where}.deny_tiers: tiers 1..3`);
@@ -237,8 +238,11 @@ function validateRegistry(r) {
     seen.add(c.component);
     if (![1, 2].includes(c.tier)) throw new Refusal(`${where}.tier: only tiers 1 and 2 may be automatic`);
     if (!["apply", "hold", "observe"].includes(c.mode)) throw new Refusal(`${where}.mode: apply, hold or observe`);
-    // No Homebrew rollout or rollback is proven yet, so formula rows can only be held or observed.
-    if (c.component.startsWith("brew.") && c.mode === "apply") throw new Refusal(`${where}.mode: Homebrew rows stay hold or observe until a rollback is proven`);
+    // No Homebrew rollout or rollback is proven yet, so formula rows can only be held or observed, whatever their id.
+    const brew = c.component.startsWith("brew.") || Object.values(c.adapters || {}).some((a) => isObj(a) &&
+      [...((isObj(a.check) && Array.isArray(a.check.argv)) ? a.check.argv : []), ...Object.values(a).flat(2)].some((x) => typeof x === "string" && /(^|[\\/])(brew|brew-formula\.sh)$/.test(x)));
+    if (brew && c.mode === "apply") throw new Refusal(`${where}.mode: Homebrew rows stay hold or observe until a rollback is proven`);
+    if (PROTECTED.includes(c.component) && c.mode === "apply") throw new Refusal(`${where}.mode: ${c.component} is shared by every agent on the host; never automatic`);
     if (!Array.isArray(c.hosts) || !c.hosts.length) throw new Refusal(`${where}.hosts: at least one host`);
     for (const h of c.hosts) {
       const host = r.hosts[h];
@@ -263,7 +267,15 @@ function validateRegistry(r) {
       str(c.canary.receipt, `${where}.canary.receipt`);
       num(c.canary.max_age_hours, `${where}.canary.max_age_hours`, 1, 24 * 30);
     }
-    if (c.watchdog_seconds !== undefined) num(c.watchdog_seconds, `${where}.watchdog_seconds`, 10, 6 * 3600);
+    if (c.watchdog_seconds !== undefined) {
+      num(c.watchdog_seconds, `${where}.watchdog_seconds`, 10, 6 * 3600);
+      // The timer must outlast a transaction that is still working (apply, every health step, the version check),
+      // so it only ever fires for one that is stuck or gone. Its stop-and-restore needs POSIX process groups.
+      if (c.adapters && c.adapters.windows) throw new Refusal(`${where}: a rollback watchdog is POSIX only`);
+      const t = { check: 30, apply: 600, health: 300, ...(c.timeouts || {}) };
+      const need = Math.max(0, ...Object.values(c.adapters || {}).map((a) => t.apply + ((a && a.health) || []).length * t.health + t.check)) + WATCHDOG_MARGIN_S;
+      if (c.watchdog_seconds < need) throw new Refusal(`${where}.watchdog_seconds: at least ${need} (apply, health and check timeouts and a margin)`);
+    }
     if (c.tier === 2 && !c.watchdog_seconds) throw new Refusal(`${where}: tier 2 needs watchdog_seconds (self-rollback timer)`);
     if (c.tier === 2 && !c.exclusive_group) throw new Refusal(`${where}: tier 2 needs an exclusive_group`);
     if (c.exclusive_group !== undefined) str(c.exclusive_group, `${where}.exclusive_group`, ID_RE);
@@ -515,64 +527,30 @@ function probe(p, now) {
   // A few plain numbers (load per core, free memory, active agents) kept with the gate samples.
   const metrics = isObj(v.metrics) ? Object.fromEntries(Object.entries(v.metrics)
     .filter(([k, x]) => /^[a-z][a-z0-9_]{0,23}$/.test(k) && Number.isFinite(x)).slice(0, 8).map(([k, x]) => [k, Math.round(x * 100) / 100])) : {};
-  const diagnostic = v.diagnostic === true;
-  if (!v.ok) return { why: `precondition ${p.name}: not met${detail ? ` (${detail})` : ""}`, metrics, diagnostic };
-  if (!p.quiet) return { why: null, metrics, diagnostic };
-  const ids = typeof v.identity === "string" && /^[\w.,:=-]{1,200}$/.test(v.identity);
-  const counters = isObj(v.counters) && Object.keys(p.quiet.max_per_minute).every((k) => Number.isFinite(v.counters[k]) && v.counters[k] >= 0);
-  if (!ids || !counters) return no("probe gave no counters or identity");
-  return { why: null, metrics, diagnostic, reading: { at, identity: v.identity, counters: Object.fromEntries(Object.keys(p.quiet.max_per_minute).map((k) => [k, v.counters[k]])) } };
+  if (!v.ok) return { why: `precondition ${p.name}: not met${detail ? ` (${detail})` : ""}`, metrics };
+  return { why: null, metrics };
 }
 
-// Quiet means the counters grew no faster than allowed since an earlier reading of the same processes. At a tick
-// the earlier reading is the previous tick's, at least min_seconds and at most max_gap_seconds old; right before
-// apply it is the run's own reading, judged over at least min_seconds.
-function quietWhy(p, base, cur, recheck, metrics = {}) {
-  const q = p.quiet;
-  const no = (why) => `precondition ${p.name}: ${why}`;
-  if (!base) return no("no earlier reading yet");
-  if (base.identity !== cur.identity) return no("process changed since the earlier reading");
-  const span = cur.at - base.at;
-  if (span < 0) return no("earlier reading is in the future");
-  if (!recheck && span < q.min_seconds * 1000) return no("earlier reading too recent");
-  if (span > q.max_gap_seconds * 1000) return no("earlier reading too old");
-  const minutes = Math.max(span, q.min_seconds * 1000) / 60e3;
-  for (const [k, max] of Object.entries(q.max_per_minute)) {
-    const d = cur.counters[k] - base.counters[k];
-    if (!Number.isFinite(d) || d < 0) return no(`counter ${k} went back`);
-    metrics[`${k}_per_min`] = Math.round((d / minutes) * 10) / 10;
-    if (d / minutes > max) return no(`busy (${k} ${(d / minutes).toFixed(1)}/min > ${max})`);
-  }
-  return null;
-}
-
-// Every host gate, all evaluated so a sample names every blocker. `last` holds the previous tick's quiet readings.
-function evalGates(hostRow, registry, now, last, recheck = false) {
+// Every host gate, all evaluated so a sample names every blocker.
+function evalGates(hostRow, registry, now) {
   const blocked = [];
-  const readings = {};
   const metrics = {};
   if ((registry.blackouts || []).some((b) => inWindow(now, b))) blocked.push({ name: "blackout", why: "blackout" });
   for (const p of hostRow.preconditions || []) {
     const r = probe(p, now);
-    let why = r.why;
-    const m = { ...(r.metrics || {}) };
-    if (!why && p.quiet) { readings[p.name] = r.reading; why = quietWhy(p, last[p.name], r.reading, recheck, m); }
-    // A signal its probe calls diagnostic (CPU time, say) can be recorded but never opens a gate.
-    if (!why && r.diagnostic && !p.diagnostic) why = `precondition ${p.name}: diagnostic-only signal cannot open a gate`;
-    if (p.diagnostic) { m.open = why ? 0 : 1; metrics[p.name] = m; continue; }
-    if (Object.keys(m).length) metrics[p.name] = m;
-    if (why) blocked.push({ name: p.name, why });
+    if (r.metrics && Object.keys(r.metrics).length) metrics[p.name] = r.metrics;
+    if (r.why) blocked.push({ name: p.name, why: r.why });
   }
   const idle = blocked.filter((b) => b.name !== "blackout");
-  return { open: !blocked.length, idleOpen: !idle.length, why: idle.map((b) => b.why).join("; "), blocked, readings, metrics };
+  return { open: !blocked.length, idleOpen: !idle.length, why: idle.map((b) => b.why).join("; "), blocked, metrics };
 }
 
 // ---------- gate samples ----------
 
 function loadGates(dir) {
   const doc = readJson(path.join(dir, "gates.json"), 4 << 20);
-  const ok = !doc.missing && isObj(doc.value) && doc.value.schema === GATES_SCHEMA && isObj(doc.value.last) && isObj(doc.value.days);
-  return ok ? doc.value : { schema: GATES_SCHEMA, last: {}, days: {} };
+  const ok = !doc.missing && isObj(doc.value) && doc.value.schema === GATES_SCHEMA && isObj(doc.value.days);
+  return ok ? { schema: GATES_SCHEMA, days: doc.value.days } : { schema: GATES_SCHEMA, days: {} };
 }
 
 // Per local day: samples, open samples, closed->open and open->closed transitions, blocker counts and a compact tick
@@ -596,12 +574,6 @@ function recordSample(dir, hostRow, now, gates, stored) {
   }
   day.ticks.push([t.hhmm, gates.open ? 1 : 0, gates.blocked.map((b) => b.name).join(","), gates.metrics]);
   day.ticks = day.ticks.slice(-400);
-  // Keep an earlier quiet reading until it is old enough to judge the next tick by.
-  for (const [name, r] of Object.entries(gates.readings)) {
-    const p = (hostRow.preconditions || []).find((x) => x.name === name);
-    const base = stored.last[name];
-    if (!base || base.identity !== r.identity || r.at - base.at >= p.quiet.min_seconds * 1000 || r.at < base.at) stored.last[name] = r;
-  }
   for (const k of Object.keys(days).sort().slice(0, -GATE_DAYS_KEPT)) delete days[k];
   writeAtomic(path.join(dir, "gates.json"), JSON.stringify(stored) + "\n");
 }
@@ -644,35 +616,82 @@ function updateState(dir, fn) {
 
 const attemptKey = (host, component, version) => `${host}/${component}@${version}`;
 
-// The host lock: a directory holding owner.json with every PID that may still act (runner, transaction, watchdog).
-function lockOwners(dir) {
-  try { return JSON.parse(fs.readFileSync(path.join(dir, "lock", "owner.json"), "utf8")); } catch { return null; }
+// ---------- processes ----------
+
+// A recorded process is {pid, marks}. It counts as running only while that PID runs a command line holding every
+// mark (this runner's path, its subcommand, its transaction directory), so a PID the system has since handed to
+// another process, after a restart say, does not hold anything. A command line that cannot be read counts as
+// running: a live transaction is never taken over on a guess (the lock-age alert covers a lock that never clears).
+const procRecord = (pid, marks) => ({ pid, marks });
+const bootMs = () => Math.round(Date.now() - os.uptime() * 1000);
+
+function commandLine(pid) {
+  try {
+    if (process.platform === "linux") return fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ");
+    const r = WINDOWS
+      ? spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`], { encoding: "utf8", timeout: 30000, windowsHide: true })
+      : spawnSync("/bin/ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 10000 });
+    if (r.error || (WINDOWS && r.status !== 0)) return null;
+    return r.status === 0 ? r.stdout.trim() : "";
+  } catch (e) {
+    return e.code === "ENOENT" ? "" : null;
+  }
 }
 
-function acquireLock(dir) {
+// "yes", "no" or "unknown".
+function procState(rec) {
+  if (Number.isInteger(rec)) rec = { pid: rec }; // an older record: a PID only
+  if (!rec || !alive(rec.pid)) return "no";
+  if (!Array.isArray(rec.marks) || !rec.marks.length) return "unknown";
+  const line = commandLine(rec.pid);
+  if (line === null) return "unknown";
+  return line && rec.marks.every((m) => line.includes(m)) ? "yes" : "no";
+}
+const running = (rec) => procState(rec) !== "no";
+
+// The host lock: a directory holding owner.json with every process that may still act (runner, transaction, watchdog).
+function lockOwners(dir) {
+  try {
+    const o = JSON.parse(fs.readFileSync(path.join(dir, "lock", "owner.json"), "utf8"));
+    return isObj(o) ? { procs: Array.isArray(o.procs) ? o.procs : Array.isArray(o.pids) ? o.pids : [], at: o.at } : null;
+  } catch { return null; }
+}
+
+function acquireLock(dir, me) {
   const lock = path.join(dir, "lock");
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   for (let i = 0; i < 2; i++) {
     try {
       fs.mkdirSync(lock, { mode: 0o700 });
-      writeAtomic(path.join(lock, "owner.json"), JSON.stringify({ pids: [process.pid], at: iso(Date.now()) }));
+      setLockProcs(dir, [me]);
       return { ok: true };
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
       const owner = lockOwners(dir);
-      if (owner && Array.isArray(owner.pids) && owner.pids.some(alive)) return { ok: false, busy: true };
-      let age = Infinity;
-      try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch {}
-      if (!owner && age < STALE_LOCK_MS) return { ok: false, busy: true }; // being created right now
+      if (owner) {
+        const states = owner.procs.map(procState);
+        if (states.includes("yes") || states.includes("unknown")) return { ok: false, since: owner.at, unverified: !states.includes("yes") };
+      } else {
+        let age = Infinity;
+        try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch {}
+        if (age < STALE_LOCK_MS) return { ok: false }; // being created right now
+      }
       const aside = `${lock}.stale-${process.pid}-${crypto.randomBytes(3).toString("hex")}`;
-      try { fs.renameSync(lock, aside); fs.rmSync(aside, { recursive: true, force: true }); } catch { return { ok: false, busy: true }; }
+      try { fs.renameSync(lock, aside); fs.rmSync(aside, { recursive: true, force: true }); } catch { return { ok: false }; }
     }
   }
-  return { ok: false, busy: true };
+  return { ok: false };
 }
 
-function setLockPids(dir, pids) {
-  writeAtomic(path.join(dir, "lock", "owner.json"), JSON.stringify({ pids, at: iso(Date.now()) }));
+function setLockProcs(dir, procs) {
+  writeAtomic(path.join(dir, "lock", "owner.json"), JSON.stringify({ procs, at: iso(Date.now()) }));
+}
+
+// Hand the lock to whichever of the others still run, or release it.
+function leaveLock(dir) {
+  const owners = lockOwners(dir);
+  const rest = owners ? owners.procs.filter((p) => (Number.isInteger(p) ? p : p && p.pid) !== process.pid && running(p)) : [];
+  if (rest.length) setLockProcs(dir, rest); else releaseLock(dir);
 }
 
 function releaseLock(dir) {
@@ -690,7 +709,8 @@ function sendLine(registry, line) {
   const n = registry.notify;
   const via = (notifyFrom && registry.hosts[notifyFrom] && registry.hosts[notifyFrom].notify_host) || n.host;
   const host = via ? ["--host", via] : [];
-  const base = n.command.map(expandHome);
+  const own = notifyFrom && registry.hosts[notifyFrom] && registry.hosts[notifyFrom].notify_command;
+  const base = fill(own || n.command, {});
   const ls = runArgv([...base, "ls", ...n.labels.flatMap((l) => ["--label", l]), "--json", ...host], 30);
   if (!ls.ok) return false;
   let agents;
@@ -720,7 +740,8 @@ function deliver(dir, registry, key) {
 // ---------- decisions ----------
 
 function context(args, mode) {
-  const now = args.now !== undefined ? parseTs(args.now, "--now") : Date.now();
+  const fixedNow = args.now !== undefined;
+  const now = fixedNow ? parseTs(args.now, "--now") : Date.now();
   const fleet = fleetDir();
   const state = stateDir();
   const regDoc = readJson(path.join(fleet, "auto-update", "registry.json"));
@@ -732,7 +753,7 @@ function context(args, mode) {
   if (!hostRow) throw new Refusal(`host ${host} is not in the registry`);
   notifyFrom = host;
   if (hostRow.os !== OS_NAME) throw new Refusal(`host ${host} is ${hostRow.os} in the registry but this is ${OS_NAME}`);
-  return { now, fleet, state, registry, host, hostRow, mode };
+  return { now, fixedNow, fleet, state, registry, host, hostRow, mode };
 }
 
 function decide(ctx, st, sw, feed, gates) {
@@ -806,7 +827,7 @@ function cmdPlan(args) {
   let st;
   try { st = loadState(ctx.state); } catch (e) { st = emptyState(); console.log(JSON.stringify({ warning: e.message })); }
   const feed = readFeed(ctx);
-  const gates = evalGates(ctx.hostRow, ctx.registry, ctx.now, loadGates(ctx.state).last);
+  const gates = evalGates(ctx.hostRow, ctx.registry, ctx.now);
   console.log(JSON.stringify({ host: ctx.host, now: iso(ctx.now), switch: sw.why, feed: feed.error || "ok",
     gates: gates.open ? "open" : "closed", blocked: gates.blocked.map((b) => b.why) }));
   let first = true;
@@ -818,14 +839,17 @@ function cmdPlan(args) {
   return 0;
 }
 
-// Mark attempts whose transaction and watchdog are gone as interrupted: held, reported once, never retried.
+// Attempts whose transaction and watchdog are gone are interrupted: held, reported once, never retried. Nothing is
+// rolled back here: after a restart or a kill the host may hold either version, so the line says to check by hand.
 function sweepInterrupted(ctx) {
+  const boot = bootMs();
   const found = updateState(ctx.state, (s) => {
     const out = [];
     for (const [k, a] of Object.entries(s.attempts)) {
       if (!ACTIVE.has(a.status)) continue;
-      if ([a.txn_pid, a.watchdog_pid].some(alive)) continue;
+      if ([a.txn_proc, a.watchdog_proc].some((p) => p && running(p))) continue;
       a.interrupted_in = a.status;
+      a.restarted = Number.isFinite(a.boot) && Math.abs(a.boot - boot) > 5 * 60e3;
       a.status = "interrupted";
       a.finished_at = iso(Date.now());
       out.push([k, a]);
@@ -833,23 +857,48 @@ function sweepInterrupted(ctx) {
     return out;
   });
   for (const [k, a] of found) {
-    alert(ctx.state, ctx.registry, `attempt:${k}`, `auto-update HOLD ${k}: interrupted during ${a.interrupted_in}; no retry, check by hand (txn ${a.txn})`);
+    if (PRE_APPLY.has(a.interrupted_in)) pruneArtifacts(path.join(ctx.state, "txn", a.txn));
+    const how = a.restarted ? "the host restarted" : "interrupted";
+    alert(ctx.state, ctx.registry, `attempt:${k}`, `auto-update HOLD ${k}: ${how} during ${a.interrupted_in}; nothing was rolled back, no retry, check by hand (txn ${a.txn})`);
   }
 }
+
+// Transaction directories of attempts no longer in state (dropped as not now) go after a week; their large files
+// went when they were dropped. Held, applied and running attempts keep theirs: logs and backups for recovery.
+function pruneOldTxns(ctx, st) {
+  const root = path.join(ctx.state, "txn");
+  const keep = new Set(Object.values(st.attempts).map((a) => a.txn));
+  let dirs = [];
+  try { dirs = fs.readdirSync(root); } catch { return; }
+  for (const d of dirs) {
+    if (keep.has(d) || !TXN_RE.test(d)) continue;
+    try { if (Date.now() - fs.statSync(path.join(root, d)).mtimeMs > 7 * 86400e3) fs.rmSync(path.join(root, d), { recursive: true, force: true }); } catch {}
+  }
+}
+
+const LOCK_ALERT_MS = 8 * 3600e3; // above the longest transaction and watchdog any row may have
 
 function cmdRun(args) {
   const ctx = context(args, "run");
   fs.mkdirSync(ctx.state, { recursive: true, mode: 0o700 });
-  const lock = acquireLock(ctx.state);
-  if (!lock.ok) return 0; // another run, transaction or watchdog is active: silent
+  const lock = acquireLock(ctx.state, procRecord(process.pid, [SELF, ` run --host ${ctx.host}`]));
+  if (!lock.ok) {
+    // Another run, transaction or watchdog is active: silent, unless the lock has outlived any transaction.
+    const since = lock.since ? Date.parse(lock.since) : NaN;
+    if (Number.isFinite(since) && Date.now() - since > LOCK_ALERT_MS) {
+      alert(ctx.state, ctx.registry, `lock:${ctx.host}`, `auto-update ${ctx.host}: host lock held since ${lock.since}${lock.unverified ? " by a process that cannot be identified" : ""}; nothing applies until it is released, check by hand`);
+    }
+    return 0;
+  }
   let handedOver = false;
   try {
     sweepInterrupted(ctx);
     const st0 = loadState(ctx.state);
+    pruneOldTxns(ctx, st0);
     for (const k of Object.keys(st0.alerts)) if (!st0.alerts[k].delivered) deliver(ctx.state, ctx.registry, k);
     // Every tick samples the host gates, whatever else happens, so the days show when the host is really idle.
     const stored = loadGates(ctx.state);
-    const gates = evalGates(ctx.hostRow, ctx.registry, ctx.now, stored.last);
+    const gates = evalGates(ctx.hostRow, ctx.registry, ctx.now);
     recordSample(ctx.state, ctx.hostRow, ctx.now, gates, stored);
     const sw = readSwitch(ctx.fleet, ctx.state);
     if (!sw.allowed) return 0;
@@ -862,7 +911,7 @@ function cmdRun(args) {
     const st = loadState(ctx.state);
     const next = decide(ctx, st, sw, feed, gates).find((l) => l.decision === "would-apply");
     if (!next) return 0;
-    handedOver = startTransaction(ctx, next, gates);
+    handedOver = startTransaction(ctx, next);
     return 0;
   } finally {
     if (!handedOver) releaseLock(ctx.state);
@@ -874,12 +923,12 @@ function cmdRun(args) {
 function waitForHandover(dir) {
   for (;;) {
     const owners = lockOwners(dir);
-    if (!owners || !(owners.pids || []).some(alive)) return;
-    sleepMs(2000);
+    if (!owners || !owners.procs.some(running)) return;
+    sleepMs(WINDOWS ? 5000 : 2000);
   }
 }
 
-function startTransaction(ctx, l, gates) {
+function startTransaction(ctx, l) {
   const row = l._row;
   const adapter = row.adapters[ctx.hostRow.os];
   const key = attemptKey(ctx.host, row.component, l._candidate);
@@ -900,19 +949,20 @@ function startTransaction(ctx, l, gates) {
     watchdog_seconds: row.watchdog_seconds || 0,
     receipt: row.canary && row.canary.host === ctx.host ? expandHome(row.canary.receipt) : null,
     // Re-checked right before apply: a long stage must not carry the change into a blackout or past the window.
+    // A run given --now (fixtures) keeps that clock; a live run uses the real clock at the recheck.
     window: (row.host_windows && row.host_windows[ctx.host]) || row.window, blackouts: ctx.registry.blackouts || [],
-    clock_offset_ms: ctx.now - Date.now(),
-    // The host gates are evaluated again right before apply, quiet counters against this run's readings.
-    gate_host: ctx.hostRow, gate_readings: gates.readings,
+    clock_offset_ms: ctx.fixedNow ? ctx.now - Date.now() : 0,
+    gate_host: ctx.hostRow,
   };
   writeAtomic(path.join(dir, "plan.json"), JSON.stringify(plan, null, 2) + "\n");
   // The attempt is persisted before anything runs: a crash from here on holds this version.
   updateState(ctx.state, (s) => {
-    s.attempts[key] = { status: "started", host: ctx.host, component: row.component, group: plan.group, local_date: plan.local_date, txn: id, started_at: iso(Date.now()), txn_pid: null, watchdog_pid: null };
+    s.attempts[key] = { status: "started", host: ctx.host, component: row.component, group: plan.group, local_date: plan.local_date, txn: id, started_at: iso(Date.now()), boot: bootMs(), txn_proc: null, watchdog_proc: null };
   });
   const child = detach(["txn", dir], dir);
-  updateState(ctx.state, (s) => { s.attempts[key].txn_pid = child; });
-  setLockPids(ctx.state, [child]);
+  const rec = procRecord(child, [SELF, "txn", dir]);
+  updateState(ctx.state, (s) => { s.attempts[key].txn_proc = rec; });
+  setLockProcs(ctx.state, [rec]);
   return true;
 }
 
@@ -926,19 +976,41 @@ function detach(argv, dir) {
 
 // ---------- the detached transaction ----------
 
+const PRE_APPLY = new Set(["started", "staging", "prechecking"]);
+const TXN_KEEP = new Set(["plan.json", "log.txt", "txn.out", "watchdog.out", "decision", "watchdog.armed"]);
+
+// Staged downloads of an attempt that never reached apply: nothing on the host depends on them.
+function pruneArtifacts(dir) {
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return; }
+  for (const f of names) if (!TXN_KEEP.has(f)) fs.rmSync(path.join(dir, f), { recursive: true, force: true });
+}
+
 function txnLogger(dir) {
   const file = path.join(dir, "log.txt");
   return (text) => fs.appendFileSync(file, `[${iso(Date.now())}] ${text}\n`, { mode: 0o600 });
 }
 
-// Exactly one of the transaction (confirm or rollback) and the watchdog (rollback) decides; the first to create
-// the decision file wins.
+// Exactly one of the transaction (confirm, roll back, not now) and the watchdog decides; the first to create the
+// decision file wins, and only the winner ends the attempt.
 function claimDecision(dir, who) {
   try { fs.writeFileSync(path.join(dir, "decision"), who, { flag: "wx", mode: 0o600 }); return true; } catch { return false; }
 }
+function decisionOf(dir) { try { return fs.readFileSync(path.join(dir, "decision"), "utf8"); } catch { return null; } }
 
-function setStatus(plan, status, extra = {}) {
-  updateState(plan.state, (s) => { Object.assign(s.attempts[plan.key], { status }, extra); });
+// Status changes only while the attempt is this transaction's and still active, and the transaction's own writes
+// stop once the watchdog has decided: an ended attempt is never overwritten. Returns whether it was written.
+function setStatus(plan, status, extra = {}, actor = "txn", also = null) {
+  const dir = path.join(plan.state, "txn", plan.id);
+  return updateState(plan.state, (s) => {
+    const a = s.attempts[plan.key];
+    if (!a || a.txn !== plan.id || !ACTIVE.has(a.status)) return false;
+    const d = decisionOf(dir);
+    if (actor === "txn" ? d === "watchdog" : d !== "watchdog") return false;
+    Object.assign(a, { status }, extra);
+    if (also) also(s);
+    return true;
+  });
 }
 
 function verifyInstalled(plan, want, log) {
@@ -948,27 +1020,58 @@ function verifyInstalled(plan, want, log) {
   return r.stdout.split(/\r?\n/).some((line) => { const m = re.exec(line.trim()); return m && m[1] === want; });
 }
 
+const rollbackVerified = (plan, log) => runArgv(plan.rollback, plan.rollback_timeout, log).ok && verifyInstalled(plan, plan.previous, log);
+
 function writeReceipt(plan, result) {
   if (!plan.receipt) return;
   writeAtomic(plan.receipt, JSON.stringify({ schema: RECEIPT_SCHEMA, component: plan.component, version: plan.version, host: plan.host, result, finished_at: iso(Date.now()), txn: plan.id }, null, 2) + "\n");
 }
 
+// Right before the first change, after every wait: the kill switch and a local STOP file, the row's mode, tier and
+// this host's allow list as they are on disk now, and the attempt still this transaction's. Unreadable or changed
+// means not now. Rollback never asks: recovery is always allowed.
+function stillAllowed(plan) {
+  const sw = readSwitch(plan.fleet, plan.state);
+  if (!sw.allowed) return `kill switch: ${sw.why}`;
+  let reg;
+  try {
+    const doc = readJson(path.join(plan.fleet, "auto-update", "registry.json"));
+    if (doc.missing) return "registry missing";
+    reg = validateRegistry(doc.value);
+  } catch (e) { return `registry unreadable: ${String(e.message).slice(0, 80)}`; }
+  const host = reg.hosts[plan.host];
+  const row = reg.components.find((c) => c.component === plan.component);
+  if (!host || !row || !row.hosts.includes(plan.host) || !host.allow.includes(plan.component)) return "no longer allowed on this host";
+  if (row.mode !== "apply") return `mode ${row.mode}`;
+  if ((host.deny_tiers || []).includes(row.tier)) return `tier ${row.tier} denied on this host`;
+  const a = loadState(plan.state).attempts[plan.key];
+  if (!a || a.txn !== plan.id || !ACTIVE.has(a.status)) return "attempt is no longer this transaction's";
+  return null;
+}
+
 function cmdTxn(dir) {
   const plan = JSON.parse(fs.readFileSync(path.join(dir, "plan.json"), "utf8"));
   const log = txnLogger(dir);
-  const registry = validateRegistry(JSON.parse(fs.readFileSync(path.join(plan.fleet, "auto-update", "registry.json"), "utf8")));
   notifyFrom = plan.host;
+  let registry = null;
+  try { registry = validateRegistry(JSON.parse(fs.readFileSync(path.join(plan.fleet, "auto-update", "registry.json"), "utf8"))); } catch {}
+  let mutated = false; // the apply step has started: from here on an error needs a verified rollback
+  const me = procRecord(process.pid, [SELF, "txn", dir]);
   const notNow = (step) => {
-    updateState(plan.state, (s) => { delete s.attempts[plan.key]; });
-    log(`${step}: not now (exit ${NOT_NOW}); attempt dropped, nothing changed`);
+    updateState(plan.state, (s) => { const a = s.attempts[plan.key]; if (a && a.txn === plan.id) delete s.attempts[plan.key]; });
+    pruneArtifacts(dir);
+    log(`${step}: not now; attempt dropped, nothing changed`);
   };
   const fail = (status, why) => {
-    setStatus(plan, status, { finished_at: iso(Date.now()), reason: why });
+    if (!setStatus(plan, status, { finished_at: iso(Date.now()), reason: why })) { log(`not recorded (${status}): the attempt had already ended`); return; }
     writeReceipt(plan, "fail");
-    alert(plan.state, registry, `attempt:${plan.key}`, `auto-update HOLD ${plan.key}: ${why}; held, no retry (txn ${plan.id})`);
+    if (!mutated) pruneArtifacts(dir);
+    if (registry) alert(plan.state, registry, `attempt:${plan.key}`, `auto-update HOLD ${plan.key}: ${why}; held, no retry (txn ${plan.id})`);
   };
   try {
-    setStatus(plan, "staging", { txn_pid: process.pid });
+    if (!setStatus(plan, "staging", { txn_proc: me })) { log("attempt is no longer this transaction's; nothing done"); return; }
+    const before = stillAllowed(plan);
+    if (before) return notNow(`before stage: ${before}`);
     for (const a of plan.stage) {
       const r = runArgv(a, plan.stage_timeout, log);
       if (r.status === NOT_NOW) return notNow("stage");
@@ -980,10 +1083,15 @@ function cmdTxn(dir) {
       if (r.status === NOT_NOW) return notNow("precheck");
       if (!r.ok) return fail("failed", "precheck failed, nothing changed");
     }
+    const at = Date.now() + plan.clock_offset_ms;
+    if (plan.blackouts.some((b) => inWindow(at, b)) || !inWindow(at, plan.window)) return notNow("window closed before apply");
+    const g = evalGates(plan.gate_host, { blackouts: plan.blackouts }, at);
+    if (!g.open) return notNow(`host gate closed before apply: ${g.why || "blackout"}`);
     if (plan.watchdog_seconds) {
       const pid = detach(["watchdog", dir], dir);
-      setLockPids(plan.state, [process.pid, pid]);
-      setStatus(plan, "prechecking", { watchdog_pid: pid });
+      const wd = procRecord(pid, [SELF, "watchdog", dir]);
+      setLockProcs(plan.state, [me, wd]);
+      setStatus(plan, "prechecking", { watchdog_proc: wd });
       log(`watchdog armed: pid ${pid}, ${plan.watchdog_seconds}s`);
       // Do not disrupt anything until the watchdog has proved it is running.
       const until = Date.now() + 10000;
@@ -992,29 +1100,20 @@ function cmdTxn(dir) {
         sleepMs(100);
       }
     }
-    const at = Date.now() + plan.clock_offset_ms;
-    if (plan.blackouts.some((b) => inWindow(at, b)) || !inWindow(at, plan.window)) {
-      claimDecision(dir, "not-now");
-      return notNow("window closed before apply");
-    }
-    const g = evalGates(plan.gate_host, { blackouts: plan.blackouts }, at, plan.gate_readings, true);
-    if (!g.open) {
-      claimDecision(dir, "not-now");
-      return notNow(`host gate closed before apply: ${g.why || "blackout"}`);
-    }
-    setStatus(plan, "applying");
+    const why = stillAllowed(plan);
+    if (why) { claimDecision(dir, "not-now"); return notNow(`before apply: ${why}`); }
+    if (!setStatus(plan, "applying")) { log("attempt ended before apply; nothing changed"); return; }
+    mutated = true;
     const ar = runArgv(plan.apply, plan.apply_timeout, log);
-    if (ar.status === NOT_NOW && claimDecision(dir, "not-now")) return notNow("apply");
-    const applied = ar.ok;
-    let healthy = applied;
-    if (applied) {
+    if (ar.status === NOT_NOW && claimDecision(dir, "not-now")) { mutated = false; return notNow("apply"); }
+    let healthy = ar.ok;
+    if (healthy) {
       setStatus(plan, "health");
       for (const a of plan.health) if (!runArgv(a, plan.health_timeout, log).ok) { healthy = false; break; }
       healthy = healthy && verifyInstalled(plan, plan.version, log);
     }
     if (healthy && claimDecision(dir, "confirm")) {
-      updateState(plan.state, (s) => {
-        Object.assign(s.attempts[plan.key], { status: "applied", finished_at: iso(Date.now()) });
+      setStatus(plan, "applied", { finished_at: iso(Date.now()) }, "txn", (s) => {
         s.applied.push({ host: plan.host, component: plan.component, version: plan.version, previous: plan.previous, group: plan.group, local_date: plan.local_date, at: iso(Date.now()) });
         s.applied = s.applied.slice(-200);
       });
@@ -1024,16 +1123,39 @@ function cmdTxn(dir) {
     }
     if (!claimDecision(dir, "txn-rollback")) { log("watchdog decided first; leaving rollback to it"); return; }
     setStatus(plan, "rolling-back");
-    const rolled = runArgv(plan.rollback, plan.rollback_timeout, log).ok && verifyInstalled(plan, plan.previous, log);
-    fail(rolled ? "rolled-back" : "rollback-failed", `${applied ? "health check failed" : "apply failed"}; ${rolled ? `rolled back to ${plan.previous}` : "ROLLBACK FAILED, fix by hand"}`);
+    const rolled = rollbackVerified(plan, log);
+    fail(rolled ? "rolled-back" : "rollback-failed", `${ar.ok ? "health check failed" : "apply failed"}; ${rolled ? `rolled back to ${plan.previous}` : "ROLLBACK FAILED, fix by hand"}`);
   } catch (e) {
     log(`error: ${e.stack || e}`);
-    try { fail("failed", `transaction error: ${String(e.message).slice(0, 120)}`); } catch {}
+    try {
+      if (!mutated) {
+        fail("failed", `transaction error before apply, nothing changed: ${String(e.message).slice(0, 120)}`);
+      } else if (claimDecision(dir, "txn-rollback")) {
+        // An error once apply has started: restore the previous version before anything else, then record it.
+        const rolled = rollbackVerified(plan, log);
+        log(rolled ? `rolled back to ${plan.previous} after the error` : "rollback after the error FAILED");
+        fail(rolled ? "rolled-back" : "rollback-failed", `transaction error after apply; ${rolled ? `rolled back to ${plan.previous}` : "ROLLBACK FAILED, fix by hand"}`);
+      } else {
+        log(`error after the ${decisionOf(dir)} decision; leaving the attempt to it`);
+      }
+    } catch (e2) { log(`error while recording the error: ${e2.message}`); }
   } finally {
-    const owners = lockOwners(plan.state);
-    const wd = owners && owners.pids ? owners.pids.filter((p) => p !== process.pid && alive(p)) : [];
-    if (wd.length) setLockPids(plan.state, wd); else releaseLock(plan.state);
+    leaveLock(plan.state);
   }
+}
+
+// POSIX: the transaction is a process group leader (detached); its steps share the group. True once no process of
+// that group is left. The group is signalled only while its leader is provably this transaction or provably gone,
+// never when the PID now belongs to something else.
+function stopTransaction(rec, log) {
+  const group = () => { try { process.kill(-rec.pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
+  const who = procState(rec);
+  if (who === "unknown" || (who === "no" && alive(rec.pid))) return false;
+  if (!group()) return true;
+  log(`watchdog: stopping the transaction's process group ${rec.pid}`);
+  try { process.kill(-rec.pid, "SIGKILL"); } catch {}
+  for (let i = 0; i < 100 && group(); i++) sleepMs(100);
+  return !group();
 }
 
 function cmdWatchdog(dir) {
@@ -1045,18 +1167,27 @@ function cmdWatchdog(dir) {
   while (Date.now() < until && !fs.existsSync(path.join(dir, "decision"))) sleepMs(Math.min(1000, Math.max(0, until - Date.now())));
   try {
     if (!claimDecision(dir, "watchdog")) return;
-    log("watchdog: no confirmation in time; rolling back");
-    const registry = validateRegistry(JSON.parse(fs.readFileSync(path.join(plan.fleet, "auto-update", "registry.json"), "utf8")));
+    // The budget covers apply, health and check, so a transaction still here is stuck or gone. Nothing is restored
+    // while it, or a step it started, may still be changing things.
+    log("watchdog: no decision in time");
+    let registry = null;
+    try { registry = validateRegistry(JSON.parse(fs.readFileSync(path.join(plan.fleet, "auto-update", "registry.json"), "utf8"))); } catch {}
     notifyFrom = plan.host;
-    setStatus(plan, "rolling-back");
-    const rolled = runArgv(plan.rollback, plan.rollback_timeout, log).ok && verifyInstalled(plan, plan.previous, log);
-    setStatus(plan, rolled ? "rolled-back-by-watchdog" : "rollback-failed", { finished_at: iso(Date.now()) });
+    const a = loadState(plan.state).attempts[plan.key];
+    const say = (line) => { if (registry) alert(plan.state, registry, `attempt:${plan.key}`, `auto-update HOLD ${plan.key}: ${line} (txn ${plan.id})`); };
+    if (!a || !a.txn_proc || !stopTransaction(a.txn_proc, log)) {
+      if (setStatus(plan, "rollback-failed", { finished_at: iso(Date.now()), reason: "transaction could not be stopped" }, "watchdog")) {
+        say(`not confirmed within ${plan.watchdog_seconds}s and the transaction could not be stopped; nothing was rolled back, fix by hand`);
+      }
+      return;
+    }
+    if (!setStatus(plan, "rolling-back", {}, "watchdog")) return;
+    const rolled = rollbackVerified(plan, log);
+    if (!setStatus(plan, rolled ? "rolled-back-by-watchdog" : "rollback-failed", { finished_at: iso(Date.now()) }, "watchdog")) return;
     writeReceipt(plan, "fail");
-    alert(plan.state, registry, `attempt:${plan.key}`, `auto-update HOLD ${plan.key}: not confirmed within ${plan.watchdog_seconds}s; ${rolled ? `watchdog rolled back to ${plan.previous}` : "watchdog ROLLBACK FAILED, fix by hand"} (txn ${plan.id})`);
+    say(`not confirmed within ${plan.watchdog_seconds}s; ${rolled ? `watchdog rolled back to ${plan.previous}` : "watchdog ROLLBACK FAILED, fix by hand"}`);
   } finally {
-    const owners = lockOwners(plan.state);
-    const rest = owners && owners.pids ? owners.pids.filter((p) => p !== process.pid && alive(p)) : [];
-    if (rest.length) setLockPids(plan.state, rest); else releaseLock(plan.state);
+    leaveLock(plan.state);
   }
 }
 

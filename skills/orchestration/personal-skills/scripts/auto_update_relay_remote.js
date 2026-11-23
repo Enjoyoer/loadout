@@ -94,9 +94,14 @@ function replace(dir, file, text) {
     fs.writeFileSync(fd, text);
     fs.fsyncSync(fd);
   } finally { fs.closeSync(fd); }
-  try {
-    fs.renameSync(tmp, file);
-  } catch (e) { fs.rmSync(tmp, { force: true }); throw e; }
+  // On Windows a rename over a copy the runner has open at that moment fails briefly: try again for up to 5 s.
+  for (let i = 0; ; i++) {
+    try { fs.renameSync(tmp, file); break; } catch (e) {
+      if (WINDOWS && ["EPERM", "EACCES", "EBUSY"].includes(e.code) && i < 50) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); continue; }
+      fs.rmSync(tmp, { force: true });
+      throw e;
+    }
+  }
   if (!WINDOWS) { const d = fs.openSync(dir, "r"); try { fs.fsyncSync(d); } finally { fs.closeSync(d); } }
 }
 
@@ -143,7 +148,8 @@ try {
       if (write) { prepare(kind !== "feed"); replace(dir, file, JSON.stringify(w) + "\n"); }
       result.written.push(name);
     } catch (e) {
-      result.rejected.push({ name: typeof name === "string" ? name.slice(0, 80) : null, why: String(e.message).slice(0, 160) });
+      // A file-system error (it has a code) may pass; a refused copy will be refused again.
+      result.rejected.push({ name: typeof name === "string" ? name.slice(0, 80) : null, why: String(e.message).slice(0, 160), ...(e.code ? { transient: true } : {}) });
     }
   }
   result.status = result.rejected.length ? "partial" : write ? (result.written.length ? "updated" : "same") : (result.written.length ? "would update" : "same");

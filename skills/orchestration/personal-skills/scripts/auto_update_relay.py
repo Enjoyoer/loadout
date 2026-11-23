@@ -127,8 +127,10 @@ def relay(fleet_dir: Path, dry_run: bool, only: Optional[str], emit, changed_onl
         emit(f"{target}: {describe(result)}")
         ok = ok and result["status"] in ("updated", "same", "would update")
         # The target answered for these exact bytes (written, same or refused): do not send them again until they
-        # change. No answer (unreachable, timeout) is not recorded, so the next tick tries again.
-        if changed_only and result["status"] != "failed":
+        # change. No answer (unreachable, timeout) or a file-system error there is not recorded, so the next tick
+        # tries again; that resends data only.
+        transient = any(r.get("transient") for r in result.get("rejected", []))
+        if changed_only and result["status"] != "failed" and not transient:
             sent[target] = {"docs": digests, "at": now.strftime("%Y-%m-%dT%H:%M:%SZ")}
             save_sent(sent)
     return ok

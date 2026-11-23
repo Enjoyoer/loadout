@@ -423,6 +423,22 @@ class Probes(unittest.TestCase):
             with self.subTest(bad):
                 self.assertEqual(run(*bad)[0], 1, "unknown, mismatched or malformed fails closed")
 
+    @unittest.skipUnless(WINDOWS, "a Windows probe")
+    def test_pc_guard_fails_closed_without_a_game_inventory(self):
+        script = SCRIPTS / "auto-update" / "adapters" / "interactive-idle.ps1"
+        def run(*extra):
+            done = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
+                                   "-MinIdleMinutes", "15", *extra], capture_output=True, text=True, timeout=120)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            return json.loads(done.stdout.strip().splitlines()[-1])
+        for extra, why in (((), "no game inventory configured"), (("-Games", ""), "no game inventory configured"),
+                           (("-Games", "game.exe,..\\x"), "game inventory malformed")):
+            with self.subTest(why):
+                r = run(*extra)
+                self.assertEqual((r["ok"], r["detail"]), (False, why))
+        r = run("-Games", "example-game.exe,example-launcher.exe")
+        self.assertFalse(r["ok"], "a session that cannot see input or windows is not idle")
+
     @unittest.skipIf(WINDOWS, "lsof is POSIX")
     def test_listener_clients_needs_a_visible_listener(self):
         addr = "127.0.0.1:49999"
@@ -447,6 +463,7 @@ class Probes(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(lsof(*args)[0], 1, "visibility errors fail closed")
 
+    @unittest.skipIf(WINDOWS, "the process table comes from Win32_Process there")
     def test_paseo_enumeration_must_be_complete_and_unambiguous(self):
         home = self.tmp / "paseo-home"
         (home / "agents" / "proj").mkdir(parents=True)
@@ -454,6 +471,8 @@ class Probes(unittest.TestCase):
         (home / "paseo.pid").write_text(json.dumps({"pid": me}))
         listing = self.tmp / "ps.txt"
         agents_file = self.tmp / "agents.json"
+        ps_tool = self.script("ps", f"#!/bin/sh\ncat '{listing}'\n")
+        ps_tool.chmod(0o755)
         fake = self.script("fake_paseo.py", f"import sys\nsys.stdout.write(open({str(agents_file)!r}).read())\n")
         if WINDOWS:
             cli = self.script("paseo.cmd", f'@"{sys.executable}" "{fake}" %*\n')
@@ -468,7 +487,7 @@ class Probes(unittest.TestCase):
                 f.unlink()
             for i, rec in enumerate(stored):
                 (home / "agents" / "proj" / f"r{i}.json").write_text(rec if isinstance(rec, str) else json.dumps(rec))
-            return self.probe("paseo", "--paseo", str(cli), "--home", str(home), env={"AUTO_UPDATE_TEST_PS": str(listing)})
+            return self.probe("paseo", "--paseo", str(cli), "--home", str(home), "--ps", str(ps_tool))
         one = f"{me} Paseo Supervisor\n123 something else\n"
         idle = [{"id": "a", "status": "idle"}, {"id": "b", "status": "closed"}, {"id": "c", "status": "error"}]
         code, r, err = check(idle, one, [{"id": "z", "lastStatus": "closed"}])

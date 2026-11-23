@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 // Read-only host idle probes for the auto-update runner. Each prints one JSON line
-// {ok, observed_at, detail, metrics?, counters?, identity?} and exits 0; a signal it cannot read is an error (exit 1), which the
+// {ok, observed_at, detail, metrics?} and exits 0; a signal it cannot read is an error (exit 1), which the
 // runner treats as unknown and keeps the gate closed. Output is counts and short codes only: never agent names,
 // prompts, process arguments, log lines, environment or secrets.
 //
-//   host-idle.mjs paseo [--paseo <cli>] [--home <dir>]
+//   host-idle.mjs paseo [--paseo <cli>] [--home <dir>] [--ps <absolute path>]
 //       No Paseo agent on this host in an active turn. Unambiguous only when this host runs exactly one Paseo daemon
 //       (one supervisor process) and it is the one the home's paseo.pid names; a second daemon, such as a scratch
 //       one with its own home, makes the answer incomplete, so the gate closes. Then `paseo ls -g -a --json --home`
 //       lists the daemon's agents (unique ids, string statuses; idle, closed and error are not in a turn, anything
 //       else is), and every agent record stored in the home whose last status is not idle, closed or error must be
-//       in that list, or the enumeration is ambiguous and the gate closes.
+//       in that list, or the enumeration is ambiguous and the gate closes. POSIX reads the process table with
+//       `<ps> -Ao pid=,args=` (default /bin/ps); Windows with Win32_Process.
 //   host-idle.mjs exit-gate -- <argv...>
 //       Runs an existing reviewed idle gate as-is (no shell) whose exit code is 0 idle, 1 busy, 2 unknown and whose
 //       last stdout line is JSON with "state" idle, busy or unknown matching it. Anything else, unknown included,
@@ -26,9 +27,6 @@
 //       (a mkdir lock whose owner file says pid=N, its queue directory, or a flock seen in /proc/locks), the
 //       5-minute load average per core is at most N (POSIX; Windows has none, so CPU busy % over a 1 s sample),
 //       and free memory is above the floor (macOS memory_pressure free %, Linux MemAvailable MB, Windows free %).
-//   host-idle.mjs quiet --launchd <name>=<label>...
-//       macOS: cumulative CPU time of each launchd job's process, in centiseconds, as counters; identity is the PIDs.
-//       Diagnostic only: its reading says "diagnostic": true, and the runner never lets it open a gate.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -61,14 +59,14 @@ const expand = (p) => (p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) :
 const RESTING = ["idle", "closed", "error"]; // not in a turn
 
 // PIDs of every Paseo supervisor on this host, one per running daemon, whatever its home.
-// Fixtures only: AUTO_UPDATE_TEST_PS names a file of "pid args" lines standing in for the process table.
 function supervisors() {
-  const test = process.env.AUTO_UPDATE_TEST_PS;
-  if (!test && process.platform === "win32") {
+  if (process.platform === "win32") {
     const ps = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'supervisor-entrypoint\\.js' -or $_.CommandLine -eq 'Paseo Supervisor' } | ForEach-Object { $_.ProcessId }";
     return run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps]).split(/\r?\n/).filter((l) => /^\d+$/.test(l.trim())).map(Number);
   }
-  return (test ? fs.readFileSync(test, "utf8") : run(["/bin/ps", "-Ao", "pid=,args="])).split(/\r?\n/).map((l) => /^\s*(\d+)\s+(.*)$/.exec(l)).filter(Boolean)
+  const ps = one("ps", "/bin/ps");
+  if (!path.isAbsolute(ps)) fail("--ps <absolute path>");
+  return run([ps, "-Ao", "pid=,args="]).split(/\r?\n/).map((l) => /^\s*(\d+)\s+(.*)$/.exec(l)).filter(Boolean)
     .filter((m) => m[2].trim() === "Paseo Supervisor" || /supervisor-entrypoint\.js/.test(m[2])).map((m) => Number(m[1]));
 }
 
@@ -222,24 +220,4 @@ if (cmd === "load") {
   out(why.length === 0, `${why.length ? why.join(", ") + "; " : ""}${loadText}${memText}`, { metrics });
 }
 
-if (cmd === "quiet") {
-  if (process.platform !== "darwin") fail("quiet: macOS launchd jobs only");
-  const pairs = (opts.launchd || []).map((x) => /^([a-z0-9][a-z0-9-]{0,30})=([A-Za-z0-9._-]{1,128})$/.exec(x));
-  if (!pairs.length || pairs.some((m) => !m)) fail("quiet: --launchd <name>=<label>");
-  const uid = process.getuid();
-  const counters = {};
-  const ids = [];
-  for (const [, name, label] of pairs) {
-    const pid = (/^\s*pid = (\d+)$/m.exec(run(["/bin/launchctl", "print", `gui/${uid}/${label}`])) || [])[1];
-    if (!pid) fail(`${name}: not running`);
-    const t = run(["/bin/ps", "-o", "time=", "-p", pid]).trim();
-    const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)(?:\.(\d+))?$/.exec(t);
-    if (!m) fail(`${name}: CPU time unreadable`);
-    const [, d = 0, h = 0, mi, se, frac = "0"] = m;
-    counters[name] = (((Number(d) * 24 + Number(h)) * 60 + Number(mi)) * 60 + Number(se)) * 100 + Math.round(Number(`0.${frac}`) * 100);
-    ids.push(`${name}:${pid}`);
-  }
-  out(true, "cpu time sampled (diagnostic only)", { counters, identity: ids.join(","), diagnostic: true });
-}
-
-fail("usage: host-idle.mjs paseo|load|quiet ...");
+fail("usage: host-idle.mjs paseo|exit-gate|listener-clients|load ...");

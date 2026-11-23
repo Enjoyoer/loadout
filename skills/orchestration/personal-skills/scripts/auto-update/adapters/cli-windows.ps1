@@ -3,7 +3,8 @@
 #     -Tool claude|codex -Step version|stage|precheck|apply|health|rollback -Txn <dir> [-Version V] [-Previous V]
 # Claude: the vendor binary at %USERPROFILE%\.local\bin\claude.exe, replaced with [IO.File]::Replace, the old
 # binary kept in the transaction directory. Codex: npm install -g @openai/codex@V, rolled back by reinstalling the
-# previous version. The Codex config.toml is never written; health proves its hash is unchanged.
+# previous version. The Codex config.toml is never written; health proves its hash is unchanged. A running CLI
+# means "not now" before anything is downloaded, and again right before the swap.
 # Exit 75 means "not now, nothing changed".
 param(
     [Parameter(Mandatory = $true)][ValidateSet('claude', 'codex')][string]$Tool,
@@ -61,6 +62,7 @@ try {
     switch ($Step) {
         'stage' {
             if (-not $Version) { throw '-Version required' }
+            if (Test-BusyCli) { [Console]::Error.WriteLine('CLI process running; not now'); exit 75 }
             Save-ConfigHash
             if ($Tool -eq 'claude') {
                 if ((Get-Command claude.exe -ErrorAction Stop).Source -ine $claude) { throw 'unexpected claude.exe path' }
@@ -102,7 +104,9 @@ try {
             } elseif ((Get-Version $codex) -ne (Expect $Previous)) {
                 Install-Codex $Previous
             }
-            Test-ConfigHash
+            # The runner verifies the restored version. An owner's own edit of config.toml meanwhile is not a failed
+            # rollback (the update never writes it), so it is only reported.
+            try { Test-ConfigHash } catch { [Console]::Error.WriteLine('note: Codex config.toml changed during the update (not by it)') }
         }
     }
     exit 0

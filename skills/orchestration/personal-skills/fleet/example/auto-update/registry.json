@@ -18,11 +18,7 @@
                              "/usr/bin/python3", "/opt/example/model-proxy/idle_gate.py", "--json"] },
                   { "name": "model-bridge-idle", "max_age_seconds": 120, "timeout_seconds": 30,
                     "argv": ["{node}", "{adapters}/host-idle.mjs", "listener-clients",
-                             "--lsof", "/usr/sbin/lsof", "--addr", "127.0.0.1:40000"] },
-                  { "name": "model-cpu", "max_age_seconds": 120, "timeout_seconds": 30, "diagnostic": true,
-                    "quiet": { "min_seconds": 300, "max_gap_seconds": 1500, "max_per_minute": { "proxy": 30, "bridge": 30 } },
-                    "argv": ["{node}", "{adapters}/host-idle.mjs", "quiet",
-                             "--launchd", "proxy=com.example.model-proxy", "--launchd", "bridge=com.example.model-bridge"] } ] },
+                             "--lsof", "/usr/sbin/lsof", "--addr", "127.0.0.1:40000"] } ] },
     "devbox": { "os": "linux", "tz": "America/New_York", "notify_host": "ssh://laptop", "ssh": "devbox",
                 "allow": ["claude-code", "codex-cli", "tailscale", "rustdesk"],
                 "preconditions": [
@@ -32,6 +28,7 @@
                     "argv": ["{node}", "{adapters}/host-idle.mjs", "load", "--max-load-per-core", "1", "--min-avail-mb", "3072",
                              "--job-flock", "/run/lock/example-jobs.lock"] } ] },
     "winbox": { "os": "windows", "tz": "America/New_York", "notify_host": "ssh://laptop", "ssh": "winbox",
+                "notify_command": ["{node}", "~/AppData/Local/example-paseo/node_modules/@getpaseo/cli/bin/paseo"],
                 "allow": ["claude-code", "codex-cli"],
                 "preconditions": [
                   { "name": "paseo-idle", "max_age_seconds": 120, "timeout_seconds": 60,
@@ -40,10 +37,11 @@
                     "argv": ["{node}", "{adapters}/host-idle.mjs", "load", "--max-cpu-pct", "50", "--min-mem-free-pct", "15",
                              "--job-lock", "~/.cache/example-jobs/local.lock", "--job-queue", "~/.cache/example-jobs/local.queue"] } ] },
     "desktop": { "os": "windows", "tz": "America/New_York", "notify_host": "ssh://laptop", "ssh": "desktop",
+                 "notify_command": ["{node}", "~/AppData/Local/example-paseo/node_modules/@getpaseo/cli/bin/paseo"],
                  "allow": ["claude-code", "codex-cli"], "deny_tiers": [2],
                  "preconditions": [ { "name": "interactive-idle", "max_age_seconds": 120, "timeout_seconds": 30,
                    "argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-                            "{adapters}/interactive-idle.ps1", "-MinIdleMinutes", "15"] } ] },
+                            "{adapters}/interactive-idle.ps1", "-MinIdleMinutes", "15", "-Games", "example-game.exe,example-launcher.exe"] } ] },
     "nas-example": { "os": "linux", "tz": "America/New_York", "allow": ["example-tunnel"],
                      "preconditions": [
                        { "name": "streams-idle", "max_age_seconds": 120, "timeout_seconds": 60,
@@ -145,7 +143,7 @@
         "precheck": [["/bin/bash", "{adapters}/brew-formula.sh", "scope", "ripgrep", "{version}"]] } }
     },
     {
-      "component": "tailscale", "tier": 2, "mode": "hold", "exclusive_group": "access", "watchdog_seconds": 900,
+      "component": "tailscale", "tier": 2, "mode": "hold", "exclusive_group": "access", "watchdog_seconds": 1800,
       "notes": "Held until an apply adapter with a proven rollback exists. Health keeps the serve config.",
       "hosts": ["laptop", "devbox"],
       "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "bounds": { "max_bump": "minor" },
@@ -160,7 +158,7 @@
       }
     },
     {
-      "component": "rustdesk", "tier": 2, "mode": "hold", "exclusive_group": "access", "watchdog_seconds": 900,
+      "component": "rustdesk", "tier": 2, "mode": "hold", "exclusive_group": "access", "watchdog_seconds": 1800,
       "hosts": ["laptop", "devbox"],
       "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "bounds": { "max_bump": "minor" },
       "window": { "tz": "America/New_York", "days": ["sun", "mon", "tue", "wed", "thu", "fri", "sat"], "start": "00:00", "end": "24:00" }, "soak_hours": 72,

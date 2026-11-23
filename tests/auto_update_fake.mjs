@@ -1,5 +1,5 @@
 // Fake tool, probe and paseo for tests/test_auto_update.py. Every behavior comes from <dir>/behavior.json.
-//   auto_update_fake.mjs <dir> <component> version|stage|precheck|apply|health|rollback [version]
+//   auto_update_fake.mjs <dir> <component> version|stage|precheck|apply|health|rollback [version] [txn dir]
 //   auto_update_fake.mjs <dir> probe [name]       behavior.probes[name] (else behavior.probe), exit probe_exits[name]
 //   auto_update_fake.mjs <dir> paseo ls ... | paseo send --no-wait [--host h] <id> <line>
 import fs from "node:fs";
@@ -27,6 +27,10 @@ const file = path.join(dir, `${what}.installed`);
 const b = (behavior.components && behavior.components[what]) || {};
 log(`${what} ${step} ${rest.join(" ")}`);
 if (step === "version") { process.stdout.write(`${what} ${fs.readFileSync(file, "utf8").trim()}\n`); process.exit(0); }
+// Side effects a step can have: a staged download in the transaction directory, files written or copied.
+if (step === "stage" && b.stage_artifact && rest[1]) fs.writeFileSync(path.join(rest[1], "staged.bin"), "x".repeat(4096));
+for (const [from, to] of b[`${step}_copy`] || []) fs.copyFileSync(from, to);
+for (const [to, text] of b[`${step}_write`] || []) fs.writeFileSync(to, text);
 if (b[`${step}_sleep`]) sleep(b[`${step}_sleep`]);
 if (b[`${step}_probes`]) { // the host gets busy while this step runs
   behavior.probes = { ...(behavior.probes || {}), ...b[`${step}_probes`] };

@@ -1,8 +1,9 @@
-# Precondition probe for a Windows daily-use PC: the interactive user has been idle long enough and no game or
-# full-screen app is in front. Prints one JSON line {"ok", "observed_at", "detail"}; the runner fails closed on
+# Precondition probe for a Windows daily-use PC: the interactive user has been idle long enough, no full-screen app
+# is in front and no game from the configured inventory runs. Without an inventory, or with a malformed one, it
+# fails closed: an unconfigured guard is not a guard. Prints one JSON line {"ok", "observed_at", "detail"}; the runner fails closed on
 # anything else. Run it only from a task that runs in the user's interactive session: a session-0 or
 # noninteractive task cannot see input or windows, so it reports ok=false.
-#   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File interactive-idle.ps1 -MinIdleMinutes 15 [-Games a.exe,b.exe]
+#   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File interactive-idle.ps1 -MinIdleMinutes 15 -Games a.exe,b.exe
 param(
     [ValidateRange(1, 1440)][int]$MinIdleMinutes = 15,
     [string[]]$Games = @()
@@ -17,6 +18,10 @@ function Out-Reading([bool]$Ok, [string]$Detail) {
 }
 
 try {
+    # -File passes "a.exe,b.exe" as one string.
+    $inventory = @($Games | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if (-not $inventory.Count) { Out-Reading $false 'no game inventory configured' }
+    if (@($inventory | Where-Object { $_ -notmatch '^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}\.exe$' }).Count) { Out-Reading $false 'game inventory malformed' }
     $session = (Get-Process -Id $PID).SessionId
     if ($session -eq 0 -or -not [Environment]::UserInteractive) { Out-Reading $false 'not in an interactive session' }
     Add-Type -TypeDefinition @'
@@ -60,10 +65,8 @@ public static class AutoUpdateIdle {
     $fs = [AutoUpdateIdle]::FullScreen([ref]$fgPid)
     if ($fs -lt 0) { Out-Reading $false 'foreground window unavailable' }
     if ($fs -eq 1) { Out-Reading $false 'full-screen app in front' }
-    if ($Games.Count) {
-        $running = @(Get-Process | Where-Object { $Games -contains ($_.ProcessName + '.exe') })
-        if ($running.Count) { Out-Reading $false 'game process running' }
-    }
+    $running = @(Get-Process | Where-Object { $inventory -contains ($_.ProcessName + '.exe') })
+    if ($running.Count) { Out-Reading $false 'game process running' }
     Out-Reading $true ("idle {0} min" -f [int]($idle / 60000))
 } catch {
     Out-Reading $false 'probe error'
