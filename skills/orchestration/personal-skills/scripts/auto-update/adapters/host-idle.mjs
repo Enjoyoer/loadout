@@ -68,7 +68,7 @@ function supervisors() {
     const ps = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'supervisor-entrypoint\\.js' -or $_.CommandLine -eq 'Paseo Supervisor' } | ForEach-Object { $_.ProcessId }";
     return run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps]).split(/\r?\n/).filter((l) => /^\d+$/.test(l.trim())).map(Number);
   }
-  return (test ? fs.readFileSync(test, "utf8") : run(["/bin/ps", "-Ao", "pid=,args="])).split("\n").map((l) => /^\s*(\d+)\s+(.*)$/.exec(l)).filter(Boolean)
+  return (test ? fs.readFileSync(test, "utf8") : run(["/bin/ps", "-Ao", "pid=,args="])).split(/\r?\n/).map((l) => /^\s*(\d+)\s+(.*)$/.exec(l)).filter(Boolean)
     .filter((m) => m[2].trim() === "Paseo Supervisor" || /supervisor-entrypoint\.js/.test(m[2])).map((m) => Number(m[1]));
 }
 
