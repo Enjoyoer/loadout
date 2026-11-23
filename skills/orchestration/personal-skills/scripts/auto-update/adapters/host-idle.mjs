@@ -83,7 +83,7 @@ if (cmd === "paseo") {
     out(false, `ambiguous: ${sups.length} Paseo daemons on this host${sups.includes(pid) ? "" : ", none is the home's"}`, { metrics: { daemons: sups.length } });
   }
   const text = process.platform === "win32" && /\.cmd$/i.test(cli)
-    ? run(["cmd.exe", "/d", "/s", "/c", `"${cli}" ls -g -a --json --home "${home}"`], { windowsVerbatimArguments: true })
+    ? run(["cmd.exe", "/d", "/s", "/c", `""${cli}" ls -g -a --json --home "${home}""`], { windowsVerbatimArguments: true })
     : run([cli, "ls", "-g", "-a", "--json", "--home", home]);
   let agents;
   try { agents = JSON.parse(text); } catch { fail("paseo ls output not JSON"); }
