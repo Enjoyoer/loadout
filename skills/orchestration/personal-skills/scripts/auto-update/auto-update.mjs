@@ -881,7 +881,9 @@ const LOCK_ALERT_MS = 8 * 3600e3; // above the longest transaction and watchdog 
 function cmdRun(args) {
   const ctx = context(args, "run");
   fs.mkdirSync(ctx.state, { recursive: true, mode: 0o700 });
-  const lock = acquireLock(ctx.state, procRecord(process.pid, [SELF, ` run --host ${ctx.host}`]));
+  // The scheduler may start this file by a link or a relative path, which is what the command line shows: mark the
+  // runner by file name and arguments, not by its resolved path.
+  const lock = acquireLock(ctx.state, procRecord(process.pid, [path.basename(SELF), ` run --host ${ctx.host}`]));
   if (!lock.ok) {
     // Another run, transaction or watchdog is active: silent, unless the lock has outlived any transaction.
     const since = lock.since ? Date.parse(lock.since) : NaN;

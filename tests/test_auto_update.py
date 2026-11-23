@@ -646,6 +646,47 @@ class AutoUpdate(unittest.TestCase):
         self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "rolled-back-by-watchdog")
 
     @unittest.skipIf(WINDOWS, "the rollback watchdog is POSIX only")
+    def test_watchdog_restores_only_once_every_step_process_is_gone(self):
+        installed = self.fx / "tool-a.installed"
+        # apply leaves a child that writes the new version 40 s later, after the 30 s watchdog has fired
+        self.behavior["components"]["tool-a"] = {"apply_late_write": [[str(installed), "1.3.0\n", 40]], "health_sleep": 60}
+        self.registry["components"] = [self.row("tool-a", 2)]
+        self.assertEqual(self.cli("run").returncode, 0)
+        a = self.wait_status("health")
+        os.kill(a["txn_proc"]["pid"], signal.SIGSTOP)
+        self.wait_idle(timeout=90)
+        self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "rolled-back-by-watchdog")
+        time.sleep(15)  # past the child's write time
+        self.assertEqual(self.version_of("tool-a"), "1.2.0", "the step's child was stopped with the group, not left to write")
+        self.assertEqual(len(self.sent()), 1)
+
+    @unittest.skipIf(WINDOWS, "a symbolic link to the runner")
+    def test_runner_started_by_a_link_keeps_its_lock(self):
+        link = self.tmp / "linked" / "auto-update.mjs"
+        link.parent.mkdir()
+        link.symlink_to(RUNNER)
+        self.registry["hosts"]["h1"]["preconditions"] = [self.gate("slow")]
+        self.probes(NOW, slow=True)
+        self.behavior["probe_sleeps"] = {"slow": 4}
+        self.sync()
+        first = subprocess.Popen([NODE, "linked/auto-update.mjs", "run", "--host", "h1", "--now", NOW], cwd=self.tmp, env=self.env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        until = time.time() + 20
+        calls = self.fx / "calls.log"
+        while not (calls.exists() and "probe slow" in calls.read_text()):
+            self.assertLess(time.time(), until)
+            time.sleep(0.05)
+        second = self.cli("run")  # while the first evaluates its gates and holds the lock alone
+        self.assertEqual((second.returncode, second.stdout), (0, ""), second.stderr)
+        self.assertEqual((self.fx / "calls.log").read_text().count("probe slow"), 1, "the second run found the host busy")
+        out, err = first.communicate(timeout=60)
+        self.assertEqual(first.returncode, 0, err)
+        self.wait_idle()
+        self.assertEqual((self.fx / "calls.log").read_text().count("tool-a apply"), 1, "one runner, one transaction")
+        self.assertEqual(self.version_of("tool-a"), "1.3.0")
+        self.assertEqual(self.sent(), [])
+
+    @unittest.skipIf(WINDOWS, "the rollback watchdog is POSIX only")
     def test_confirmed_change_disarms_the_watchdog(self):
         self.registry["components"] = [self.row("tool-a", 2)]
         self.cli("run")

@@ -3,6 +3,7 @@
 //   auto_update_fake.mjs <dir> probe [name]       behavior.probes[name] (else behavior.probe), exit probe_exits[name]
 //   auto_update_fake.mjs <dir> paseo ls ... | paseo send --no-wait [--host h] <id> <line>
 import fs from "node:fs";
+import { spawn } from "node:child_process";
 import path from "node:path";
 
 const [dir, what, step, ...rest] = process.argv.slice(2);
@@ -18,6 +19,7 @@ if (what === "paseo") {
 if (what === "probe") {
   log(`probe ${step || ""}`.trim());
   const code = step ? (behavior.probe_exits || {})[step] : behavior.probe_exit;
+  if (step && (behavior.probe_sleeps || {})[step]) sleep(behavior.probe_sleeps[step]);
   if (code) process.exit(code);
   process.stdout.write(JSON.stringify((step && (behavior.probes || {})[step]) || behavior.probe) + "\n");
   process.exit(0);
@@ -31,6 +33,11 @@ if (step === "version") { process.stdout.write(`${what} ${fs.readFileSync(file, 
 if (step === "stage" && b.stage_artifact && rest[1]) fs.writeFileSync(path.join(rest[1], "staged.bin"), "x".repeat(4096));
 for (const [from, to] of b[`${step}_copy`] || []) fs.copyFileSync(from, to);
 for (const [to, text] of b[`${step}_write`] || []) fs.writeFileSync(to, text);
+// A child the step leaves running in its process group, which changes the tool later (a slow installer, say).
+for (const [to, text, after] of b[`${step}_late_write`] || []) {
+  spawn(process.execPath, ["-e", `setTimeout(() => require("fs").writeFileSync(${JSON.stringify(to)}, ${JSON.stringify(text)}), ${after * 1000})`],
+        { stdio: "ignore" }).unref();
+}
 if (b[`${step}_sleep`]) sleep(b[`${step}_sleep`]);
 if (b[`${step}_probes`]) { // the host gets busy while this step runs
   behavior.probes = { ...(behavior.probes || {}), ...b[`${step}_probes`] };
