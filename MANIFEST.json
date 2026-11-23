@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "06b7d2dbcb027d1aee353c34173a47088022b298",
+  "source_commit": "a2eedfacffa60af6fcdd196cf151cdb72575282b",
   "skill_count": 25,
   "file_count": 149,
   "files": [
@@ -394,8 +394,8 @@
       "path": "skills/orchestration/personal-skills/fleet/example/auto-update/registry.json",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 17068,
-      "sha256": "64c073bc66b49bbf8b273e7b5296e0a1899959bfcbb8a7436213493c4b8f1270"
+      "bytes": 17085,
+      "sha256": "4509468602aebb0ae378fbcd96b209d7e225c494ba73037dd0bb8c511fa42465"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/auto-update/switch.json",
@@ -464,8 +464,8 @@
       "path": "skills/orchestration/personal-skills/scripts/auto-update/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 13866,
-      "sha256": "055942a5fb05402fcfb8a06fa040be26e92fcf0135e848f1fceff319dac64d7a"
+      "bytes": 14250,
+      "sha256": "ba148ec8ef57f0a5ec43ae6778b24b22d0dd4391d45a2942e66ca7ed5b4e9e44"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/access-health.sh",
@@ -499,8 +499,8 @@
       "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/host-idle.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 7875,
-      "sha256": "4213bda50274001b2f726b163af0d8ae678065622cccb38fda475592c1d3191a"
+      "bytes": 8347,
+      "sha256": "7fadd4c29c313d2d40588e2b966f3ef6d4be9bd96894a1a14dc0de0389832a72"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/interactive-idle.ps1",
@@ -513,8 +513,8 @@
       "path": "skills/orchestration/personal-skills/scripts/auto-update/auto-update.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 52690,
-      "sha256": "dd6e28cbb2b369bf917d08ecd06670a26824d67ea78a4f660cc9cc14b3554c64"
+      "bytes": 53328,
+      "sha256": "e68c7bb16a59cc09454c7e676856ca296d0ec957ad7305be415d4b1e524ab7b7"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/com.loadout.auto-update.plist",
