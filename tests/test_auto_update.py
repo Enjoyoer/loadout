@@ -143,6 +143,22 @@ class AutoUpdate(unittest.TestCase):
         p = self.fx / "sent.log"
         return p.read_text().splitlines() if p.exists() else []
 
+    def gate(self, name, **extra):
+        return {"name": name, "max_age_seconds": 120, "argv": [NODE, str(FAKE), str(self.fx), "probe", name], **extra}
+
+    def probes(self, now, **states):
+        """states: name -> True (idle), False (busy), or a dict merged into the reading."""
+        self.behavior["probes"] = {}
+        for name, v in states.items():
+            reading = {"ok": v is not False, "observed_at": now}
+            if isinstance(v, dict):
+                reading.update(v)
+            self.behavior["probes"][name] = reading
+
+    def gate_days(self):
+        p = self.state / "gates.json"
+        return json.loads(p.read_text())["days"] if p.exists() else {}
+
     # ----- cases -----
 
     def test_plan_reports_would_apply_and_writes_nothing(self):
@@ -350,6 +366,123 @@ class AutoUpdate(unittest.TestCase):
         self.registry["components"][0]["adapters"][OS]["check"]["regex"] = "^tool-a ([0-9._]+)$"
         _, rows = self.plan()
         self.assertEqual(rows["tool-a"]["decision"], "would-apply", rows["tool-a"])
+
+    def test_idle_gates_busy_or_unknown_skip_without_an_attempt(self):
+        self.registry["hosts"]["h1"]["preconditions"] = [self.gate("paseo-idle"), self.gate("host-load")]
+        self.registry["components"] = [self.row("tool-a", 1, window={**ALWAYS, "end": "24:00"})]
+        ticks = ["2026-11-24T08:00:00Z", "2026-11-24T08:10:00Z", "2026-11-24T08:20:00Z", "2026-11-24T08:30:00Z",
+                 "2026-11-24T08:40:00Z", "2026-11-24T08:50:00Z"]
+        no_go = [(dict(paseo_idle=False, host_load=True), "paseo-idle: not met"),
+                 (dict(paseo_idle=True, host_load=False), "host-load: not met"),
+                 (dict(paseo_idle=True, host_load=True), "paseo-idle: probe failed"),     # unknown: probe errors
+                 (dict(paseo_idle={"observed_at": "2026-11-24T07:00:00Z"}, host_load=True), "paseo-idle: reading stale"),
+                 (dict(paseo_idle={"ok": "yes"}, host_load=True), "paseo-idle: probe output invalid")]
+        for now, (states, reason) in zip(ticks, no_go):
+            with self.subTest(reason):
+                self.feed["generated_at"] = now
+                self.probes(now, **{k.replace("_", "-"): v for k, v in states.items()})
+                self.behavior["probe_exits"] = {"paseo-idle": 1} if "failed" in reason else {}
+                _, rows = self.plan(now=now)
+                self.assertIn(reason, rows["tool-a"]["reason"])
+                self.run_and_wait(now=now)
+                self.assertEqual(self.attempts(), {}, "a busy or unknown host is not an attempt")
+        self.assertEqual(self.version_of("tool-a"), "1.2.0")
+        self.assertEqual(self.sent(), [], "a skip sends nothing")
+        # Five skips the same day do not cap the next tick.
+        now = ticks[-1]
+        self.feed["generated_at"] = now
+        self.behavior["probe_exits"] = {}
+        self.probes(now, **{"paseo-idle": True, "host-load": True})
+        self.run_and_wait(now=now)
+        self.assertEqual(self.version_of("tool-a"), "1.3.0")
+        day = self.gate_days()["2026-11-24"]
+        self.assertEqual((day["samples"], day["open"], day["opened"], day["closed"]), (6, 1, 1, 0))
+        self.assertEqual(day["blocked"]["paseo-idle: not met"], 1)
+        self.assertEqual(day["blocked"]["paseo-idle: probe failed"], 1)
+        self.assertEqual(day["ticks"][-1], ["03:50", 1, ""])
+        self.assertEqual(day["ticks"][0], ["03:00", 0, "paseo-idle"])
+
+    def test_quiet_gate_needs_two_readings_over_minutes(self):
+        quiet = {"min_seconds": 300, "max_gap_seconds": 1500, "max_per_minute": {"proxy": 30, "bridge": 30}}
+        self.registry["hosts"]["h1"]["preconditions"] = [self.gate("traffic", quiet=quiet)]
+        self.registry["components"] = [self.row("tool-a", 1, window={**ALWAYS, "end": "24:00"})]
+        reading = lambda proxy, bridge=500, ident="proxy:11,bridge:12": {"counters": {"proxy": proxy, "bridge": bridge}, "identity": ident}
+        steps = [  # (time, proxy counter, identity, expected reason or None for open)
+            ("2026-11-24T08:00:00Z", 1000, None, "no earlier reading yet"),
+            ("2026-11-24T08:02:00Z", 1001, None, "earlier reading too recent"),   # keeps the 08:00 reading
+            ("2026-11-24T08:10:00Z", 9000, None, "busy (proxy"),                  # 8000 cs over 10 min
+            ("2026-11-24T08:20:00Z", 9100, "proxy:99,bridge:12", "process changed"),
+            ("2026-11-24T09:00:00Z", 9100, "proxy:99,bridge:12", "earlier reading too old"),
+            ("2026-11-24T09:10:00Z", 9050, "proxy:99,bridge:12", "went back"),
+        ]
+        self.switch("stopped")  # ticks sample the gates even while the switch is off
+        for now, proxy, ident, reason in steps:
+            with self.subTest(now):
+                self.probes(now, traffic=reading(proxy, ident=ident or "proxy:11,bridge:12"))
+                self.feed["generated_at"] = now
+                head, _ = self.plan(now=now)
+                self.assertEqual(head["gates"], "closed")
+                self.assertIn(reason, " ".join(head["blocked"]))
+                self.run_and_wait(now=now)
+        self.switch("allowed")
+        for now, proxy in (("2026-11-24T09:20:00Z", 9100), ("2026-11-24T09:30:00Z", 9200)):
+            self.probes(now, traffic=reading(proxy, ident="proxy:99,bridge:12"))
+            self.feed["generated_at"] = now
+            head, rows = self.plan(now=now)
+            self.run_and_wait(now=now)
+        self.assertEqual(head["gates"], "open", head)  # 100 cs over 10 min: 10/min, under 30
+        self.assertEqual(self.version_of("tool-a"), "1.3.0")
+        day = self.gate_days()["2026-11-24"]
+        self.assertEqual((day["samples"], day["open"]), (8, 2))
+        self.assertNotIn("proxy:99", json.dumps(day), "samples keep codes, not process ids")
+
+    def test_gate_closing_during_stage_stops_before_apply(self):
+        quiet = {"min_seconds": 300, "max_gap_seconds": 1500, "max_per_minute": {"proxy": 30}}
+        self.registry["hosts"]["h1"]["preconditions"] = [self.gate("paseo-idle"), self.gate("traffic", quiet=quiet)]
+        self.registry["components"] = [self.row("tool-a", 1, window={**ALWAYS, "end": "24:00"})]
+        traffic = lambda n: {"counters": {"proxy": n}, "identity": "proxy:11"}
+        races = {"agent turn starts": {"paseo-idle": {"ok": False}},
+                 "model traffic starts": {"traffic": traffic(1000 + 30 * 5 + 500)}}
+        t0 = "2026-11-24T08:00:00Z"
+        self.probes(t0, **{"paseo-idle": True, "traffic": traffic(1000)})
+        self.switch("stopped")
+        self.run_and_wait(now=t0)  # the earlier quiet reading
+        self.switch("allowed")
+        for i, (name, change) in enumerate(races.items()):
+            with self.subTest(name):
+                now = f"2026-11-24T08:{10 * (i + 1)}:00Z"
+                self.feed["generated_at"] = now
+                self.probes(now, **{"paseo-idle": True, "traffic": traffic(1000)})
+                stamped = {k: {**v, "observed_at": now} for k, v in change.items()}
+                self.behavior["components"]["tool-a"] = {"stage_probes": {k: {**self.behavior["probes"][k], **v} for k, v in stamped.items()}}
+                _, rows = self.plan(now=now)
+                self.assertEqual(rows["tool-a"]["decision"], "would-apply", rows["tool-a"])
+                self.run_and_wait(now=now)
+                self.assertNotIn("tool-a apply", (self.fx / "calls.log").read_text())
+                self.assertEqual(self.attempts(), {}, "stopped before apply: not an attempt")
+                self.assertEqual(self.version_of("tool-a"), "1.2.0")
+                logs = list(self.state.glob("txn/*/log.txt"))
+                self.assertTrue(any("host gate closed before apply" in p.read_text() for p in logs))
+        self.behavior["components"]["tool-a"] = {}
+        now = "2026-11-24T08:40:00Z"
+        self.feed["generated_at"] = now
+        self.probes(now, **{"paseo-idle": True, "traffic": traffic(1000)})
+        self.run_and_wait(now=now)
+        self.assertEqual(self.version_of("tool-a"), "1.3.0")
+        self.assertEqual(self.sent(), [])
+
+    def test_all_day_window_keeps_the_sunday_blackout(self):
+        self.registry["components"] = [self.row("tool-a", 1, window={**ALWAYS, "end": "24:00"})]
+        for now, decision, reason in (("2026-11-25T04:59:30Z", "would-apply", ""),   # Tue 23:59:30 EST
+                                      ("2026-11-29T10:30:00Z", "skip", "blackout"),   # Sun 05:30 EST
+                                      ("2026-07-05T09:30:00Z", "skip", "blackout"),   # Sun 05:30 EDT
+                                      ("2026-11-29T12:00:00Z", "would-apply", "")):  # Sun 07:00 EST
+            with self.subTest(now):
+                self.feed.update(generated_at=now, components={"tool-a": self.entry("1.3.0", seen="2026-06-01T00:00:00Z")})
+                head, rows = self.plan(now=now)
+                self.assertEqual(rows["tool-a"]["decision"], decision, rows["tool-a"])
+                self.assertIn(reason, rows["tool-a"]["reason"])
+                self.assertEqual(head["gates"], "closed" if reason else "open")
 
     def test_interrupted_apply_is_held_not_retried(self):
         self.behavior["components"]["tool-a"] = {"apply_sleep": 120}

@@ -1,6 +1,6 @@
 // Fake tool, probe and paseo for tests/test_auto_update.py. Every behavior comes from <dir>/behavior.json.
 //   auto_update_fake.mjs <dir> <component> version|stage|precheck|apply|health|rollback [version]
-//   auto_update_fake.mjs <dir> probe
+//   auto_update_fake.mjs <dir> probe [name]       behavior.probes[name] (else behavior.probe), exit probe_exits[name]
 //   auto_update_fake.mjs <dir> paseo ls ... | paseo send --no-wait [--host h] <id> <line>
 import fs from "node:fs";
 import path from "node:path";
@@ -16,9 +16,10 @@ if (what === "paseo") {
   process.exit(2);
 }
 if (what === "probe") {
-  log("probe");
-  if (behavior.probe_exit) process.exit(behavior.probe_exit);
-  process.stdout.write(JSON.stringify(behavior.probe) + "\n");
+  log(`probe ${step || ""}`.trim());
+  const code = step ? (behavior.probe_exits || {})[step] : behavior.probe_exit;
+  if (code) process.exit(code);
+  process.stdout.write(JSON.stringify((step && (behavior.probes || {})[step]) || behavior.probe) + "\n");
   process.exit(0);
 }
 
@@ -27,6 +28,10 @@ const b = (behavior.components && behavior.components[what]) || {};
 log(`${what} ${step} ${rest.join(" ")}`);
 if (step === "version") { process.stdout.write(`${what} ${fs.readFileSync(file, "utf8").trim()}\n`); process.exit(0); }
 if (b[`${step}_sleep`]) sleep(b[`${step}_sleep`]);
+if (b[`${step}_probes`]) { // the host gets busy while this step runs
+  behavior.probes = { ...(behavior.probes || {}), ...b[`${step}_probes`] };
+  fs.writeFileSync(path.join(dir, "behavior.json"), JSON.stringify(behavior));
+}
 const code = b[`${step}_exit`] ?? 0;
 if (code !== 0 && step !== "apply") process.exit(code);
 if (step === "apply") {

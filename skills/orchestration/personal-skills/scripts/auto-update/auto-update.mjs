@@ -27,6 +27,8 @@ const SWITCH_SCHEMA = "loadout.auto-update.switch/1";
 const FEED_SCHEMA = "loadout.auto-update.available/1";
 const RECEIPT_SCHEMA = "loadout.auto-update.canary/1";
 const STATE_SCHEMA = "loadout.auto-update.state/1";
+const GATES_SCHEMA = "loadout.auto-update.gates/1";
+const GATE_DAYS_KEPT = 31;
 
 const ID_RE = /^[a-z0-9][a-z0-9.@+-]{0,63}$/;
 const HOST_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -35,11 +37,12 @@ const VERSION_RE = /^[0-9][0-9A-Za-z.+-]{0,63}$/;
 const INSTALLED_RE = /^[0-9][0-9A-Za-z._+-]{0,63}$/;
 const TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const END_RE = /^(([01]\d|2[0-3]):[0-5]\d|24:00)$/; // a window may run to the end of the day
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const OSES = ["macos", "linux", "windows"];
 const STEPS = ["check", "stage", "precheck", "apply", "health", "rollback"];
-const PLACEHOLDERS = new Set(["version", "installed", "digest", "adapters", "txn", "component", "host"]);
+const PLACEHOLDERS = new Set(["version", "installed", "digest", "adapters", "txn", "component", "host", "node"]);
 const ACTIVE = new Set(["started", "staging", "prechecking", "applying", "health", "rolling-back"]);
 const MAX_INPUT = 256 * 1024;
 const MAX_FEED = 64 * 1024;
@@ -149,11 +152,11 @@ function validateWindow(w, where) {
   try { new Intl.DateTimeFormat("en-US", { timeZone: w.tz }); } catch { throw new Refusal(`${where}.tz: unknown time zone`); }
   if (!Array.isArray(w.days) || !w.days.length || w.days.some((d) => !DAYS.includes(d))) throw new Refusal(`${where}.days: use sun..sat`);
   str(w.start, `${where}.start`, HHMM_RE);
-  str(w.end, `${where}.end`, HHMM_RE);
+  str(w.end, `${where}.end`, END_RE);
   if (w.end <= w.start) throw new Refusal(`${where}: end must be after start on the same day`);
 }
 
-const CHECK_PLACEHOLDERS = new Set(["adapters", "component", "host"]);
+const CHECK_PLACEHOLDERS = new Set(["adapters", "component", "host", "node"]);
 
 function validateArgv(a, where, allowed = PLACEHOLDERS) {
   if (!Array.isArray(a) || !a.length || a.some((x) => typeof x !== "string" || !x.length || x.length > 4096)) {
@@ -189,11 +192,18 @@ function validateRegistry(r) {
     if (!Array.isArray(h.allow) || h.allow.some((c) => !ID_RE.test(c))) throw new Refusal(`${where}.allow: component ids`);
     for (const [i, p] of (h.preconditions || []).entries()) {
       const pw = `${where}.preconditions[${i}]`;
-      exactKeys(p, pw, ["name", "argv", "max_age_seconds"], ["timeout_seconds"]);
+      exactKeys(p, pw, ["name", "argv", "max_age_seconds"], ["timeout_seconds", "quiet"]);
       str(p.name, `${pw}.name`, ID_RE);
-      validateArgv(p.argv, `${pw}.argv`, new Set(["adapters"]));
+      validateArgv(p.argv, `${pw}.argv`, new Set(["adapters", "node"]));
       num(p.max_age_seconds, `${pw}.max_age_seconds`, 1, 3600);
       if (p.timeout_seconds !== undefined) num(p.timeout_seconds, `${pw}.timeout_seconds`, 1, 300);
+      if (p.quiet !== undefined) {
+        exactKeys(p.quiet, `${pw}.quiet`, ["min_seconds", "max_gap_seconds", "max_per_minute"]);
+        num(p.quiet.min_seconds, `${pw}.quiet.min_seconds`, 60, 3600);
+        num(p.quiet.max_gap_seconds, `${pw}.quiet.max_gap_seconds`, p.quiet.min_seconds, 4 * 3600);
+        if (!isObj(p.quiet.max_per_minute) || !Object.keys(p.quiet.max_per_minute).length) throw new Refusal(`${pw}.quiet.max_per_minute: counter limits`);
+        for (const [k, v] of Object.entries(p.quiet.max_per_minute)) { str(k, `${pw}.quiet.max_per_minute key`, ID_RE); num(v, `${pw}.quiet.max_per_minute.${k}`, 0, 1e12); }
+      }
     }
     if (h.deny_tiers !== undefined && (!Array.isArray(h.deny_tiers) || h.deny_tiers.some((t) => ![1, 2, 3].includes(t)))) {
       throw new Refusal(`${where}.deny_tiers: tiers 1..3`);
@@ -380,7 +390,9 @@ function inWindow(ms, w) {
 
 // ---------- commands ----------
 
-function fill(argv, vars) {
+// {node} is the Node running this runner, so probes and adapters written in JS need no PATH lookup.
+function fill(argv, given) {
+  const vars = { node: process.execPath, ...given };
   return argv.map((x, i) => {
     const out = x.replace(/\{([a-z]+)\}/g, (_, k) => {
       if (vars[k] === undefined) throw new Refusal(`placeholder {${k}} has no value here`);
@@ -418,17 +430,99 @@ function installedVersion(adapter, vars, timeouts) {
   return { error: "check output did not match" };
 }
 
+// One host gate reading. A probe prints one JSON line {ok, observed_at, detail?, counters?, identity?}; anything
+// missing, late, malformed or stale is "unknown" and closes the gate. Only counts and short codes are kept.
 function probe(p, now) {
   const r = runArgv(fill(p.argv, { adapters: ADAPTERS }), p.timeout_seconds || 30);
-  if (!r.ok) return `precondition ${p.name}: probe failed (${r.error || `exit ${r.status}`})`;
+  const no = (why) => ({ why: `precondition ${p.name}: ${why}` });
+  if (!r.ok) return no(`probe failed (${r.error || `exit ${r.status}`})`);
   let v;
-  try { v = JSON.parse(r.stdout.trim().split(/\r?\n/).pop()); } catch { return `precondition ${p.name}: probe output not JSON`; }
-  if (!isObj(v) || typeof v.ok !== "boolean") return `precondition ${p.name}: probe output invalid`;
+  try { v = JSON.parse(r.stdout.trim().split(/\r?\n/).pop()); } catch { return no("probe output not JSON"); }
+  if (!isObj(v) || typeof v.ok !== "boolean") return no("probe output invalid");
   let at;
-  try { at = parseTs(v.observed_at, "observed_at"); } catch { return `precondition ${p.name}: no valid observed_at`; }
-  if (at > now + 60e3 || now - at > p.max_age_seconds * 1000) return `precondition ${p.name}: reading stale`;
-  if (!v.ok) return `precondition ${p.name}: not met${typeof v.detail === "string" ? ` (${v.detail.slice(0, 120)})` : ""}`;
+  try { at = parseTs(v.observed_at, "observed_at"); } catch { return no("no valid observed_at"); }
+  if (at > now + 60e3 || now - at > p.max_age_seconds * 1000) return no("reading stale");
+  const detail = typeof v.detail === "string" ? v.detail.replace(/[^\w .,:%/<>=+-]/g, "").slice(0, 120) : "";
+  if (!v.ok) return no(`not met${detail ? ` (${detail})` : ""}`);
+  if (!p.quiet) return { why: null };
+  const ids = typeof v.identity === "string" && /^[\w.,:=-]{1,200}$/.test(v.identity);
+  const counters = isObj(v.counters) && Object.keys(p.quiet.max_per_minute).every((k) => Number.isFinite(v.counters[k]) && v.counters[k] >= 0);
+  if (!ids || !counters) return no("probe gave no counters or identity");
+  return { why: null, reading: { at, identity: v.identity, counters: Object.fromEntries(Object.keys(p.quiet.max_per_minute).map((k) => [k, v.counters[k]])) } };
+}
+
+// Quiet means the counters grew no faster than allowed since an earlier reading of the same processes. At a tick
+// the earlier reading is the previous tick's, at least min_seconds and at most max_gap_seconds old; right before
+// apply it is the run's own reading, judged over at least min_seconds.
+function quietWhy(p, base, cur, recheck) {
+  const q = p.quiet;
+  const no = (why) => `precondition ${p.name}: ${why}`;
+  if (!base) return no("no earlier reading yet");
+  if (base.identity !== cur.identity) return no("process changed since the earlier reading");
+  const span = cur.at - base.at;
+  if (span < 0) return no("earlier reading is in the future");
+  if (!recheck && span < q.min_seconds * 1000) return no("earlier reading too recent");
+  if (span > q.max_gap_seconds * 1000) return no("earlier reading too old");
+  const minutes = Math.max(span, q.min_seconds * 1000) / 60e3;
+  for (const [k, max] of Object.entries(q.max_per_minute)) {
+    const d = cur.counters[k] - base.counters[k];
+    if (!Number.isFinite(d) || d < 0) return no(`counter ${k} went back`);
+    if (d / minutes > max) return no(`busy (${k} ${(d / minutes).toFixed(1)}/min > ${max})`);
+  }
   return null;
+}
+
+// Every host gate, all evaluated so a sample names every blocker. `last` holds the previous tick's quiet readings.
+function evalGates(hostRow, registry, now, last, recheck = false) {
+  const blocked = [];
+  const readings = {};
+  if ((registry.blackouts || []).some((b) => inWindow(now, b))) blocked.push({ name: "blackout", why: "blackout" });
+  for (const p of hostRow.preconditions || []) {
+    const r = probe(p, now);
+    let why = r.why;
+    if (!why && p.quiet) { readings[p.name] = r.reading; why = quietWhy(p, last[p.name], r.reading, recheck); }
+    if (why) blocked.push({ name: p.name, why });
+  }
+  const idle = blocked.filter((b) => b.name !== "blackout");
+  return { open: !blocked.length, idleOpen: !idle.length, why: idle.map((b) => b.why).join("; "), blocked, readings };
+}
+
+// ---------- gate samples ----------
+
+function loadGates(dir) {
+  const doc = readJson(path.join(dir, "gates.json"), 4 << 20);
+  const ok = !doc.missing && isObj(doc.value) && doc.value.schema === GATES_SCHEMA && isObj(doc.value.last) && isObj(doc.value.days);
+  return ok ? doc.value : { schema: GATES_SCHEMA, last: {}, days: {} };
+}
+
+// Per local day: samples, open samples, closed->open and open->closed transitions, blocker counts and a compact tick
+// list [HH:MM, open, blockers]. Names and short codes only: no agent names, processes, paths or values.
+function recordSample(dir, hostRow, now, gates, stored) {
+  const t = localTime(now, hostRow.tz);
+  const days = stored.days;
+  const prevKey = Object.keys(days).sort().pop();
+  const wasOpen = prevKey ? days[prevKey].last_open : null;
+  const day = days[t.date] || (days[t.date] = { samples: 0, open: 0, opened: 0, closed: 0, last_open: null, first_at: iso(now), last_at: null, blocked: {}, ticks: [] });
+  day.samples += 1;
+  if (gates.open) day.open += 1;
+  if (wasOpen === false && gates.open) day.opened += 1;
+  if (wasOpen === true && !gates.open) day.closed += 1;
+  day.last_open = gates.open;
+  day.last_at = iso(now);
+  for (const b of gates.blocked) {
+    const code = `${b.name}: ${b.why.replace(/^precondition [^:]+: /, "").replace(/\(.*\)/, "").replace(/[0-9]+(\.[0-9]+)?/g, "#").trim()}`;
+    day.blocked[code] = (day.blocked[code] || 0) + 1;
+  }
+  day.ticks.push([t.hhmm, gates.open ? 1 : 0, gates.blocked.map((b) => b.name).join(",")]);
+  day.ticks = day.ticks.slice(-400);
+  // Keep an earlier quiet reading until it is old enough to judge the next tick by.
+  for (const [name, r] of Object.entries(gates.readings)) {
+    const p = (hostRow.preconditions || []).find((x) => x.name === name);
+    const base = stored.last[name];
+    if (!base || base.identity !== r.identity || r.at - base.at >= p.quiet.min_seconds * 1000 || r.at < base.at) stored.last[name] = r;
+  }
+  for (const k of Object.keys(days).sort().slice(0, -GATE_DAYS_KEPT)) delete days[k];
+  writeAtomic(path.join(dir, "gates.json"), JSON.stringify(stored) + "\n");
 }
 
 // ---------- state ----------
@@ -560,7 +654,7 @@ function context(args, mode) {
   return { now, fleet, state, registry, host, hostRow, mode };
 }
 
-function decide(ctx, st, sw, feed) {
+function decide(ctx, st, sw, feed, gates) {
   const { registry, host, hostRow, now } = ctx;
   const rows = registry.components.filter((c) => c.hosts.includes(host)).sort((a, b) => a.tier - b.tier);
   const today = localTime(now, hostRow.tz).date;
@@ -569,7 +663,6 @@ function decide(ctx, st, sw, feed) {
   for (const a of [...st.applied, ...Object.values(st.attempts)]) {
     if (a.host === host && a.group && a.local_date === today) exclusiveToday.set(a.group, a.component);
   }
-  let preconditionResult;
   const out = [];
   for (const row of rows) {
     const line = { component: row.component, host, tier: row.tier, mode: row.mode, installed: null, candidate: null, decision: "skip", reason: "" };
@@ -610,11 +703,7 @@ function decide(ctx, st, sw, feed) {
     if (row.exclusive_group && exclusiveToday.has(row.exclusive_group)) {
       line.reason = `exclusive: ${exclusiveToday.get(row.exclusive_group)} already applied on ${host} today`; continue;
     }
-    if (preconditionResult === undefined) {
-      preconditionResult = null;
-      for (const p of hostRow.preconditions || []) { preconditionResult = probe(p, now); if (preconditionResult) break; }
-    }
-    if (preconditionResult) { line.reason = preconditionResult; continue; }
+    if (!gates.idleOpen) { line.reason = gates.why; continue; }
     line.decision = "would-apply";
     line.reason = row.canary && row.canary.host === host ? "canary host: precheck proves the exact version" : "all gates passed";
     line._row = row;
@@ -636,9 +725,11 @@ function cmdPlan(args) {
   let st;
   try { st = loadState(ctx.state); } catch (e) { st = emptyState(); console.log(JSON.stringify({ warning: e.message })); }
   const feed = readFeed(ctx.registry, ctx.now);
-  console.log(JSON.stringify({ host: ctx.host, now: iso(ctx.now), switch: sw.why, feed: feed.error || "ok" }));
+  const gates = evalGates(ctx.hostRow, ctx.registry, ctx.now, loadGates(ctx.state).last);
+  console.log(JSON.stringify({ host: ctx.host, now: iso(ctx.now), switch: sw.why, feed: feed.error || "ok",
+    gates: gates.open ? "open" : "closed", blocked: gates.blocked.map((b) => b.why) }));
   let first = true;
-  for (const l of decide(ctx, st, sw, feed)) {
+  for (const l of decide(ctx, st, sw, feed, gates)) {
     const p = publicLine(l);
     if (p.decision === "would-apply") { p.next = first; first = false; }
     console.log(JSON.stringify(p));
@@ -675,6 +766,10 @@ function cmdRun(args) {
     sweepInterrupted(ctx);
     const st0 = loadState(ctx.state);
     for (const k of Object.keys(st0.alerts)) if (!st0.alerts[k].delivered) deliver(ctx.state, ctx.registry, k);
+    // Every tick samples the host gates, whatever else happens, so the days show when the host is really idle.
+    const stored = loadGates(ctx.state);
+    const gates = evalGates(ctx.hostRow, ctx.registry, ctx.now, stored.last);
+    recordSample(ctx.state, ctx.hostRow, ctx.now, gates, stored);
     const sw = readSwitch(ctx.fleet, ctx.state);
     if (!sw.allowed) return 0;
     const feed = readFeed(ctx.registry, ctx.now);
@@ -684,16 +779,16 @@ function cmdRun(args) {
     }
     if (st0.alerts[`feed:${ctx.host}`]) updateState(ctx.state, (s) => { delete s.alerts[`feed:${ctx.host}`]; });
     const st = loadState(ctx.state);
-    const next = decide(ctx, st, sw, feed).find((l) => l.decision === "would-apply");
+    const next = decide(ctx, st, sw, feed, gates).find((l) => l.decision === "would-apply");
     if (!next) return 0;
-    handedOver = startTransaction(ctx, next);
+    handedOver = startTransaction(ctx, next, gates);
     return 0;
   } finally {
     if (!handedOver) releaseLock(ctx.state);
   }
 }
 
-function startTransaction(ctx, l) {
+function startTransaction(ctx, l, gates) {
   const row = l._row;
   const adapter = row.adapters[ctx.hostRow.os];
   const key = attemptKey(ctx.host, row.component, l._candidate);
@@ -716,6 +811,8 @@ function startTransaction(ctx, l) {
     // Re-checked right before apply: a long stage must not carry the change into a blackout or past the window.
     window: (row.host_windows && row.host_windows[ctx.host]) || row.window, blackouts: ctx.registry.blackouts || [],
     clock_offset_ms: ctx.now - Date.now(),
+    // The host gates are evaluated again right before apply, quiet counters against this run's readings.
+    gate_host: ctx.hostRow, gate_readings: gates.readings,
   };
   writeAtomic(path.join(dir, "plan.json"), JSON.stringify(plan, null, 2) + "\n");
   // The attempt is persisted before anything runs: a crash from here on holds this version.
@@ -808,6 +905,11 @@ function cmdTxn(dir) {
     if (plan.blackouts.some((b) => inWindow(at, b)) || !inWindow(at, plan.window)) {
       claimDecision(dir, "not-now");
       return notNow("window closed before apply");
+    }
+    const g = evalGates(plan.gate_host, { blackouts: plan.blackouts }, at, plan.gate_readings, true);
+    if (!g.open) {
+      claimDecision(dir, "not-now");
+      return notNow(`host gate closed before apply: ${g.why || "blackout"}`);
     }
     setStatus(plan, "applying");
     const ar = runArgv(plan.apply, plan.apply_timeout, log);
