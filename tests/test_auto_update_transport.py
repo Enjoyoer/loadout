@@ -58,7 +58,7 @@ class TransportBase(unittest.TestCase):
         self.registry = {
             "schema": "loadout.auto-update.registry/1",
             "feed": {"path": str(self.feed_path), "max_age_hours": 36, "source_host": "src"},
-            "notify": {"command": ["paseo"], "labels": ["role=pm"]},
+            "notify": {"command": [NODE, "paseo"], "labels": ["role=pm"]},  # never run here; an executable, as Windows needs
             "hosts": {"src": {"os": OS, "tz": "America/New_York", "allow": ["tool-a"]},
                       "h1": {"os": OS, "tz": "America/New_York", "allow": ["tool-a"], "ssh": "h1"},
                       "h2": {"os": OS, "tz": "America/New_York", "allow": ["tool-a"], "ssh": "h2"}},

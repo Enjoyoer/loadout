@@ -741,6 +741,12 @@ class AutoUpdate(unittest.TestCase):
         self.assertEqual(self.version_of("tool-a"), "1.2.0", "never taken over on a guess")
 
     def test_windows_host_notifier_is_an_executable(self):
+        own = self.tmp / "own-notify"
+        own.mkdir()
+        (own / "behavior.json").write_text("{}")
+        for h in self.registry["hosts"].values():  # each host its own notifier, the fleet-wide one a bare name (a .cmd shim on Windows)
+            h["notify_command"] = ["{node}", str(FAKE), str(own), "paseo"]
+        self.registry["notify"]["command"] = ["paseo"]
         self.registry["hosts"]["win"] = {"os": "windows", "tz": "America/New_York", "allow": []}
         done = self.cli("validate", now=None)
         self.assertEqual(done.returncode, 2)
@@ -748,11 +754,7 @@ class AutoUpdate(unittest.TestCase):
         self.registry["hosts"]["win"]["notify_command"] = ["{node}", "~/AppData/Local/example/paseo"]
         self.assertEqual(self.cli("validate", now=None).returncode, 0)
         # One held failure reaches the PM through the host's own notifier (node and the CLI's script, no shell).
-        own = self.tmp / "own-notify"
-        own.mkdir()
-        (own / "behavior.json").write_text("{}")
         del self.registry["hosts"]["win"]
-        self.registry["hosts"]["h1"]["notify_command"] = ["{node}", str(FAKE), str(own), "paseo"]
         self.behavior["components"]["tool-a"] = {"health_exit": 1}
         self.registry["components"] = [self.row("tool-a", 1)]
         self.run_and_wait()
