@@ -124,7 +124,13 @@ function writeAtomic(file, text) {
   const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
   const fd = fs.openSync(temp, "wx", 0o600);
   try { fs.writeSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-  fs.renameSync(temp, file);
+  // On Windows a rename over a file another process has open (a reader of state.json) fails for that moment.
+  for (let i = 0; ; i++) {
+    try { fs.renameSync(temp, file); return; } catch (e) {
+      if (!WINDOWS || !["EPERM", "EACCES", "EBUSY"].includes(e.code) || i >= 50) { fs.rmSync(temp, { force: true }); throw e; }
+      sleepMs(100);
+    }
+  }
 }
 
 function alive(pid) {

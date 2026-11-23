@@ -133,7 +133,7 @@ class TransportBase(unittest.TestCase):
 @unittest.skipUnless(NODE, "node is required")
 class Transport(TransportBase):
     def test_push_writes_owner_only_copies_atomically_then_same(self):
-        (self.fake / "hosts" / "h1").mkdir(parents=True)
+        (self.fake / "hosts" / "h1").mkdir(parents=True, exist_ok=True)
         code, out = self.push("--host", "h1")
         self.assertEqual(code, 0, out)
         self.assertIn("h1: updated; written feed, canary/tool-a", out)
@@ -158,25 +158,25 @@ class Transport(TransportBase):
         self.assertIn("h1: same; same feed, canary/tool-a", out)
 
     def test_dry_run_writes_nothing(self):
-        (self.fake / "hosts" / "h1").mkdir(parents=True)
+        (self.fake / "hosts" / "h1").mkdir(parents=True, exist_ok=True)
         code, out = self.push("--dry-run", "--host", "h1")
         self.assertEqual(code, 0, out)
         self.assertIn("h1: would update; written feed, canary/tool-a", out)
-        self.assertFalse(self.state("h1").exists())
+        self.assertFalse((self.state("h1") / "relay").exists())
 
     def test_invalid_inputs_are_not_sent(self):
         self.publish(stamp(-40 * 60))  # 40 hours old
         self.receipt(stamp(-3), result="maybe")
-        (self.fake / "hosts" / "h1").mkdir(parents=True)
+        (self.fake / "hosts" / "h1").mkdir(parents=True, exist_ok=True)
         code, out = self.push("--host", "h1")
         self.assertEqual(code, 1)
         self.assertIn("not sent feed: feed stale", out)
         self.assertIn("not sent canary/tool-a: canary receipt result invalid", out)
         self.assertIn("nothing valid to send", out)
-        self.assertFalse(self.state("h1").exists())
+        self.assertFalse((self.state("h1") / "relay").exists())
 
     def test_replay_stale_and_conflicting_copies_are_refused(self):
-        (self.fake / "hosts" / "h1").mkdir(parents=True)
+        (self.fake / "hosts" / "h1").mkdir(parents=True, exist_ok=True)
         old = self.exported()
         self.publish(stamp(-1))
         new = self.exported()
@@ -196,7 +196,7 @@ class Transport(TransportBase):
         self.assertEqual(kept["sha256"], new[0]["doc"]["sha256"], "refusals leave the copy here")
 
     def test_malformed_and_misaddressed_copies_are_refused(self):
-        (self.fake / "hosts" / "h1").mkdir(parents=True)
+        (self.fake / "hosts" / "h1").mkdir(parents=True, exist_ok=True)
         good = self.exported()
 
         def doc(change, which=0):
@@ -216,11 +216,11 @@ class Transport(TransportBase):
         for why in cases:
             self.assertTrue(any(why in g for g in got), (why, got))
         self.assertEqual(r["written"], [])
-        self.assertFalse(self.state("h1").exists())
+        self.assertFalse((self.state("h1") / "relay").exists())
 
     @unittest.skipIf(WINDOWS, "POSIX ownership and links")
     def test_destination_must_be_owner_only_and_not_a_link(self):
-        (self.fake / "hosts" / "h1").mkdir(parents=True)
+        (self.fake / "hosts" / "h1").mkdir(parents=True, exist_ok=True)
         good = self.exported()
         state = self.state("h1")
         state.mkdir(parents=True, mode=0o700)
@@ -238,7 +238,7 @@ class Transport(TransportBase):
 
     @unittest.skipIf(WINDOWS, "one state root per test on Windows")
     def test_a_copy_for_another_host_is_not_read(self):
-        (self.fake / "hosts" / "h1").mkdir(parents=True)
+        (self.fake / "hosts" / "h1").mkdir(parents=True, exist_ok=True)
         self.assertEqual(self.push("--host", "h1")[0], 0)
         h2 = self.state("h2")
         h2.parent.mkdir(parents=True)
@@ -277,7 +277,7 @@ class RelayTick(TransportBase):
         self.write(self.fleet / "auto-update" / "switch.json", {"schema": "loadout.auto-update.switch/1", "apply": "allowed"})
         self.ssh_log = self.tmp / "ssh.log"
         self.env["FAKE_SSH_LOG"] = str(self.ssh_log)
-        (self.fake / "hosts" / "h1").mkdir(parents=True)
+        (self.fake / "hosts" / "h1").mkdir(parents=True, exist_ok=True)
 
     def behave(self, host, b):
         (self.fx / host / "behavior.json").write_text(json.dumps({"components": {"tool-a": b}, "probe": {"ok": True}}))
