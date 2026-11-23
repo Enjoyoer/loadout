@@ -43,6 +43,8 @@ function fixture(home: string) {
   let beforeFetch: ((id: string) => Promise<void>) | undefined;
   let afterFetch: ((agent: AgentSnapshot | undefined) => Promise<void>) | undefined;
   let onApply: ((agentId: string, model: string) => void | Promise<void>) | undefined;
+  // M8: runs inside every pq read, before the reading is returned (a relabel while a decision awaits pq).
+  let onPq: (() => void | Promise<void>) | undefined;
   // What the daemon's stored record holds per agent: it follows memory unless the agent's background persist fails.
   const unpersisted = new Map<string, Profile[]>();
   const stored = async (id: string): Promise<Profile[]> => unpersisted.get(id) ?? (agents.has(id) ? [profileOf(agents.get(id)!)!] : []);
@@ -116,7 +118,7 @@ function fixture(home: string) {
   } as unknown as PluginServerContext;
   let plugin: ReturnType<typeof contribute> | null = null;
   const start = async () => {
-    plugin = contribute(server, async () => api, new QuotaReader(async () => ({ document: document() })), new ReturnStore(path.join(home, "pm-return.json")), stored);
+    plugin = contribute(server, async () => api, new QuotaReader(async () => { await onPq?.(); return { document: document() }; }), new ReturnStore(path.join(home, "pm-return.json")), stored);
     await plugin.idle();
   };
   const stop = async () => { plugin?.(); await plugin?.idle(); plugin = null; };
@@ -139,7 +141,7 @@ function fixture(home: string) {
     agents, calls, pq, start, stop, add, endTurn, tick, handlers, unpersisted, timelines, sent,
     returns: new ReturnStore(path.join(home, "pm-return.json")), records: new ResumeStore(),
     failApplies: (n: number) => { failApply = n; },
-    hooks: (set: { beforeFetch?: typeof beforeFetch; afterFetch?: typeof afterFetch; onApply?: typeof onApply; beforeSend?: typeof beforeSend }) => { ({ beforeFetch, afterFetch, onApply, beforeSend } = set); },
+    hooks: (set: { beforeFetch?: typeof beforeFetch; afterFetch?: typeof afterFetch; onApply?: typeof onApply; beforeSend?: typeof beforeSend; onPq?: typeof onPq }) => { ({ beforeFetch, afterFetch, onApply, beforeSend, onPq } = set); },
     // Delivers a turn end as given (T13, T15: a late event for an older turn); resolves when the plugin is idle.
     emit: (event: unknown) => { handlers.get("agent.turn_ended")!(event, { paseo: api }); return plugin!.idle(); },
     setConfig: (patch: Partial<Config>) => { config = ConfigSchema.parse({ ...config, ...patch }); },
@@ -1354,27 +1356,51 @@ it("M2: CPA's 503 twice moves a child PM but not a main PM; the main PM's second
   assert.equal(f.agents.get("main-config")!.model, OPUS);
 }));
 
-it("M3: a main PM's stored obligations from before the upgrade: an unapplied intent is dropped, a landed swap is not repaired and still returns to its original", () => scenario(async (f, logs) => {
+it("M3: a main PM's stored obligations from before the upgrade: an unapplied intent is dropped, an exact landing settles with its record, a partial one goes back to the exact original at once and keeps its resume, a settled one returns on proof", () => scenario(async (f, logs) => {
   const original: Profile = { model: OPUS, thinkingOptionId: "high", serviceTier: null };
   const fallback: Profile = { model: SOL, thinkingOptionId: "medium", serviceTier: "standard" };
+  // Each main PM's turn was refused while every Claude account is out: its resume record waits on Opus.
+  const ids = [["intent", "work"], ["partial", "personal"], ["exact", "config"], ["landed", "config"]] as const;
+  for (const [id, project] of ids) {
+    f.add(id, "pm", { labels: { role: "pm", project } });
+    await f.endTurn(id, { kind: "failed", error: { message: USAGE } }, `${id}-turn-1`);
+  }
   await f.stop();
-  f.add("intent", "pm", { labels: { role: "pm", project: "work" } });
   await f.returns.add(newObligation("intent", original, fallback, "auto", "switching"));
-  // Landed on Sol, but thinking and the Fast label were not written before the crash.
-  f.add("partial", "pm", { model: SOL, labels: { role: "pm", project: "personal" } });
+  // Landed on Sol before a crash, but thinking and the Fast label were not written.
+  Object.assign(f.agents.get("partial")!, { model: SOL });
   await f.returns.add(newObligation("partial", original, fallback, "auto", "switching"));
-  f.add("landed", "pm", { model: SOL, thinkingOptionId: "medium", labels: { role: "pm", project: "config", "opc.service-tier": "standard" } });
+  // Landed exactly, but the crash came before the swap was settled.
+  Object.assign(f.agents.get("exact")!, { model: SOL, thinkingOptionId: "medium", labels: { ...f.agents.get("exact")!.labels, "opc.service-tier": "standard" } });
+  await f.returns.add(newObligation("exact", original, fallback, "auto", "switching"));
+  // Settled on Sol before the upgrade.
+  Object.assign(f.agents.get("landed")!, { model: SOL, thinkingOptionId: "medium", labels: { ...f.agents.get("landed")!.labels, "opc.service-tier": "standard" } });
   await f.returns.add(newObligation("landed", original, fallback, "auto", "fallback"));
   await f.start();
+  await f.tick();
   assert.equal(await f.returns.get("intent"), null);
   assert.ok(logs.some((l) => l.includes("pm-swap-dropped agentId=intent") && l.includes("main-pm")));
-  assert.equal((await f.returns.get("partial"))?.phase, "fallback", "the return is kept");
   assert.ok(logs.some((l) => /pm-swap-not-completed agentId=partial \S+ reason=main-pm return=kept/.test(l)));
+  // Nothing is written toward Sol; the only write is the partial PM's exact original.
+  assert.deepEqual(f.calls.apply, [{ agentId: "partial", modelId: OPUS, thinkingOptionId: "high" }]);
+  assert.deepEqual(profileOf(f.agents.get("partial")!), original);
+  assert.equal(await f.returns.get("partial"), null);
+  assert.ok(logs.some((l) => /pm-restore-due agentId=partial \S+ reason=main-pm-partial/.test(l)));
+  // Its resume record is kept, back on Opus and held on the out pool: no send while Claude is out.
+  const partialRecord = (await f.records.read()).find((r) => r.agentId === "partial")!;
+  assert.equal(partialRecord.model, OPUS);
+  assert.ok(partialRecord.quotaHold && partialRecord.state === "parked");
+  assert.ok(!f.calls.sends.some((s) => s.startsWith("partial:")));
+  // The exact landing settles with no write; its record follows it to Sol and resumes there.
+  assert.equal((await f.returns.get("exact"))?.phase, "fallback");
+  assert.ok(logs.some((l) => l.includes("pm-swap-verified agentId=exact")));
+  assert.equal((await f.records.read()).find((r) => r.agentId === "exact" && r.state !== "superseded")?.model ?? SOL, SOL);
+  assert.ok(f.calls.sends.some((s) => s.startsWith(`exact:${SOL}:`)), "resumed on Sol, not lost");
+  // The settled return is not forced back and its sends are not blocked; it returns on Claude proof.
   assert.ok(await f.returns.get("landed"));
-  assert.deepEqual(f.calls.apply, [], "nothing written toward Sol");
   f.pq.claude = { five: "ok", week: "ok" };
   await f.tick();
-  for (const id of ["partial", "landed"]) {
+  for (const id of ["exact", "landed"]) {
     assert.deepEqual(profileOf(f.agents.get(id)!), original, `${id} back on its original`);
     assert.equal(await f.returns.get(id), null);
   }
@@ -1434,4 +1460,101 @@ it("M6: a child PM relabelled to a main project after its swap keeps its return 
   await f.tick();
   assert.deepEqual(profileOf(f.agents.get("moved-in")!), OPUS_HIGH);
   assert.equal(await f.returns.get("moved-in"), null);
+}));
+
+const FABLE_HIGH: Profile = { model: FABLE, thinkingOptionId: "high", serviceTier: null };
+const CHAIN = { stages: { first: OPUS_HIGH, last: SOL_MEDIUM } };
+
+it("M7: a main PM's chain never writes its first stage: no new or stored step back, partial onward or back moves return to the exact original, and a cancelled CPA move owes no pq-free resend", async () => {
+  // A new step back on Opus proof, then a stored step-back intent: the main PM stays on Sol; a Fable success returns it.
+  await scenario(async (f, logs) => {
+    f.setConfig({ pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+    f.add("main", "pm", { model: SOL, thinkingOptionId: "medium", labels: { role: "pm", project: "work", "opc.service-tier": "standard" } });
+    const ob = await f.returns.add({ ...newObligation("main", FABLE_HIGH, SOL_MEDIUM, "auto", "fallback", Date.now(), { ...CHAIN, stage: "last" }) });
+    f.add("opus-worker", "worker");
+    later(1);
+    await f.endTurn("opus-worker", { kind: "completed" }, "opus-ok", "Normal reply on Opus.");
+    await f.tick(); await f.tick();
+    assert.equal(f.calls.apply.length, 0, "no step back to Opus");
+    assert.ok(!logs.some((l) => l.includes("pm-stage-start agentId=main")), "no step back is even started");
+    await f.returns.update(ob!.obligationId, (o) => ({ ...o, phase: "switching", stage: "first", fallback: OPUS_HIGH, stepBackPending: true }));
+    await f.tick();
+    assert.equal(f.calls.apply.length, 0, "the stored step back is not written");
+    const kept = await f.returns.get("main");
+    assert.equal(kept?.phase, "fallback");
+    assert.equal(kept?.stage, "last");
+    assert.ok(logs.some((l) => l.includes("pm-stage-dropped agentId=main") && l.includes("main-pm")));
+    f.add("fable-worker", "worker", { model: FABLE });
+    await f.endTurn("fable-worker", { kind: "completed" }, "fable-ok", "Normal reply on Fable.");
+    await f.tick();
+    assert.deepEqual(f.calls.apply.map((c) => c.modelId), [FABLE]);
+    assert.deepEqual(profileOf(f.agents.get("main")!), FABLE_HIGH);
+  });
+  // Partial onward (Sol model, other thinking) and partial back (Opus model, other thinking): the exact original at once.
+  await scenario(async (f, logs) => {
+    f.setConfig({ pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+    f.add("onward", "pm", { model: SOL, thinkingOptionId: "high", labels: { role: "pm", project: "work" } });
+    await f.returns.add({ ...newObligation("onward", FABLE_HIGH, SOL_MEDIUM, "auto", "switching", Date.now(), { ...CHAIN, stage: "last" }) });
+    f.add("back", "pm", { model: OPUS, thinkingOptionId: "medium", labels: { role: "pm", project: "personal", "opc.service-tier": "standard" } });
+    await f.returns.add({ ...newObligation("back", FABLE_HIGH, OPUS_HIGH, "auto", "switching", Date.now(), { ...CHAIN, stage: "first" }), stepBackPending: true });
+    await f.tick();
+    assert.deepEqual(f.calls.apply.map((c) => [c.agentId, c.modelId]).sort(), [["back", FABLE], ["onward", FABLE]]);
+    for (const id of ["onward", "back"]) {
+      assert.deepEqual(profileOf(f.agents.get(id)!), FABLE_HIGH, id);
+      assert.equal(await f.returns.get(id), null);
+    }
+    assert.ok(!logs.some((l) => /pm-swap-apply/.test(l)));
+  });
+  // A CPA onward move stored before the upgrade, cancelled for a main PM: no pq-free resend on the stage it stays on.
+  await scenario(async (f, logs) => {
+    f.setConfig({ pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+    f.pq.codex = { five: "out", week: "out" };
+    f.add("main", "pm", { labels: { role: "pm", project: "config" } });
+    await f.endTurn("main", { kind: "failed", error: { message: USAGE } }, "main-turn-1");
+    assert.ok((await f.records.read()).find((r) => r.agentId === "main")?.quotaHold);
+    await f.returns.add({ ...newObligation("main", FABLE_HIGH, SOL_MEDIUM, "auto", "switching", Date.now(), { ...CHAIN, stage: "last" }, true), cpaResendMessageId: null });
+    await f.tick(); await f.tick();
+    const kept = await f.returns.get("main");
+    assert.equal(kept?.stage, "first");
+    assert.equal(kept?.phase, "fallback");
+    assert.equal(kept?.cpaResend, false);
+    assert.equal(kept?.cpaResendMessageId, null);
+    assert.deepEqual(f.calls.apply, []);
+    assert.deepEqual(f.calls.sends, [], "the held resume is not sent past the pq hold");
+    assert.ok(!logs.some((l) => l.includes("cpa-503-moved")));
+  });
+});
+
+it("M8: a PM relabelled to a main project while its swap decision awaits pq is not written; the intent is then dropped", () => scenario(async (f, logs) => {
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+  f.hooks({ onPq: async () => {
+    if (await f.returns.get("pm")) f.agents.get("pm")!.labels = { ...f.agents.get("pm")!.labels, project: "work" };
+  } });
+  await f.endTurn("pm", { kind: "failed", error: { message: USAGE } }, "pm-turn-1");
+  assert.deepEqual(f.calls.apply, []);
+  assert.ok(logs.some((l) => /pm-swap-deferred agentId=pm \S+ reason=main-pm/.test(l)));
+  f.hooks({});
+  await f.tick();
+  assert.equal(await f.returns.get("pm"), null);
+  assert.deepEqual(f.calls.apply, []);
+  assert.equal(f.agents.get("pm")!.model, OPUS);
+  assert.ok((await f.records.read()).find((r) => r.agentId === "pm")?.quotaHold, "its resume keeps the ordinary hold");
+}));
+
+it("M9: with Claude and Codex both out a main PM still alerts once; a late completion of an older turn does not reset it; a child PM is held as before", () => scenario(async (f, logs) => {
+  f.pq.codex = { five: "out", week: "out" };
+  f.add("main", "pm", { labels: { role: "pm", project: "personal" } });
+  f.add("child", "pm", { labels: { role: "pm", project: "fixture" } });
+  await f.endTurn("main", { kind: "failed", error: { message: USAGE } }, "main-turn-1");
+  await f.endTurn("child", { kind: "failed", error: { message: USAGE } }, "child-turn-1");
+  assert.equal(capAlerts(logs, "main").length, 1);
+  assert.equal(capAlerts(logs, "child").length, 0);
+  assert.ok(logs.some((l) => l.includes("pm-fallback-held agentId=child") && l.includes("fallback-pool-exhausted")));
+  // A late completed event of an older turn while the capped work still waits.
+  f.timelines.set("main", [{ type: "user_message", text: "older work", messageId: "older-user" }, { type: "assistant_message", text: "Older normal reply." }]);
+  await f.emit({ agent: { id: "main" }, turnId: "older-turn", outcome: { kind: "completed" }, timeline: [] });
+  assert.ok((await f.records.read()).some((r) => r.agentId === "main" && r.state === "parked"), "the capped work still waits");
+  await f.tick(); await f.tick(); await f.tick();
+  assert.equal(capAlerts(logs, "main").length, 1, "deduplicated for the whole episode");
+  assert.deepEqual(f.calls.apply, []);
 }));

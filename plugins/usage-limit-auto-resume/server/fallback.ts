@@ -113,8 +113,9 @@ export const MAIN_PM_PROJECTS: readonly string[] = ["config", "work", "personal"
 
 /**
  * A main PM: labelled exactly `role=pm` with a `project` label of a main PM project (`config`, `work`, `personal`).
- * Since 0.9.0 (owner decision 333a) no automatic move puts one on another profile: no pace swap, no Claude-out swap,
- * no CPA move and no onward stage step. It stays on its profile and resumes there. Read live at every decision.
+ * Since 0.9.0 (owner decision 333a) the plugin decides no automatic move for one: no pace swap, no Claude-out swap,
+ * no CPA move, no onward step and no step back. It stays on its profile and resumes there; the only profile written for
+ * it is its exact original. Read on the agent at each decision and again right before each settings write.
  */
 export function isMainPm(agent: Pick<AgentSnapshot, "labels">): boolean {
   const labels = agent.labels ?? {};
