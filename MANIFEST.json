@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "862f94624311cc6de963a1547f8e891129b868c9",
+  "source_commit": "c6db328be8a378af6260930c6cd1d90e4be41429",
   "skill_count": 25,
   "file_count": 147,
   "files": [
@@ -464,8 +464,8 @@
       "path": "skills/orchestration/personal-skills/scripts/auto-update/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 11059,
-      "sha256": "6b2aa11c294cff9479040cf4ba21a38d8800698f4578943905761cf7705fbb4d"
+      "bytes": 11373,
+      "sha256": "ee2866dbd0d2a30b3fdf1a7b521ecbd8979c3c3a6ea1ccd6460e19c07fc60a46"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/access-health.sh",
@@ -506,8 +506,8 @@
       "path": "skills/orchestration/personal-skills/scripts/auto-update/auto-update.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 45398,
-      "sha256": "9be6a8ba293f9686f910255733ae06d2c853a6a1e76486780bda91e38c3432e4"
+      "bytes": 46193,
+      "sha256": "5bb9798523bc184f176ac94f336ec383831f66c7f3451d86fe72973f7f28f1f2"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/com.loadout.auto-update.plist",
