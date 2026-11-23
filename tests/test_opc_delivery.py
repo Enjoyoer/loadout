@@ -480,8 +480,8 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertIn("a watcher route on Luna runs Fast on", off["record"].get("error", ""))
 
     def test_recorded_sol_fast_on_plan_route_rebuilds(self):
-        sol = {"role": "worker", "source": "task-default", "kind": "research", "model": "fleet/gpt-6.2-sol", "effort": "high",
-               "fastMode": True, "reason": "research default Sol high, Fast on"}
+        sol = {"role": "worker", "source": "task-default", "kind": "plan", "model": "fleet/gpt-6.2-sol", "effort": "high",
+               "fastMode": True, "reason": "plan default Sol high, Fast on"}
         self.write_routes(self.task, {"plan-lane": sol})
         built = self.launch(self.task, "plan-lane", "recorded['plan-lane'].route", self.watcher_catalog(), task_class="plan")
         self.assertEqual(built["request"].get("provider"), "pi/fleet/gpt-6.2-sol", built["request"])
@@ -526,17 +526,18 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(json.loads(done.stdout), ["task-default Worker route must match its Pi catalog label",
                                                    "pi/fleet/gpt-6.2-sol"])
 
-    def test_route_cli_research_resolves_to_fable_high(self):
+    def test_route_cli_research_resolves_to_terra_high(self):
         root = Path(self.task).parent.parent
         catalog = [{"id": "fleet/claude-fable-5-2", "label": "Fable", "thinkingOptions": [{"id": "high"}]},
-                   {"id": "fleet/gpt-6.2-sol", "label": "Sol", "thinkingOptions": [{"id": "high"}, {"id": "xhigh"}]}]
+                   {"id": "fleet/gpt-6.2-sol", "label": "Sol", "thinkingOptions": [{"id": "high"}, {"id": "xhigh"}]},
+                   {"id": "fleet/gpt-6.1-terra", "label": "Terra", "thinkingOptions": [{"id": "high"}]}]
         (root / "catalog.json").write_text(json.dumps(catalog))
         done = run("node", str(SCRIPTS / "route.mjs"), "--class", "research", "--catalog", str(root / "catalog.json"))
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(json.loads(done.stdout), {"route": {"role": "worker", "source": "task-default", "kind": "plan",
-                                                             "model": "fleet/claude-fable-5-2", "effort": "high",
-                                                             "fastMode": False, "reason": "plan default Fable high, Fast off"},
-                                                   "reason": "plan default Fable high, Fast off"})
+        self.assertEqual(json.loads(done.stdout), {"route": {"role": "worker", "source": "task-default", "kind": "research",
+                                                             "model": "fleet/gpt-6.1-terra", "effort": "high",
+                                                             "fastMode": False, "reason": "research default Terra high, Fast off"},
+                                                   "reason": "research default Terra high, Fast off"})
 
     def test_recorded_route_missing_from_catalog_is_refused(self):
         catalog = [{"id": "fleet/claude-opus-5-6", "label": "Opus", "thinkingOptions": [{"id": "medium"}, {"id": "xhigh"}]}]
