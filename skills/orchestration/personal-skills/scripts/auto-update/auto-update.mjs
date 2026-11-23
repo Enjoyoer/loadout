@@ -2,7 +2,9 @@
 // Loadout fleet auto-update runner. One fixed-rule decision core per host; no model decisions, no service.
 //
 //   node auto-update.mjs plan --host <name> [--now <ISO>]   would-apply lines, reads only, writes nothing
-//   node auto-update.mjs run  --host <name> [--now <ISO>]   scheduler entry: at most one apply, silent on success
+//   node auto-update.mjs run  --host <name> [--now <ISO>] [--wait]
+//                                                           scheduler entry: at most one apply, silent on success;
+//                                                           --wait stays until the transaction and watchdog end
 //   node auto-update.mjs validate                           check the registry for every host
 //   node auto-update.mjs export --host <self> --for <host>  relay copies of this host's feed and canary receipts
 //   node auto-update.mjs txn <dir> | watchdog <dir>         internal: the detached transaction and its rollback timer
@@ -41,6 +43,9 @@ const TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const END_RE = /^(([01]\d|2[0-3]):[0-5]\d|24:00)$/; // a window may run to the end of the day
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+const TXN_RE = /^\d{8}T\d{6}Z-[a-z0-9][a-z0-9.@+-]{0,63}-[0-9a-f]{6}$/;
+// A Windows scheduler task waits for the transaction (run --wait); its time limit must outlast the longest one.
+const WINDOWS_TXN_MAX_SECONDS = 4 * 3600;
 const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const OSES = ["macos", "linux", "windows"];
 const STEPS = ["check", "stage", "precheck", "apply", "health", "rollback"];
@@ -281,8 +286,20 @@ function validateRegistry(r) {
     for (const h of c.hosts) {
       if (c.mode === "apply" && !c.adapters[r.hosts[h].os]) throw new Refusal(`${where}: no ${r.hosts[h].os} adapter for ${h}`);
     }
+    if (c.adapters.windows && worstCaseSeconds(c, c.adapters.windows) > WINDOWS_TXN_MAX_SECONDS) {
+      throw new Refusal(`${where}: a windows transaction could outlast the scheduler task's ${WINDOWS_TXN_MAX_SECONDS / 3600} h limit`);
+    }
   }
   return r;
+}
+
+// Longest a transaction and its watchdog can run with these timeouts (the same defaults as startTransaction).
+function worstCaseSeconds(row, a) {
+  const t = { check: 30, stage: 900, precheck: 300, apply: 600, health: 300, rollback: 600, ...(row.timeouts || {}) };
+  const n = (s) => (a[s] || []).length;
+  const before = n("stage") * t.stage + n("precheck") * t.precheck;
+  const after = Math.max(t.apply + n("health") * t.health + t.check, row.watchdog_seconds || 0) + t.rollback + t.check;
+  return before + after + 60;
 }
 
 // ---------- switch, feed, receipts ----------
@@ -368,8 +385,9 @@ function readFeed(ctx) {
 
 // Strict check of one receipt document; returns null when it is valid, else why not.
 function receiptProblem(r, component, host, now, maxAgeHours) {
-  exactKeys(r, "receipt", ["schema", "component", "version", "host", "result", "finished_at"]);
+  exactKeys(r, "receipt", ["schema", "component", "version", "host", "result", "finished_at", "txn"]);
   if (r.schema !== RECEIPT_SCHEMA) throw new Refusal("receipt.schema");
+  str(r.txn, "receipt.txn", TXN_RE);
   const at = parseTs(r.finished_at, "receipt.finished_at");
   if (r.component !== component || r.host !== host) return "canary receipt is for another component or host";
   if (!["pass", "fail"].includes(r.result)) return "canary receipt result invalid";
@@ -842,6 +860,16 @@ function cmdRun(args) {
     return 0;
   } finally {
     if (!handedOver) releaseLock(ctx.state);
+    // A Windows scheduler task stays running for the whole transaction, so its end cannot take the transaction with it.
+    else if (args.wait) waitForHandover(ctx.state);
+  }
+}
+
+function waitForHandover(dir) {
+  for (;;) {
+    const owners = lockOwners(dir);
+    if (!owners || !(owners.pids || []).some(alive)) return;
+    sleepMs(2000);
   }
 }
 
@@ -916,7 +944,7 @@ function verifyInstalled(plan, want, log) {
 
 function writeReceipt(plan, result) {
   if (!plan.receipt) return;
-  writeAtomic(plan.receipt, JSON.stringify({ schema: RECEIPT_SCHEMA, component: plan.component, version: plan.version, host: plan.host, result, finished_at: iso(Date.now()) }, null, 2) + "\n");
+  writeAtomic(plan.receipt, JSON.stringify({ schema: RECEIPT_SCHEMA, component: plan.component, version: plan.version, host: plan.host, result, finished_at: iso(Date.now()), txn: plan.id }, null, 2) + "\n");
 }
 
 function cmdTxn(dir) {
@@ -1026,6 +1054,18 @@ function cmdWatchdog(dir) {
   }
 }
 
+// A receipt is relayed only when this host's own state shows the transaction that wrote it finished with that
+// result: a pass only after a confirmed apply, a fail only after a held failure. A version found installed (by hand,
+// or by discovery) never yields a receipt, and an interrupted attempt yields none either.
+const PASS_STATUS = ["applied"];
+const FAIL_STATUS = ["failed", "rolled-back", "rollback-failed", "rolled-back-by-watchdog"];
+function fromCanaryTxn(r, st) {
+  const a = st.attempts[attemptKey(r.host, r.component, r.version)];
+  if (!a || a.txn !== r.txn) return "receipt not from a completed canary transaction here";
+  if (!(r.result === "pass" ? PASS_STATUS : FAIL_STATUS).includes(a.status)) return `receipt result does not match the transaction (${a.status})`;
+  return null;
+}
+
 // On the publishing host: relay copies of the feed and of this host's canary receipts for one other host, one JSON
 // line each after a header. Only inputs that validate now are exported; nothing is written.
 function cmdExport(args) {
@@ -1039,6 +1079,7 @@ function cmdExport(args) {
   };
   const docs = [];
   const skipped = [];
+  const st = loadState(ctx.state);
   if (ctx.registry.feed.source_host === ctx.host) {
     try {
       const doc = readJson(expandHome(ctx.registry.feed.path), MAX_FEED);
@@ -1053,7 +1094,7 @@ function cmdExport(args) {
     try {
       const doc = readJson(expandHome(row.canary.receipt));
       if (doc.missing) { skipped.push({ name, why: "no receipt yet" }); continue; }
-      const bad = receiptProblem(doc.value, row.component, ctx.host, ctx.now, row.canary.max_age_hours);
+      const bad = receiptProblem(doc.value, row.component, ctx.host, ctx.now, row.canary.max_age_hours) || fromCanaryTxn(doc.value, st);
       if (bad) throw new Refusal(bad);
       docs.push({ name, max_age_hours: row.canary.max_age_hours, doc: wrap("receipt", doc.text) });
     } catch (e) { skipped.push({ name, why: e instanceof Refusal ? e.message : "unreadable" }); }
@@ -1080,6 +1121,7 @@ function parseArgs(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--host" || argv[i] === "--now" || argv[i] === "--for") { out[argv[i].slice(2)] = argv[++i]; }
+    else if (argv[i] === "--wait") out.wait = true;
     else if (argv[i].startsWith("--")) throw new Refusal(`unknown option ${argv[i]}`);
     else out._.push(argv[i]);
   }
@@ -1096,7 +1138,7 @@ function main() {
   if (cmd === "export") return cmdExport(args);
   if (cmd === "txn" && arg) return cmdTxn(arg);
   if (cmd === "watchdog" && arg) return cmdWatchdog(arg);
-  throw new Refusal("usage: auto-update.mjs plan|run --host <name> [--now <ISO>] | validate | export --host <self> --for <host>");
+  throw new Refusal("usage: auto-update.mjs plan|run --host <name> [--now <ISO>] [--wait] | validate | export --host <self> --for <host>");
 }
 
 try {

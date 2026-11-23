@@ -21,7 +21,7 @@ scheduler/                      inert launchd, systemd and Task Scheduler templa
 ## Commands
 
 - `node auto-update.mjs plan --host <name> [--now <ISO>]`: one JSON line per component for this host, `decision` `would-apply`, `current`, `observe` or `skip` with its `reason`; `next: true` marks the one a run would apply. It runs only the read-only `check` commands and precondition probes and writes nothing.
-- `node auto-update.mjs run --host <name>`: what the scheduler runs.
+- `node auto-update.mjs run --host <name> [--wait]`: what the scheduler runs. `--wait` (the Windows tasks) stays until the transaction and its watchdog have ended.
 - `node auto-update.mjs validate`: checks the registry for every host, on the source host before a push.
 - `node auto-update.mjs export --host <self> --for <host>`: on the publishing host, relay copies of the feed and of this host's canary receipts for one other host (see Relay). Reads only.
 
@@ -82,11 +82,15 @@ Data only: no URL, command, path or checksum in it is ever used. Download source
 
 ### Canary receipt
 
-`{"schema": "loadout.auto-update.canary/1", "component", "version", "host", "result": "pass"|"fail", "finished_at"}`, written by the canary host's transaction. Every other host reads only the relay copy of it.
+`{"schema": "loadout.auto-update.canary/1", "component", "version", "host", "result": "pass"|"fail", "finished_at", "txn"}`, written by the canary host's transaction (`txn` is its id). Every other host reads only the relay copy of it.
+
+- No receipt from discovery: a receipt exists only because a canary transaction ran. A version found installed on the canary host (by hand or otherwise) is `current` and writes none, and an interrupted transaction writes none, so the other hosts never get that version automatically.
+- The publishing host relays a receipt only when its own `state.json` holds the attempt for that exact host, component and version with the same `txn` and a matching end: `pass` after `applied`, `fail` after a held failure or rollback. A hand-written or mismatched file is not sent.
+- A target uses it only while it is fresh (`max_age_hours`, on the target's clock), for that component from the canary host, with `result` `pass` and `version` equal to the target's own candidate.
 
 ### Relay
 
-The publishing host (`feed.source_host`, also the canary host for canary rows) sends copies with `python3 ../auto_update_relay.py push [--dry-run] [--host <name>]`, after the feed is published and after a canary transaction. For each other registry host with `ssh`, `auto-update.mjs export` takes the feed and that host's canary receipts that validate now, and `fleet.run_node` ships them in the fleet's digest-checked stdin envelope. A copy is `{"schema": "loadout.auto-update.relay/1", kind, source_host, for_host, sent_at, sha256, data}`, `data` being the original file's exact bytes.
+The publishing host (`feed.source_host`, also the canary host for canary rows) sends copies from its scheduler tick: right after `run`, the launchd template runs `python3 ../auto_update_relay.py tick --self <host> --node <node>`. It runs whatever the gates, the kill switch or a running transaction say (it carries data only), and it is quiet on any other host. A target is sent only what changed since it last answered (a newly published feed, a newly finished canary), and everything again after 6 hours; `<state>/relay-sent.json` records the digests each target answered for. A target that did not answer is tried again next tick; that resends data, never an apply, since each host keeps its own failed attempts held. `push [--dry-run] [--host <name>]` sends at once, by hand. For each other registry host with `ssh`, `auto-update.mjs export` takes the feed and that host's canary receipts that validate now, and `fleet.run_node` ships them in the fleet's digest-checked stdin envelope. A copy is `{"schema": "loadout.auto-update.relay/1", kind, source_host, for_host, sent_at, sha256, data}`, `data` being the original file's exact bytes.
 
 - The receiver writes only `<state>/relay/available.json` and `<state>/relay/canary/<component>.json`; no path comes from the payload. Directories are 0700 and files 0600, owned by the user and not links, written through a temp file, fsynced and renamed.
 - It refuses a copy whose digest or shape is wrong, sent more than 10 minutes ago, whose document is stale or in the future, or which is older than the copy already there or differs from it at the same document time (replay). A refusal leaves the old copy.
@@ -99,7 +103,7 @@ For each row on this host, in tier order, the first failing gate is the reason: 
 
 ## Transaction
 
-`run` takes the host lock (a `lock/` directory naming every live PID: runner, transaction, watchdog), records the attempt as `started` in `state.json`, starts `auto-update.mjs txn <dir>` detached, hands it the lock and exits. The transaction then:
+`run` takes the host lock (a `lock/` directory naming every live PID: runner, transaction, watchdog), records the attempt as `started` in `state.json`, starts `auto-update.mjs txn <dir>` detached, hands it the lock and exits (with `--wait`, it first waits until every process named in the lock has ended). The transaction then:
 
 1. runs `stage` and `precheck` (nothing has changed yet; a failure holds the version);
 2. for a row with `watchdog_seconds`, starts the detached watchdog and waits until it has armed;
@@ -114,15 +118,15 @@ State lives in `${XDG_STATE_HOME:-~/.local/state}/loadout/auto-update/` (`%LOCAL
 
 ## Schedulers
 
-The templates in `scheduler/` are periodic ticks, inert until Config installs them with real values: every 10 minutes on idle-gated hosts (`com.loadout.auto-update.plist`, `loadout-auto-update.timer`, `loadout-auto-update.xml`), and every 10 minutes from Sunday 03:00 to 05:00 on a daily-use PC (`loadout-auto-update-pc.xml`). No watcher, daemon or sleep loop: each tick samples the gates, applies at most one change and exits. A tick inside a blackout or window that is closed only samples; launchd runs a missed tick after wake, so the runner enforces every window and blackout itself. The systemd timer has `Persistent=false` and `KillMode=process` so the detached transaction outlives the oneshot. The Task Scheduler task runs only while the user is logged on (InteractiveToken), so the idle probe can see the session; it never wakes the PC or catches up.
+The templates in `scheduler/` are periodic ticks, inert until Config installs them with real values: every 10 minutes on idle-gated hosts (`com.loadout.auto-update.plist`, `loadout-auto-update.timer`, `loadout-auto-update.xml`), and every 10 minutes from Sunday 03:00 to 05:00 on a daily-use PC (`loadout-auto-update-pc.xml`). No watcher, daemon or sleep loop: each tick samples the gates, applies at most one change and exits. A tick inside a blackout or window that is closed only samples; launchd runs a missed tick after wake, so the runner enforces every window and blackout itself. The systemd timer has `Persistent=false` and `KillMode=process` so the detached transaction outlives the oneshot. The Task Scheduler task runs only while the user is logged on (InteractiveToken), so the idle probe can see the session; it never wakes the PC or catches up. It runs `run --wait`, so the task instance lives as long as the transaction and its watchdog: the task's normal end never cuts a transaction short, and `IgnoreNew` skips ticks meanwhile. Its `ExecutionTimeLimit` (5 h) is above the longest Windows transaction `validate` allows (4 h, from the row's step timeouts and watchdog). If the task is still stopped mid-transaction (by hand, at the limit, at logoff), either the transaction survives and finishes under the host lock, or it dies with the task and the next tick marks the attempt `interrupted`: held, reported once, never retried.
 
 ## Gaps before any live apply
 
-- The relay is built but not wired: nothing yet runs `auto_update_relay.py push` after publishing or after a canary. Until it runs, every other host reports `feed missing` and applies nothing.
+- The relay tick runs from the publishing host's launchd template only once that template is loaded; until then every other host reports `feed missing` and applies nothing. ssh from a launchd job (keys, `BatchMode`) is checked at that first load.
 - Homebrew: no proven rollback (Homebrew has no supported downgrade), so formula rows stay `hold`; `brew-formula.sh scope` already proves an upgrade touches exactly one formula.
 - Tailscale and RustDesk: no apply adapter yet (vendor package per OS, kept installer for rollback). Health and serve-config preservation exist. The watchdog is a detached process and does not survive a reboot.
 - Containers: `container-digest.sh` is a contract only (pull by digest beside the running image, recreate, origin and external health, recreate from the kept image on failure).
-- Windows: check on each host that a process the task starts detached survives the task's end.
+- Windows: a controlled Task Scheduler dry run on each host must still show the task staying `Running` for a whole transaction, what stopping it does to the transaction (both outcomes are safe, see Schedulers), and that conhost headless shows no window.
 - Idle thresholds are provisional until a few days of gate samples exist: 5-minute load at most 1 per core (half the existing Mac load alarm of 2 per core), memory floors from the existing policies (the same alarm's 15% free on macOS, the Linux build lock's 3072 MB available, 15% on Windows), Windows CPU at most 50% over a 1 s sample. Model traffic on the proxy host is gated by the proxy's own reviewed idle gate (`exit-gate`) and by no client on the bridge listener (`listener-clients`); CPU time of either (`quiet`, launchd only) is diagnostic.
 - The Paseo gate is open only while the host runs exactly one Paseo daemon, its home's; a scratch daemon with another home keeps it closed for as long as it runs.
 - Claude Code: the adapters stage only the version the vendor's stable pointer names at that moment (`claude-code-releases/stable`); another version, or an unreadable pointer, is "not now". Downgrades are never applied, so a host already past stable waits.

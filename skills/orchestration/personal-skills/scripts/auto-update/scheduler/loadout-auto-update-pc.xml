@@ -4,7 +4,10 @@
      from Sunday 03:00 to 05:00 local time only, in the user's interactive session (InteractiveToken) so the idle and
      full-screen probe can see input; it never wakes the PC or catches up. conhost headless keeps a console window
      from appearing over a game (check on the PC before registering). The runner also enforces the PC's window, the
-     15-minute idle and full-screen gate before each apply, and the Sunday 05:00-07:00 blackout. -->
+     15-minute idle and full-screen gate before each apply, and the Sunday 05:00-07:00 blackout.
+     The task waits for the transaction it starts (the runner's wait flag), so the task's end never cuts a transaction short;
+     PT5H is above the 4 h worst case the registry validation allows for a Windows transaction. IgnoreNew skips the
+     ticks that fall while it runs. -->
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>Loadout fleet auto-update runner</Description></RegistrationInfo>
   <Triggers>
@@ -24,11 +27,11 @@
     <StartWhenAvailable>false</StartWhenAvailable>
     <WakeToRun>false</WakeToRun>
     <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
-    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
+    <ExecutionTimeLimit>PT5H</ExecutionTimeLimit>
     <Priority>7</Priority>
     <Enabled>false</Enabled>
   </Settings>
   <Actions Context="Author">
-    <Exec><Command>%SystemRoot%\System32\conhost.exe</Command><Arguments>--headless "@NODE@" "@RUNNER@" run --host @HOST@</Arguments></Exec>
+    <Exec><Command>%SystemRoot%\System32\conhost.exe</Command><Arguments>--headless "@NODE@" "@RUNNER@" run --host @HOST@ --wait</Arguments></Exec>
   </Actions>
 </Task>

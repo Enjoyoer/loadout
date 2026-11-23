@@ -264,7 +264,7 @@ class AutoUpdate(unittest.TestCase):
         self.registry["components"][0].update(hosts=["h1", "canary"],
                                               canary={"host": "canary", "receipt": str(self.receipt), "max_age_hours": 48})
         base = {"schema": "loadout.auto-update.canary/1", "component": "tool-a", "version": "1.3.0", "host": "canary",
-                "result": "pass", "finished_at": "2026-11-23T08:00:00Z"}
+                "result": "pass", "finished_at": "2026-11-23T08:00:00Z", "txn": "20261123T080000Z-tool-a-0a1b2c"}
         cases = {
             "missing": None,
             "other version": {**base, "version": "1.2.9"},
@@ -304,6 +304,7 @@ class AutoUpdate(unittest.TestCase):
         self.run_and_wait()
         r = json.loads(self.receipt.read_text())
         self.assertEqual((r["component"], r["version"], r["host"], r["result"]), ("tool-a", "1.3.0", "h1", "pass"))
+        self.assertEqual(r["txn"], self.attempts()["h1/tool-a@1.3.0"]["txn"])
 
     def test_feed_relay_copy_is_bound_intact_and_fresh(self):
         self.registry["hosts"]["src"] = {"os": OS, "tz": "America/New_York", "allow": ["tool-a"]}
@@ -350,6 +351,14 @@ class AutoUpdate(unittest.TestCase):
         done = self.cli("validate", now=None)
         self.assertEqual(done.returncode, 2)
         self.assertIn("Homebrew rows stay hold or observe", done.stderr)
+
+    def test_windows_transaction_must_fit_the_scheduler_task(self):
+        row = self.registry["components"][0]
+        row["adapters"]["windows"] = row["adapters"][OS]
+        row["timeouts"] = {"stage": 3600, "precheck": 3600, "apply": 3600, "health": 3600}
+        done = self.cli("validate", now=None)
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("could outlast the scheduler task", done.stderr)
 
     def test_bounds(self):
         cases = {
@@ -689,7 +698,10 @@ class AutoUpdate(unittest.TestCase):
         env = dict(self.env, LOADOUT_FLEET=str(fleet))
         done = subprocess.run([NODE, str(RUNNER), "validate"], env=env, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("desktop windows: claude-code(t1,hold) codex-cli(t1,hold)", done.stdout)
+        # The CLI hold: every host's Claude Code and Codex CLI rows stay hold.
+        for host in ("laptop macos", "devbox linux", "winbox windows", "desktop windows"):
+            line = next(l for l in done.stdout.splitlines() if l.startswith(host + ":"))
+            self.assertIn("claude-code(t1,hold) codex-cli(t1,hold)", line)
 
 
 if __name__ == "__main__":

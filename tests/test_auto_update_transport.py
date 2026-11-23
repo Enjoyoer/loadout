@@ -22,6 +22,8 @@ RELAY = SCRIPTS / "auto_update_relay.py"
 RECEIVER = SCRIPTS / "auto_update_relay_remote.js"
 RUNNER = SCRIPTS / "auto-update" / "auto-update.mjs"
 PROBE = SCRIPTS / "auto-update" / "adapters" / "host-idle.mjs"
+FAKE = Path(__file__).resolve().parent / "auto_update_fake.mjs"
+TXN = "20261123T200000Z-tool-a-a1b2c3"
 NODE = shutil.which("node")
 OS = {"darwin": "macos", "linux": "linux", "win32": "windows"}[sys.platform]
 WINDOWS = sys.platform == "win32"
@@ -36,8 +38,7 @@ def stamp(delta_minutes=0.0):
     return t.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-@unittest.skipUnless(NODE, "node is required")
-class Transport(unittest.TestCase):
+class TransportBase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="au-relay-"))
         self.fake = self.tmp / "fake"
@@ -53,6 +54,7 @@ class Transport(unittest.TestCase):
                         USERPROFILE=str(self.src_home))
         # On Windows the receiver's state root is %LOCALAPPDATA%, which the fake ssh passes through unchanged.
         self.env["LOCALAPPDATA"] = str(self.fake / "hosts" / "h1" / "AppData" / "Local")
+        self.src_state = (Path(self.env["LOCALAPPDATA"]) if WINDOWS else self.src_home / ".local" / "state") / "loadout" / "auto-update"
         self.registry = {
             "schema": "loadout.auto-update.registry/1",
             "feed": {"path": str(self.feed_path), "max_age_hours": 36, "source_host": "src"},
@@ -83,9 +85,16 @@ class Transport(unittest.TestCase):
                                     "publisher": "version-watch", "components": {
                                         "tool-a": {"version": version, "first_seen_at": generated_at, "security": False}}})
 
-    def receipt(self, finished_at, result="pass"):
+    def receipt(self, finished_at, result="pass", attempt="applied"):
+        """A receipt and the source host's own record of the canary transaction that wrote it."""
         self.write(self.receipt_path, {"schema": "loadout.auto-update.canary/1", "component": "tool-a", "version": "1.3.0",
-                                       "host": "src", "result": result, "finished_at": finished_at})
+                                       "host": "src", "result": result, "finished_at": finished_at, "txn": TXN})
+        self.src_state.mkdir(parents=True, exist_ok=True)
+        if not WINDOWS:
+            self.src_state.chmod(0o700)
+        attempts = {"src/tool-a@1.3.0": {"status": attempt, "txn": TXN}} if attempt else {}
+        self.write(self.src_state / "state.json", {"schema": "loadout.auto-update.state/1", "attempts": attempts,
+                                                   "applied": [], "alerts": {}})
 
     def state(self, host):
         if WINDOWS:
@@ -120,8 +129,9 @@ class Transport(unittest.TestCase):
         lines = [json.loads(line) for line in done.stdout.splitlines()]
         return lines[0], {line["component"]: line for line in lines[1:]}
 
-    # ----- cases -----
 
+@unittest.skipUnless(NODE, "node is required")
+class Transport(TransportBase):
     def test_push_writes_owner_only_copies_atomically_then_same(self):
         (self.fake / "hosts" / "h1").mkdir(parents=True)
         code, out = self.push("--host", "h1")
@@ -236,6 +246,149 @@ class Transport(unittest.TestCase):
         head, rows = self.plan_on("h2")
         self.assertIn("made for another host", head["feed"])
         self.assertIn("made for another host", head["feed"])
+
+
+@unittest.skipIf(WINDOWS, "the publishing host is POSIX; one state root per test on Windows")
+@unittest.skipUnless(NODE, "node is required")
+class RelayTick(TransportBase):
+    """The source host's scheduler tick: runner run, then relay tick, with real canary transactions (fake tool)."""
+
+    def setUp(self):
+        super().setUp()
+        self.receipt_path.unlink()
+        (self.src_state / "state.json").unlink()
+        self.fx = self.tmp / "fx"
+        for host in ("src", "h1", "notify"):
+            (self.fx / host).mkdir(parents=True)
+            self.behave(host, {})
+            (self.fx / host / "tool-a.installed").write_text("1.2.0")
+        fake = [NODE, str(FAKE), str(self.fx / "{host}"), "tool-a"]
+        row = self.registry["components"][0]
+        row.update(mode="apply", hosts=["src", "h1"], window={**row["window"], "days": ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]})
+        row["canary"]["max_age_hours"] = 1
+        row["adapters"] = {OS: {"check": {"argv": fake + ["version"], "regex": "^tool-a ([0-9.]+)$"},
+                                "stage": [fake + ["stage", "{version}"]], "precheck": [fake + ["precheck", "{version}"]],
+                                "apply": fake + ["apply", "{version}"], "health": [fake + ["health"]],
+                                "rollback": fake + ["rollback", "{installed}"]}}
+        self.registry["hosts"]["src"]["allow"] = self.registry["hosts"]["h1"]["allow"] = ["tool-a"]
+        del self.registry["hosts"]["h2"]
+        self.registry["notify"] = {"command": [NODE, str(FAKE), str(self.fx / "notify"), "paseo"], "labels": ["role=pm"]}
+        self.write(self.fleet / "auto-update" / "registry.json", self.registry)
+        self.write(self.fleet / "auto-update" / "switch.json", {"schema": "loadout.auto-update.switch/1", "apply": "allowed"})
+        self.ssh_log = self.tmp / "ssh.log"
+        self.env["FAKE_SSH_LOG"] = str(self.ssh_log)
+        (self.fake / "hosts" / "h1").mkdir(parents=True)
+
+    def behave(self, host, b):
+        (self.fx / host / "behavior.json").write_text(json.dumps({"components": {"tool-a": b}, "probe": {"ok": True}}))
+
+    def calls(self, host, step):
+        log = self.fx / host / "calls.log"
+        return [l for l in log.read_text().splitlines() if f"tool-a {step}" in l] if log.exists() else []
+
+    def ssh_calls(self):
+        return len(self.ssh_log.read_text().splitlines()) if self.ssh_log.exists() else 0
+
+    def run_src(self):
+        done = subprocess.run([NODE, str(RUNNER), "run", "--host", "src", "--wait"], env=self.env, capture_output=True,
+                              text=True, timeout=120)
+        self.assertEqual((done.returncode, done.stdout), (0, ""), done.stderr)
+
+    def tick(self, host="src"):
+        done = subprocess.run(with_fake_ssh(RELAY, self.ssh, "tick", "--self", host, "--node", NODE), env=self.env,
+                              capture_output=True, text=True, timeout=120)
+        return done.returncode, done.stdout + done.stderr
+
+    def src_attempt(self):
+        return json.loads((self.src_state / "state.json").read_text())["attempts"].get("src/tool-a@1.3.0")
+
+    def test_tick_relays_a_completed_canary_once_with_its_exact_version(self):
+        code, out = self.tick()
+        self.assertIn("h1: not sent canary/tool-a: no receipt yet", out)
+        self.assertIn("h1: updated; written feed", out)
+        self.assertEqual(self.ssh_calls(), 1)
+        _, rows = self.plan_on("h1")
+        self.assertEqual(rows["tool-a"]["reason"], "canary receipt missing")
+        self.assertEqual(self.tick(), (0, ""), "nothing changed: nothing sent")
+        self.assertEqual(self.ssh_calls(), 1)
+        self.run_src()  # --wait: the canary transaction has ended when run returns
+        self.assertEqual(self.src_attempt()["status"], "applied")
+        r = json.loads(self.receipt_path.read_text())
+        self.assertEqual((r["version"], r["result"], r["txn"]), ("1.3.0", "pass", self.src_attempt()["txn"]))
+        code, out = self.tick()
+        self.assertEqual(code, 0, out)
+        self.assertIn("h1: updated; written canary/tool-a; same feed", out)
+        head, rows = self.plan_on("h1")
+        self.assertEqual((rows["tool-a"]["decision"], rows["tool-a"]["candidate"]), ("would-apply", "1.3.0"))
+        # A newer feed: the receipt proves 1.3.0 only.
+        self.publish(stamp(-1), version="1.3.1")
+        code, out = self.tick()
+        self.assertIn("h1: updated; written feed; same canary/tool-a", out)
+        _, rows = self.plan_on("h1")
+        self.assertEqual(rows["tool-a"]["reason"], "canary proved 1.3.0, not 1.3.1")
+        # The receipt goes stale on the target by its own clock (max_age_hours 1 here).
+        self.publish(stamp(-1))
+        self.tick()
+        later = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        done = subprocess.run([NODE, str(RUNNER), "plan", "--host", "h1", "--now", later], env=self.host_env("h1"),
+                              capture_output=True, text=True, timeout=60)
+        self.assertIn("canary receipt too old", done.stdout)
+        # The CLI hold: a hold row applies nothing whatever the feed and the receipt say.
+        self.registry["components"][0]["mode"] = "hold"
+        self.write(self.fleet / "auto-update" / "registry.json", self.registry)
+        _, rows = self.plan_on("h1")
+        self.assertEqual(rows["tool-a"]["reason"], "mode hold")
+        done = subprocess.run([NODE, str(RUNNER), "run", "--host", "h1", "--wait"], env=self.host_env("h1"),
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.calls("h1", "stage"), [])
+
+    def test_receipts_come_only_from_a_completed_canary_transaction(self):
+        (self.fx / "src" / "tool-a.installed").write_text("1.3.0")  # found installed already (by hand, or discovery)
+        self.run_src()
+        self.assertFalse(self.receipt_path.exists(), "a version found installed yields no receipt")
+        _, out = self.tick()
+        self.assertIn("h1: not sent canary/tool-a: no receipt yet", out)
+        cases = {"receipt not from a completed canary transaction here": ("pass", None),
+                 "receipt result does not match the transaction (applied)": ("fail", "applied"),
+                 "receipt result does not match the transaction (interrupted)": ("pass", "interrupted")}
+        for why, (result, attempt) in cases.items():
+            with self.subTest(why):
+                self.receipt(stamp(-1), result=result, attempt=attempt)
+                code, out = self.push("--host", "h1")
+                self.assertIn(f"h1: not sent canary/tool-a: {why}", out)
+        self.assertFalse((self.state("h1") / "relay" / "canary").exists())
+
+    def test_relay_retry_resends_data_never_a_failed_apply(self):
+        self.behave("src", {"health_exit": 1})
+        self.run_src()
+        self.assertEqual(self.src_attempt()["status"], "rolled-back")
+        self.assertEqual(json.loads(self.receipt_path.read_text())["result"], "fail")
+        (self.fake / "down-h1").write_text("")
+        code, out = self.tick()
+        self.assertEqual(code, 1)
+        self.assertIn("h1: FAILED", out)
+        code, out = self.tick()
+        self.assertIn("h1: FAILED", out, "an unanswered send is tried again next tick")
+        (self.fake / "down-h1").unlink()
+        code, out = self.tick()
+        self.assertEqual(code, 0, out)
+        self.assertIn("written feed, canary/tool-a", out)
+        self.assertEqual(self.tick(), (0, ""))
+        for _ in range(2):
+            self.run_src()
+        self.assertEqual(self.src_attempt()["status"], "rolled-back", "the failed version stays held")
+        self.assertEqual(len(self.calls("src", "stage")), 1, "never staged again")
+        _, rows = self.plan_on("h1")
+        self.assertEqual(rows["tool-a"]["reason"], 'canary result "fail"')
+        done = subprocess.run([NODE, str(RUNNER), "run", "--host", "h1", "--wait"], env=self.host_env("h1"),
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.calls("h1", "stage"), [])
+
+    def test_tick_is_quiet_on_any_other_host(self):
+        self.assertEqual(self.tick("h1"), (0, ""))
+        self.assertEqual(self.ssh_calls(), 0)
 
 
 @unittest.skipUnless(NODE, "node is required")
