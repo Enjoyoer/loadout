@@ -1553,9 +1553,9 @@ const nativeCaps={enabled:true,status:'available',modes:[{id:'full-access',isUna
 const workspace={workspaceId:'wks-example',cwd:'/tmp/example-worktree'};
 const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:'lane',title:'Worker',initialPrompt:'Do it',workspace,capabilities:piCaps,...extra});
 const plain=value=>JSON.parse(JSON.stringify(value));
-// Owner-approved task routes: Fast off by default, on for the Luna classes (owner 2026-11-17) and for review, browser and browser-hard (decision 327).
+// Owner-approved task routes: Fast off by default, on for the Luna classes (owner 2026-11-17), for review, browser and browser-hard (decision 327) and for review-security (decision 332).
 assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','review','review-security','sites','smoke','ui-check','ui-design','watcher']);
-for(const [kind,label,effort,fastMode] of [['code','Opus','high',false],['plan','Fable','high',false],['research','Fable','high',false],['review','Sol','high',true],['review-security','Opus','high',false],['smoke','Luna','low',true],['sites','Luna','xhigh',true],['browser','Sol','low',true],['browser-hard','Sol','high',true],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Sol','low',false]]){
+for(const [kind,label,effort,fastMode] of [['code','Opus','high',false],['plan','Fable','high',false],['research','Fable','high',false],['review','Sol','high',true],['review-security','Sol','xhigh',true],['smoke','Luna','low',true],['sites','Luna','xhigh',true],['browser','Sol','low',true],['browser-hard','Sol','high',true],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Sol','low',false]]){
  const route=r.selectWorkerRoute({taskKind:kind,catalog});
  assert.equal(route.model,['browser','browser-hard','sites'].includes(kind)?r.resolveCatalogLabel(catalog,label).id.slice(6):r.resolveCatalogLabel(catalog,label).id);assert.equal(route.effort,effort);assert.equal(route.fastMode,fastMode);
 }
