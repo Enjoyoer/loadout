@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "fd6a57b94ac096f764d850e33c6fd4ac809ffc16",
+  "source_commit": "6b78a4368d493b1d416586491b27345ee5c78a94",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -1597,8 +1597,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/README.md",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 54319,
-      "sha256": "e11ac1d7137eafaaeab8925409498af655217fd5814deff24f86843fa8c87dbb"
+      "bytes": 56461,
+      "sha256": "70687af77a9488a54d21406525093f465f9da2bb88424f3153c7005443486651"
     },
     {
       "path": "plugins/usage-limit-auto-resume/index.server.ts",
@@ -1645,14 +1645,14 @@
     {
       "path": "plugins/usage-limit-auto-resume/server/fallback-runner.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 61680,
-      "sha256": "ef074aa88bcbe6b836daa6d17587b59af49442c4ce16a0043c9fc04c5b76bf40"
+      "bytes": 66042,
+      "sha256": "818ea21321e67e09c9acd6b612a9f03928267d2eee42c6634435024c237e85d7"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/fallback.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 31503,
-      "sha256": "7a063f6cd6b97e51bf5aa64d99f42a6402b35f209c7d89890e40ffc5c8174942"
+      "bytes": 31618,
+      "sha256": "d5509303bc01a4f9b029bea406637e8c46d6c1b6fdd57afccffcbbf547d736b4"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/model.ts",
@@ -1735,8 +1735,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/test/pm-fallback.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 91222,
-      "sha256": "9d83636a5516f7ca869b06ae931f399b931f655091f681be7f559eb7c63cd70b"
+      "bytes": 100156,
+      "sha256": "a448e2c1c752929b50eb5ab78af555d9b699aea14f2eb86674bfdc47cb2c9811"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/rpc-timeout.test.ts",
