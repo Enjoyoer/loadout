@@ -50,6 +50,12 @@ busy() {
 }
 
 stage_claude() {
+  # Vendor stable channel only: the candidate must be what the vendor's stable pointer names right now. If the
+  # pointer cannot be read or names another version, nothing changes and the attempt is dropped (not now).
+  local stable
+  stable=$(curl -fsS --retry 2 --max-time 30 "https://downloads.claude.ai/claude-code-releases/stable") || { echo "vendor stable pointer unreadable; not now" >&2; exit 75; }
+  stable=${stable//[$'\r\n\t ']/}
+  [[ $stable == "$version" ]] || { echo "candidate is not the vendor stable release; not now" >&2; exit 75; }
   local dest; dest=$(target_for "$version")
   if [[ -x $dest ]]; then "$dest" --version | grep -qxF "$(expect_version "$version")"; return; fi
   local base="https://downloads.claude.ai/claude-code-releases/$version"

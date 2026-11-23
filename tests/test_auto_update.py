@@ -143,6 +143,22 @@ class AutoUpdate(unittest.TestCase):
         p = self.fx / "sent.log"
         return p.read_text().splitlines() if p.exists() else []
 
+    def relay_copy(self, name, doc, source, for_host=None, sent_at=NOW, tamper=None):
+        """Write a relay copy for this test's host state, as auto_update_relay_remote.js would."""
+        import base64, hashlib
+        data = (json.dumps(doc) if not isinstance(doc, str) else doc).encode()
+        w = {"schema": "loadout.auto-update.relay/1", "kind": "feed" if name == "feed" else "receipt",
+             "source_host": source, "for_host": for_host or "h1", "sent_at": sent_at,
+             "sha256": hashlib.sha256(data).hexdigest(), "data": base64.b64encode(data).decode()}
+        if tamper:
+            tamper(w)
+        d = self.state / "relay" / ("" if name == "feed" else "canary")
+        d.mkdir(parents=True, exist_ok=True)
+        for x in (self.state, self.state / "relay", d):
+            if not WINDOWS:
+                x.chmod(0o700)
+        self.write(d / ("available.json" if name == "feed" else name.split("/", 1)[1] + ".json"), w)
+
     def gate(self, name, **extra):
         return {"name": name, "max_age_seconds": 120, "argv": [NODE, str(FAKE), str(self.fx), "probe", name], **extra}
 
@@ -257,15 +273,29 @@ class AutoUpdate(unittest.TestCase):
             "too old": {**base, "finished_at": "2026-11-20T00:00:00Z"},
             "extra key": {**base, "note": "trust me"},
         }
+        relayed = self.state / "relay" / "canary" / "tool-a.json"
         for name, receipt in cases.items():
             with self.subTest(name):
-                self.receipt.unlink(missing_ok=True)
+                relayed.unlink(missing_ok=True)
                 if receipt:
-                    self.write(self.receipt, receipt)
+                    self.relay_copy("canary/tool-a", receipt, "canary")
                 _, rows = self.plan()
                 self.assertEqual(rows["tool-a"]["decision"], "skip")
                 self.assertIn("canary", rows["tool-a"]["reason"])
+        # A receipt file at the canary's own path on this host is never read: only the relay copy counts.
         self.write(self.receipt, base)
+        relayed.unlink(missing_ok=True)
+        _, rows = self.plan()
+        self.assertIn("canary receipt missing", rows["tool-a"]["reason"])
+        binding = {"made for another host": lambda w: w.update(for_host="pc"),
+                   "another host than the expected source": lambda w: w.update(source_host="h1"),
+                   "digest mismatch": lambda w: w.update(sha256="0" * 64)}
+        for why, tamper in binding.items():
+            with self.subTest(why):
+                self.relay_copy("canary/tool-a", base, "canary", tamper=tamper)
+                _, rows = self.plan()
+                self.assertIn(why, rows["tool-a"]["reason"])
+        self.relay_copy("canary/tool-a", base, "canary")
         _, rows = self.plan()
         self.assertEqual(rows["tool-a"]["decision"], "would-apply")
 
@@ -274,6 +304,52 @@ class AutoUpdate(unittest.TestCase):
         self.run_and_wait()
         r = json.loads(self.receipt.read_text())
         self.assertEqual((r["component"], r["version"], r["host"], r["result"]), ("tool-a", "1.3.0", "h1", "pass"))
+
+    def test_feed_relay_copy_is_bound_intact_and_fresh(self):
+        self.registry["hosts"]["src"] = {"os": OS, "tz": "America/New_York", "allow": ["tool-a"]}
+        self.registry["feed"]["source_host"] = "src"
+        head, _ = self.plan()
+        self.assertEqual(head["feed"], "feed missing", "a non-source host never reads the feed file itself")
+        cases = {"made for another host": dict(for_host="pc"),
+                 "another host than the expected source": dict(tamper=lambda w: w.update(source_host="pc")),
+                 "digest mismatch": dict(tamper=lambda w: w.update(data=w["data"][:-4] + "AAA=")),
+                 "wrong schema or kind": dict(tamper=lambda w: w.update(kind="receipt")),
+                 "unknown key": dict(tamper=lambda w: w.update(path="/tmp/x"))}
+        for why, kw in cases.items():
+            with self.subTest(why):
+                self.relay_copy("feed", self.feed, "src", **kw)
+                head, rows = self.plan()
+                self.assertIn(why, head["feed"])
+                self.assertIn(why, rows["tool-a"]["reason"])
+        self.relay_copy("feed", {**self.feed, "generated_at": "2026-11-22T00:00:00Z"}, "src")
+        head, _ = self.plan()
+        self.assertIn("feed stale", head["feed"])
+        self.relay_copy("feed", self.feed, "src")
+        head, rows = self.plan()
+        self.assertEqual(head["feed"], "ok")
+        self.assertEqual(rows["tool-a"]["decision"], "would-apply")
+        head, _ = self.plan(host="src")  # the source host still reads its own file
+        self.assertEqual(head["feed"], "ok")
+
+    def test_diagnostic_signals_never_open_or_block(self):
+        self.registry["hosts"]["h1"]["preconditions"] = [self.gate("paseo-idle"), self.gate("cpu", diagnostic=True)]
+        self.probes(NOW, **{"paseo-idle": True, "cpu": False})
+        head, rows = self.plan()
+        self.assertEqual((head["gates"], rows["tool-a"]["decision"]), ("open", "would-apply"), "diagnostic never blocks")
+        self.probes(NOW, **{"paseo-idle": {"diagnostic": True}, "cpu": True})
+        head, rows = self.plan()
+        self.assertIn("paseo-idle: diagnostic-only signal cannot open a gate", rows["tool-a"]["reason"])
+        self.switch("stopped")
+        self.run_and_wait()
+        day = self.gate_days()["2026-11-24"]
+        self.assertEqual(day["ticks"][-1][3]["cpu"], {"open": 1})
+
+    def test_homebrew_rows_cannot_be_set_to_apply(self):
+        self.registry["hosts"]["h1"]["allow"].append("brew.fd")
+        self.registry["components"].append(self.row("brew.fd", 1))
+        done = self.cli("validate", now=None)
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("Homebrew rows stay hold or observe", done.stderr)
 
     def test_bounds(self):
         cases = {

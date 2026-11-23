@@ -9,7 +9,10 @@ auto-update.mjs                 decision core, transaction and rollback watchdog
 adapters/cli-posix.sh           Claude Code and Codex CLI, macOS and Linux (stage beside, symlink swap, re-point)
 adapters/cli-windows.ps1        Claude Code and Codex CLI, Windows (file replace with kept binary, npm reinstall)
 adapters/interactive-idle.ps1   precondition probe: interactive user idle and nothing full-screen
-adapters/host-idle.mjs          precondition probes: no active Paseo turn, below-normal load, model traffic quiet
+adapters/host-idle.mjs          precondition probes: no active Paseo turn, below-normal load, an existing idle gate,
+                                no client on a local listener, CPU time (diagnostic only)
+../auto_update_relay.py         sends the feed and canary receipts from the publishing host (fleet ssh envelope)
+../auto_update_relay_remote.js  receives them into this host's fixed relay files
 adapters/brew-formula.sh        Homebrew formula version and scoped-upgrade proof (read-only)
 adapters/access-health.sh       Tailscale and RustDesk versions, serve-config snapshot and health (read-only)
 scheduler/                      inert launchd, systemd and Task Scheduler templates
@@ -20,6 +23,7 @@ scheduler/                      inert launchd, systemd and Task Scheduler templa
 - `node auto-update.mjs plan --host <name> [--now <ISO>]`: one JSON line per component for this host, `decision` `would-apply`, `current`, `observe` or `skip` with its `reason`; `next: true` marks the one a run would apply. It runs only the read-only `check` commands and precondition probes and writes nothing.
 - `node auto-update.mjs run --host <name>`: what the scheduler runs.
 - `node auto-update.mjs validate`: checks the registry for every host, on the source host before a push.
+- `node auto-update.mjs export --host <self> --for <host>`: on the publishing host, relay copies of the feed and of this host's canary receipts for one other host (see Relay). Reads only.
 
 `--host` is the host's name in the registry; the scheduler template carries it. A host missing from the registry, or whose `os` differs from the machine, stops with exit 2 and changes nothing.
 
@@ -31,14 +35,15 @@ All inputs are JSON files that must be regular files (no links), owned by the ru
 
 Config owns it, in the private fleet directory (see `fleet/README.md`); the fleet push copies it to every host. `../../fleet/example/auto-update/registry.json` shows every field with made-up hosts.
 
-- `feed`: `path` of the available-versions file on this host, `max_age_hours`.
+- `feed`: `path` of the available-versions file, `max_age_hours`, and `source_host`, the host that publishes it. Only that host reads `path`; every other host reads its relay copy. Without `source_host` every host reads `path`.
 - `notify`: `command` (argv prefix of the Paseo CLI), `labels` that resolve the owning PM at send time (`role=pm`, `project=config`), optional `host` (`ssh://<alias>`). A host's `notify_host` overrides it. Exactly one matching agent or nothing is sent.
 - `blackouts[]`: windows `{tz, days, start, end}` in which nothing applies, whatever a row says.
-- `hosts.<name>`: `os`, `tz` (for the per-day exclusivity date), `allow` (component ids this host may run at all), optional `deny_tiers`, `preconditions[]` and `notify_host`. A row naming a host that does not allow it, or a denied tier, fails validation.
+- `hosts.<name>`: `os`, `tz` (for the per-day exclusivity date), `allow` (component ids this host may run at all), optional `deny_tiers`, `preconditions[]`, `notify_host` and `ssh` (the alias the relay sends to). A row naming a host that does not allow it, or a denied tier, fails validation.
   - `preconditions[]`: `{name, argv, max_age_seconds, timeout_seconds?, quiet?}`, the host's idle gates. The probe prints one JSON line `{"ok": bool, "observed_at": "<UTC>", "detail"?}`. A failing, unparseable, stale or `ok: false` reading is busy or unknown: the run skips without an attempt, and every later tick decides again (no daily cap). Every gate is evaluated at each tick and again right before apply.
+  - `diagnostic: true`: the gate is evaluated and its numbers kept in the samples, but it never blocks or opens anything. A probe that marks its own reading `"diagnostic": true` (CPU time) closes any gate not marked diagnostic, so it can never stand in for a real idle signal.
   - `quiet` `{min_seconds, max_gap_seconds, max_per_minute: {counter: limit}}`: the probe also prints `counters` (cumulative, never decreasing) and `identity` (which processes they belong to). The gate is open only when the previous tick's reading of the same processes is between `min_seconds` and `max_gap_seconds` old and every counter grew at most `limit` per minute since; the first reading, a restarted process, a counter that went back or a gap after sleep keeps it closed. One reading never proves quiet. Right before apply the counters are compared with the run's own reading, judged over at least `min_seconds`.
 - `components[]`, one row each:
-  - `component`, `tier` (1 or 2; nothing higher can be automatic), `mode` (`apply`, `hold`, `observe`), `hosts`.
+  - `component`, `tier` (1 or 2; nothing higher can be automatic), `mode` (`apply`, `hold`, `observe`), `hosts`. A `brew.*` row cannot be `apply`: no Homebrew rollout and rollback is proven.
   - `version_pattern`: anchored pattern the candidate must match. `bounds.max_bump` (`patch`, `minor`, `major`) and `bounds.deny[]` (anchored patterns, for example `^27\\..*$`). Downgrades are never applied.
   - `window` `{tz, days, start, end}`, DST-aware through the time zone (`end` may be `24:00`), and `host_windows.<host>` to override it per host. Idle-gated hosts use an all-day window and rely on their preconditions; a daily-use PC keeps a fixed window.
   - `soak_hours` from the feed's `first_seen_at`, and `security_soak_hours` for a release the feed marks `security`.
@@ -77,7 +82,16 @@ Data only: no URL, command, path or checksum in it is ever used. Download source
 
 ### Canary receipt
 
-`{"schema": "loadout.auto-update.canary/1", "component", "version", "host", "result": "pass"|"fail", "finished_at"}`, written by the canary host's transaction.
+`{"schema": "loadout.auto-update.canary/1", "component", "version", "host", "result": "pass"|"fail", "finished_at"}`, written by the canary host's transaction. Every other host reads only the relay copy of it.
+
+### Relay
+
+The publishing host (`feed.source_host`, also the canary host for canary rows) sends copies with `python3 ../auto_update_relay.py push [--dry-run] [--host <name>]`, after the feed is published and after a canary transaction. For each other registry host with `ssh`, `auto-update.mjs export` takes the feed and that host's canary receipts that validate now, and `fleet.run_node` ships them in the fleet's digest-checked stdin envelope. A copy is `{"schema": "loadout.auto-update.relay/1", kind, source_host, for_host, sent_at, sha256, data}`, `data` being the original file's exact bytes.
+
+- The receiver writes only `<state>/relay/available.json` and `<state>/relay/canary/<component>.json`; no path comes from the payload. Directories are 0700 and files 0600, owned by the user and not links, written through a temp file, fsynced and renamed.
+- It refuses a copy whose digest or shape is wrong, sent more than 10 minutes ago, whose document is stale or in the future, or which is older than the copy already there or differs from it at the same document time (replay). A refusal leaves the old copy.
+- The runner reads a copy only when `for_host` is its own registry name and `source_host` is the expected source (`feed.source_host`, or the row's canary host), checks the digest, then validates the original as usual. A missing, misaddressed or stale copy means `feed missing` or no receipt: nothing applies.
+- `--dry-run` checks everything on the target and writes nothing.
 
 ## Decisions
 
@@ -104,11 +118,13 @@ The templates in `scheduler/` are periodic ticks, inert until Config installs th
 
 ## Gaps before any live apply
 
-- Feed and canary receipts reach only the host that writes them. Every other host needs a transport for both (the fleet push, or a read-only pull from the publishing host); until then it reports `feed missing` and applies nothing.
+- The relay is built but not wired: nothing yet runs `auto_update_relay.py push` after publishing or after a canary. Until it runs, every other host reports `feed missing` and applies nothing.
 - Homebrew: no proven rollback (Homebrew has no supported downgrade), so formula rows stay `hold`; `brew-formula.sh scope` already proves an upgrade touches exactly one formula.
 - Tailscale and RustDesk: no apply adapter yet (vendor package per OS, kept installer for rollback). Health and serve-config preservation exist. The watchdog is a detached process and does not survive a reboot.
 - Containers: `container-digest.sh` is a contract only (pull by digest beside the running image, recreate, origin and external health, recreate from the kept image on failure).
 - Windows: check on each host that a process the task starts detached survives the task's end.
-- Idle thresholds are provisional until a few days of gate samples exist: 5-minute load at most 1 per core (half the existing Mac load alarm of 2 per core), memory floors from the existing policies (the same alarm's 15% free on macOS, the Linux build lock's 3072 MB available, 15% on Windows), Windows CPU at most 50% over a 1 s sample, and model traffic at most 30 centiseconds of proxy or bridge CPU per minute over at least 5 minutes. The `quiet` probe reads launchd jobs, so it exists for macOS only.
+- Idle thresholds are provisional until a few days of gate samples exist: 5-minute load at most 1 per core (half the existing Mac load alarm of 2 per core), memory floors from the existing policies (the same alarm's 15% free on macOS, the Linux build lock's 3072 MB available, 15% on Windows), Windows CPU at most 50% over a 1 s sample. Model traffic on the proxy host is gated by the proxy's own reviewed idle gate (`exit-gate`) and by no client on the bridge listener (`listener-clients`); CPU time of either (`quiet`, launchd only) is diagnostic.
+- The Paseo gate is open only while the host runs exactly one Paseo daemon, its home's; a scratch daemon with another home keeps it closed for as long as it runs.
+- Claude Code: the adapters stage only the version the vendor's stable pointer names at that moment (`claude-code-releases/stable`); another version, or an unreadable pointer, is "not now". Downgrades are never applied, so a host already past stable waits.
 - The recheck right before apply is only as fresh as its probes: a turn that starts between it and the swap is not seen. The CLI adapters refuse with "not now" while the CLI is running, and the swap is atomic, so a running process keeps the old binary.
 - The daily-use PC template starts Node through `conhost.exe --headless` so no console window appears over a game; check that on the PC before registering it.

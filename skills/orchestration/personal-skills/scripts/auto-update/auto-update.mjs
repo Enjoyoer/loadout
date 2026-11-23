@@ -4,6 +4,7 @@
 //   node auto-update.mjs plan --host <name> [--now <ISO>]   would-apply lines, reads only, writes nothing
 //   node auto-update.mjs run  --host <name> [--now <ISO>]   scheduler entry: at most one apply, silent on success
 //   node auto-update.mjs validate                           check the registry for every host
+//   node auto-update.mjs export --host <self> --for <host>  relay copies of this host's feed and canary receipts
 //   node auto-update.mjs txn <dir> | watchdog <dir>         internal: the detached transaction and its rollback timer
 //
 // Inputs: <fleet>/auto-update/registry.json and switch.json (Config-owned, private fleet), the available-versions
@@ -28,6 +29,7 @@ const FEED_SCHEMA = "loadout.auto-update.available/1";
 const RECEIPT_SCHEMA = "loadout.auto-update.canary/1";
 const STATE_SCHEMA = "loadout.auto-update.state/1";
 const GATES_SCHEMA = "loadout.auto-update.gates/1";
+const RELAY_SCHEMA = "loadout.auto-update.relay/1";
 const GATE_DAYS_KEPT = 31;
 
 const ID_RE = /^[a-z0-9][a-z0-9.@+-]{0,63}$/;
@@ -108,7 +110,7 @@ function readJson(file, max = MAX_INPUT) {
     const again = fs.fstatSync(fd);
     if (again.ino !== st.ino || again.dev !== st.dev || again.size > max) throw new Refusal(`${file}: changed while reading`);
     const text = fs.readFileSync(fd, "utf8");
-    try { return { value: JSON.parse(text) }; } catch { throw new Refusal(`${file}: not valid JSON`); }
+    try { return { value: JSON.parse(text), text }; } catch { throw new Refusal(`${file}: not valid JSON`); }
   } finally { fs.closeSync(fd); }
 }
 
@@ -171,7 +173,7 @@ function validateArgv(a, where, allowed = PLACEHOLDERS) {
 function validateRegistry(r) {
   exactKeys(r, "registry", ["schema", "feed", "notify", "hosts", "components"], ["blackouts", "notes"]);
   if (r.schema !== REGISTRY_SCHEMA) throw new Refusal(`registry.schema: expected ${REGISTRY_SCHEMA}`);
-  exactKeys(r.feed, "registry.feed", ["path", "max_age_hours"]);
+  exactKeys(r.feed, "registry.feed", ["path", "max_age_hours"], ["source_host"]);
   str(r.feed.path, "registry.feed.path");
   num(r.feed.max_age_hours, "registry.feed.max_age_hours", 1, 168);
   exactKeys(r.notify, "registry.notify", ["command", "labels"], ["host"]);
@@ -182,17 +184,20 @@ function validateRegistry(r) {
   if (r.notify.host !== undefined) str(r.notify.host, "registry.notify.host", /^ssh:\/\/[A-Za-z0-9._-]+$/);
   for (const [i, b] of (r.blackouts || []).entries()) validateWindow(b, `registry.blackouts[${i}]`);
   if (!isObj(r.hosts) || !Object.keys(r.hosts).length) throw new Refusal("registry.hosts: at least one host");
+  if (r.feed.source_host !== undefined && !r.hosts[r.feed.source_host]) throw new Refusal("registry.feed.source_host: not in registry.hosts");
   for (const [name, h] of Object.entries(r.hosts)) {
     const where = `registry.hosts.${name}`;
     if (!HOST_RE.test(name)) throw new Refusal(`${where}: invalid host name`);
-    exactKeys(h, where, ["os", "tz", "allow"], ["preconditions", "deny_tiers", "notify_host"]);
+    exactKeys(h, where, ["os", "tz", "allow"], ["preconditions", "deny_tiers", "notify_host", "ssh"]);
+    if (h.ssh !== undefined) str(h.ssh, `${where}.ssh`, /^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$/);
     if (h.notify_host !== undefined) str(h.notify_host, `${where}.notify_host`, /^ssh:\/\/[A-Za-z0-9._-]+$/);
     if (!OSES.includes(h.os)) throw new Refusal(`${where}.os: macos, linux or windows`);
     validateWindow({ tz: h.tz, days: ["sun"], start: "00:00", end: "00:01" }, `${where}.tz`);
     if (!Array.isArray(h.allow) || h.allow.some((c) => !ID_RE.test(c))) throw new Refusal(`${where}.allow: component ids`);
     for (const [i, p] of (h.preconditions || []).entries()) {
       const pw = `${where}.preconditions[${i}]`;
-      exactKeys(p, pw, ["name", "argv", "max_age_seconds"], ["timeout_seconds", "quiet"]);
+      exactKeys(p, pw, ["name", "argv", "max_age_seconds"], ["timeout_seconds", "quiet", "diagnostic"]);
+      if (p.diagnostic !== undefined && typeof p.diagnostic !== "boolean") throw new Refusal(`${pw}.diagnostic: true or false`);
       str(p.name, `${pw}.name`, ID_RE);
       validateArgv(p.argv, `${pw}.argv`, new Set(["adapters", "node"]));
       num(p.max_age_seconds, `${pw}.max_age_seconds`, 1, 3600);
@@ -221,6 +226,8 @@ function validateRegistry(r) {
     seen.add(c.component);
     if (![1, 2].includes(c.tier)) throw new Refusal(`${where}.tier: only tiers 1 and 2 may be automatic`);
     if (!["apply", "hold", "observe"].includes(c.mode)) throw new Refusal(`${where}.mode: apply, hold or observe`);
+    // No Homebrew rollout or rollback is proven yet, so formula rows can only be held or observed.
+    if (c.component.startsWith("brew.") && c.mode === "apply") throw new Refusal(`${where}.mode: Homebrew rows stay hold or observe until a rollback is proven`);
     if (!Array.isArray(c.hosts) || !c.hosts.length) throw new Refusal(`${where}.hosts: at least one host`);
     for (const h of c.hosts) {
       const host = r.hosts[h];
@@ -320,10 +327,38 @@ function validateFeed(f, now, maxAgeHours) {
   return out;
 }
 
-function readFeed(registry, now) {
-  const file = expandHome(registry.feed.path);
+// ---------- relay copies (feed and canary receipts from the publishing host) ----------
+
+const relayFile = (state, name) => path.join(state, "relay", ...(name === "feed" ? ["available.json"] : ["canary", `${name.slice(7)}.json`]));
+const sha256hex = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
+
+// A relay copy carries the original file's exact bytes, which host made it and which host it is for. It is read only
+// when it is for this host, from the expected source, and intact; then the original is validated as usual.
+function readRelay(state, name, kind, source, host, max) {
+  const doc = readJson(relayFile(state, name), 2 * max + 4096);
+  if (doc.missing) return { missing: true };
+  const w = doc.value;
+  exactKeys(w, "relay", ["schema", "kind", "source_host", "for_host", "sent_at", "sha256", "data"]);
+  if (w.schema !== RELAY_SCHEMA || w.kind !== kind) throw new Refusal("relay copy: wrong schema or kind");
+  if (w.source_host !== source) throw new Refusal("relay copy: from another host than the expected source");
+  if (w.for_host !== host) throw new Refusal("relay copy: made for another host");
+  parseTs(w.sent_at, "relay.sent_at");
+  if (typeof w.data !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(w.data)) throw new Refusal("relay copy: data not base64");
+  const bytes = Buffer.from(w.data, "base64");
+  if (bytes.length > max) throw new Refusal("relay copy: too large");
+  if (typeof w.sha256 !== "string" || sha256hex(bytes) !== w.sha256) throw new Refusal("relay copy: digest mismatch");
+  try { return { value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) }; } catch { throw new Refusal("relay copy: data not JSON"); }
+}
+
+// The publishing host (feed.source_host, or every host when none is named) reads the feed file itself; every other
+// host reads only its relay copy.
+function readFeed(ctx) {
+  const { registry, now, host, state } = ctx;
+  const source = registry.feed.source_host;
   try {
-    const doc = readJson(file, MAX_FEED);
+    const doc = source && source !== host
+      ? readRelay(state, "feed", "feed", source, host, MAX_FEED)
+      : readJson(expandHome(registry.feed.path), MAX_FEED);
     if (doc.missing) return { error: "feed missing" };
     return { components: validateFeed(doc.value, now, registry.feed.max_age_hours) };
   } catch (e) {
@@ -331,20 +366,30 @@ function readFeed(registry, now) {
   }
 }
 
-function checkReceipt(canary, component, version, now) {
+// Strict check of one receipt document; returns null when it is valid, else why not.
+function receiptProblem(r, component, host, now, maxAgeHours) {
+  exactKeys(r, "receipt", ["schema", "component", "version", "host", "result", "finished_at"]);
+  if (r.schema !== RECEIPT_SCHEMA) throw new Refusal("receipt.schema");
+  const at = parseTs(r.finished_at, "receipt.finished_at");
+  if (r.component !== component || r.host !== host) return "canary receipt is for another component or host";
+  if (!["pass", "fail"].includes(r.result)) return "canary receipt result invalid";
+  str(r.version, "receipt.version", VERSION_RE);
+  if (at > now + FUTURE_SLACK_MS) return "canary receipt in the future";
+  if (now - at > maxAgeHours * 3600e3) return "canary receipt too old";
+  return null;
+}
+
+// Another host than the canary reads the canary's receipt only from its relay copy.
+function checkReceipt(canary, component, version, ctx) {
   let doc;
-  try { doc = readJson(expandHome(canary.receipt)); } catch (e) { return `canary receipt rejected: ${e.message}`; }
+  try { doc = readRelay(ctx.state, `canary/${component}`, "receipt", canary.host, ctx.host, MAX_INPUT); } catch (e) { return `canary receipt rejected: ${e.message}`; }
   if (doc.missing) return "canary receipt missing";
   const r = doc.value;
   try {
-    exactKeys(r, "receipt", ["schema", "component", "version", "host", "result", "finished_at"]);
-    if (r.schema !== RECEIPT_SCHEMA) throw new Refusal("receipt.schema");
-    const at = parseTs(r.finished_at, "receipt.finished_at");
-    if (r.component !== component || r.host !== canary.host) return "canary receipt is for another component or host";
+    const bad = receiptProblem(r, component, canary.host, ctx.now, canary.max_age_hours);
+    if (bad) return bad;
     if (r.version !== version) return `canary proved ${String(r.version).slice(0, 64)}, not ${version}`;
     if (r.result !== "pass") return `canary result ${JSON.stringify(String(r.result).slice(0, 16))}`;
-    if (at > now + FUTURE_SLACK_MS) return "canary receipt in the future";
-    if (now - at > canary.max_age_hours * 3600e3) return "canary receipt too old";
     return null;
   } catch (e) {
     return `canary receipt rejected: ${e.message}`;
@@ -446,12 +491,13 @@ function probe(p, now) {
   // A few plain numbers (load per core, free memory, active agents) kept with the gate samples.
   const metrics = isObj(v.metrics) ? Object.fromEntries(Object.entries(v.metrics)
     .filter(([k, x]) => /^[a-z][a-z0-9_]{0,23}$/.test(k) && Number.isFinite(x)).slice(0, 8).map(([k, x]) => [k, Math.round(x * 100) / 100])) : {};
-  if (!v.ok) return { why: `precondition ${p.name}: not met${detail ? ` (${detail})` : ""}`, metrics };
-  if (!p.quiet) return { why: null, metrics };
+  const diagnostic = v.diagnostic === true;
+  if (!v.ok) return { why: `precondition ${p.name}: not met${detail ? ` (${detail})` : ""}`, metrics, diagnostic };
+  if (!p.quiet) return { why: null, metrics, diagnostic };
   const ids = typeof v.identity === "string" && /^[\w.,:=-]{1,200}$/.test(v.identity);
   const counters = isObj(v.counters) && Object.keys(p.quiet.max_per_minute).every((k) => Number.isFinite(v.counters[k]) && v.counters[k] >= 0);
   if (!ids || !counters) return no("probe gave no counters or identity");
-  return { why: null, metrics, reading: { at, identity: v.identity, counters: Object.fromEntries(Object.keys(p.quiet.max_per_minute).map((k) => [k, v.counters[k]])) } };
+  return { why: null, metrics, diagnostic, reading: { at, identity: v.identity, counters: Object.fromEntries(Object.keys(p.quiet.max_per_minute).map((k) => [k, v.counters[k]])) } };
 }
 
 // Quiet means the counters grew no faster than allowed since an earlier reading of the same processes. At a tick
@@ -487,6 +533,9 @@ function evalGates(hostRow, registry, now, last, recheck = false) {
     let why = r.why;
     const m = { ...(r.metrics || {}) };
     if (!why && p.quiet) { readings[p.name] = r.reading; why = quietWhy(p, last[p.name], r.reading, recheck, m); }
+    // A signal its probe calls diagnostic (CPU time, say) can be recorded but never opens a gate.
+    if (!why && r.diagnostic && !p.diagnostic) why = `precondition ${p.name}: diagnostic-only signal cannot open a gate`;
+    if (p.diagnostic) { m.open = why ? 0 : 1; metrics[p.name] = m; continue; }
     if (Object.keys(m).length) metrics[p.name] = m;
     if (why) blocked.push({ name: p.name, why });
   }
@@ -700,7 +749,7 @@ function decide(ctx, st, sw, feed, gates) {
     const soak = (entry.security && row.security_soak_hours !== undefined ? row.security_soak_hours : row.soak_hours) * 3600e3;
     if (now - entry.first_seen_ms < soak) { line.reason = `soaking until ${iso(entry.first_seen_ms + soak)}`; continue; }
     if (row.canary && row.canary.host !== host) {
-      const bad = checkReceipt(row.canary, row.component, candidate, now);
+      const bad = checkReceipt(row.canary, row.component, candidate, ctx);
       if (bad) { line.reason = bad; continue; }
     }
     if (!sw.allowed) { line.reason = `kill switch: ${sw.why}`; continue; }
@@ -732,7 +781,7 @@ function cmdPlan(args) {
   const sw = readSwitch(ctx.fleet, ctx.state);
   let st;
   try { st = loadState(ctx.state); } catch (e) { st = emptyState(); console.log(JSON.stringify({ warning: e.message })); }
-  const feed = readFeed(ctx.registry, ctx.now);
+  const feed = readFeed(ctx);
   const gates = evalGates(ctx.hostRow, ctx.registry, ctx.now, loadGates(ctx.state).last);
   console.log(JSON.stringify({ host: ctx.host, now: iso(ctx.now), switch: sw.why, feed: feed.error || "ok",
     gates: gates.open ? "open" : "closed", blocked: gates.blocked.map((b) => b.why) }));
@@ -780,7 +829,7 @@ function cmdRun(args) {
     recordSample(ctx.state, ctx.hostRow, ctx.now, gates, stored);
     const sw = readSwitch(ctx.fleet, ctx.state);
     if (!sw.allowed) return 0;
-    const feed = readFeed(ctx.registry, ctx.now);
+    const feed = readFeed(ctx);
     if (feed.error) {
       alert(ctx.state, ctx.registry, `feed:${ctx.host}`, `auto-update ${ctx.host}: ${feed.error}; nothing applied`);
       return 0;
@@ -977,6 +1026,43 @@ function cmdWatchdog(dir) {
   }
 }
 
+// On the publishing host: relay copies of the feed and of this host's canary receipts for one other host, one JSON
+// line each after a header. Only inputs that validate now are exported; nothing is written.
+function cmdExport(args) {
+  const ctx = context(args, "export");
+  const to = args.for;
+  const target = to && ctx.registry.hosts[to];
+  if (!target || to === ctx.host) throw new Refusal("--for <another registry host> required");
+  const wrap = (kind, text) => {
+    const data = Buffer.from(text, "utf8");
+    return { schema: RELAY_SCHEMA, kind, source_host: ctx.host, for_host: to, sent_at: iso(Date.now()), sha256: sha256hex(data), data: data.toString("base64") };
+  };
+  const docs = [];
+  const skipped = [];
+  if (ctx.registry.feed.source_host === ctx.host) {
+    try {
+      const doc = readJson(expandHome(ctx.registry.feed.path), MAX_FEED);
+      if (doc.missing) throw new Refusal("feed missing");
+      validateFeed(doc.value, ctx.now, ctx.registry.feed.max_age_hours);
+      docs.push({ name: "feed", max_age_hours: ctx.registry.feed.max_age_hours, doc: wrap("feed", doc.text) });
+    } catch (e) { skipped.push({ name: "feed", why: e instanceof Refusal ? e.message : "unreadable" }); }
+  }
+  for (const row of ctx.registry.components) {
+    if (!row.canary || row.canary.host !== ctx.host || !row.hosts.includes(to)) continue;
+    const name = `canary/${row.component}`;
+    try {
+      const doc = readJson(expandHome(row.canary.receipt));
+      if (doc.missing) { skipped.push({ name, why: "no receipt yet" }); continue; }
+      const bad = receiptProblem(doc.value, row.component, ctx.host, ctx.now, row.canary.max_age_hours);
+      if (bad) throw new Refusal(bad);
+      docs.push({ name, max_age_hours: row.canary.max_age_hours, doc: wrap("receipt", doc.text) });
+    } catch (e) { skipped.push({ name, why: e instanceof Refusal ? e.message : "unreadable" }); }
+  }
+  console.log(JSON.stringify({ for_host: to, ssh: target.ssh || null, skipped }));
+  for (const d of docs) console.log(JSON.stringify(d));
+  return 0;
+}
+
 function cmdValidate() {
   const doc = readJson(path.join(fleetDir(), "auto-update", "registry.json"));
   if (doc.missing) throw new Refusal("registry.json missing");
@@ -993,7 +1079,7 @@ function cmdValidate() {
 function parseArgs(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--host" || argv[i] === "--now") { out[argv[i].slice(2)] = argv[++i]; }
+    if (argv[i] === "--host" || argv[i] === "--now" || argv[i] === "--for") { out[argv[i].slice(2)] = argv[++i]; }
     else if (argv[i].startsWith("--")) throw new Refusal(`unknown option ${argv[i]}`);
     else out._.push(argv[i]);
   }
@@ -1007,9 +1093,10 @@ function main() {
   if (cmd === "plan") return cmdPlan(args);
   if (cmd === "run") return cmdRun(args);
   if (cmd === "validate") return cmdValidate();
+  if (cmd === "export") return cmdExport(args);
   if (cmd === "txn" && arg) return cmdTxn(arg);
   if (cmd === "watchdog" && arg) return cmdWatchdog(arg);
-  throw new Refusal("usage: auto-update.mjs plan|run --host <name> [--now <ISO>] | validate");
+  throw new Refusal("usage: auto-update.mjs plan|run --host <name> [--now <ISO>] | validate | export --host <self> --for <host>");
 }
 
 try {

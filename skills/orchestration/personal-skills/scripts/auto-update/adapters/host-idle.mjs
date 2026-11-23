@@ -4,9 +4,22 @@
 // runner treats as unknown and keeps the gate closed. Output is counts and short codes only: never agent names,
 // prompts, process arguments, log lines, environment or secrets.
 //
-//   host-idle.mjs paseo [--paseo <cli>]
-//       No local Paseo agent in an active turn: `paseo ls -g -a --json` against the local daemon; every agent must be
-//       idle or closed (any other status, or no answer, closes the gate).
+//   host-idle.mjs paseo [--paseo <cli>] [--home <dir>]
+//       No Paseo agent on this host in an active turn. Unambiguous only when this host runs exactly one Paseo daemon
+//       (one supervisor process) and it is the one the home's paseo.pid names; a second daemon, such as a scratch
+//       one with its own home, makes the answer incomplete, so the gate closes. Then `paseo ls -g -a --json --home`
+//       lists the daemon's agents (unique ids, string statuses; idle, closed and error are not in a turn, anything
+//       else is), and every agent record stored in the home whose last status is not idle, closed or error must be
+//       in that list, or the enumeration is ambiguous and the gate closes.
+//   host-idle.mjs exit-gate -- <argv...>
+//       Runs an existing reviewed idle gate as-is (no shell) whose exit code is 0 idle, 1 busy, 2 unknown and whose
+//       last stdout line is JSON with "state" idle, busy or unknown matching it. Anything else, unknown included,
+//       is an error. Only the gate's plain numbers are passed on.
+//   host-idle.mjs listener-clients --lsof <path> --addr <ipv4:port>
+//       No client connected to a local TCP listener. lsof must first show the listener itself (proof that this
+//       user can see that process's sockets), then no ESTABLISHED connection on the address, then the listener
+//       again. lsof's exit 1 with no output is the normal empty match; any other exit, any stderr, or a listener
+//       it cannot see is an error. lsof only reads socket tables, so the probe adds no traffic.
 //   host-idle.mjs load [--max-load-per-core N] [--max-cpu-pct N] [--min-mem-free-pct N] [--min-avail-mb N]
 //                      [--job-lock <dir>]... [--job-queue <dir>]... [--job-flock <file>]...
 //       Below normal load under the hosts' existing policy: no job holds or waits for the host's one-job build lock
@@ -15,12 +28,16 @@
 //       and free memory is above the floor (macOS memory_pressure free %, Linux MemAvailable MB, Windows free %).
 //   host-idle.mjs quiet --launchd <name>=<label>...
 //       macOS: cumulative CPU time of each launchd job's process, in centiseconds, as counters; identity is the PIDs.
-//       The runner compares two ticks' counters (quiet in the registry); one reading alone never proves quiet.
+//       Diagnostic only: its reading says "diagnostic": true, and the runner never lets it open a gate.
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-const [cmd, ...rest] = process.argv.slice(2);
+const [cmd, ...all] = process.argv.slice(2);
+const dash = all.indexOf("--");
+const rest = dash < 0 ? all : all.slice(0, dash);
+const tail = dash < 0 ? [] : all.slice(dash + 1);
 const opts = {};
 for (let i = 0; i < rest.length; i += 2) {
   const k = rest[i];
@@ -40,19 +57,94 @@ function run(argv, opt = {}) {
   return r.stdout;
 }
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
+const expand = (p) => (p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p);
+const RESTING = ["idle", "closed", "error"]; // not in a turn
+
+// PIDs of every Paseo supervisor on this host, one per running daemon, whatever its home.
+// Fixtures only: AUTO_UPDATE_TEST_PS names a file of "pid args" lines standing in for the process table.
+function supervisors() {
+  const test = process.env.AUTO_UPDATE_TEST_PS;
+  if (!test && process.platform === "win32") {
+    const ps = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'supervisor-entrypoint\\.js' -or $_.CommandLine -eq 'Paseo Supervisor' } | ForEach-Object { $_.ProcessId }";
+    return run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps]).split(/\r?\n/).filter((l) => /^\d+$/.test(l.trim())).map(Number);
+  }
+  return (test ? fs.readFileSync(test, "utf8") : run(["/bin/ps", "-Ao", "pid=,args="])).split("\n").map((l) => /^\s*(\d+)\s+(.*)$/.exec(l)).filter(Boolean)
+    .filter((m) => m[2].trim() === "Paseo Supervisor" || /supervisor-entrypoint\.js/.test(m[2])).map((m) => Number(m[1]));
+}
 
 if (cmd === "paseo") {
   const cli = one("paseo", "paseo");
+  const home = expand(one("home", "~/.paseo"));
+  let pid = null;
+  try { pid = JSON.parse(fs.readFileSync(path.join(home, "paseo.pid"), "utf8")).pid; } catch { fail("no readable paseo.pid in the home"); }
+  if (!Number.isInteger(pid) || !alive(pid)) fail("the home's daemon is not running");
+  const sups = supervisors();
+  if (sups.length !== 1 || sups[0] !== pid) {
+    out(false, `ambiguous: ${sups.length} Paseo daemons on this host${sups.includes(pid) ? "" : ", none is the home's"}`, { metrics: { daemons: sups.length } });
+  }
   const text = process.platform === "win32" && /\.cmd$/i.test(cli)
-    ? run(["cmd.exe", "/d", "/s", "/c", `"${cli}" ls -g -a --json`], { windowsVerbatimArguments: true })
-    : run([cli, "ls", "-g", "-a", "--json"]);
+    ? run(["cmd.exe", "/d", "/s", "/c", `"${cli}" ls -g -a --json --home "${home}"`], { windowsVerbatimArguments: true })
+    : run([cli, "ls", "-g", "-a", "--json", "--home", home]);
   let agents;
   try { agents = JSON.parse(text); } catch { fail("paseo ls output not JSON"); }
-  if (!Array.isArray(agents) || agents.some((a) => !a || typeof a.status !== "string")) fail("paseo ls output has no statuses");
-  const active = agents.filter((a) => !["idle", "closed"].includes(a.status));
+  if (!Array.isArray(agents) || agents.some((a) => !a || typeof a.status !== "string" || typeof a.id !== "string")) fail("paseo ls output has no ids or statuses");
+  const listed = new Set(agents.map((a) => a.id));
+  if (listed.size !== agents.length) out(false, "ambiguous: paseo ls repeats an agent", { metrics: { agents: agents.length } });
+  // Stored records: only id and last status are read.
+  let unlisted = 0, unreadable = 0;
+  const root = path.join(home, "agents");
+  let dirs = [];
+  try { dirs = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()); } catch (e) { if (e.code !== "ENOENT") fail("agent store unreadable"); }
+  for (const d of dirs) {
+    for (const f of fs.readdirSync(path.join(root, d.name))) {
+      if (!f.endsWith(".json")) continue;
+      let rec;
+      try { rec = JSON.parse(fs.readFileSync(path.join(root, d.name, f), "utf8")); } catch { unreadable += 1; continue; }
+      const st = rec && typeof rec.lastStatus === "string" ? rec.lastStatus : null;
+      if (st !== null && RESTING.includes(st)) continue;
+      if (!listed.has(rec && rec.id)) unlisted += 1;
+    }
+  }
+  if (unlisted || unreadable) out(false, `ambiguous: ${unlisted} stored agents possibly in a turn are not listed, ${unreadable} unreadable`, { metrics: { unlisted, unreadable } });
+  const active = agents.filter((a) => !RESTING.includes(a.status));
   const kinds = [...new Set(active.map((a) => a.status.replace(/[^a-z_-]/g, "").slice(0, 20)))].sort().join(",");
   out(active.length === 0, `${active.length} of ${agents.length} agents active${kinds ? ` (${kinds})` : ""}`,
-    { metrics: { active: active.length, agents: agents.length } });
+    { metrics: { active: active.length, agents: agents.length, daemons: 1 } });
+}
+
+if (cmd === "exit-gate") {
+  if (!tail.length) fail("exit-gate: -- <argv> required");
+  const r = spawnSync(tail[0], tail.slice(1), { encoding: "utf8", timeout: 60000, maxBuffer: 1 << 20, windowsHide: true });
+  if (r.error) fail("exit-gate: gate did not run");
+  const states = { 0: "idle", 1: "busy" };
+  if (!(r.status in states)) fail(r.status === 2 ? "exit-gate: gate says unknown" : `exit-gate: gate exit ${r.status}`);
+  let v;
+  try { v = JSON.parse((r.stdout || "").trim().split(/\r?\n/).pop()); } catch { fail("exit-gate: gate output not JSON"); }
+  if (!v || typeof v !== "object" || v.state !== states[r.status]) fail("exit-gate: gate state does not match its exit code");
+  const metrics = Object.fromEntries(Object.entries(v).filter(([k, x]) => /^[a-z][a-z0-9_]{0,23}$/.test(k) && Number.isFinite(x)).slice(0, 6));
+  out(r.status === 0, `state ${v.state}${Object.keys(metrics).length ? " " + Object.entries(metrics).map(([k, x]) => `${k}=${x}`).join(" ") : ""}`, { metrics });
+}
+
+if (cmd === "listener-clients") {
+  const lsof = one("lsof");
+  const addr = one("addr");
+  if (!lsof || !path.isAbsolute(lsof)) fail("listener-clients: --lsof <absolute path>");
+  if (!addr || !/^(\d{1,3}\.){3}\d{1,3}:\d{1,5}$/.test(addr)) fail("listener-clients: --addr <ipv4:port>");
+  const q = (state) => {
+    const r = spawnSync(lsof, ["-nP", `-iTCP@${addr}`, `-sTCP:${state}`], { encoding: "utf8", timeout: 20000, maxBuffer: 8 << 20 });
+    if (r.error || (r.stderr || "").trim()) fail(`listener-clients: lsof ${state} errored`);
+    const rows = (r.stdout || "").split("\n").slice(1).filter((l) => l.trim());
+    if (r.status === 1 && !rows.length && !(r.stdout || "").trim()) return [];
+    if (r.status !== 0 || !rows.length) fail(`listener-clients: lsof ${state} exit ${r.status}`);
+    return rows;
+  };
+  const listening = () => q("LISTEN").filter((l) => l.includes(` ${addr} (LISTEN)`)).length;
+  if (!listening()) fail("listener-clients: listener not visible");
+  const conns = q("ESTABLISHED").filter((l) => l.includes(`${addr}->`) || l.includes(`->${addr} `));
+  if (!listening()) fail("listener-clients: listener gone during the check");
+  const clients = new Set(conns.map((l) => (/(\S+->\S+) \(ESTABLISHED\)/.exec(l) || [])[1]).filter(Boolean)
+    .map((c) => c.split("->").sort().join("<>"))).size;
+  out(clients === 0 && conns.length === 0, `${clients} established clients`, { metrics: { clients } });
 }
 
 if (cmd === "load") {
@@ -147,7 +239,7 @@ if (cmd === "quiet") {
     counters[name] = (((Number(d) * 24 + Number(h)) * 60 + Number(mi)) * 60 + Number(se)) * 100 + Math.round(Number(`0.${frac}`) * 100);
     ids.push(`${name}:${pid}`);
   }
-  out(true, "cpu time sampled", { counters, identity: ids.join(",") });
+  out(true, "cpu time sampled (diagnostic only)", { counters, identity: ids.join(","), diagnostic: true });
 }
 
 fail("usage: host-idle.mjs paseo|load|quiet ...");

@@ -64,6 +64,9 @@ try {
             Save-ConfigHash
             if ($Tool -eq 'claude') {
                 if ((Get-Command claude.exe -ErrorAction Stop).Source -ine $claude) { throw 'unexpected claude.exe path' }
+                # Vendor stable channel only; an unreadable pointer or another version changes nothing (exit 75, not now).
+                try { $stable = ([string](Invoke-RestMethod -Uri 'https://downloads.claude.ai/claude-code-releases/stable' -TimeoutSec 30)).Trim() } catch { [Console]::Error.WriteLine('vendor stable pointer unreadable; not now'); exit 75 }
+                if ($stable -ne $Version) { [Console]::Error.WriteLine('candidate is not the vendor stable release; not now'); exit 75 }
                 $base = "https://downloads.claude.ai/claude-code-releases/$Version"
                 $manifest = Invoke-RestMethod -Uri "$base/manifest.json" -TimeoutSec 30
                 $want = [string]$manifest.platforms.'win32-x64'.checksum

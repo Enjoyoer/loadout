@@ -1,7 +1,7 @@
 {
   "schema": "loadout.auto-update.registry/1",
   "notes": "Made-up example. The real registry lives in your private fleet directory as auto-update/registry.json.",
-  "feed": { "path": "~/.local/state/loadout/auto-update/available.json", "max_age_hours": 36 },
+  "feed": { "path": "~/.local/state/loadout/auto-update/available.json", "max_age_hours": 36, "source_host": "laptop" },
   "notify": { "command": ["paseo"], "labels": ["role=pm", "project=config"] },
   "blackouts": [ { "tz": "America/New_York", "days": ["sun"], "start": "05:00", "end": "07:00" } ],
   "hosts": {
@@ -13,11 +13,17 @@
                   { "name": "host-load", "max_age_seconds": 120, "timeout_seconds": 30,
                     "argv": ["{node}", "{adapters}/host-idle.mjs", "load", "--max-load-per-core", "1", "--min-mem-free-pct", "15",
                              "--job-lock", "~/.cache/example-jobs/local.lock", "--job-queue", "~/.cache/example-jobs/local.queue"] },
-                  { "name": "model-traffic-quiet", "max_age_seconds": 120, "timeout_seconds": 30,
+                  { "name": "model-proxy-idle", "max_age_seconds": 120, "timeout_seconds": 90,
+                    "argv": ["{node}", "{adapters}/host-idle.mjs", "exit-gate", "--",
+                             "/usr/bin/python3", "/opt/example/model-proxy/idle_gate.py", "--json"] },
+                  { "name": "model-bridge-idle", "max_age_seconds": 120, "timeout_seconds": 30,
+                    "argv": ["{node}", "{adapters}/host-idle.mjs", "listener-clients",
+                             "--lsof", "/usr/sbin/lsof", "--addr", "127.0.0.1:40000"] },
+                  { "name": "model-cpu", "max_age_seconds": 120, "timeout_seconds": 30, "diagnostic": true,
                     "quiet": { "min_seconds": 300, "max_gap_seconds": 1500, "max_per_minute": { "proxy": 30, "bridge": 30 } },
                     "argv": ["{node}", "{adapters}/host-idle.mjs", "quiet",
                              "--launchd", "proxy=com.example.model-proxy", "--launchd", "bridge=com.example.model-bridge"] } ] },
-    "devbox": { "os": "linux", "tz": "America/New_York", "notify_host": "ssh://laptop",
+    "devbox": { "os": "linux", "tz": "America/New_York", "notify_host": "ssh://laptop", "ssh": "devbox",
                 "allow": ["claude-code", "codex-cli", "tailscale", "rustdesk"],
                 "preconditions": [
                   { "name": "paseo-idle", "max_age_seconds": 120, "timeout_seconds": 60,
@@ -25,7 +31,7 @@
                   { "name": "host-load", "max_age_seconds": 120, "timeout_seconds": 30,
                     "argv": ["{node}", "{adapters}/host-idle.mjs", "load", "--max-load-per-core", "1", "--min-avail-mb", "3072",
                              "--job-flock", "/run/lock/example-jobs.lock"] } ] },
-    "winbox": { "os": "windows", "tz": "America/New_York", "notify_host": "ssh://laptop",
+    "winbox": { "os": "windows", "tz": "America/New_York", "notify_host": "ssh://laptop", "ssh": "winbox",
                 "allow": ["claude-code", "codex-cli"],
                 "preconditions": [
                   { "name": "paseo-idle", "max_age_seconds": 120, "timeout_seconds": 60,
@@ -33,7 +39,7 @@
                   { "name": "host-load", "max_age_seconds": 120, "timeout_seconds": 30,
                     "argv": ["{node}", "{adapters}/host-idle.mjs", "load", "--max-cpu-pct", "50", "--min-mem-free-pct", "15",
                              "--job-lock", "~/.cache/example-jobs/local.lock", "--job-queue", "~/.cache/example-jobs/local.queue"] } ] },
-    "desktop": { "os": "windows", "tz": "America/New_York", "notify_host": "ssh://laptop",
+    "desktop": { "os": "windows", "tz": "America/New_York", "notify_host": "ssh://laptop", "ssh": "desktop",
                  "allow": ["claude-code", "codex-cli"], "deny_tiers": [2],
                  "preconditions": [ { "name": "interactive-idle", "max_age_seconds": 120, "timeout_seconds": 30,
                    "argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
@@ -48,7 +54,7 @@
   "components": [
     {
       "component": "claude-code", "tier": 1, "mode": "hold",
-      "notes": "Held until the old CLI canary schedule is gone; then mode apply.",
+      "notes": "Held until the old CLI canary schedule is gone; then mode apply. The feed carries the vendor stable release; the adapter stages nothing else.",
       "hosts": ["laptop", "devbox", "winbox", "desktop"],
       "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
       "bounds": { "max_bump": "minor" },
