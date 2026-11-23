@@ -43,6 +43,8 @@ function fixture(home: string) {
   let beforeFetch: ((id: string) => Promise<void>) | undefined;
   let afterFetch: ((agent: AgentSnapshot | undefined) => Promise<void>) | undefined;
   let onApply: ((agentId: string, model: string) => void | Promise<void>) | undefined;
+  // M8: runs inside every pq read, before the reading is returned (a relabel while a decision awaits pq).
+  let onPq: (() => void | Promise<void>) | undefined;
   // What the daemon's stored record holds per agent: it follows memory unless the agent's background persist fails.
   const unpersisted = new Map<string, Profile[]>();
   const stored = async (id: string): Promise<Profile[]> => unpersisted.get(id) ?? (agents.has(id) ? [profileOf(agents.get(id)!)!] : []);
@@ -116,7 +118,7 @@ function fixture(home: string) {
   } as unknown as PluginServerContext;
   let plugin: ReturnType<typeof contribute> | null = null;
   const start = async () => {
-    plugin = contribute(server, async () => api, new QuotaReader(async () => ({ document: document() })), new ReturnStore(path.join(home, "pm-return.json")), stored);
+    plugin = contribute(server, async () => api, new QuotaReader(async () => { await onPq?.(); return { document: document() }; }), new ReturnStore(path.join(home, "pm-return.json")), stored);
     await plugin.idle();
   };
   const stop = async () => { plugin?.(); await plugin?.idle(); plugin = null; };
@@ -139,7 +141,7 @@ function fixture(home: string) {
     agents, calls, pq, start, stop, add, endTurn, tick, handlers, unpersisted, timelines, sent,
     returns: new ReturnStore(path.join(home, "pm-return.json")), records: new ResumeStore(),
     failApplies: (n: number) => { failApply = n; },
-    hooks: (set: { beforeFetch?: typeof beforeFetch; afterFetch?: typeof afterFetch; onApply?: typeof onApply; beforeSend?: typeof beforeSend }) => { ({ beforeFetch, afterFetch, onApply, beforeSend } = set); },
+    hooks: (set: { beforeFetch?: typeof beforeFetch; afterFetch?: typeof afterFetch; onApply?: typeof onApply; beforeSend?: typeof beforeSend; onPq?: typeof onPq }) => { ({ beforeFetch, afterFetch, onApply, beforeSend, onPq } = set); },
     // Delivers a turn end as given (T13, T15: a late event for an older turn); resolves when the plugin is idle.
     emit: (event: unknown) => { handlers.get("agent.turn_ended")!(event, { paseo: api }); return plugin!.idle(); },
     setConfig: (patch: Partial<Config>) => { config = ConfigSchema.parse({ ...config, ...patch }); },
@@ -1290,4 +1292,270 @@ it("P6: an unconfigured host, with no excluded agent prefix or no pool accounts,
     assert.deepEqual((await f.returns.read()).obligations, []);
     assert.equal(logs.filter((l) => l.endsWith("pm-pace-held reason=unconfigured")).length, before + 2, "once per sweep");
   }
+}));
+
+// Owner decision 333a, phase 1: a main PM (role=pm, project config, work or personal) is never moved by the plugin.
+// Fixture ids and projects only.
+const MAIN_PMS = [["main-config", "config"], ["main-work", "work"], ["main-personal", "personal"]] as const;
+const capAlerts = (logs: string[], id: string) => logs.filter((l) => l.includes(`pm-main-cap-alert agentId=${id} `));
+
+it("M1: at a Claude cap each main PM stays on Opus with one alert and resumes there; similar labels and a child PM fall back as before", () => scenario(async (f, logs) => {
+  for (const [id, project] of MAIN_PMS) f.add(id, "pm", { labels: { role: "pm", project } });
+  // Near misses: a child PM, a worker in a main project, other roles and projects that only look alike.
+  const similar: Array<[string, Record<string, string>]> = [
+    ["child", { role: "pm", project: "fixture" }],
+    ["worker-in-config", { role: "worker", project: "config" }],
+    ["pm-worker", { role: "pm-worker", project: "work" }],
+    ["config-worker", { role: "pm", project: "config-worker" }],
+    ["cased", { role: "pm", project: "Work" }],
+    ["unlabelled", { role: "pm" }],
+  ];
+  for (const [id, labels] of similar) f.add(id, labels.role!, { labels });
+  for (const id of [...MAIN_PMS.map(([id]) => id), ...similar.map(([id]) => id)]) await f.endTurn(id, { kind: "failed", error: { message: USAGE } }, `${id}-turn-1`);
+  await f.tick(); await f.tick();
+  for (const [id] of MAIN_PMS) {
+    assert.equal(f.agents.get(id)!.model, OPUS, `${id} stays on Opus`);
+    assert.equal(await f.returns.get(id), null, `${id} gets no return obligation`);
+    assert.ok(!f.calls.apply.some((c) => c.agentId === id), `${id} is never written`);
+    assert.equal(capAlerts(logs, id).length, 1, `${id}: one alert across sweeps`);
+    const record = (await f.records.read()).find((r) => r.agentId === id)!;
+    assert.equal(record.model, OPUS);
+    assert.ok(record.quotaHold, `${id}: the ordinary hold`);
+  }
+  for (const [id] of similar) {
+    assert.equal(f.agents.get(id)!.model, SOL, `${id} falls back as before`);
+    assert.equal(capAlerts(logs, id).length, 0);
+  }
+  // Reasons only in the alert: no quota figures or account labels.
+  for (const line of logs.filter((l) => l.includes("pm-main-cap-alert"))) assert.doesNotMatch(line, /quota=|leftPct|capacity|acct-|%/);
+  // Claude frees up after the weekly reset the hold waits for: the held record resumes each main PM on Opus.
+  f.pq.claude = { five: "ok", week: "ok" };
+  later(25 * 60);
+  await f.tick(); await f.tick();
+  for (const [id] of MAIN_PMS) assert.ok(f.calls.sends.some((s) => s.startsWith(`${id}:${OPUS}:`)), `${id} resumed on Opus`);
+  assert.ok(!f.calls.sends.some((s) => s.startsWith("main-") && s.includes(SOL)));
+}));
+
+it("M2: CPA's 503 twice moves a child PM but not a main PM; the main PM's second refusal alerts once", () => scenario(async (f, logs) => {
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.add("main-config", "pm", { labels: { role: "pm", project: "config" } });
+  f.add("child", "pm", { labels: { role: "pm", project: "fixture" } });
+  await cpaTwice(f, "main-config", "main-turn-1");
+  await cpaTwice(f, "child", "child-turn-1");
+  await f.tick(); await f.tick();
+  assert.deepEqual(f.calls.apply.map((c) => c.agentId), ["child"]);
+  assert.equal(f.agents.get("main-config")!.model, OPUS);
+  assert.equal(await f.returns.get("main-config"), null);
+  assert.equal(capAlerts(logs, "main-config").length, 1);
+  assert.ok(capAlerts(logs, "main-config")[0]!.includes("trigger=cpa-503-twice"));
+  // A completed turn ends the episode: the next cap alerts again.
+  await f.endTurn("main-config", { kind: "completed" }, "main-ok", "Normal reply.");
+  Object.assign(f.agents.get("main-config")!, { lastUserMessageAt: new Date().toISOString() });
+  await cpaTwice(f, "main-config", "main-turn-2");
+  assert.equal(capAlerts(logs, "main-config").length, 2);
+  assert.equal(f.agents.get("main-config")!.model, OPUS);
+}));
+
+it("M3: a main PM's stored obligations from before the upgrade: an unapplied intent is dropped, an exact landing settles with its record, a partial one goes back to the exact original at once and keeps its resume, a settled one returns on proof", () => scenario(async (f, logs) => {
+  const original: Profile = { model: OPUS, thinkingOptionId: "high", serviceTier: null };
+  const fallback: Profile = { model: SOL, thinkingOptionId: "medium", serviceTier: "standard" };
+  // Each main PM's turn was refused while every Claude account is out: its resume record waits on Opus.
+  const ids = [["intent", "work"], ["partial", "personal"], ["exact", "config"], ["landed", "config"]] as const;
+  for (const [id, project] of ids) {
+    f.add(id, "pm", { labels: { role: "pm", project } });
+    await f.endTurn(id, { kind: "failed", error: { message: USAGE } }, `${id}-turn-1`);
+  }
+  await f.stop();
+  await f.returns.add(newObligation("intent", original, fallback, "auto", "switching"));
+  // Landed on Sol before a crash, but thinking and the Fast label were not written.
+  Object.assign(f.agents.get("partial")!, { model: SOL });
+  await f.returns.add(newObligation("partial", original, fallback, "auto", "switching"));
+  // Landed exactly, but the crash came before the swap was settled.
+  Object.assign(f.agents.get("exact")!, { model: SOL, thinkingOptionId: "medium", labels: { ...f.agents.get("exact")!.labels, "opc.service-tier": "standard" } });
+  await f.returns.add(newObligation("exact", original, fallback, "auto", "switching"));
+  // Settled on Sol before the upgrade.
+  Object.assign(f.agents.get("landed")!, { model: SOL, thinkingOptionId: "medium", labels: { ...f.agents.get("landed")!.labels, "opc.service-tier": "standard" } });
+  await f.returns.add(newObligation("landed", original, fallback, "auto", "fallback"));
+  await f.start();
+  await f.tick();
+  assert.equal(await f.returns.get("intent"), null);
+  assert.ok(logs.some((l) => l.includes("pm-swap-dropped agentId=intent") && l.includes("main-pm")));
+  assert.ok(logs.some((l) => /pm-swap-not-completed agentId=partial \S+ reason=main-pm return=kept/.test(l)));
+  // Nothing is written toward Sol; the only write is the partial PM's exact original.
+  assert.deepEqual(f.calls.apply, [{ agentId: "partial", modelId: OPUS, thinkingOptionId: "high" }]);
+  assert.deepEqual(profileOf(f.agents.get("partial")!), original);
+  assert.equal(await f.returns.get("partial"), null);
+  assert.ok(logs.some((l) => /pm-restore-due agentId=partial \S+ reason=main-pm-partial/.test(l)));
+  // Its resume record is kept, back on Opus and held on the out pool: no send while Claude is out.
+  const partialRecord = (await f.records.read()).find((r) => r.agentId === "partial")!;
+  assert.equal(partialRecord.model, OPUS);
+  assert.ok(partialRecord.quotaHold && partialRecord.state === "parked");
+  assert.ok(!f.calls.sends.some((s) => s.startsWith("partial:")));
+  // The exact landing settles with no write; its record follows it to Sol and resumes there.
+  assert.equal((await f.returns.get("exact"))?.phase, "fallback");
+  assert.ok(logs.some((l) => l.includes("pm-swap-verified agentId=exact")));
+  assert.equal((await f.records.read()).find((r) => r.agentId === "exact" && r.state !== "superseded")?.model ?? SOL, SOL);
+  assert.ok(f.calls.sends.some((s) => s.startsWith(`exact:${SOL}:`)), "resumed on Sol, not lost");
+  // The settled return is not forced back and its sends are not blocked; it returns on Claude proof.
+  assert.ok(await f.returns.get("landed"));
+  f.pq.claude = { five: "ok", week: "ok" };
+  await f.tick();
+  for (const id of ["exact", "landed"]) {
+    assert.deepEqual(profileOf(f.agents.get(id)!), original, `${id} back on its original`);
+    assert.equal(await f.returns.get(id), null);
+  }
+  assert.equal(f.agents.get("intent")!.model, OPUS);
+}));
+
+it("M4: a main PM on a chain's first stage refused there is not stepped on to Sol; its return to the original stands; a child PM steps on", () => scenario(async (f, logs) => {
+  f.setConfig({ pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+  const original: Profile = { model: FABLE, thinkingOptionId: "high", serviceTier: null };
+  const first: Profile = { model: OPUS, thinkingOptionId: "high", serviceTier: null };
+  const last: Profile = { model: SOL, thinkingOptionId: "medium", serviceTier: "standard" };
+  for (const [id, project] of [["main", "personal"], ["child", "fixture"]] as const) {
+    f.add(id, "pm", { labels: { role: "pm", project } });
+    await f.returns.add(newObligation(id, original, first, "auto", "fallback", Date.now(), { stages: { first, last }, stage: "first" }));
+    await f.endTurn(id, { kind: "failed", error: { message: USAGE } }, `${id}-turn-1`);
+  }
+  await f.tick();
+  assert.equal(f.agents.get("main")!.model, OPUS, "the main PM stays on the first stage");
+  assert.equal((await f.returns.get("main"))?.stage, "first");
+  assert.equal(capAlerts(logs, "main").length, 1);
+  assert.ok(capAlerts(logs, "main")[0]!.includes("would=step"));
+  assert.equal(f.agents.get("child")!.model, SOL, "a child PM steps on as before");
+  f.add("fable-worker", "worker", { model: FABLE });
+  await f.endTurn("fable-worker", { kind: "completed" }, "fable-ok", "Normal reply on Fable.");
+  await f.tick();
+  assert.deepEqual(profileOf(f.agents.get("main")!), original, "the main PM returns to Fable");
+  assert.equal(await f.returns.get("main"), null);
+}));
+
+it("M5: pace mode leaves all three main PMs alone and still moves PMs whose labels only look alike", () => scenario(async (f, logs) => {
+  f.setConfig(PACE_ON);
+  f.pq.pace = paceAt(80);
+  for (const [id, project] of MAIN_PMS) f.add(id, "pm", { labels: { role: "pm", project } });
+  f.add("config-worker", "pm", { labels: { role: "pm", project: "config-worker" } });
+  f.add("cased", "pm", { labels: { role: "pm", project: "Personal" } });
+  await f.tick();
+  for (const [id] of MAIN_PMS) {
+    assert.equal(f.agents.get(id)!.model, OPUS);
+    assert.ok(logs.some((l) => l.includes(`pm-pace-held agentId=${id} reason=excluded-project`)));
+  }
+  for (const id of ["config-worker", "cased"]) assert.deepEqual(profileOf(f.agents.get(id)!), SOL_MEDIUM, `${id} moves`);
+}));
+
+it("M6: a child PM relabelled to a main project after its swap keeps its return and goes back to Opus; a main PM relabelled to a child project falls back as a child PM", () => scenario(async (f, logs) => {
+  await swapPm(f, "moved-in");
+  assert.equal(f.agents.get("moved-in")!.model, SOL);
+  f.agents.get("moved-in")!.labels = { ...f.agents.get("moved-in")!.labels, project: "work" };
+  f.add("moved-out", "pm", { labels: { role: "pm", project: "personal" } });
+  await f.endTurn("moved-out", { kind: "failed", error: { message: USAGE } }, "moved-out-turn-1");
+  assert.equal(f.agents.get("moved-out")!.model, OPUS);
+  assert.equal(capAlerts(logs, "moved-out").length, 1);
+  f.agents.get("moved-out")!.labels = { role: "pm", project: "fixture" };
+  await f.tick();
+  assert.equal(f.agents.get("moved-out")!.model, SOL, "now a child PM: the usual fallback");
+  assert.ok(await f.returns.get("moved-in"), "the relabelled PM keeps its return");
+  f.pq.claude = { five: "ok", week: "ok" };
+  await f.tick();
+  assert.deepEqual(profileOf(f.agents.get("moved-in")!), OPUS_HIGH);
+  assert.equal(await f.returns.get("moved-in"), null);
+}));
+
+const FABLE_HIGH: Profile = { model: FABLE, thinkingOptionId: "high", serviceTier: null };
+const CHAIN = { stages: { first: OPUS_HIGH, last: SOL_MEDIUM } };
+
+it("M7: a main PM's chain never writes its first stage: no new or stored step back, partial onward or back moves return to the exact original, and a cancelled CPA move owes no pq-free resend", async () => {
+  // A new step back on Opus proof, then a stored step-back intent: the main PM stays on Sol; a Fable success returns it.
+  await scenario(async (f, logs) => {
+    f.setConfig({ pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+    f.add("main", "pm", { model: SOL, thinkingOptionId: "medium", labels: { role: "pm", project: "work", "opc.service-tier": "standard" } });
+    const ob = await f.returns.add({ ...newObligation("main", FABLE_HIGH, SOL_MEDIUM, "auto", "fallback", Date.now(), { ...CHAIN, stage: "last" }) });
+    f.add("opus-worker", "worker");
+    later(1);
+    await f.endTurn("opus-worker", { kind: "completed" }, "opus-ok", "Normal reply on Opus.");
+    await f.tick(); await f.tick();
+    assert.equal(f.calls.apply.length, 0, "no step back to Opus");
+    assert.ok(!logs.some((l) => l.includes("pm-stage-start agentId=main")), "no step back is even started");
+    await f.returns.update(ob!.obligationId, (o) => ({ ...o, phase: "switching", stage: "first", fallback: OPUS_HIGH, stepBackPending: true }));
+    await f.tick();
+    assert.equal(f.calls.apply.length, 0, "the stored step back is not written");
+    const kept = await f.returns.get("main");
+    assert.equal(kept?.phase, "fallback");
+    assert.equal(kept?.stage, "last");
+    assert.ok(logs.some((l) => l.includes("pm-stage-dropped agentId=main") && l.includes("main-pm")));
+    f.add("fable-worker", "worker", { model: FABLE });
+    await f.endTurn("fable-worker", { kind: "completed" }, "fable-ok", "Normal reply on Fable.");
+    await f.tick();
+    assert.deepEqual(f.calls.apply.map((c) => c.modelId), [FABLE]);
+    assert.deepEqual(profileOf(f.agents.get("main")!), FABLE_HIGH);
+  });
+  // Partial onward (Sol model, other thinking) and partial back (Opus model, other thinking): the exact original at once.
+  await scenario(async (f, logs) => {
+    f.setConfig({ pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+    f.add("onward", "pm", { model: SOL, thinkingOptionId: "high", labels: { role: "pm", project: "work" } });
+    await f.returns.add({ ...newObligation("onward", FABLE_HIGH, SOL_MEDIUM, "auto", "switching", Date.now(), { ...CHAIN, stage: "last" }) });
+    f.add("back", "pm", { model: OPUS, thinkingOptionId: "medium", labels: { role: "pm", project: "personal", "opc.service-tier": "standard" } });
+    await f.returns.add({ ...newObligation("back", FABLE_HIGH, OPUS_HIGH, "auto", "switching", Date.now(), { ...CHAIN, stage: "first" }), stepBackPending: true });
+    await f.tick();
+    assert.deepEqual(f.calls.apply.map((c) => [c.agentId, c.modelId]).sort(), [["back", FABLE], ["onward", FABLE]]);
+    for (const id of ["onward", "back"]) {
+      assert.deepEqual(profileOf(f.agents.get(id)!), FABLE_HIGH, id);
+      assert.equal(await f.returns.get(id), null);
+    }
+    assert.ok(!logs.some((l) => /pm-swap-apply/.test(l)));
+  });
+  // A CPA onward move stored before the upgrade, cancelled for a main PM: no pq-free resend on the stage it stays on.
+  await scenario(async (f, logs) => {
+    f.setConfig({ pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+    f.pq.codex = { five: "out", week: "out" };
+    f.add("main", "pm", { labels: { role: "pm", project: "config" } });
+    await f.endTurn("main", { kind: "failed", error: { message: USAGE } }, "main-turn-1");
+    assert.ok((await f.records.read()).find((r) => r.agentId === "main")?.quotaHold);
+    await f.returns.add({ ...newObligation("main", FABLE_HIGH, SOL_MEDIUM, "auto", "switching", Date.now(), { ...CHAIN, stage: "last" }, true), cpaResendMessageId: null });
+    await f.tick(); await f.tick();
+    const kept = await f.returns.get("main");
+    assert.equal(kept?.stage, "first");
+    assert.equal(kept?.phase, "fallback");
+    assert.equal(kept?.cpaResend, false);
+    assert.equal(kept?.cpaResendMessageId, null);
+    assert.deepEqual(f.calls.apply, []);
+    assert.deepEqual(f.calls.sends, [], "the held resume is not sent past the pq hold");
+    assert.ok(!logs.some((l) => l.includes("cpa-503-moved")));
+    assert.ok(logs.some((l) => l.includes("pm-stage-dropped agentId=main") && l.includes("main-pm")));
+  });
+});
+
+it("M8: a PM relabelled to a main project while its swap decision awaits pq is not written; the intent is then dropped", () => scenario(async (f, logs) => {
+  f.add("pm", "pm", { labels: { role: "pm", project: "fixture" } });
+  f.hooks({ onPq: async () => {
+    if (await f.returns.get("pm")) f.agents.get("pm")!.labels = { ...f.agents.get("pm")!.labels, project: "work" };
+  } });
+  await f.endTurn("pm", { kind: "failed", error: { message: USAGE } }, "pm-turn-1");
+  assert.deepEqual(f.calls.apply, []);
+  assert.ok(logs.some((l) => /pm-swap-deferred agentId=pm \S+ reason=main-pm/.test(l)));
+  f.hooks({});
+  await f.tick();
+  assert.equal(await f.returns.get("pm"), null);
+  assert.deepEqual(f.calls.apply, []);
+  assert.equal(f.agents.get("pm")!.model, OPUS);
+  assert.ok((await f.records.read()).find((r) => r.agentId === "pm")?.quotaHold, "its resume keeps the ordinary hold");
+}));
+
+it("M9: with Claude and Codex both out a main PM still alerts once; a late completion of an older turn does not reset it; a child PM is held as before", () => scenario(async (f, logs) => {
+  f.pq.codex = { five: "out", week: "out" };
+  f.add("main", "pm", { labels: { role: "pm", project: "personal" } });
+  f.add("child", "pm", { labels: { role: "pm", project: "fixture" } });
+  await f.endTurn("main", { kind: "failed", error: { message: USAGE } }, "main-turn-1");
+  await f.endTurn("child", { kind: "failed", error: { message: USAGE } }, "child-turn-1");
+  assert.equal(capAlerts(logs, "main").length, 1);
+  assert.equal(capAlerts(logs, "child").length, 0);
+  assert.ok(logs.some((l) => l.includes("pm-fallback-held agentId=child") && l.includes("fallback-pool-exhausted")));
+  // A late completed event of an older turn while the capped work still waits.
+  f.timelines.set("main", [{ type: "user_message", text: "older work", messageId: "older-user" }, { type: "assistant_message", text: "Older normal reply." }]);
+  await f.emit({ agent: { id: "main" }, turnId: "older-turn", outcome: { kind: "completed" }, timeline: [] });
+  assert.ok((await f.records.read()).some((r) => r.agentId === "main" && r.state === "parked"), "the capped work still waits");
+  await f.tick(); await f.tick(); await f.tick();
+  assert.equal(capAlerts(logs, "main").length, 1, "deduplicated for the whole episode");
+  assert.deepEqual(f.calls.apply, []);
 }));

@@ -76,6 +76,11 @@ export type ReturnObligation = {
    * (no Claude success or capacity proof alone), at least PACE_FLAP_MS after the swap landed. Absent: false.
    */
   pace?: boolean;
+  /**
+   * Since 0.9.0: a main PM's move that landed partly or did not persist, found by recheckSwap. Its return to the exact
+   * original is due at once (decision 333a). Absent: false.
+   */
+  mainPmPartial?: boolean;
   attempts: number;
   lastAttemptAt: string | null;
   lastError: string | null;
@@ -108,8 +113,20 @@ export function storedMatches(stored: readonly Profile[], profile: Profile): boo
 /** The least time between a pace swap landing and its pace return, and between a pace return and the next pace swap. */
 export const PACE_FLAP_MS = 30 * 60_000;
 
-/** The main PMs' projects, which pace mode never moves. A host setting adds to them and can never remove one. */
+/** The main PMs' projects (isMainPm), for which the plugin decides no automatic move. Built in; no setting removes one. */
 export const MAIN_PM_PROJECTS: readonly string[] = ["config", "work", "personal"];
+
+/**
+ * A main PM: labelled exactly `role=pm` with a `project` label of a main PM project (`config`, `work`, `personal`).
+ * Since 0.9.0 (owner decision 333a) the plugin decides no automatic move for one: no pace swap, no Claude-out swap,
+ * no CPA move, no onward step and no step back. It stays on its profile and resumes there; the only profile written for
+ * it is its exact original, except for a relabel that lands during a write (Paseo has no conditional write). Read on the
+ * agent at each decision and again right before each settings write.
+ */
+export function isMainPm(agent: Pick<AgentSnapshot, "labels">): boolean {
+  const labels = agent.labels ?? {};
+  return labels.role === "pm" && typeof labels.project === "string" && MAIN_PM_PROJECTS.includes(labels.project);
+}
 
 /**
  * Why pace mode may not move this agent, or null: it must be fallback-eligible (a live Pi agent with a session on a
@@ -121,7 +138,7 @@ export function paceIneligible(agent: AgentSnapshot, config: { paceFallbackExclu
   if (base) return base;
   const labels = agent.labels ?? {};
   if (labels.role !== "pm") return "excluded-role";
-  if (labels.project && (MAIN_PM_PROJECTS.includes(labels.project) || config.paceFallbackExcludedProjects.includes(labels.project))) return "excluded-project";
+  if (isMainPm(agent) || (labels.project && config.paceFallbackExcludedProjects.includes(labels.project))) return "excluded-project";
   if (config.paceFallbackExcludedAgents.some((prefix) => agent.id.startsWith(prefix))) return "excluded-agent";
   if (config.excludedLabels.some((label) => labels[label] === "true")) return "excluded-label";
   return null;
@@ -130,7 +147,8 @@ export function paceIneligible(agent: AgentSnapshot, config: { paceFallbackExclu
 /**
  * Why an agent may not be moved to the fallback profile, or null when it may: a live Pi agent with a session whose
  * original model (by default its current one) is a Claude subscription model (API-billed `fleet/api/...` routes are
- * never moved). Any role counts since 0.7.0 (PMs only before); no label opts an agent out (since 0.3.0).
+ * never moved). Any role counts since 0.7.0 (PMs only before); no opt-out label exists (since 0.3.0). A main PM
+ * (isMainPm) is eligible here, so its resume timing is unchanged, but the runner never decides a move for it (0.9.0).
  */
 export function fallbackIneligible(agent: AgentSnapshot, originalModel = agent.model): string | null {
   if (agent.provider !== "pi") return "not-pi";
@@ -373,6 +391,7 @@ function isObligation(value: unknown): value is ReturnObligation {
     (o.stepBackPending === undefined || typeof o.stepBackPending === "boolean") &&
     (o.cpaResendMessageId === undefined || isNullableString(o.cpaResendMessageId)) &&
     (o.pace === undefined || typeof o.pace === "boolean") &&
+    (o.mainPmPartial === undefined || typeof o.mainPmPartial === "boolean") &&
     Number.isSafeInteger(o.attempts) && (o.lastAttemptAt === null || isTime(o.lastAttemptAt)) && isNullableString(o.lastError) &&
     isTime(o.createdAt) && isTime(o.updatedAt);
 }
