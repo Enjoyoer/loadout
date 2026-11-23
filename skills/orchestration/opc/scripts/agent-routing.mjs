@@ -31,15 +31,16 @@ const FORMER_FIXED_ROLE_ROUTES = Object.freeze({
 const workerClass = (label, effort, ceiling = null, fastMode = false) => Object.freeze({ label, effort, ceiling, fastMode });
 // Local code lanes default to Opus high (owner 2026-11-18); plan, ui-design and ui-check run Fable high. Routes are the minimum
 // (owner rule): nothing lowers a route. Every class runs Fast off (owner 2026-11-07) except the Luna classes, which run
-// Fast on (owner 2026-11-17), and review, browser and browser-hard, which run Fast on by default (owner decision 327,
-// 2026-11-22); otherwise Fast is an owner-named exception per task.
+// Fast on (owner 2026-11-17), review, browser and browser-hard, which run Fast on by default (owner decision 327,
+// 2026-11-22), and review-security (owner decision 332); otherwise Fast is an owner-named exception per task.
 export const WORKER_DEFAULT_ROUTES = Object.freeze({
   // Owner 2026-11-18: code runs at Opus high; ceiling xhigh keeps earlier xhigh lanes rebuildable.
   code: workerClass('Opus', 'high', 'xhigh'),
   review: workerClass('Sol', 'high', null, true),
-  // Security, credential and data-loss reviews run on Opus, never GPT (owner rule): GPT trips the cyber-safety filter.
-  // Owner 2026-11-18: Opus high; ceiling xhigh keeps earlier xhigh lanes rebuildable.
-  'review-security': workerClass('Opus', 'high', 'xhigh'),
+  // Owner decision 332: security, credential and data-loss reviews run on Sol xhigh, Fast on. After a terminal Sol
+  // failure or a blocker verdict the PM may start one separate owner-named Opus xhigh, Fast off lane (routing.md);
+  // FORMER_CLASS_ROUTES keeps earlier Opus high and xhigh lanes rebuildable.
+  'review-security': workerClass('Sol', 'xhigh', null, true),
   // Owner 2026-11-18 (decision 244): plan and research run read-only on Fable high, Fast off; FORMER_CLASS_ROUTES keeps
   // earlier Sol high lanes rebuildable.
   plan: workerClass('Fable', 'high'),
@@ -69,6 +70,8 @@ const workerRule = kind => WORKER_DEFAULT_ROUTES[canonicalWorkerClass(kind)];
 const FORMER_CLASS_ROUTES = Object.freeze({
   watcher: Object.freeze([Object.freeze({ label: 'Luna', effort: 'xhigh', fastMode: true })]),
   plan: Object.freeze([Object.freeze({ label: 'Sol', effort: 'high', fastMode: false })]),
+  'review-security': Object.freeze([Object.freeze({ label: 'Opus', effort: 'high', fastMode: false }),
+    Object.freeze({ label: 'Opus', effort: 'xhigh', fastMode: false })]),
 });
 // Each label draws on one provider's quota pool.
 export const LABEL_POOLS = Object.freeze({ Opus: 'claude', Sonnet: 'claude', Fable: 'claude', Sol: 'codex', Terra: 'codex', Luna: 'codex', Astra: 'codex' });
@@ -87,7 +90,9 @@ export const GPT_WEB_LABELS = Object.freeze(['Sol', 'Terra', 'Luna', 'Astra', 'W
 const GPT_WEB_MODEL = /(?:^|\/)(?:gpt-|chatgpt-web\/)/i;
 export function isGptOrWebRoute(route, catalog = null) {
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
-  const label = route?.label ?? (route?.source === 'task-default' ? workerRule(route.kind)?.label
+  // A task default takes its class's label, unless it is a recorded former default of another label (an Opus
+  // review-security lane from before decision 332).
+  const label = route?.label ?? (route?.source === 'task-default' && !formerClassRoute(route, route.kind, rows) ? workerRule(route.kind)?.label
     : rows?.find(row => row.id === route?.model || row.id?.slice(row.id.indexOf('/') + 1) === route?.model)?.label);
   return GPT_WEB_LABELS.includes(label) || GPT_WEB_MODEL.test(route?.model ?? '');
 }
@@ -134,11 +139,12 @@ function requireFableRule(route, rows = null) {
 // A Luna class (Fast on, owner 2026-11-17) takes no route with Fast off, owner-named or not, and neither does a route
 // on a former Fast-on Luna label of its class (a watcher on Luna). The Sol Fast-on defaults (decision 327) refuse nothing.
 const FAST_REQUIRED_LABEL = 'Luna';
-const formerClassRoute = (route, taskClass, rows) => {
+const formerClassRoutes = (route, taskClass, rows) => {
   const kind = canonicalWorkerClass(taskClass);
   return (Object.hasOwn(FORMER_CLASS_ROUTES, kind ?? '') ? FORMER_CLASS_ROUTES[kind] : [])
-    .find(former => labelModel(route?.model, former.label, rows));
+    .filter(former => labelModel(route?.model, former.label, rows));
 };
+const formerClassRoute = (route, taskClass, rows) => formerClassRoutes(route, taskClass, rows)[0];
 function classFastProblem(route, taskClass, rows = null) {
   const kind = canonicalWorkerClass(taskClass), former = formerClassRoute(route, kind, rows);
   if (route?.fastMode === true) return null;
@@ -150,9 +156,12 @@ function classFastProblem(route, taskClass, rows = null) {
 // The owner's hard rules for a lane class bind every route, whatever its source says: ui-design and ui-check are exactly
 // Fable high, Fast off, these classes never run a GPT or web model, Fable never runs at another level, a Fast-on class
 // never runs Fast off, and no route runs below its class minimum. Inside them an owner-named route keeps its model and
-// effort.
-const CLAUDE_ONLY_CLASSES = Object.freeze(['code', 'review-security']);
-function laneProblem(route, taskClass, rows) {
+// effort. A recorded lane (recorded) on a non-GPT model keeps its class's former minimum (FORMER_CLASS_MINIMUMS).
+const CLAUDE_ONLY_CLASSES = Object.freeze(['code']);
+// A class's minimum before a class-table change, kept for a lane recorded on a non-GPT model: review-security ran only
+// non-GPT routes at high or above before decision 332 (an Opus, Sonnet or Fable lane), and those lanes still rebuild.
+const FORMER_CLASS_MINIMUMS = Object.freeze({ 'review-security': 'high' });
+function laneProblem(route, taskClass, rows, recorded = false) {
   taskClass = canonicalWorkerClass(taskClass);
   if (route.source === 'task-default' && canonicalWorkerClass(route.kind) !== taskClass) return `it is a ${route.kind} route`;
   if (uiClass(taskClass)) return isUiRoute(route, rows) ? null : `a ${taskClass} lane runs only Fable high, Fast off`;
@@ -160,14 +169,17 @@ function laneProblem(route, taskClass, rows) {
   if (ownerRule) return ownerRule;
   const rule = WORKER_DEFAULT_ROUTES[taskClass];
   // The one GPT exception: the exact off-pace backup in a code lane, which records only while off pace and launches only
-  // from its own recorded lane (owner decisions 310 and 316). Reviews, review-security and every other class never take it.
+  // from its own recorded lane (owner decisions 310 and 316). Every other class never takes it.
   const backup = route.source === 'pace-backup' && taskClass === 'code' && !unapprovedBackup(route);
   if (CLAUDE_ONLY_CLASSES.includes(taskClass) && isGptOrWebModel(route.model, rows) && !backup) {
     return `${route.model} is a GPT or web model and the ${taskClass} class runs ${rule.label}`;
   }
   // The backup's medium is the owner's own level for it (2026-11-21), below the code minimum by decision.
-  return !backup && effortOrder.indexOf(route.effort) < effortOrder.indexOf(rule.effort)
-    ? `effort ${route.effort} is below the ${taskClass} minimum ${rule.effort}` : null;
+  const former = recorded && Object.hasOwn(FORMER_CLASS_MINIMUMS, taskClass) && !isGptOrWebModel(route.model, rows)
+    ? FORMER_CLASS_MINIMUMS[taskClass] : rule.effort;
+  const minimum = Math.min(effortOrder.indexOf(rule.effort), effortOrder.indexOf(former));
+  return !backup && effortOrder.indexOf(route.effort) < minimum
+    ? `effort ${route.effort} is below the ${taskClass} minimum ${effortOrder[minimum]}` : null;
 }
 const knownClass = taskClass => Object.hasOwn(WORKER_DEFAULT_ROUTES, canonicalWorkerClass(taskClass) ?? '') || uiClass(taskClass);
 // A task default runs its class's own model: with a catalog exactly the class's row, without one a model id that names
@@ -178,12 +190,13 @@ function defaultIdentityProblem(route, rows) {
   return namesLabel(route.model, rule.label) ? null : `${route.model} does not name the ${route.kind} class's ${rule.label} model`;
 }
 
-// A fresh lane's route checked against its intended class (recording, and a launch with no recorded route).
-export function validateLaneClass(route, taskClass, catalog = null) {
+// A fresh lane's route checked against its intended class (recording, and a launch with no recorded route); with
+// recorded, a lane's recorded route checked against the class it was recorded for (route.mjs replaying its flags).
+export function validateLaneClass(route, taskClass, catalog = null, { recorded = false } = {}) {
   taskClass = canonicalWorkerClass(taskClass);
   if (!knownClass(taskClass)) throw workerRouteUnresolved();
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
-  const problem = laneProblem(route, taskClass, rows) ?? (route.source === 'task-default' ? defaultIdentityProblem(route, rows) : null);
+  const problem = laneProblem(route, taskClass, rows, recorded) ?? (route.source === 'task-default' ? defaultIdentityProblem(route, rows) : null);
   if (problem) throw Error(`${taskClass} lane refuses this Worker route: ${problem}`);
 }
 
@@ -449,7 +462,7 @@ function validateWorkerRoute(route) {
 // A task default must also still be today's class: the class's catalog label (never a GPT or web model for a Claude
 // class), the class's Fast, and, as the allowances for what a class-table change left behind, either Fast for a GPT
 // class (Fast on recorded before GPT defaults went Fast off, Fast off recorded before decision 327 turned review and
-// browser Fast on) and any effort from the class minimum up to its ceiling, which the Pi catalog must still serve, or
+// browser Fast on; a review-security Sol default, which only ever ran Fast on, keeps no other) and any effort from the class minimum up to its ceiling, which the Pi catalog must still serve, or
 // exactly a former default of the class (FORMER_CLASS_ROUTES). A Luna class lane recorded with Fast off is refused
 // (owner 2026-11-17).
 function validateRebuild(route, taskClass, rows) {
@@ -458,8 +471,8 @@ function validateRebuild(route, taskClass, rows) {
   const rule = WORKER_DEFAULT_ROUTES[taskClass];
   const ceiling = rule && (rule.ceiling ?? rule.effort);
   const former = recordedFormerDefault(route, taskClass, rows);
-  const problem = laneProblem(route, taskClass, rows) ?? (route.source !== 'task-default' || former ? null
-    : route.fastMode !== rule.fastMode && !GPT_WEB_LABELS.includes(rule.label) ? `Fast ${route.fastMode ? 'on' : 'off'} does not match the ${taskClass} class`
+  const problem = laneProblem(route, taskClass, rows, true) ?? (route.source !== 'task-default' || former ? null
+    : route.fastMode !== rule.fastMode && (!GPT_WEB_LABELS.includes(rule.label) || FAST_EXACT_CLASSES.includes(taskClass)) ? `Fast ${route.fastMode ? 'on' : 'off'} does not match the ${taskClass} class`
       : effortOrder.indexOf(route.effort) > effortOrder.indexOf(ceiling) ? `effort ${route.effort} is above the ${taskClass} ceiling ${ceiling}`
         : claudeClassOnGptModel(rule, route) ? `${route.model} is a GPT or web model and the ${taskClass} class runs ${rule.label}`
           : null);
@@ -483,16 +496,20 @@ function validateRebuild(route, taskClass, rows) {
   return valid;
 }
 
+// GPT classes whose task default only ever ran with today's Fast, so a recorded default must match it: review-security
+// on Sol, Fast on since decision 332.
+const FAST_EXACT_CLASSES = Object.freeze(['review-security']);
+
 // A recorded task default of the lane's class that is exactly a former default of that class (FORMER_CLASS_ROUTES),
 // still served at its effort when a catalog is given. Only a lane with a recorded route may pass it. Like any recorded
 // GPT default, a former GPT default recorded with Fast on keeps it.
 function recordedFormerDefault(route, taskClass, rows) {
-  const kind = canonicalWorkerClass(taskClass), former = formerClassRoute(route, kind, rows);
-  return Boolean(route?.source === 'task-default' && former && canonicalWorkerClass(route.kind) === kind &&
-    route.effort === former.effort &&
-    (route.fastMode === former.fastMode || (route.fastMode === true && GPT_WEB_LABELS.includes(former.label))) &&
-    (!rows || rows.some(row => row.label === former.label && namesRow(row, route.model) &&
-      row.thinkingOptions?.some(option => option.id === route.effort))));
+  const kind = canonicalWorkerClass(taskClass);
+  return route?.source === 'task-default' && canonicalWorkerClass(route.kind) === kind &&
+    formerClassRoutes(route, kind, rows).some(former => route.effort === former.effort &&
+      (route.fastMode === former.fastMode || (route.fastMode === true && GPT_WEB_LABELS.includes(former.label))) &&
+      (!rows || rows.some(row => row.label === former.label && namesRow(row, route.model) &&
+        row.thinkingOptions?.some(option => option.id === route.effort))));
 }
 
 // The Worker route a brief or request is built from, bound to its destination task (as readTask returns it), lane, and
@@ -557,9 +574,8 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog 
     }
     const fast = classFastProblem(ownerRoute, taskKind, rows);
     if (fast) throw Error(`${fast}; name the route with Fast on or use the class route`);
-    if (taskKind === 'review-security' && isGptOrWebRoute(ownerRoute, rows)) {
-      throw Error('review-security never runs a GPT or web model (owner rule); name a Claude model or use the class route');
-    }
+    // A standalone review-security resolution refuses what recording and launching it would refuse (its minimum).
+    if (taskKind === 'review-security') validateLaneClass(ownerRoute, taskKind, rows);
     return Object.freeze({ ...ownerRoute });
   }
   if (Object.hasOwn(OWNER_RULE_ROUTES, taskKind ?? '')) {

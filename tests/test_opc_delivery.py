@@ -388,6 +388,71 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual(built["request"]["settings"], {"thinkingOptionId": "xhigh"})
         self.assertIn("model=fleet/claude-opus-5-5; effort=xhigh; Fast=off", built["brief"])
 
+    def security_catalog(self):
+        return [{"id": f"fleet/{model}", "label": label, "thinkingOptions": [{"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}
+                for model, label in (("claude-opus-5-5", "Opus"), ("claude-sonnet-5-5", "Sonnet"), ("claude-fable-5-2", "Fable"),
+                                     ("gpt-6.2-sol", "Sol"))]
+
+    def test_review_security_lanes_recorded_before_decision_332_rebuild(self):
+        # PM-specified (decision 332 repair): the former Opus high default and owner-named non-GPT high routes rebuild; a
+        # Sol default recorded Fast off never existed and is refused; an owner-named Sol Fast off route stays valid.
+        owner = {"role": "worker", "source": "owner-explicit", "effort": "high", "fastMode": False}
+        lanes = {"opus-default": {**PRE_730_CODE_ROUTE, "kind": "review-security", "effort": "high",
+                                  "reason": "review-security default Opus high, Fast off"},
+                 "opus-owner": {**owner, "model": "fleet/claude-opus-5-5"},
+                 "sonnet-owner": {**owner, "model": "fleet/claude-sonnet-5-5"},
+                 "fable-owner": {**owner, "model": "fleet/claude-fable-5-2"},
+                 "sol-owner-off": {**owner, "model": "fleet/gpt-6.2-sol", "effort": "xhigh"},
+                 "sol-default-off": {"role": "worker", "source": "task-default", "kind": "review-security",
+                                     "model": "fleet/gpt-6.2-sol", "effort": "xhigh", "fastMode": False,
+                                     "reason": "review-security default Sol xhigh, Fast off"}}
+        self.write_routes(self.task, lanes)
+        for lane, route in lanes.items():
+            built = self.launch(self.task, lane, f"recorded[{json.dumps(lane)}].route", self.security_catalog(),
+                                task_class="security")
+            if lane == "sol-default-off":
+                for step in ("request", "brief"):
+                    self.assertEqual(built[step].get("error"), "recorded review-security Worker route cannot rebuild: Fast off "
+                                                               "does not match the review-security class", step)
+                continue
+            self.assertEqual(built["request"].get("provider"), f"pi/{route['model']}", (lane, built))
+            self.assertEqual(built["request"]["settings"], {"thinkingOptionId": route["effort"]}, lane)
+        # A fresh owner-named route below xhigh is refused when recorded, as when resolved alone.
+        fresh = self.launch(self.task, "new-lane", json.dumps({**owner, "model": "fleet/claude-sonnet-5-5"}),
+                            self.security_catalog(), record_lane="new-lane", task_class="review-security")
+        self.assertIn("effort high is below the review-security minimum xhigh", fresh["record"].get("error", ""))
+
+    def test_route_cli_replays_recorded_review_security_lanes_with_their_exact_flags(self):
+        # PM-specified (decision 332 repair): exact original flags, class or alias, replay a recorded lane; mutated flags
+        # or another class are refused; a fresh standalone owner-named route below xhigh is refused.
+        root = Path(self.task).parent.parent
+        (root / "catalog.json").write_text(json.dumps(self.security_catalog()))
+        owner = {"role": "worker", "source": "owner-explicit", "model": "fleet/claude-opus-5-5", "effort": "high", "fastMode": False}
+        sol = {**owner, "model": "fleet/gpt-6.2-sol", "effort": "xhigh", "fastMode": True}
+        self.write_routes(self.task, {"opus-owner": owner, "sol-owner": sol})
+        cli = ("node", str(SCRIPTS / "route.mjs"), "--catalog", str(root / "catalog.json"), "--task", self.task)
+        original = ("--owner-model", "fleet/claude-opus-5-5", "--owner-effort", "high", "--owner-fast", "off")
+        for flags in ((), ("--class", "review-security", *original), ("--class", "security", *original)):
+            replayed = run(*cli, "--lane", "opus-owner", *flags)
+            self.assertEqual(replayed.returncode, 0, (flags, replayed.stderr))
+            self.assertEqual(json.loads(replayed.stdout)["route"], owner)
+        sol_flags = ("--owner-model", "fleet/gpt-6.2-sol", "--owner-effort", "xhigh", "--owner-fast", "on")
+        replayed = run(*cli, "--lane", "sol-owner", "--class", "security", *sol_flags)
+        self.assertEqual(json.loads(replayed.stdout or "{}").get("route"), sol, replayed.stderr)
+        for lane, flags, named in (("sol-owner", ("--class", "code", *sol_flags), "class"),
+                                   ("opus-owner", ("--class", "ui-design", *original), "class"),
+                                   ("opus-owner", ("--class", "review-security", *original[:3], "xhigh", *original[4:]), "owner-effort"),
+                                   ("opus-owner", ("--class", "review-security", "--owner-model", "fleet/claude-sonnet-5-5", *original[2:]), "owner-model")):
+            mutated = run(*cli, "--lane", lane, *flags)
+            self.assertNotEqual(mutated.returncode, 0, (flags, mutated.stdout))
+            self.assertIn(f"--{named}", mutated.stderr)
+        escalated = run(*cli, "--lane", "security-escalation", "--class", "review-security", *original[:3], "xhigh", *original[4:])
+        self.assertEqual(escalated.returncode, 0, escalated.stderr)
+        self.assertEqual(json.loads(escalated.stdout)["route"], {**owner, "effort": "xhigh"})
+        alone = run("node", str(SCRIPTS / "route.mjs"), "--class", "review-security", *original)
+        self.assertNotEqual(alone.returncode, 0, alone.stdout)
+        self.assertIn("effort high is below the review-security minimum xhigh", alone.stderr)
+
     def watcher_catalog(self):
         return [{"id": f"fleet/{model}", "label": label, "thinkingOptions": [{"id": "low"}, {"id": "high"}, {"id": "xhigh"}]}
                 for model, label in (("gpt-6.2-sol", "Sol"), ("gpt-6-luna", "Luna"))]
