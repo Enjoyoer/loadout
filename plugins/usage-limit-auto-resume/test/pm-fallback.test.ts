@@ -1291,3 +1291,147 @@ it("P6: an unconfigured host, with no excluded agent prefix or no pool accounts,
     assert.equal(logs.filter((l) => l.endsWith("pm-pace-held reason=unconfigured")).length, before + 2, "once per sweep");
   }
 }));
+
+// Owner decision 333a, phase 1: a main PM (role=pm, project config, work or personal) is never moved by the plugin.
+// Fixture ids and projects only.
+const MAIN_PMS = [["main-config", "config"], ["main-work", "work"], ["main-personal", "personal"]] as const;
+const capAlerts = (logs: string[], id: string) => logs.filter((l) => l.includes(`pm-main-cap-alert agentId=${id} `));
+
+it("M1: at a Claude cap each main PM stays on Opus with one alert and resumes there; similar labels and a child PM fall back as before", () => scenario(async (f, logs) => {
+  for (const [id, project] of MAIN_PMS) f.add(id, "pm", { labels: { role: "pm", project } });
+  // Near misses: a child PM, a worker in a main project, other roles and projects that only look alike.
+  const similar: Array<[string, Record<string, string>]> = [
+    ["child", { role: "pm", project: "fixture" }],
+    ["worker-in-config", { role: "worker", project: "config" }],
+    ["pm-worker", { role: "pm-worker", project: "work" }],
+    ["config-worker", { role: "pm", project: "config-worker" }],
+    ["cased", { role: "pm", project: "Work" }],
+    ["unlabelled", { role: "pm" }],
+  ];
+  for (const [id, labels] of similar) f.add(id, labels.role!, { labels });
+  for (const id of [...MAIN_PMS.map(([id]) => id), ...similar.map(([id]) => id)]) await f.endTurn(id, { kind: "failed", error: { message: USAGE } }, `${id}-turn-1`);
+  await f.tick(); await f.tick();
+  for (const [id] of MAIN_PMS) {
+    assert.equal(f.agents.get(id)!.model, OPUS, `${id} stays on Opus`);
+    assert.equal(await f.returns.get(id), null, `${id} gets no return obligation`);
+    assert.ok(!f.calls.apply.some((c) => c.agentId === id), `${id} is never written`);
+    assert.equal(capAlerts(logs, id).length, 1, `${id}: one alert across sweeps`);
+    const record = (await f.records.read()).find((r) => r.agentId === id)!;
+    assert.equal(record.model, OPUS);
+    assert.ok(record.quotaHold, `${id}: the ordinary hold`);
+  }
+  for (const [id] of similar) {
+    assert.equal(f.agents.get(id)!.model, SOL, `${id} falls back as before`);
+    assert.equal(capAlerts(logs, id).length, 0);
+  }
+  // Reasons only in the alert: no quota figures or account labels.
+  for (const line of logs.filter((l) => l.includes("pm-main-cap-alert"))) assert.doesNotMatch(line, /quota=|leftPct|capacity|acct-|%/);
+  // Claude frees up after the weekly reset the hold waits for: the held record resumes each main PM on Opus.
+  f.pq.claude = { five: "ok", week: "ok" };
+  later(25 * 60);
+  await f.tick(); await f.tick();
+  for (const [id] of MAIN_PMS) assert.ok(f.calls.sends.some((s) => s.startsWith(`${id}:${OPUS}:`)), `${id} resumed on Opus`);
+  assert.ok(!f.calls.sends.some((s) => s.startsWith("main-") && s.includes(SOL)));
+}));
+
+it("M2: CPA's 503 twice moves a child PM but not a main PM; the main PM's second refusal alerts once", () => scenario(async (f, logs) => {
+  f.pq.claude = { five: "ok", week: "ok" };
+  f.add("main-config", "pm", { labels: { role: "pm", project: "config" } });
+  f.add("child", "pm", { labels: { role: "pm", project: "fixture" } });
+  await cpaTwice(f, "main-config", "main-turn-1");
+  await cpaTwice(f, "child", "child-turn-1");
+  await f.tick(); await f.tick();
+  assert.deepEqual(f.calls.apply.map((c) => c.agentId), ["child"]);
+  assert.equal(f.agents.get("main-config")!.model, OPUS);
+  assert.equal(await f.returns.get("main-config"), null);
+  assert.equal(capAlerts(logs, "main-config").length, 1);
+  assert.ok(capAlerts(logs, "main-config")[0]!.includes("trigger=cpa-503-twice"));
+  // A completed turn ends the episode: the next cap alerts again.
+  await f.endTurn("main-config", { kind: "completed" }, "main-ok", "Normal reply.");
+  Object.assign(f.agents.get("main-config")!, { lastUserMessageAt: new Date().toISOString() });
+  await cpaTwice(f, "main-config", "main-turn-2");
+  assert.equal(capAlerts(logs, "main-config").length, 2);
+  assert.equal(f.agents.get("main-config")!.model, OPUS);
+}));
+
+it("M3: a main PM's stored obligations from before the upgrade: an unapplied intent is dropped, a landed swap is not repaired and still returns to its original", () => scenario(async (f, logs) => {
+  const original: Profile = { model: OPUS, thinkingOptionId: "high", serviceTier: null };
+  const fallback: Profile = { model: SOL, thinkingOptionId: "medium", serviceTier: "standard" };
+  await f.stop();
+  f.add("intent", "pm", { labels: { role: "pm", project: "work" } });
+  await f.returns.add(newObligation("intent", original, fallback, "auto", "switching"));
+  // Landed on Sol, but thinking and the Fast label were not written before the crash.
+  f.add("partial", "pm", { model: SOL, labels: { role: "pm", project: "personal" } });
+  await f.returns.add(newObligation("partial", original, fallback, "auto", "switching"));
+  f.add("landed", "pm", { model: SOL, thinkingOptionId: "medium", labels: { role: "pm", project: "config", "opc.service-tier": "standard" } });
+  await f.returns.add(newObligation("landed", original, fallback, "auto", "fallback"));
+  await f.start();
+  assert.equal(await f.returns.get("intent"), null);
+  assert.ok(logs.some((l) => l.includes("pm-swap-dropped agentId=intent") && l.includes("main-pm")));
+  assert.equal((await f.returns.get("partial"))?.phase, "fallback", "the return is kept");
+  assert.ok(logs.some((l) => /pm-swap-not-completed agentId=partial \S+ reason=main-pm return=kept/.test(l)));
+  assert.ok(await f.returns.get("landed"));
+  assert.deepEqual(f.calls.apply, [], "nothing written toward Sol");
+  f.pq.claude = { five: "ok", week: "ok" };
+  await f.tick();
+  for (const id of ["partial", "landed"]) {
+    assert.deepEqual(profileOf(f.agents.get(id)!), original, `${id} back on its original`);
+    assert.equal(await f.returns.get(id), null);
+  }
+  assert.equal(f.agents.get("intent")!.model, OPUS);
+}));
+
+it("M4: a main PM on a chain's first stage refused there is not stepped on to Sol; its return to the original stands; a child PM steps on", () => scenario(async (f, logs) => {
+  f.setConfig({ pmFallbackFirst: [{ from: FABLE, model: OPUS, thinking: "high" }] });
+  const original: Profile = { model: FABLE, thinkingOptionId: "high", serviceTier: null };
+  const first: Profile = { model: OPUS, thinkingOptionId: "high", serviceTier: null };
+  const last: Profile = { model: SOL, thinkingOptionId: "medium", serviceTier: "standard" };
+  for (const [id, project] of [["main", "personal"], ["child", "fixture"]] as const) {
+    f.add(id, "pm", { labels: { role: "pm", project } });
+    await f.returns.add(newObligation(id, original, first, "auto", "fallback", Date.now(), { stages: { first, last }, stage: "first" }));
+    await f.endTurn(id, { kind: "failed", error: { message: USAGE } }, `${id}-turn-1`);
+  }
+  await f.tick();
+  assert.equal(f.agents.get("main")!.model, OPUS, "the main PM stays on the first stage");
+  assert.equal((await f.returns.get("main"))?.stage, "first");
+  assert.equal(capAlerts(logs, "main").length, 1);
+  assert.ok(capAlerts(logs, "main")[0]!.includes("would=step"));
+  assert.equal(f.agents.get("child")!.model, SOL, "a child PM steps on as before");
+  f.add("fable-worker", "worker", { model: FABLE });
+  await f.endTurn("fable-worker", { kind: "completed" }, "fable-ok", "Normal reply on Fable.");
+  await f.tick();
+  assert.deepEqual(profileOf(f.agents.get("main")!), original, "the main PM returns to Fable");
+  assert.equal(await f.returns.get("main"), null);
+}));
+
+it("M5: pace mode leaves all three main PMs alone and still moves PMs whose labels only look alike", () => scenario(async (f, logs) => {
+  f.setConfig(PACE_ON);
+  f.pq.pace = paceAt(80);
+  for (const [id, project] of MAIN_PMS) f.add(id, "pm", { labels: { role: "pm", project } });
+  f.add("config-worker", "pm", { labels: { role: "pm", project: "config-worker" } });
+  f.add("cased", "pm", { labels: { role: "pm", project: "Personal" } });
+  await f.tick();
+  for (const [id] of MAIN_PMS) {
+    assert.equal(f.agents.get(id)!.model, OPUS);
+    assert.ok(logs.some((l) => l.includes(`pm-pace-held agentId=${id} reason=excluded-project`)));
+  }
+  for (const id of ["config-worker", "cased"]) assert.deepEqual(profileOf(f.agents.get(id)!), SOL_MEDIUM, `${id} moves`);
+}));
+
+it("M6: a child PM relabelled to a main project after its swap keeps its return and goes back to Opus; a main PM relabelled to a child project falls back as a child PM", () => scenario(async (f, logs) => {
+  await swapPm(f, "moved-in");
+  assert.equal(f.agents.get("moved-in")!.model, SOL);
+  f.agents.get("moved-in")!.labels = { ...f.agents.get("moved-in")!.labels, project: "work" };
+  f.add("moved-out", "pm", { labels: { role: "pm", project: "personal" } });
+  await f.endTurn("moved-out", { kind: "failed", error: { message: USAGE } }, "moved-out-turn-1");
+  assert.equal(f.agents.get("moved-out")!.model, OPUS);
+  assert.equal(capAlerts(logs, "moved-out").length, 1);
+  f.agents.get("moved-out")!.labels = { role: "pm", project: "fixture" };
+  await f.tick();
+  assert.equal(f.agents.get("moved-out")!.model, SOL, "now a child PM: the usual fallback");
+  assert.ok(await f.returns.get("moved-in"), "the relabelled PM keeps its return");
+  f.pq.claude = { five: "ok", week: "ok" };
+  await f.tick();
+  assert.deepEqual(profileOf(f.agents.get("moved-in")!), OPUS_HIGH);
+  assert.equal(await f.returns.get("moved-in"), null);
+}));

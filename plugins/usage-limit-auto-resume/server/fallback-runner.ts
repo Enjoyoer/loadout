@@ -3,7 +3,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config.ts";
 import type { AgentSettingsPort } from "./daemon.ts";
-import { chainDecision, chainRefusal, CPA_STREAK, cpaSwapEvidence, cpaUnavailable, turnModel, enrollmentKey, fallbackIneligible, fallbackSinceMs, pqProbeOpensAt, PQ_PROBE_INTERVAL_MS, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, PACE_FLAP_MS, paceIneligible, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type CpaStreak, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
+import { chainDecision, chainRefusal, CPA_STREAK, cpaSwapEvidence, cpaUnavailable, turnModel, enrollmentKey, fallbackIneligible, fallbackSinceMs, isMainPm, pqProbeOpensAt, PQ_PROBE_INTERVAL_MS, isSubscriptionClaude, isSwapEvidence, onOriginal, profileChanged, sameModel, sameProfile, recordSwapEvidence, scopedCapacity, scopedWindow, stageOf, turnSwapEvidence, writeBlocked, type SwapEvidence, hasCapacity, PACE_FLAP_MS, paceIneligible, matchesProfile, newObligation, profileOf, restoreDue, SERVICE_TIER_LABEL, storedMatches, swapDecision, type CpaStreak, type Profile, type ReturnObligation, type ReturnStore } from "./fallback.ts";
 import { agentPool, poolOut, type Pace, type PoolQuota, type QuotaPool } from "./quota.ts";
 import { isActive, messageId, rebindRecord, transientDelaySeconds, type AgentSnapshot, type ResumeRecord } from "./model.ts";
 import type { ResumeStore } from "./store.ts";
@@ -48,6 +48,16 @@ export function createFallbackRunner(deps: FallbackDeps) {
   // stay on it.
   const dropped = new Map<string, Profile>();
   const nowIso = () => new Date().toISOString();
+  // Main PMs (isMainPm, owner decision 333a) whose hard-cap alert this process has logged: one alert per agent until it
+  // completes a turn again. Kept in memory, so a plugin reload may log it once more.
+  const capAlerted = new Set<string>();
+  // A main PM that a non-main PM's rules would move now stays on its profile: no obligation, no write. Its resume record
+  // keeps the ordinary hold and resumes it there. One alert, with reasons only (no quota figures or account labels).
+  function mainPmHeld(agent: AgentSnapshot, why: string, stage: "swap" | "step") {
+    if (capAlerted.has(agent.id)) return;
+    capAlerted.add(agent.id);
+    log(`pm-main-cap-alert agentId=${agent.id} project=${agent.labels?.project} trigger=${why} would=${stage} profile=${show(profileOf(agent) ?? { model: agent.model ?? "unknown", thinkingOptionId: null, serviceTier: null })} action="main PM stays on its profile with no automatic fallback (decision 333a); its resume waits for the Claude reset; the owner may move it by hand"`);
+  }
 
   async function fetchAgent(api: FallbackApi, agentId: string): Promise<AgentSnapshot | null> {
     const result = await api.agents.ref(agentId).refresh();
@@ -352,10 +362,13 @@ export function createFallbackRunner(deps: FallbackDeps) {
   // the return.
   async function recheckSwap(obligation: ReturnObligation, agent: AgentSnapshot, config: Config): Promise<ReturnObligation | null> {
     if (agent.model === obligation.fallback.model) {
-      const ineligible = fallbackIneligible(agent, obligation.original.model);
+      const ineligible = fallbackIneligible(agent, obligation.original.model) ?? (isMainPm(agent) ? "main-pm" : null);
       if (!ineligible) return obligation;
       log(`pm-swap-not-completed agentId=${agent.id} obligationId=${obligation.obligationId} reason=${ineligible} return=kept`);
-      return returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), ...landedStep(o, o.stage === "first"), updatedAt: nowIso() }));
+      // A main PM's partial swap is left as it landed, and that profile counts as the plugin's own (restoreReadback), so
+      // the return to the original stands instead of reading as an owner change.
+      const left = ineligible === "main-pm" ? profileOf(agent) : null;
+      return returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), ...(left && !sameProfile(left, o.fallback) ? { restoreReadback: left } : {}), ...landedStep(o, o.stage === "first"), updatedAt: nowIso() }));
     }
     // A pace intent is re-decided by pace mode's own rule: still an eligible PM on its original model, the mode on, and a
     // fresh reading off pace. On pace or undecided, no pace swap is made.
@@ -376,7 +389,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
     const onStage = stageOf(obligation, profileOf(agent));
     if (onStage) {
       if (onStage === "last" && obligation.stage === "first") return obligation;
-      let reason = fallbackIneligible(agent, obligation.original.model) ?? (config.pmFallback ? null : "pmFallback-off");
+      let reason = fallbackIneligible(agent, obligation.original.model) ?? (isMainPm(agent) ? "main-pm" : null) ?? (config.pmFallback ? null : "pmFallback-off");
       // A move made by CPA's 503 evidence is not re-read against pq.
       if (!reason && !obligation.cpa503) {
         const decision = swapDecision(...await fresh());
@@ -386,7 +399,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       await stayOnStage(obligation, onStage, reason);
       return null;
     }
-    let reason = agent.model !== obligation.original.model ? "model-changed" : fallbackIneligible(agent, obligation.original.model);
+    let reason = agent.model !== obligation.original.model ? "model-changed" : fallbackIneligible(agent, obligation.original.model) ?? (isMainPm(agent) ? "main-pm" : null);
     if (!reason && !config.pmFallback) reason = "pmFallback-off";
     // A chain's first stage was chosen by a refusal of the original model that cannot be read again; the last stage,
     // skipped to, by every Claude account out, which can.
@@ -572,16 +585,17 @@ export function createFallbackRunner(deps: FallbackDeps) {
     // CPA's 503 twice in a row on the first stage: on to the last without asking pq.
     const held = evidence.cpa ? await cpaHolds(agentId) : null;
     if (evidence.cpa && !held) return reconcileLocked(agentId, config);
-    if (held) {
-      await startStage(obligation, "last", `trigger=${why} evidence=cpa-503`, held);
-      return reconcileLocked(agentId, config);
-    }
+    if (held && isMainPm(agent)) mainPmHeld(agent, why, "step");
+    else if (held) await startStage(obligation, "last", `trigger=${why} evidence=cpa-503`, held);
+    if (held) return reconcileLocked(agentId, config);
     const decision = swapDecision(await deps.quota("claude", config), await deps.quota(agentPool("pi", obligation.stages!.last.model) ?? "codex", config));
     if (!decision.swap) {
       once(agentId, `pm-stage-held agentId=${agentId} reason=${JSON.stringify(decision.reason)} trigger=${why}`);
       return reconcileLocked(agentId, config);
     }
-    await startStage(obligation, "last", `trigger=${why}`);
+    // A main PM is not stepped on: it stays on this stage, and its return toward the original stands.
+    if (isMainPm(agent)) mainPmHeld(agent, why, "step");
+    else await startStage(obligation, "last", `trigger=${why}`);
     await reconcileLocked(agentId, config);
   }
 
@@ -629,6 +643,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
       const decision = swapDecision(await deps.quota("claude", config), await deps.quota(agentPool("pi", configured.model) ?? "codex", config));
       if (!decision.swap) return once(agentId, `pm-fallback-held agentId=${agentId} reason=${JSON.stringify(decision.reason)} trigger=${why}`);
     }
+    // Every rule above says move: a main PM stays where it is instead (decision 333a), with one alert.
+    if (isMainPm(agent)) return mainPmHeld(agent, why, "swap");
     const last = await inCatalog(api, configured);
     if (!last) return once(agentId, `pm-fallback-skipped agentId=${agentId} reason=fallback-not-in-catalog profile=${show(configured)}`);
     // The first stage writes no Fast label.
@@ -729,6 +745,8 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // owes no resend after it. A late event for an older turn, while a newer input waits, failed or runs, answered
       // nothing the resend is for.
       if (outcome.kind === "completed" && await answeredLatest(agentId)) await clearResend(agentId, "answered");
+      // A main PM that completes a turn is past its cap: a later cap alerts again.
+      if (outcome.kind === "completed") capAlerted.delete(agentId);
       const freed = (cpa?.count === 1 && config.pmFallback ? await firstDelay(agentId, endedAt, config) : false) || !!await dueFreeResend(agentId);
       // A failed turn on the final fallback of a return CPA's 503 made: no swap and no return come of it; the resume
       // engine handles its record as usual.
