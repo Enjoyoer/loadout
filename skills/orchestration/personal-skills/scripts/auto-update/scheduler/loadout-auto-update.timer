@@ -1,0 +1,13 @@
+# INERT TEMPLATE (systemd --user). Enable only when Config approves phase 1.
+# Fires at :15 of 01:00 to 04:00 America/New_York (DST-aware), never in the Sunday 05:00-07:00 blackout.
+# Persistent=false: a missed slot is not caught up; the runner enforces windows and blackouts itself as well.
+[Unit]
+Description=Loadout fleet auto-update runner schedule
+
+[Timer]
+OnCalendar=*-*-* 01,02,03,04:15:00 America/New_York
+Persistent=false
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

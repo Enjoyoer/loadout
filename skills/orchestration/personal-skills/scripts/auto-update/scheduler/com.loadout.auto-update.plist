@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- INERT TEMPLATE. Not installed by any sync. Replace @NODE@, @RUNNER@, @HOST@ and @HOME@, then load it only when
+     Config approves phase 1. Fires at :15 of 01:00 to 04:00 local time every day, never in the Sunday 05:00-07:00
+     blackout; launchd runs a missed slot on wake, so the runner also enforces windows and blackouts itself. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.loadout.auto-update</string>
+  <key>ProgramArguments</key>
+  <array><string>@NODE@</string><string>@RUNNER@</string><string>run</string><string>--host</string><string>@HOST@</string></array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>StandardOutPath</key><string>@HOME@/.local/state/loadout/auto-update/launchd.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/.local/state/loadout/auto-update/launchd.log</string>
+  <key>AbandonProcessGroup</key><true/>
+</dict>
+</plist>

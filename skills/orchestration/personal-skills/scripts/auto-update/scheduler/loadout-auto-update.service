@@ -1,0 +1,10 @@
+# INERT TEMPLATE (systemd --user). Not installed by any sync. Replace @NODE@, @RUNNER@ and @HOST@.
+[Unit]
+Description=Loadout fleet auto-update runner (fixed rules, one apply at most)
+
+[Service]
+Type=oneshot
+ExecStart=@NODE@ @RUNNER@ run --host @HOST@
+# The detached transaction and its rollback watchdog must outlive this oneshot.
+KillMode=process
+Nice=10

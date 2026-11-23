@@ -1,0 +1,155 @@
+{
+  "schema": "loadout.auto-update.registry/1",
+  "notes": "Made-up example. The real registry lives in your private fleet directory as auto-update/registry.json.",
+  "feed": { "path": "~/.local/state/loadout/auto-update/available.json", "max_age_hours": 36 },
+  "notify": { "command": ["paseo"], "labels": ["role=pm", "project=config"] },
+  "blackouts": [ { "tz": "America/New_York", "days": ["sun"], "start": "05:00", "end": "07:00" } ],
+  "hosts": {
+    "laptop": { "os": "macos", "tz": "America/New_York",
+                "allow": ["claude-code", "codex-cli", "agy", "brew.ripgrep", "tailscale", "rustdesk"] },
+    "devbox": { "os": "linux", "tz": "America/New_York", "notify_host": "ssh://laptop",
+                "allow": ["claude-code", "codex-cli", "tailscale", "rustdesk"] },
+    "desktop": { "os": "windows", "tz": "America/New_York", "notify_host": "ssh://laptop",
+                 "allow": ["claude-code", "codex-cli"], "deny_tiers": [2],
+                 "preconditions": [ { "name": "interactive-idle", "max_age_seconds": 120, "timeout_seconds": 30,
+                   "argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                            "{adapters}/interactive-idle.ps1", "-MinIdleMinutes", "15"] } ] },
+    "nas-example": { "os": "linux", "tz": "America/New_York", "allow": ["example-tunnel"] }
+  },
+  "components": [
+    {
+      "component": "claude-code", "tier": 1, "mode": "hold",
+      "notes": "Held until the old CLI canary schedule is gone; then mode apply.",
+      "hosts": ["laptop", "devbox", "desktop"],
+      "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "bounds": { "max_bump": "minor" },
+      "window": { "tz": "America/New_York", "days": ["mon", "tue", "wed", "thu", "fri", "sat"], "start": "02:00", "end": "04:30" },
+      "host_windows": { "desktop": { "tz": "America/New_York", "days": ["sun"], "start": "03:00", "end": "05:00" } },
+      "soak_hours": 48, "security_soak_hours": 12,
+      "canary": { "host": "laptop", "receipt": "~/.local/state/loadout/auto-update/canary/claude-code.json", "max_age_hours": 168 },
+      "adapters": {
+        "macos": {
+          "check": { "argv": ["~/.local/bin/claude", "--version"], "regex": "^([0-9.]+) \\(Claude Code\\)$" },
+          "stage": [["{adapters}/cli-posix.sh", "claude", "stage", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/claude", "--store", "~/.local/share/claude/versions"]],
+          "precheck": [["{adapters}/cli-posix.sh", "claude", "precheck", "--version", "{version}", "--txn", "{txn}", "--store", "~/.local/share/claude/versions",
+                        "--smoke-node", "/usr/local/bin/node", "--smoke-wrapper", "~/.config/loadout/mcp-env.cjs",
+                        "--smoke-base-url", "http://127.0.0.1:8080", "--smoke-model", "example-model"]],
+          "apply": ["{adapters}/cli-posix.sh", "claude", "apply", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/claude", "--store", "~/.local/share/claude/versions"],
+          "health": [["~/.local/bin/claude", "--version"]],
+          "rollback": ["{adapters}/cli-posix.sh", "claude", "rollback", "--txn", "{txn}", "--link", "~/.local/bin/claude"]
+        },
+        "linux": {
+          "check": { "argv": ["~/.local/bin/claude", "--version"], "regex": "^([0-9.]+) \\(Claude Code\\)$" },
+          "stage": [["{adapters}/cli-posix.sh", "claude", "stage", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/claude", "--store", "~/.local/share/claude/versions"]],
+          "precheck": [["{adapters}/cli-posix.sh", "claude", "precheck", "--version", "{version}", "--txn", "{txn}", "--store", "~/.local/share/claude/versions"]],
+          "apply": ["{adapters}/cli-posix.sh", "claude", "apply", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/claude", "--store", "~/.local/share/claude/versions"],
+          "health": [["~/.local/bin/claude", "--version"]],
+          "rollback": ["{adapters}/cli-posix.sh", "claude", "rollback", "--txn", "{txn}", "--link", "~/.local/bin/claude"]
+        },
+        "windows": {
+          "check": { "argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "claude", "-Step", "version"], "regex": "^([0-9.]+) \\(Claude Code\\)$" },
+          "stage": [["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "claude", "-Step", "stage", "-Txn", "{txn}", "-Version", "{version}"]],
+          "precheck": [["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "claude", "-Step", "precheck", "-Txn", "{txn}", "-Version", "{version}"]],
+          "apply": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "claude", "-Step", "apply", "-Txn", "{txn}", "-Version", "{version}"],
+          "health": [["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "claude", "-Step", "health", "-Txn", "{txn}"]],
+          "rollback": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "claude", "-Step", "rollback", "-Txn", "{txn}", "-Previous", "{installed}"]
+        }
+      }
+    },
+    {
+      "component": "codex-cli", "tier": 1, "mode": "hold",
+      "hosts": ["laptop", "devbox", "desktop"],
+      "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "bounds": { "max_bump": "minor" },
+      "window": { "tz": "America/New_York", "days": ["mon", "tue", "wed", "thu", "fri", "sat"], "start": "02:00", "end": "04:30" },
+      "host_windows": { "desktop": { "tz": "America/New_York", "days": ["sun"], "start": "03:00", "end": "05:00" } },
+      "soak_hours": 48, "security_soak_hours": 12,
+      "canary": { "host": "laptop", "receipt": "~/.local/state/loadout/auto-update/canary/codex-cli.json", "max_age_hours": 168 },
+      "adapters": {
+        "macos": {
+          "check": { "argv": ["~/.local/bin/codex", "--version"], "regex": "^codex-cli ([0-9.]+)$" },
+          "stage": [["{adapters}/cli-posix.sh", "codex", "stage", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/codex", "--store", "~/.local/share/codex-cli"]],
+          "precheck": [["{adapters}/cli-posix.sh", "codex", "precheck", "--version", "{version}", "--txn", "{txn}", "--store", "~/.local/share/codex-cli"]],
+          "apply": ["{adapters}/cli-posix.sh", "codex", "apply", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/codex", "--store", "~/.local/share/codex-cli"],
+          "health": [["~/.local/bin/codex", "exec", "--help"]],
+          "rollback": ["{adapters}/cli-posix.sh", "codex", "rollback", "--txn", "{txn}", "--link", "~/.local/bin/codex"]
+        },
+        "linux": {
+          "check": { "argv": ["~/.local/bin/codex", "--version"], "regex": "^codex-cli ([0-9.]+)$" },
+          "stage": [["{adapters}/cli-posix.sh", "codex", "stage", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/codex", "--store", "~/.local/share/codex-cli"]],
+          "precheck": [["{adapters}/cli-posix.sh", "codex", "precheck", "--version", "{version}", "--txn", "{txn}", "--store", "~/.local/share/codex-cli"]],
+          "apply": ["{adapters}/cli-posix.sh", "codex", "apply", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/codex", "--store", "~/.local/share/codex-cli"],
+          "health": [["~/.local/bin/codex", "exec", "--help"]],
+          "rollback": ["{adapters}/cli-posix.sh", "codex", "rollback", "--txn", "{txn}", "--link", "~/.local/bin/codex"]
+        },
+        "windows": {
+          "check": { "argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "codex", "-Step", "version"], "regex": "^codex-cli ([0-9.]+)$" },
+          "stage": [["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "codex", "-Step", "stage", "-Txn", "{txn}", "-Version", "{version}"]],
+          "apply": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "codex", "-Step", "apply", "-Txn", "{txn}", "-Version", "{version}"],
+          "health": [["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "codex", "-Step", "health", "-Txn", "{txn}"]],
+          "rollback": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "codex", "-Step", "rollback", "-Txn", "{txn}", "-Previous", "{installed}"]
+        }
+      }
+    },
+    {
+      "component": "agy", "tier": 1, "mode": "observe",
+      "notes": "Self-updates; the runner only records its version.",
+      "hosts": ["laptop"],
+      "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "bounds": { "max_bump": "minor" },
+      "window": { "tz": "America/New_York", "days": ["mon"], "start": "02:00", "end": "04:00" }, "soak_hours": 0,
+      "adapters": { "macos": { "check": { "argv": ["agy", "--version"], "regex": "^([0-9][0-9.]*)( .*)?$" } } }
+    },
+    {
+      "component": "brew.ripgrep", "tier": 1, "mode": "hold",
+      "notes": "Formula only, scoped upgrade proven by the dry run; held until a Homebrew rollback is proven.",
+      "hosts": ["laptop"],
+      "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(_[0-9]+)?$", "bounds": { "max_bump": "minor" },
+      "window": { "tz": "America/New_York", "days": ["tue"], "start": "02:00", "end": "04:00" }, "soak_hours": 72,
+      "adapters": { "macos": {
+        "check": { "argv": ["{adapters}/brew-formula.sh", "version", "ripgrep"], "regex": "^([0-9][0-9._]*)$" },
+        "precheck": [["{adapters}/brew-formula.sh", "scope", "ripgrep", "{version}"]] } }
+    },
+    {
+      "component": "tailscale", "tier": 2, "mode": "hold", "exclusive_group": "access", "watchdog_seconds": 900,
+      "notes": "Held until an apply adapter with a proven rollback exists. Health keeps the serve config.",
+      "hosts": ["laptop", "devbox"],
+      "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "bounds": { "max_bump": "minor" },
+      "window": { "tz": "America/New_York", "days": ["wed"], "start": "02:00", "end": "04:00" }, "soak_hours": 72,
+      "adapters": {
+        "macos": { "check": { "argv": ["{adapters}/access-health.sh", "tailscale-version"], "regex": "^([0-9.]+)$" },
+                   "stage": [["{adapters}/access-health.sh", "snapshot", "{txn}"]],
+                   "health": [["{adapters}/access-health.sh", "tailscale", "{txn}"], ["{adapters}/access-health.sh", "rustdesk"]] },
+        "linux": { "check": { "argv": ["{adapters}/access-health.sh", "tailscale-version"], "regex": "^([0-9.]+)$" },
+                   "stage": [["{adapters}/access-health.sh", "snapshot", "{txn}"]],
+                   "health": [["{adapters}/access-health.sh", "tailscale", "{txn}"], ["{adapters}/access-health.sh", "rustdesk"]] }
+      }
+    },
+    {
+      "component": "rustdesk", "tier": 2, "mode": "hold", "exclusive_group": "access", "watchdog_seconds": 900,
+      "hosts": ["laptop", "devbox"],
+      "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "bounds": { "max_bump": "minor" },
+      "window": { "tz": "America/New_York", "days": ["thu"], "start": "02:00", "end": "04:00" }, "soak_hours": 72,
+      "adapters": {
+        "macos": { "check": { "argv": ["{adapters}/access-health.sh", "rustdesk-version"], "regex": "^([0-9.]+)$" },
+                   "stage": [["{adapters}/access-health.sh", "snapshot", "{txn}"]],
+                   "health": [["{adapters}/access-health.sh", "rustdesk"], ["{adapters}/access-health.sh", "tailscale", "{txn}"]] },
+        "linux": { "check": { "argv": ["{adapters}/access-health.sh", "rustdesk-version"], "regex": "^([0-9.]+)$" },
+                   "stage": [["{adapters}/access-health.sh", "snapshot", "{txn}"]],
+                   "health": [["{adapters}/access-health.sh", "rustdesk"], ["{adapters}/access-health.sh", "tailscale", "{txn}"]] }
+      }
+    },
+    {
+      "component": "example-tunnel", "tier": 1, "mode": "hold", "require_digest": true,
+      "notes": "Container adapter contract: pull by digest beside the running image, recreate, external and origin health, re-create from the kept image on failure. Adapter not shipped; the owner window goes in host_windows.",
+      "hosts": ["nas-example"],
+      "version_pattern": "^[0-9]{4}\\.[0-9]+\\.[0-9]+$", "bounds": { "max_bump": "major" },
+      "window": { "tz": "America/New_York", "days": ["sat"], "start": "03:00", "end": "04:00" }, "soak_hours": 72, "security_soak_hours": 24,
+      "adapters": { "linux": {
+        "check": { "argv": ["{adapters}/container-digest.sh", "version", "example-tunnel"], "regex": "^([0-9.]+)$" },
+        "stage": [["{adapters}/container-digest.sh", "pull", "example-tunnel", "{digest}", "{txn}"]],
+        "apply": ["{adapters}/container-digest.sh", "recreate", "example-tunnel", "{digest}", "{txn}"],
+        "health": [["{adapters}/container-digest.sh", "health-origin", "example-tunnel"], ["{adapters}/container-digest.sh", "health-external", "example-tunnel"]],
+        "rollback": ["{adapters}/container-digest.sh", "restore", "example-tunnel", "{txn}"] } }
+    }
+  ]
+}
