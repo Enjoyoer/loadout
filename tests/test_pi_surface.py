@@ -1599,6 +1599,12 @@ assert.equal(ownerSurface.provider,'pi/fleet/gpt-6.1-sol');assert.equal(ownerSur
 const ownerReq=build({route:owner});
 assert.equal(ownerReq.request.provider,'pi/fleet/gpt-6.1-sol');assert.deepEqual(ownerReq.request.settings,{thinkingOptionId:'high'});
 assert.equal(ownerReq.request.labels['opc.service-tier'],'fast');assert.equal(ownerReq.request.labels['opc.route-source'],'owner-explicit');
+// Decision 332: review-security defaults to Sol xhigh with the Fast label; an owner-named GPT route is allowed and, resolved
+// alone as when recorded, keeps the xhigh minimum.
+const secReq=build({route:r.selectWorkerRoute({taskKind:'review-security',catalog})});
+assert.equal(secReq.request.provider,'pi/fleet/gpt-6.1-sol');assert.deepEqual(secReq.request.settings,{thinkingOptionId:'xhigh'});assert.equal(secReq.request.labels['opc.service-tier'],'fast');
+assert.deepEqual(plain(r.selectWorkerRoute({ownerRoute:{...owner,effort:'xhigh'},taskKind:'security',catalog})),{...owner,effort:'xhigh'});
+assert.throws(()=>r.selectWorkerRoute({ownerRoute:{...owner,model:'fleet/claude-opus-5-5',fastMode:false},taskKind:'review-security',catalog}),/below the review-security minimum xhigh/);
 // Fast off on a GPT route is an explicit Standard, independent of the fleet default.
 assert.equal(build({route:{...owner,fastMode:false}}).request.labels['opc.service-tier'],'standard');
 // Other kinds ask the owner; a missing label or thinking level stops the lane.

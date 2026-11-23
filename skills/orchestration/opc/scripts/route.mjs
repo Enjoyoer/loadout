@@ -173,7 +173,7 @@ function differingLaneFlags(stored, flags, ownerRoute) {
       : OFF_PACE_SOURCES.includes(stored.source) ? canonicalWorkerClass(flags.class) === 'code'
         : ownerRoute != null || Object.hasOwn(OWNER_RULE_ROUTES, canonicalWorkerClass(flags.class));
     if (fits && stored.source !== 'task-default') {
-      try { validateLaneClass(stored, flags.class); } catch { fits = false; }
+      try { validateLaneClass(stored, flags.class, null, { recorded: true }); } catch { fits = false; }
     }
     if (!fits) differ.push('class');
   }
