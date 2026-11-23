@@ -44,7 +44,7 @@ Config owns it, in the private fleet directory (see `fleet/README.md`); the flee
   - Tier 2 needs `exclusive_group` (at most one change per group per host per local day, failed attempts included) and `watchdog_seconds`.
   - `require_digest`: the feed must give an image digest (`{digest}` in argv), for digest-pinned containers.
   - `adapters.<os>`: `check` `{argv, regex}` (group 1 is the installed version), and `stage[]`, `precheck[]`, `apply`, `health[]`, `rollback`. A row in `mode apply` needs apply, health and rollback for every host's OS.
-  - argv placeholders, whole or inside an element: `{version}`, `{installed}`, `{digest}`, `{adapters}` (this directory's `adapters/`), `{txn}` (the transaction directory), `{component}`, `{host}`. A leading `~` is the home directory. Commands run without a shell; `.cmd` and `.bat` files go through `powershell.exe -File`.
+  - argv placeholders, whole or inside an element: `{version}`, `{installed}`, `{digest}`, `{adapters}` (this directory's `adapters/`), `{txn}` (the transaction directory), `{component}`, `{host}`. A leading `~` is the home directory. Commands run without a shell; `.cmd` and `.bat` files go through `powershell.exe -File`. The skills sync installs these scripts without the executable bit, so run each adapter through its interpreter (`/bin/bash {adapters}/cli-posix.sh ...`, `powershell.exe -File {adapters}/cli-windows.ps1 ...`).
 
 ### Kill switch: `<fleet>/auto-update/switch.json`
 

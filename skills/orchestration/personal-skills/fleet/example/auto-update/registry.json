@@ -30,21 +30,21 @@
       "adapters": {
         "macos": {
           "check": { "argv": ["~/.local/bin/claude", "--version"], "regex": "^([0-9.]+) \\(Claude Code\\)$" },
-          "stage": [["{adapters}/cli-posix.sh", "claude", "stage", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/claude", "--store", "~/.local/share/claude/versions"]],
-          "precheck": [["{adapters}/cli-posix.sh", "claude", "precheck", "--version", "{version}", "--txn", "{txn}", "--store", "~/.local/share/claude/versions",
+          "stage": [["/bin/bash", "{adapters}/cli-posix.sh", "claude", "stage", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/claude", "--store", "~/.local/share/claude/versions"]],
+          "precheck": [["/bin/bash", "{adapters}/cli-posix.sh", "claude", "precheck", "--version", "{version}", "--txn", "{txn}", "--store", "~/.local/share/claude/versions",
                         "--smoke-node", "/usr/local/bin/node", "--smoke-wrapper", "~/.config/loadout/mcp-env.cjs",
                         "--smoke-base-url", "http://127.0.0.1:8080", "--smoke-model", "example-model"]],
-          "apply": ["{adapters}/cli-posix.sh", "claude", "apply", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/claude", "--store", "~/.local/share/claude/versions"],
+          "apply": ["/bin/bash", "{adapters}/cli-posix.sh", "claude", "apply", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/claude", "--store", "~/.local/share/claude/versions"],
           "health": [["~/.local/bin/claude", "--version"]],
-          "rollback": ["{adapters}/cli-posix.sh", "claude", "rollback", "--txn", "{txn}", "--link", "~/.local/bin/claude"]
+          "rollback": ["/bin/bash", "{adapters}/cli-posix.sh", "claude", "rollback", "--txn", "{txn}", "--link", "~/.local/bin/claude"]
         },
         "linux": {
           "check": { "argv": ["~/.local/bin/claude", "--version"], "regex": "^([0-9.]+) \\(Claude Code\\)$" },
-          "stage": [["{adapters}/cli-posix.sh", "claude", "stage", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/claude", "--store", "~/.local/share/claude/versions"]],
-          "precheck": [["{adapters}/cli-posix.sh", "claude", "precheck", "--version", "{version}", "--txn", "{txn}", "--store", "~/.local/share/claude/versions"]],
-          "apply": ["{adapters}/cli-posix.sh", "claude", "apply", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/claude", "--store", "~/.local/share/claude/versions"],
+          "stage": [["/bin/bash", "{adapters}/cli-posix.sh", "claude", "stage", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/claude", "--store", "~/.local/share/claude/versions"]],
+          "precheck": [["/bin/bash", "{adapters}/cli-posix.sh", "claude", "precheck", "--version", "{version}", "--txn", "{txn}", "--store", "~/.local/share/claude/versions"]],
+          "apply": ["/bin/bash", "{adapters}/cli-posix.sh", "claude", "apply", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/claude", "--store", "~/.local/share/claude/versions"],
           "health": [["~/.local/bin/claude", "--version"]],
-          "rollback": ["{adapters}/cli-posix.sh", "claude", "rollback", "--txn", "{txn}", "--link", "~/.local/bin/claude"]
+          "rollback": ["/bin/bash", "{adapters}/cli-posix.sh", "claude", "rollback", "--txn", "{txn}", "--link", "~/.local/bin/claude"]
         },
         "windows": {
           "check": { "argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "claude", "-Step", "version"], "regex": "^([0-9.]+) \\(Claude Code\\)$" },
@@ -68,19 +68,19 @@
       "adapters": {
         "macos": {
           "check": { "argv": ["~/.local/bin/codex", "--version"], "regex": "^codex-cli ([0-9.]+)$" },
-          "stage": [["{adapters}/cli-posix.sh", "codex", "stage", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/codex", "--store", "~/.local/share/codex-cli"]],
-          "precheck": [["{adapters}/cli-posix.sh", "codex", "precheck", "--version", "{version}", "--txn", "{txn}", "--store", "~/.local/share/codex-cli"]],
-          "apply": ["{adapters}/cli-posix.sh", "codex", "apply", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/codex", "--store", "~/.local/share/codex-cli"],
+          "stage": [["/bin/bash", "{adapters}/cli-posix.sh", "codex", "stage", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/codex", "--store", "~/.local/share/codex-cli"]],
+          "precheck": [["/bin/bash", "{adapters}/cli-posix.sh", "codex", "precheck", "--version", "{version}", "--txn", "{txn}", "--store", "~/.local/share/codex-cli"]],
+          "apply": ["/bin/bash", "{adapters}/cli-posix.sh", "codex", "apply", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/codex", "--store", "~/.local/share/codex-cli"],
           "health": [["~/.local/bin/codex", "exec", "--help"]],
-          "rollback": ["{adapters}/cli-posix.sh", "codex", "rollback", "--txn", "{txn}", "--link", "~/.local/bin/codex"]
+          "rollback": ["/bin/bash", "{adapters}/cli-posix.sh", "codex", "rollback", "--txn", "{txn}", "--link", "~/.local/bin/codex"]
         },
         "linux": {
           "check": { "argv": ["~/.local/bin/codex", "--version"], "regex": "^codex-cli ([0-9.]+)$" },
-          "stage": [["{adapters}/cli-posix.sh", "codex", "stage", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/codex", "--store", "~/.local/share/codex-cli"]],
-          "precheck": [["{adapters}/cli-posix.sh", "codex", "precheck", "--version", "{version}", "--txn", "{txn}", "--store", "~/.local/share/codex-cli"]],
-          "apply": ["{adapters}/cli-posix.sh", "codex", "apply", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/codex", "--store", "~/.local/share/codex-cli"],
+          "stage": [["/bin/bash", "{adapters}/cli-posix.sh", "codex", "stage", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/codex", "--store", "~/.local/share/codex-cli"]],
+          "precheck": [["/bin/bash", "{adapters}/cli-posix.sh", "codex", "precheck", "--version", "{version}", "--txn", "{txn}", "--store", "~/.local/share/codex-cli"]],
+          "apply": ["/bin/bash", "{adapters}/cli-posix.sh", "codex", "apply", "--version", "{version}", "--txn", "{txn}", "--link", "~/.local/bin/codex", "--store", "~/.local/share/codex-cli"],
           "health": [["~/.local/bin/codex", "exec", "--help"]],
-          "rollback": ["{adapters}/cli-posix.sh", "codex", "rollback", "--txn", "{txn}", "--link", "~/.local/bin/codex"]
+          "rollback": ["/bin/bash", "{adapters}/cli-posix.sh", "codex", "rollback", "--txn", "{txn}", "--link", "~/.local/bin/codex"]
         },
         "windows": {
           "check": { "argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{adapters}/cli-windows.ps1", "-Tool", "codex", "-Step", "version"], "regex": "^codex-cli ([0-9.]+)$" },
@@ -106,8 +106,8 @@
       "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(_[0-9]+)?$", "bounds": { "max_bump": "minor" },
       "window": { "tz": "America/New_York", "days": ["tue"], "start": "02:00", "end": "04:00" }, "soak_hours": 72,
       "adapters": { "macos": {
-        "check": { "argv": ["{adapters}/brew-formula.sh", "version", "ripgrep"], "regex": "^([0-9][0-9._]*)$" },
-        "precheck": [["{adapters}/brew-formula.sh", "scope", "ripgrep", "{version}"]] } }
+        "check": { "argv": ["/bin/bash", "{adapters}/brew-formula.sh", "version", "ripgrep"], "regex": "^([0-9][0-9._]*)$" },
+        "precheck": [["/bin/bash", "{adapters}/brew-formula.sh", "scope", "ripgrep", "{version}"]] } }
     },
     {
       "component": "tailscale", "tier": 2, "mode": "hold", "exclusive_group": "access", "watchdog_seconds": 900,
@@ -116,12 +116,12 @@
       "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "bounds": { "max_bump": "minor" },
       "window": { "tz": "America/New_York", "days": ["wed"], "start": "02:00", "end": "04:00" }, "soak_hours": 72,
       "adapters": {
-        "macos": { "check": { "argv": ["{adapters}/access-health.sh", "tailscale-version"], "regex": "^([0-9.]+)$" },
-                   "stage": [["{adapters}/access-health.sh", "snapshot", "{txn}"]],
-                   "health": [["{adapters}/access-health.sh", "tailscale", "{txn}"], ["{adapters}/access-health.sh", "rustdesk"]] },
-        "linux": { "check": { "argv": ["{adapters}/access-health.sh", "tailscale-version"], "regex": "^([0-9.]+)$" },
-                   "stage": [["{adapters}/access-health.sh", "snapshot", "{txn}"]],
-                   "health": [["{adapters}/access-health.sh", "tailscale", "{txn}"], ["{adapters}/access-health.sh", "rustdesk"]] }
+        "macos": { "check": { "argv": ["/bin/bash", "{adapters}/access-health.sh", "tailscale-version"], "regex": "^([0-9.]+)$" },
+                   "stage": [["/bin/bash", "{adapters}/access-health.sh", "snapshot", "{txn}"]],
+                   "health": [["/bin/bash", "{adapters}/access-health.sh", "tailscale", "{txn}"], ["/bin/bash", "{adapters}/access-health.sh", "rustdesk"]] },
+        "linux": { "check": { "argv": ["/bin/bash", "{adapters}/access-health.sh", "tailscale-version"], "regex": "^([0-9.]+)$" },
+                   "stage": [["/bin/bash", "{adapters}/access-health.sh", "snapshot", "{txn}"]],
+                   "health": [["/bin/bash", "{adapters}/access-health.sh", "tailscale", "{txn}"], ["/bin/bash", "{adapters}/access-health.sh", "rustdesk"]] }
       }
     },
     {
@@ -130,12 +130,12 @@
       "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "bounds": { "max_bump": "minor" },
       "window": { "tz": "America/New_York", "days": ["thu"], "start": "02:00", "end": "04:00" }, "soak_hours": 72,
       "adapters": {
-        "macos": { "check": { "argv": ["{adapters}/access-health.sh", "rustdesk-version"], "regex": "^([0-9.]+)$" },
-                   "stage": [["{adapters}/access-health.sh", "snapshot", "{txn}"]],
-                   "health": [["{adapters}/access-health.sh", "rustdesk"], ["{adapters}/access-health.sh", "tailscale", "{txn}"]] },
-        "linux": { "check": { "argv": ["{adapters}/access-health.sh", "rustdesk-version"], "regex": "^([0-9.]+)$" },
-                   "stage": [["{adapters}/access-health.sh", "snapshot", "{txn}"]],
-                   "health": [["{adapters}/access-health.sh", "rustdesk"], ["{adapters}/access-health.sh", "tailscale", "{txn}"]] }
+        "macos": { "check": { "argv": ["/bin/bash", "{adapters}/access-health.sh", "rustdesk-version"], "regex": "^([0-9.]+)$" },
+                   "stage": [["/bin/bash", "{adapters}/access-health.sh", "snapshot", "{txn}"]],
+                   "health": [["/bin/bash", "{adapters}/access-health.sh", "rustdesk"], ["/bin/bash", "{adapters}/access-health.sh", "tailscale", "{txn}"]] },
+        "linux": { "check": { "argv": ["/bin/bash", "{adapters}/access-health.sh", "rustdesk-version"], "regex": "^([0-9.]+)$" },
+                   "stage": [["/bin/bash", "{adapters}/access-health.sh", "snapshot", "{txn}"]],
+                   "health": [["/bin/bash", "{adapters}/access-health.sh", "rustdesk"], ["/bin/bash", "{adapters}/access-health.sh", "tailscale", "{txn}"]] }
       }
     },
     {
@@ -145,11 +145,11 @@
       "version_pattern": "^[0-9]{4}\\.[0-9]+\\.[0-9]+$", "bounds": { "max_bump": "major" },
       "window": { "tz": "America/New_York", "days": ["sat"], "start": "03:00", "end": "04:00" }, "soak_hours": 72, "security_soak_hours": 24,
       "adapters": { "linux": {
-        "check": { "argv": ["{adapters}/container-digest.sh", "version", "example-tunnel"], "regex": "^([0-9.]+)$" },
-        "stage": [["{adapters}/container-digest.sh", "pull", "example-tunnel", "{digest}", "{txn}"]],
-        "apply": ["{adapters}/container-digest.sh", "recreate", "example-tunnel", "{digest}", "{txn}"],
-        "health": [["{adapters}/container-digest.sh", "health-origin", "example-tunnel"], ["{adapters}/container-digest.sh", "health-external", "example-tunnel"]],
-        "rollback": ["{adapters}/container-digest.sh", "restore", "example-tunnel", "{txn}"] } }
+        "check": { "argv": ["/bin/bash", "{adapters}/container-digest.sh", "version", "example-tunnel"], "regex": "^([0-9.]+)$" },
+        "stage": [["/bin/bash", "{adapters}/container-digest.sh", "pull", "example-tunnel", "{digest}", "{txn}"]],
+        "apply": ["/bin/bash", "{adapters}/container-digest.sh", "recreate", "example-tunnel", "{digest}", "{txn}"],
+        "health": [["/bin/bash", "{adapters}/container-digest.sh", "health-origin", "example-tunnel"], ["/bin/bash", "{adapters}/container-digest.sh", "health-external", "example-tunnel"]],
+        "rollback": ["/bin/bash", "{adapters}/container-digest.sh", "restore", "example-tunnel", "{txn}"] } }
     }
   ]
 }
