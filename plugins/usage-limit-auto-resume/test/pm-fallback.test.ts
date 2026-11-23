@@ -1522,6 +1522,7 @@ it("M7: a main PM's chain never writes its first stage: no new or stored step ba
     assert.deepEqual(f.calls.apply, []);
     assert.deepEqual(f.calls.sends, [], "the held resume is not sent past the pq hold");
     assert.ok(!logs.some((l) => l.includes("cpa-503-moved")));
+    assert.ok(logs.some((l) => l.includes("pm-stage-dropped agentId=main") && l.includes("main-pm")));
   });
 });
 

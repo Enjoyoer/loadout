@@ -76,6 +76,11 @@ export type ReturnObligation = {
    * (no Claude success or capacity proof alone), at least PACE_FLAP_MS after the swap landed. Absent: false.
    */
   pace?: boolean;
+  /**
+   * Since 0.9.0: a main PM's move that landed partly or did not persist, found by recheckSwap. Its return to the exact
+   * original is due at once (decision 333a). Absent: false.
+   */
+  mainPmPartial?: boolean;
   attempts: number;
   lastAttemptAt: string | null;
   lastError: string | null;
@@ -108,14 +113,15 @@ export function storedMatches(stored: readonly Profile[], profile: Profile): boo
 /** The least time between a pace swap landing and its pace return, and between a pace return and the next pace swap. */
 export const PACE_FLAP_MS = 30 * 60_000;
 
-/** The main PMs' projects, which neither pace mode nor a Claude-out fallback ever moves. Built in; no setting removes one. */
+/** The main PMs' projects (isMainPm), for which the plugin decides no automatic move. Built in; no setting removes one. */
 export const MAIN_PM_PROJECTS: readonly string[] = ["config", "work", "personal"];
 
 /**
  * A main PM: labelled exactly `role=pm` with a `project` label of a main PM project (`config`, `work`, `personal`).
  * Since 0.9.0 (owner decision 333a) the plugin decides no automatic move for one: no pace swap, no Claude-out swap,
  * no CPA move, no onward step and no step back. It stays on its profile and resumes there; the only profile written for
- * it is its exact original. Read on the agent at each decision and again right before each settings write.
+ * it is its exact original, except for a relabel that lands during a write (Paseo has no conditional write). Read on the
+ * agent at each decision and again right before each settings write.
  */
 export function isMainPm(agent: Pick<AgentSnapshot, "labels">): boolean {
   const labels = agent.labels ?? {};
@@ -385,6 +391,7 @@ function isObligation(value: unknown): value is ReturnObligation {
     (o.stepBackPending === undefined || typeof o.stepBackPending === "boolean") &&
     (o.cpaResendMessageId === undefined || isNullableString(o.cpaResendMessageId)) &&
     (o.pace === undefined || typeof o.pace === "boolean") &&
+    (o.mainPmPartial === undefined || typeof o.mainPmPartial === "boolean") &&
     Number.isSafeInteger(o.attempts) && (o.lastAttemptAt === null || isTime(o.lastAttemptAt)) && isNullableString(o.lastError) &&
     isTime(o.createdAt) && isTime(o.updatedAt);
 }

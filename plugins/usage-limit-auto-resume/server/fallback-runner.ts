@@ -124,7 +124,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
 
   // A stage move that cannot go ahead leaves the PM where it is: the obligation goes back to the stage it is on, and
   // the return to the original stands.
-  // For a main PM (`dropResend`) the cancelled move's owed CPA resend goes too: it was owed for a move that never
+  // For a main PM (`dropResend`), whatever stopped the move, the cancelled move's owed CPA resend goes too: it was owed for a move that never
   // happened, and must not skip the pq hold on the stage the PM stays on.
   async function stayOnStage(obligation: ReturnObligation, stage: "first" | "last", reason: string, dropResend = false) {
     const kept = await returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", stage, fallback: o.stages![stage], fallbackSince: o.fallbackSince ?? nowIso(), restoreDueAt: null, ...(dropResend ? { cpaResend: false, cpaResendMessageId: null } : {}), ...landedStep(o, stage === "first"), updatedAt: nowIso() }));
@@ -246,7 +246,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
     if (!blocked) return true;
     if (blocked === "cancelled") { await cancel(obligation.obligationId); return false; }
     const onStage = stageOf(obligation, profileOf(agent));
-    if (obligation.phase === "switching" && agent.model !== obligation.fallback.model && onStage) await stayOnStage(obligation, onStage, blocked);
+    if (obligation.phase === "switching" && agent.model !== obligation.fallback.model && onStage) await stayOnStage(obligation, onStage, blocked, isMainPm(agent));
     else if (obligation.phase === "switching" && agent.model !== obligation.fallback.model) {
       await returns.remove(obligation.obligationId);
       log(`pm-swap-dropped agentId=${agent.id} obligationId=${obligation.obligationId} reason=${blocked} profile=${show(profileOf(agent) ?? obligation.original)}`);
@@ -375,7 +375,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // A main PM's partial or unpersisted move is not completed. The profile it left is the plugin's own
       // (restoreReadback): the return to the exact original is due at once (reconcileLocked), and resume sends wait for it.
       const left = main ? profileOf(agent) : null;
-      return returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), ...(left ? { restoreReadback: left } : {}), ...landedStep(o, o.stage === "first"), updatedAt: nowIso() }));
+      return returns.update(obligation.obligationId, (o) => ({ ...o, phase: "fallback", fallbackSince: o.fallbackSince ?? nowIso(), ...(left ? { restoreReadback: left, mainPmPartial: true } : {}), ...landedStep(o, o.stage === "first"), updatedAt: nowIso() }));
     }
     // A pace intent is re-decided by pace mode's own rule: still an eligible PM on its original model, the mode on, and a
     // fresh reading off pace. On pace or undecided, no pace swap is made.
@@ -398,7 +398,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // A step back writes the first stage, which is not a main PM's original: a main PM stays on the last stage, and
       // only the exact original is written for it, by the restore.
       if (onStage === "last" && obligation.stage === "first" && isMainPm(agent)) {
-        await stayOnStage(obligation, onStage, "main-pm", true);
+        await stayOnStage(obligation, onStage, fallbackIneligible(agent, obligation.original.model) ?? "main-pm", true);
         return null;
       }
       if (onStage === "last" && obligation.stage === "first") return obligation;
@@ -409,7 +409,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
         if (!decision.swap) reason = decision.reason;
       }
       if (!reason) return obligation;
-      await stayOnStage(obligation, onStage, reason, reason === "main-pm");
+      await stayOnStage(obligation, onStage, reason, isMainPm(agent));
       return null;
     }
     let reason = agent.model !== obligation.original.model ? "model-changed" : fallbackIneligible(agent, obligation.original.model) ?? (isMainPm(agent) ? "main-pm" : null);
@@ -437,10 +437,9 @@ export function createFallbackRunner(deps: FallbackDeps) {
     return null;
   }
 
-  // A main PM left by the plugin on a partial or unpersisted move (recheckSwap stored it as restoreReadback): its return
-  // to the exact original is due now, whatever the Claude proof.
-  const mainPartial = (obligation: ReturnObligation, agent: AgentSnapshot, live: Profile) =>
-    isMainPm(agent) && !!obligation.restoreReadback && sameProfile(live, obligation.restoreReadback);
+  // A main PM left by the plugin on a partial or unpersisted move (recheckSwap marked it mainPmPartial): its return to
+  // the exact original is due now, whatever the Claude proof. A settled return of a main PM keeps its usual conditions.
+  const mainPartial = (obligation: ReturnObligation, agent: AgentSnapshot) => isMainPm(agent) && obligation.mainPmPartial === true;
 
   // The fresh read right before a settings write: no write (false) when the read fails, the agent's profile moved since
   // the snapshot the decision used (`before`), a write is blocked (cancel, archive, no session), or a move away from the
@@ -490,7 +489,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       // A pace return: due on a fresh on-pace reading (paceReturnDue), or once the PM is back on its original by hand.
       const live = await liveOrDropped(obligation, agent);
       if (!live) return;
-      const home = onOriginal(obligation, live) || mainPartial(obligation, agent, live);
+      const home = onOriginal(obligation, live) || mainPartial(obligation, agent);
       const due = home || await paceReturnDue(obligation, config);
       if (due !== (obligation.restoreDueAt !== null)) {
         const at = nowIso();
@@ -539,7 +538,7 @@ export function createFallbackRunner(deps: FallbackDeps) {
       const paceOff = reason !== null || stepping ? await offPace(agent, obligation, config) : false;
       // Back on the original by hand: settled as a restore, which also writes the original's tier label.
       // A main PM left on a partial move of the plugin's own goes back to its exact original at once.
-      const partial = mainPartial(obligation, agent, live);
+      const partial = mainPartial(obligation, agent);
       const due = reason !== null && !paceOff || onOriginal(obligation, live) || partial;
       // On the chain's last stage without proof for the original: proof for the first stage's model (the account windows
       // by pq, or a success of that model) steps the PM back to the first stage, from where the original's proof
@@ -574,10 +573,10 @@ export function createFallbackRunner(deps: FallbackDeps) {
     if (matchesProfile(agent, target) && await persisted(agentId, target)) return settle(obligation, agent, goal);
     if (!config.armed) return once(agentId, `pm-would-${goal} agentId=${agentId} obligationId=${obligation.obligationId} profile=${show(target)}`);
     if (!api.agentSettings) return once(agentId, `pm-${goal}-unsupported agentId=${agentId} reason=no-agent-settings-port`);
-    // The decision above awaited pq and the stores: the agent is read again right before the write.
-    if (!await writable(api, obligation, goal, config, agent)) return;
     const attempt = await returns.update(obligation.obligationId, (o) => ({ ...o, attempts: o.attempts + 1, lastAttemptAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
     if (!attempt) return;
+    // The decision above awaited pq and the stores: the agent is read again right before the write.
+    if (!await writable(api, obligation, goal, config, agent)) return;
     log(`pm-${goal}-apply agentId=${agentId} obligationId=${obligation.obligationId}${paced(obligation)} attempt=${attempt.attempts} status=${agent.status} profile=${show(target)}`);
     try {
       // Model and thinking travel in one request. The Fast label, the only label this feature writes, is always
