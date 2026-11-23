@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "dd3d29d68594dd9c0140da35239429271e53cd6f",
+  "source_commit": "bded61bb0970143409c9207735a441e1ac7d330a",
   "skill_count": 25,
   "file_count": 151,
   "files": [
@@ -499,8 +499,8 @@
       "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/host-idle.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 15130,
-      "sha256": "d27324cfc8085219750bc7b403bae5802d41bfeb55b51c4d1ceaa2e032131d81"
+      "bytes": 15133,
+      "sha256": "f2e24587b1c8a872e21d094960c3e4098c113d804b83575b3223d5078b1150ae"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/interactive-idle.ps1",
