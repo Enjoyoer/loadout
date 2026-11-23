@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "f4c407395533a096d07bb2cabaeff6ed0d48d5ee",
+  "source_commit": "2dac36c4a7abde06eac8615f4631d0fe90311d73",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -240,8 +240,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 21603,
-      "sha256": "a1992c784b2cb5fb4f7499ed8d97914ff55bf8303bd69bc68394467c39bb17e6"
+      "bytes": 23642,
+      "sha256": "db305f988af7269aef1a447b6f1dd7cf6884b5e063bbec02ed5139e57c1c2480"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -261,8 +261,8 @@
       "path": "skills/orchestration/opc/references/web-reviewer.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5005,
-      "sha256": "2c152acb060c05917ee33c0ae11128b4bd330ec5747adc1e39406d138a89672e"
+      "bytes": 5294,
+      "sha256": "dee5cbd38a7a113899116e381ff5b6f94f4f73badceda32bfb86ce4974757ebe"
     },
     {
       "path": "skills/orchestration/opc/references/worktree-lifecycle.md",
@@ -275,8 +275,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 55473,
-      "sha256": "8ab260f954280f04b3069dee4cc44029be200dac5960b819f5a29c6283d530cb"
+      "bytes": 56217,
+      "sha256": "2d39ac0b516c6d7526a092ace88f9797b9512e26ae2b0181056d674346d21e7d"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
