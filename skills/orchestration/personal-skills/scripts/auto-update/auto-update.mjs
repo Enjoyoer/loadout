@@ -31,6 +31,8 @@ const STATE_SCHEMA = "loadout.auto-update.state/1";
 const ID_RE = /^[a-z0-9][a-z0-9.@+-]{0,63}$/;
 const HOST_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const VERSION_RE = /^[0-9][0-9A-Za-z.+-]{0,63}$/;
+// An installed version may also carry a Homebrew revision (15.2.0_1); the feed never does.
+const INSTALLED_RE = /^[0-9][0-9A-Za-z._+-]{0,63}$/;
 const TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
@@ -151,12 +153,14 @@ function validateWindow(w, where) {
   if (w.end <= w.start) throw new Refusal(`${where}: end must be after start on the same day`);
 }
 
-function validateArgv(a, where) {
+const CHECK_PLACEHOLDERS = new Set(["adapters", "component", "host"]);
+
+function validateArgv(a, where, allowed = PLACEHOLDERS) {
   if (!Array.isArray(a) || !a.length || a.some((x) => typeof x !== "string" || !x.length || x.length > 4096)) {
     throw new Refusal(`${where}: argv must be a non-empty list of strings`);
   }
   for (const x of a) {
-    for (const m of x.matchAll(/\{([^}]*)\}/g)) if (!PLACEHOLDERS.has(m[1])) throw new Refusal(`${where}: unknown placeholder {${m[1]}}`);
+    for (const m of x.matchAll(/\{([^}]*)\}/g)) if (!allowed.has(m[1])) throw new Refusal(`${where}: placeholder {${m[1]}} not allowed here`);
   }
   if (/\.(cmd|bat)$/i.test(a[0])) throw new Refusal(`${where}: run .cmd/.bat through powershell.exe -File, not directly`);
 }
@@ -187,7 +191,7 @@ function validateRegistry(r) {
       const pw = `${where}.preconditions[${i}]`;
       exactKeys(p, pw, ["name", "argv", "max_age_seconds"], ["timeout_seconds"]);
       str(p.name, `${pw}.name`, ID_RE);
-      validateArgv(p.argv, `${pw}.argv`);
+      validateArgv(p.argv, `${pw}.argv`, new Set(["adapters"]));
       num(p.max_age_seconds, `${pw}.max_age_seconds`, 1, 3600);
       if (p.timeout_seconds !== undefined) num(p.timeout_seconds, `${pw}.timeout_seconds`, 1, 300);
     }
@@ -245,7 +249,7 @@ function validateRegistry(r) {
       if (!OSES.includes(o)) throw new Refusal(`${aw}: unknown OS`);
       exactKeys(a, aw, ["check"], ["stage", "precheck", "apply", "health", "rollback"]);
       exactKeys(a.check, `${aw}.check`, ["argv", "regex"]);
-      validateArgv(a.check.argv, `${aw}.check.argv`);
+      validateArgv(a.check.argv, `${aw}.check.argv`, CHECK_PLACEHOLDERS);
       regex(a.check.regex, `${aw}.check.regex`);
       for (const s of ["stage", "precheck", "health"]) {
         if (a[s] === undefined) continue;
@@ -340,7 +344,7 @@ function checkReceipt(canary, component, version, now) {
 // ---------- versions and windows ----------
 
 function parts(v) {
-  const core = v.split(/[+-]/)[0].split(".");
+  const core = v.split(/[+-]/)[0].split(/[._]/);
   return core.map((x) => (/^\d+$/.test(x) ? Number(x) : NaN));
 }
 
@@ -409,7 +413,7 @@ function installedVersion(adapter, vars, timeouts) {
   const re = new RegExp(adapter.check.regex);
   for (const line of r.stdout.split(/\r?\n/)) {
     const m = re.exec(line.trim());
-    if (m && m[1] && VERSION_RE.test(m[1])) return { version: m[1] };
+    if (m && m[1] && INSTALLED_RE.test(m[1])) return { version: m[1] };
   }
   return { error: "check output did not match" };
 }
@@ -709,6 +713,9 @@ function startTransaction(ctx, l) {
     rollback: fill(adapter.rollback, vars), rollback_timeout: t.rollback || 600,
     watchdog_seconds: row.watchdog_seconds || 0,
     receipt: row.canary && row.canary.host === ctx.host ? expandHome(row.canary.receipt) : null,
+    // Re-checked right before apply: a long stage must not carry the change into a blackout or past the window.
+    window: (row.host_windows && row.host_windows[ctx.host]) || row.window, blackouts: ctx.registry.blackouts || [],
+    clock_offset_ms: ctx.now - Date.now(),
   };
   writeAtomic(path.join(dir, "plan.json"), JSON.stringify(plan, null, 2) + "\n");
   // The attempt is persisted before anything runs: a crash from here on holds this version.
@@ -796,6 +803,11 @@ function cmdTxn(dir) {
         if (Date.now() > until) { claimDecision(dir, "txn-abort"); return fail("failed", "watchdog did not arm, nothing changed"); }
         sleepMs(100);
       }
+    }
+    const at = Date.now() + plan.clock_offset_ms;
+    if (plan.blackouts.some((b) => inWindow(at, b)) || !inWindow(at, plan.window)) {
+      claimDecision(dir, "not-now");
+      return notNow("window closed before apply");
     }
     setStatus(plan, "applying");
     const ar = runArgv(plan.apply, plan.apply_timeout, log);

@@ -43,7 +43,7 @@ Config owns it, in the private fleet directory (see `fleet/README.md`); the flee
   - `canary` `{host, receipt, max_age_hours}`: on the canary host the transaction's `precheck` proves the exact staged version before the swap and the transaction writes the receipt; every other host needs a fresh `pass` receipt for exactly this component, version and canary host.
   - Tier 2 needs `exclusive_group` (at most one change per group per host per local day, failed attempts included) and `watchdog_seconds`.
   - `require_digest`: the feed must give an image digest (`{digest}` in argv), for digest-pinned containers.
-  - `adapters.<os>`: `check` `{argv, regex}` (group 1 is the installed version), and `stage[]`, `precheck[]`, `apply`, `health[]`, `rollback`. A row in `mode apply` needs apply, health and rollback for every host's OS.
+  - `adapters.<os>`: `check` `{argv, regex}` (group 1 is the installed version; it may carry a Homebrew revision such as `15.2.0_1`, compared as one more part; `check` and precondition argv may use only `{adapters}`, `{component}` and `{host}`), and `stage[]`, `precheck[]`, `apply`, `health[]`, `rollback`. A row in `mode apply` needs apply, health and rollback for every host's OS.
   - argv placeholders, whole or inside an element: `{version}`, `{installed}`, `{digest}`, `{adapters}` (this directory's `adapters/`), `{txn}` (the transaction directory), `{component}`, `{host}`. A leading `~` is the home directory. Commands run without a shell; `.cmd` and `.bat` files go through `powershell.exe -File`. The skills sync installs these scripts without the executable bit, so run each adapter through its interpreter (`/bin/bash {adapters}/cli-posix.sh ...`, `powershell.exe -File {adapters}/cli-windows.ps1 ...`).
 
 ### Kill switch: `<fleet>/auto-update/switch.json`
@@ -87,7 +87,7 @@ For each row on this host, in tier order, the first failing gate is the reason: 
 
 1. runs `stage` and `precheck` (nothing has changed yet; a failure holds the version);
 2. for a row with `watchdog_seconds`, starts the detached watchdog and waits until it has armed;
-3. runs `apply`, every `health` command, and `check` again, which must read the new version;
+3. checks the blackouts and the window again (a long stage must not carry the change into either; if closed, the attempt is dropped as "not now"), then runs `apply`, every `health` command, and `check` again, which must read the new version;
 4. confirms, or rolls back and checks that the old version is back. The transaction and the watchdog race for one exclusively created `decision` file, so exactly one of them confirms or rolls back.
 
 Exit 75 from `stage`, `precheck` or `apply` means "not now, nothing changed" (for example a CLI process is running): the attempt is dropped without a hold or an alert, and a later scheduled run decides again.

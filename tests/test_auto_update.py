@@ -335,6 +335,22 @@ class AutoUpdate(unittest.TestCase):
         self.assertEqual(self.sent(), [])
         self.assertEqual(self.version_of("tool-a"), "1.2.0")
 
+    def test_window_closing_during_stage_stops_before_apply(self):
+        self.behavior["components"]["tool-a"] = {"stage_sleep": 4}
+        self.registry["components"] = [self.row("tool-a", 1, window={**ALWAYS, "start": "02:00", "end": "03:00"})]
+        self.run_and_wait(now="2026-11-24T07:59:58Z")  # Tue 02:59:58 EST
+        self.assertEqual(self.attempts(), {})
+        self.assertEqual(self.version_of("tool-a"), "1.2.0")
+        self.assertNotIn("tool-a apply", (self.fx / "calls.log").read_text())
+
+    def test_brew_revision_versions_compare(self):
+        self.installed("tool-a", "15.2.0_1")
+        self.feed["components"]["tool-a"] = self.entry("15.3.0")
+        self.registry["components"] = [self.row("tool-a", 1, version_pattern="^[0-9]+\\.[0-9]+\\.[0-9]+(_[0-9]+)?$")]
+        self.registry["components"][0]["adapters"][OS]["check"]["regex"] = "^tool-a ([0-9._]+)$"
+        _, rows = self.plan()
+        self.assertEqual(rows["tool-a"]["decision"], "would-apply", rows["tool-a"])
+
     def test_interrupted_apply_is_held_not_retried(self):
         self.behavior["components"]["tool-a"] = {"apply_sleep": 120}
         self.registry["components"] = [self.row("tool-a", 1)]
