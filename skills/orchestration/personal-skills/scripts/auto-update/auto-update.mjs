@@ -443,18 +443,21 @@ function probe(p, now) {
   try { at = parseTs(v.observed_at, "observed_at"); } catch { return no("no valid observed_at"); }
   if (at > now + 60e3 || now - at > p.max_age_seconds * 1000) return no("reading stale");
   const detail = typeof v.detail === "string" ? v.detail.replace(/[^\w .,:%/<>=+-]/g, "").slice(0, 120) : "";
-  if (!v.ok) return no(`not met${detail ? ` (${detail})` : ""}`);
-  if (!p.quiet) return { why: null };
+  // A few plain numbers (load per core, free memory, active agents) kept with the gate samples.
+  const metrics = isObj(v.metrics) ? Object.fromEntries(Object.entries(v.metrics)
+    .filter(([k, x]) => /^[a-z][a-z0-9_]{0,23}$/.test(k) && Number.isFinite(x)).slice(0, 8).map(([k, x]) => [k, Math.round(x * 100) / 100])) : {};
+  if (!v.ok) return { why: `precondition ${p.name}: not met${detail ? ` (${detail})` : ""}`, metrics };
+  if (!p.quiet) return { why: null, metrics };
   const ids = typeof v.identity === "string" && /^[\w.,:=-]{1,200}$/.test(v.identity);
   const counters = isObj(v.counters) && Object.keys(p.quiet.max_per_minute).every((k) => Number.isFinite(v.counters[k]) && v.counters[k] >= 0);
   if (!ids || !counters) return no("probe gave no counters or identity");
-  return { why: null, reading: { at, identity: v.identity, counters: Object.fromEntries(Object.keys(p.quiet.max_per_minute).map((k) => [k, v.counters[k]])) } };
+  return { why: null, metrics, reading: { at, identity: v.identity, counters: Object.fromEntries(Object.keys(p.quiet.max_per_minute).map((k) => [k, v.counters[k]])) } };
 }
 
 // Quiet means the counters grew no faster than allowed since an earlier reading of the same processes. At a tick
 // the earlier reading is the previous tick's, at least min_seconds and at most max_gap_seconds old; right before
 // apply it is the run's own reading, judged over at least min_seconds.
-function quietWhy(p, base, cur, recheck) {
+function quietWhy(p, base, cur, recheck, metrics = {}) {
   const q = p.quiet;
   const no = (why) => `precondition ${p.name}: ${why}`;
   if (!base) return no("no earlier reading yet");
@@ -467,6 +470,7 @@ function quietWhy(p, base, cur, recheck) {
   for (const [k, max] of Object.entries(q.max_per_minute)) {
     const d = cur.counters[k] - base.counters[k];
     if (!Number.isFinite(d) || d < 0) return no(`counter ${k} went back`);
+    metrics[`${k}_per_min`] = Math.round((d / minutes) * 10) / 10;
     if (d / minutes > max) return no(`busy (${k} ${(d / minutes).toFixed(1)}/min > ${max})`);
   }
   return null;
@@ -476,15 +480,18 @@ function quietWhy(p, base, cur, recheck) {
 function evalGates(hostRow, registry, now, last, recheck = false) {
   const blocked = [];
   const readings = {};
+  const metrics = {};
   if ((registry.blackouts || []).some((b) => inWindow(now, b))) blocked.push({ name: "blackout", why: "blackout" });
   for (const p of hostRow.preconditions || []) {
     const r = probe(p, now);
     let why = r.why;
-    if (!why && p.quiet) { readings[p.name] = r.reading; why = quietWhy(p, last[p.name], r.reading, recheck); }
+    const m = { ...(r.metrics || {}) };
+    if (!why && p.quiet) { readings[p.name] = r.reading; why = quietWhy(p, last[p.name], r.reading, recheck, m); }
+    if (Object.keys(m).length) metrics[p.name] = m;
     if (why) blocked.push({ name: p.name, why });
   }
   const idle = blocked.filter((b) => b.name !== "blackout");
-  return { open: !blocked.length, idleOpen: !idle.length, why: idle.map((b) => b.why).join("; "), blocked, readings };
+  return { open: !blocked.length, idleOpen: !idle.length, why: idle.map((b) => b.why).join("; "), blocked, readings, metrics };
 }
 
 // ---------- gate samples ----------
@@ -496,7 +503,8 @@ function loadGates(dir) {
 }
 
 // Per local day: samples, open samples, closed->open and open->closed transitions, blocker counts and a compact tick
-// list [HH:MM, open, blockers]. Names and short codes only: no agent names, processes, paths or values.
+// list [HH:MM, open, blockers, metrics]. Gate names, short codes and plain numbers only: no agent names,
+// processes, paths or log text.
 function recordSample(dir, hostRow, now, gates, stored) {
   const t = localTime(now, hostRow.tz);
   const days = stored.days;
@@ -513,7 +521,7 @@ function recordSample(dir, hostRow, now, gates, stored) {
     const code = `${b.name}: ${b.why.replace(/^precondition [^:]+: /, "").replace(/\(.*\)/, "").replace(/[0-9]+(\.[0-9]+)?/g, "#").trim()}`;
     day.blocked[code] = (day.blocked[code] || 0) + 1;
   }
-  day.ticks.push([t.hhmm, gates.open ? 1 : 0, gates.blocked.map((b) => b.name).join(",")]);
+  day.ticks.push([t.hhmm, gates.open ? 1 : 0, gates.blocked.map((b) => b.name).join(","), gates.metrics]);
   day.ticks = day.ticks.slice(-400);
   // Keep an earlier quiet reading until it is old enough to judge the next tick by.
   for (const [name, r] of Object.entries(gates.readings)) {

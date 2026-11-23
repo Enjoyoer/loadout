@@ -399,8 +399,8 @@ class AutoUpdate(unittest.TestCase):
         self.assertEqual((day["samples"], day["open"], day["opened"], day["closed"]), (6, 1, 1, 0))
         self.assertEqual(day["blocked"]["paseo-idle: not met"], 1)
         self.assertEqual(day["blocked"]["paseo-idle: probe failed"], 1)
-        self.assertEqual(day["ticks"][-1], ["03:50", 1, ""])
-        self.assertEqual(day["ticks"][0], ["03:00", 0, "paseo-idle"])
+        self.assertEqual(day["ticks"][-1][:3], ["03:50", 1, ""])
+        self.assertEqual(day["ticks"][0][:3], ["03:00", 0, "paseo-idle"])
 
     def test_quiet_gate_needs_two_readings_over_minutes(self):
         quiet = {"min_seconds": 300, "max_gap_seconds": 1500, "max_per_minute": {"proxy": 30, "bridge": 30}}
@@ -435,6 +435,7 @@ class AutoUpdate(unittest.TestCase):
         day = self.gate_days()["2026-11-24"]
         self.assertEqual((day["samples"], day["open"]), (8, 2))
         self.assertNotIn("proxy:99", json.dumps(day), "samples keep codes, not process ids")
+        self.assertEqual(day["ticks"][-1][3]["traffic"], {"proxy_per_min": 10.0, "bridge_per_min": 0.0})
 
     def test_gate_closing_during_stage_stops_before_apply(self):
         quiet = {"min_seconds": 300, "max_gap_seconds": 1500, "max_per_minute": {"proxy": 30}}

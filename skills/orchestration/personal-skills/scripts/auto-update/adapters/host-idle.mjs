@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Read-only host idle probes for the auto-update runner. Each prints one JSON line
-// {ok, observed_at, detail, counters?, identity?} and exits 0; a signal it cannot read is an error (exit 1), which the
+// {ok, observed_at, detail, metrics?, counters?, identity?} and exits 0; a signal it cannot read is an error (exit 1), which the
 // runner treats as unknown and keeps the gate closed. Output is counts and short codes only: never agent names,
 // prompts, process arguments, log lines, environment or secrets.
 //
@@ -8,8 +8,9 @@
 //       No local Paseo agent in an active turn: `paseo ls -g -a --json` against the local daemon; every agent must be
 //       idle or closed (any other status, or no answer, closes the gate).
 //   host-idle.mjs load [--max-load-per-core N] [--max-cpu-pct N] [--min-mem-free-pct N] [--min-avail-mb N]
-//                      [--heavy-lock <dir>]... [--heavy-queue <dir>]... [--heavy-flock <file>]...
-//       Below normal load under the hosts' existing policy: no job holds or waits for the host's `heavy` lock, the
+//                      [--job-lock <dir>]... [--job-queue <dir>]... [--job-flock <file>]...
+//       Below normal load under the hosts' existing policy: no job holds or waits for the host's one-job build lock
+//       (a mkdir lock whose owner file says pid=N, its queue directory, or a flock seen in /proc/locks), the
 //       5-minute load average per core is at most N (POSIX; Windows has none, so CPU busy % over a 1 s sample),
 //       and free memory is above the floor (macOS memory_pressure free %, Linux MemAvailable MB, Windows free %).
 //   host-idle.mjs quiet --launchd <name>=<label>...
@@ -50,31 +51,33 @@ if (cmd === "paseo") {
   if (!Array.isArray(agents) || agents.some((a) => !a || typeof a.status !== "string")) fail("paseo ls output has no statuses");
   const active = agents.filter((a) => !["idle", "closed"].includes(a.status));
   const kinds = [...new Set(active.map((a) => a.status.replace(/[^a-z_-]/g, "").slice(0, 20)))].sort().join(",");
-  out(active.length === 0, `${active.length} of ${agents.length} agents active${kinds ? ` (${kinds})` : ""}`);
+  out(active.length === 0, `${active.length} of ${agents.length} agents active${kinds ? ` (${kinds})` : ""}`,
+    { metrics: { active: active.length, agents: agents.length } });
 }
 
 if (cmd === "load") {
   const why = [];
-  for (const dir of opts["heavy-lock"] || []) {
+  const metrics = {};
+  for (const dir of opts["job-lock"] || []) {
     if (!fs.existsSync(dir)) continue;
     let pid = null;
     try { pid = Number((/^pid=(\d+)$/m.exec(fs.readFileSync(`${dir}/owner`, "utf8")) || [])[1]) || null; } catch {}
-    if (pid === null || alive(pid)) why.push("heavy job running");
+    if (pid === null || alive(pid)) why.push("job lock held");
   }
-  for (const dir of opts["heavy-queue"] || []) {
+  for (const dir of opts["job-queue"] || []) {
     let n = 0;
-    try { n = fs.readdirSync(dir).length; } catch (e) { if (e.code !== "ENOENT") fail("heavy queue unreadable"); }
-    if (n) why.push(`heavy queue ${n}`);
+    try { n = fs.readdirSync(dir).length; } catch (e) { if (e.code !== "ENOENT") fail("job queue unreadable"); }
+    if (n) why.push(`job queue ${n}`);
   }
-  for (const file of opts["heavy-flock"] || []) {
+  for (const file of opts["job-flock"] || []) {
     let st;
-    try { st = fs.statSync(file); } catch (e) { if (e.code === "ENOENT") continue; fail("heavy lock unreadable"); }
+    try { st = fs.statSync(file); } catch (e) { if (e.code === "ENOENT") continue; fail("job lock unreadable"); }
     const major = Number((BigInt(st.dev) >> 8n) & 0xfffn);
     const minor = Number((BigInt(st.dev) & 0xffn) | ((BigInt(st.dev) >> 12n) & 0xfff00n));
     const id = `${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino}`;
     let locks;
     try { locks = fs.readFileSync("/proc/locks", "utf8"); } catch { fail("/proc/locks unreadable"); }
-    if (locks.split("\n").some((l) => l.split(/\s+/).includes(id))) why.push("heavy job running");
+    if (locks.split("\n").some((l) => l.split(/\s+/).includes(id))) why.push("job lock held");
   }
   const cores = os.cpus().length;
   if (!cores) fail("no CPU count");
@@ -91,11 +94,13 @@ if (cmd === "load") {
     const pct = (100 * (sum(busy, b) - sum(busy, a))) / dt;
     const max = numOpt("max-cpu-pct", 50);
     loadText = `cpu ${pct.toFixed(0)}% (max ${max})`;
+    metrics.cpu_pct = Math.round(pct);
     if (pct > max) why.push("cpu busy");
   } else {
     const per = os.loadavg()[1] / cores;
     const max = numOpt("max-load-per-core", 1);
     loadText = `load5/core ${per.toFixed(2)} (max ${max})`;
+    metrics.load_per_core = Math.round(per * 100) / 100;
     if (per > max) why.push("load high");
   }
   let memText = "";
@@ -104,6 +109,7 @@ if (cmd === "load") {
     if (!m) fail("memory_pressure gave no free percentage");
     const min = numOpt("min-mem-free-pct", 15);
     memText = `, memory free ${m[1]}% (min ${min})`;
+    metrics.mem_free_pct = Number(m[1]);
     if (Number(m[1]) < min) why.push("memory low");
   } else if (process.platform === "linux") {
     const m = /^MemAvailable:\s+(\d+) kB/m.exec(fs.readFileSync("/proc/meminfo", "utf8"));
@@ -111,14 +117,17 @@ if (cmd === "load") {
     const mb = Math.floor(Number(m[1]) / 1024);
     const min = numOpt("min-avail-mb", 3072);
     memText = `, available ${mb} MB (min ${min})`;
+    metrics.avail_mb = mb;
     if (mb < min) why.push("memory low");
   } else {
     const pct = (100 * os.freemem()) / os.totalmem();
     const min = numOpt("min-mem-free-pct", 15);
     memText = `, memory free ${pct.toFixed(0)}% (min ${min})`;
+    metrics.mem_free_pct = Math.round(pct);
     if (pct < min) why.push("memory low");
   }
-  out(why.length === 0, `${why.length ? why.join(", ") + "; " : ""}${loadText}${memText}`);
+  metrics.job_lock = why.some((w) => w.startsWith("job")) ? 1 : 0;
+  out(why.length === 0, `${why.length ? why.join(", ") + "; " : ""}${loadText}${memText}`, { metrics });
 }
 
 if (cmd === "quiet") {
