@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "c6db328be8a378af6260930c6cd1d90e4be41429",
+  "source_commit": "06b7d2dbcb027d1aee353c34173a47088022b298",
   "skill_count": 25,
-  "file_count": 147,
+  "file_count": 149,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -394,8 +394,8 @@
       "path": "skills/orchestration/personal-skills/fleet/example/auto-update/registry.json",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 14058,
-      "sha256": "a83fc5577af2ba7429267c6c17835fae28f86ef70c0f6eccb9224cddbcb83934"
+      "bytes": 17068,
+      "sha256": "64c073bc66b49bbf8b273e7b5296e0a1899959bfcbb8a7436213493c4b8f1270"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/auto-update/switch.json",
@@ -464,8 +464,8 @@
       "path": "skills/orchestration/personal-skills/scripts/auto-update/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 11373,
-      "sha256": "ee2866dbd0d2a30b3fdf1a7b521ecbd8979c3c3a6ea1ccd6460e19c07fc60a46"
+      "bytes": 13866,
+      "sha256": "055942a5fb05402fcfb8a06fa040be26e92fcf0135e848f1fceff319dac64d7a"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/access-health.sh",
@@ -496,6 +496,13 @@
       "sha256": "1387bf1402ea8c2538b6dd1ba63e5cc4ed336c18e9c1c0b603c52d2208e6b636"
     },
     {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/host-idle.mjs",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 7875,
+      "sha256": "4213bda50274001b2f726b163af0d8ae678065622cccb38fda475592c1d3191a"
+    },
+    {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/interactive-idle.ps1",
       "category": "orchestration",
       "skill": "personal-skills",
@@ -506,15 +513,22 @@
       "path": "skills/orchestration/personal-skills/scripts/auto-update/auto-update.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 46193,
-      "sha256": "5bb9798523bc184f176ac94f336ec383831f66c7f3451d86fe72973f7f28f1f2"
+      "bytes": 52690,
+      "sha256": "dd6e28cbb2b369bf917d08ecd06670a26824d67ea78a4f660cc9cc14b3554c64"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/com.loadout.auto-update.plist",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 1526,
-      "sha256": "b3a94a6f239e1a39b489067c6a0b33234840be458d68542bd87341aa2e41934f"
+      "bytes": 1224,
+      "sha256": "465013015bfe5a4275782f45d6b4ed4a4d69015b13e952ccdd0aeac706d1c4f5"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/loadout-auto-update-pc.xml",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 2095,
+      "sha256": "226d8369760ba846ee1413fb3987ab537c94ca3bd53a8ba43d1f5aed1b2803bf"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/loadout-auto-update.service",
@@ -527,15 +541,15 @@
       "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/loadout-auto-update.timer",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 486,
-      "sha256": "8c39bc201a5ce154a099ad4c7b16a58869dbdfcf31e079b6283e2169a2409370"
+      "bytes": 512,
+      "sha256": "ec8de4897ec89ff14812ada9fc452de352534f87b59fbfbf7a1780f6608e2898"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/loadout-auto-update.xml",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 2184,
-      "sha256": "b4eefad4043853fce8cd2939dd9b84f36ff9a116b0211183c1e44e6cbd9ed409"
+      "bytes": 1848,
+      "sha256": "9f473a8c155cadf9cb4c683d8391ab0d377b26132878ac2ccb43d798f000d4d7"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/client_config.py",
