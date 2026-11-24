@@ -12,6 +12,7 @@ skills/*/*/references/local.md
 /CLAUDE.md
 skills/*/*/fleet/local/
 plugins/*/node_modules/
+plugins/usage-limit-auto-resume/dist/
 
 # PM memory, kept locally only
 STATUS.html

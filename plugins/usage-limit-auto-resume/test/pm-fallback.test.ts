@@ -1,6 +1,6 @@
 // Owner-specified PM quota fallback cases, through the plugin's real hooks, sweep and state files. Fixture data only.
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { it, mock } from "node:test";
@@ -10,7 +10,7 @@ import contribute from "../index.server.ts";
 import { ConfigSchema, type Config } from "../server/config.ts";
 import { newObligation, profileOf, ReturnStore, type Profile } from "../server/fallback.ts";
 import type { AgentSnapshot } from "../server/model.ts";
-import { QuotaReader } from "../server/quota.ts";
+import { formatRemotePace, QuotaReader, RemotePaceReader, type RemotePaceRunResult } from "../server/quota.ts";
 import { ResumeStore } from "../server/store.ts";
 
 const OPUS = "fleet/claude-opus-5-5";
@@ -45,6 +45,9 @@ function fixture(home: string) {
   let onApply: ((agentId: string, model: string) => void | Promise<void>) | undefined;
   // M8: runs inside every pq read, before the reading is returned (a relabel while a decision awaits pq).
   let onPq: (() => void | Promise<void>) | undefined;
+  // Remote pace fixture: when pqUnavailable is true, local pq returns ENOENT (modeling a vm host without pq).
+  let pqUnavailable = false;
+  let onRemotePace: ((host: string, command: readonly string[], timeoutMs: number) => Promise<RemotePaceRunResult>) | undefined;
   // What the daemon's stored record holds per agent: it follows memory unless the agent's background persist fails.
   const unpersisted = new Map<string, Profile[]>();
   const stored = async (id: string): Promise<Profile[]> => unpersisted.get(id) ?? (agents.has(id) ? [profileOf(agents.get(id)!)!] : []);
@@ -118,7 +121,13 @@ function fixture(home: string) {
   } as unknown as PluginServerContext;
   let plugin: ReturnType<typeof contribute> | null = null;
   const start = async () => {
-    plugin = contribute(server, async () => api, new QuotaReader(async () => { await onPq?.(); return { document: document() }; }), new ReturnStore(path.join(home, "pm-return.json")), stored);
+    const quotaReader = new QuotaReader(async () => {
+      await onPq?.();
+      return pqUnavailable ? { error: "pq unavailable (no local pq)" } : { document: document() };
+    });
+    const remoteReader = new RemotePaceReader(async (host, command, timeoutMs) =>
+      onRemotePace ? onRemotePace(host, command, timeoutMs) : { error: "remote-unavailable" });
+    plugin = contribute(server, async () => api, quotaReader, new ReturnStore(path.join(home, "pm-return.json")), stored, undefined, undefined, undefined, remoteReader);
     await plugin.idle();
   };
   const stop = async () => { plugin?.(); await plugin?.idle(); plugin = null; };
@@ -138,9 +147,11 @@ function fixture(home: string) {
   };
   const tick = async () => { mock.timers.tick(30_000); await plugin!.idle(); };
   return {
-    agents, calls, pq, start, stop, add, endTurn, tick, handlers, unpersisted, timelines, sent,
+    home, agents, calls, pq, start, stop, add, endTurn, tick, handlers, unpersisted, timelines, sent,
     returns: new ReturnStore(path.join(home, "pm-return.json")), records: new ResumeStore(),
     failApplies: (n: number) => { failApply = n; },
+    setPqUnavailable: (value: boolean) => { pqUnavailable = value; },
+    setRemotePace: (fn: typeof onRemotePace) => { onRemotePace = fn; },
     hooks: (set: { beforeFetch?: typeof beforeFetch; afterFetch?: typeof afterFetch; onApply?: typeof onApply; beforeSend?: typeof beforeSend; onPq?: typeof onPq }) => { ({ beforeFetch, afterFetch, onApply, beforeSend, onPq } = set); },
     // Delivers a turn end as given (T13, T15: a late event for an older turn); resolves when the plugin is idle.
     emit: (event: unknown) => { handlers.get("agent.turn_ended")!(event, { paseo: api }); return plugin!.idle(); },
@@ -1558,4 +1569,138 @@ it("M9: with Claude and Codex both out a main PM still alerts once; a late compl
   await f.tick(); await f.tick(); await f.tick();
   assert.equal(capAlerts(logs, "main").length, 1, "deduplicated for the whole episode");
   assert.deepEqual(f.calls.apply, []);
+}));
+
+// Decision 386: narrow remote tri-state pace transport for a host without local pq. No private exclusion entries required.
+const REMOTE_PACE_ON = {
+  paceFallback: true,
+  pacePoolAccounts: [] as string[],
+  paceRemoteHost: "pace-source-host",
+  paceRemoteCommand: ["/usr/local/bin/node", "~/plugins/usage-limit-auto-resume/dist/pace-read.mjs", "/fixture/settings/auto-resume-config.json"],
+  paceFallbackExcludedProjects: [] as string[],
+  paceFallbackExcludedAgents: [] as string[],
+};
+
+it("R1: remote tri-state pace swaps and restores a project PM with both exclusion lists empty, without local pq or retained pace state", () => scenario(async (f, logs) => {
+  f.setPqUnavailable(true);
+  f.setConfig(REMOTE_PACE_ON);
+  let wire: RemotePaceRunResult = { stdout: `${JSON.stringify(formatRemotePace({ state: "undecided", reason: "pq-stale" }, Date.now()))}\n` };
+  f.setRemotePace(async () => wire);
+  f.add("pm-proj", "pm", { labels: { role: "pm", project: "fixture-proj" } });
+
+  // Undecided moves nothing.
+  await f.tick();
+  assert.equal(f.agents.get("pm-proj")!.model, OPUS);
+  assert.equal(await f.returns.get("pm-proj"), null);
+  assert.ok(logs.some((l) => l === "[usage-limit-auto-resume] pm-pace-held reason=undecided"));
+
+  // Off swaps via the exact same obligation + verified swap path.
+  wire = { stdout: `${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, Date.now()))}\n` };
+  await f.tick();
+  assert.deepEqual(profileOf(f.agents.get("pm-proj")!), SOL_MEDIUM);
+  const obligation = await f.returns.get("pm-proj");
+  assert.equal(obligation?.pace, true);
+  assert.deepEqual(obligation?.original, OPUS_HIGH);
+  assert.ok(logs.some((l) => /pm-swap-start agentId=pm-proj \S+ trigger=pace/.test(l)));
+  assert.ok(logs.some((l) => /pm-swap-verified agentId=pm-proj \S+ trigger=pace/.test(l)));
+
+  // On obeys the 30-min flap guard, then restores to the exact original profile.
+  wire = { stdout: `${JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, Date.now()))}\n` };
+  later(10);
+  await f.tick();
+  assert.equal(f.agents.get("pm-proj")!.model, SOL, "flap guard holds early restore");
+  later(21);
+  wire = { stdout: `${JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, Date.now()))}\n` };
+  await f.tick();
+  assert.deepEqual(profileOf(f.agents.get("pm-proj")!), OPUS_HIGH);
+  assert.equal(await f.returns.get("pm-proj"), null);
+  assert.ok(logs.some((l) => /pm-restore-verified agentId=pm-proj \S+ trigger=pace/.test(l)));
+
+  // No retained pace state files written to PASEO_HOME, and no quota/account text in logs.
+  assert.deepEqual(await readdir(f.home), ["pm-return.json"]);
+  for (const line of logs.filter((l) => /pace/.test(l))) assert.doesNotMatch(line, /acct-|usedPct|gap|%|pace-source-host/);
+}));
+
+it("R2: remote pace fails closed on missing, timeout, stale, invalid, duplicate-key, blank-line, or misconfigured inputs for both swap and restore", () => scenario(async (f) => {
+  f.setPqUnavailable(true);
+  f.add("pm-swap", "pm", { labels: { role: "pm", project: "fixture-proj" } });
+  const nowIso = () => new Date(Date.now()).toISOString();
+  const badResults = (): RemotePaceRunResult[] => [
+    { error: "remote-unavailable" },
+    { error: "remote-timeout" },
+    { stdout: `${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, Date.now() - 180_000))}\n` },
+    { stdout: `${JSON.stringify({ schemaVersion: 1, state: "off", reason: "behind-pace", asOf: nowIso(), accounts: [] })}\n` },
+    { stdout: `{"schemaVersion":1,"state":"on","state":"off","reason":"behind-pace","asOf":"${nowIso()}"}\n` },
+    { stdout: `\n${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, Date.now()))}\n` },
+    { stdout: `${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, Date.now()))}\n\n` },
+    { stdout: "not-json\n" },
+  ];
+  f.setConfig(REMOTE_PACE_ON);
+  for (const bad of badResults()) {
+    f.setRemotePace(async () => bad);
+    await f.tick();
+    assert.equal(f.agents.get("pm-swap")!.model, OPUS);
+  }
+  // Incomplete or ambiguous remote configs fail closed too.
+  f.setRemotePace(async () => ({ stdout: `${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, Date.now()))}\n` }));
+  for (const patch of [
+    { paceRemoteCommand: null },
+    { paceRemoteHost: null },
+    { pacePoolAccounts: ["acct-a"] },
+  ]) {
+    f.setConfig({ ...REMOTE_PACE_ON, ...patch });
+    await f.tick();
+    assert.equal(f.agents.get("pm-swap")!.model, OPUS);
+  }
+  // Swap cleanly, advance past flap guard, then confirm missing/timeout/stale/invalid/duplicate-key never trigger a restore.
+  f.setConfig(REMOTE_PACE_ON);
+  await f.tick();
+  assert.equal(f.agents.get("pm-swap")!.model, SOL);
+  later(31);
+  for (const bad of [
+    { error: "remote-unavailable" } as RemotePaceRunResult,
+    { error: "remote-timeout" } as RemotePaceRunResult,
+    { stdout: `${JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, Date.now() - 180_000))}\n` },
+    { stdout: `${JSON.stringify({ schemaVersion: 1, state: "on", reason: "on-pace", asOf: nowIso(), extra: 1 })}\n` },
+    { stdout: `{"schemaVersion":1,"state":"off","state":"on","reason":"on-pace","asOf":"${nowIso()}"}\n` },
+    { stdout: `\n${JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, Date.now()))}\n` },
+  ]) {
+    f.setRemotePace(async () => bad);
+    await f.tick();
+    assert.equal(f.agents.get("pm-swap")!.model, SOL);
+    assert.equal((await f.returns.get("pm-swap"))?.pace, true);
+  }
+}));
+
+it("R3: remote pace protects hardcoded main PMs, optional user exclusions, and re-checks fresh live labels before writes", () => scenario(async (f, logs) => {
+  f.setPqUnavailable(true);
+  f.setConfig({ ...REMOTE_PACE_ON, paceFallbackExcludedProjects: ["fixture-excluded"], paceFallbackExcludedAgents: ["excl0001"] });
+  f.setRemotePace(async () => ({ stdout: `${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, Date.now()))}\n` }));
+  for (const [id, project] of MAIN_PMS) f.add(id, "pm", { labels: { role: "pm", project } });
+  f.add("excl-proj", "pm", { labels: { role: "pm", project: "fixture-excluded" } });
+  f.add("excl0001-fixture", "pm", { labels: { role: "pm", project: "fixture-proj" } });
+  f.add("quiet", "pm", { labels: { role: "pm", project: "fixture-proj", noresume: "true" } });
+  f.add("worker", "worker", { labels: { role: "worker", project: "fixture-proj" } });
+  f.add("api-pm", "pm", { model: "fleet/api/claude-opus-5-5", labels: { role: "pm", project: "fixture-proj" } });
+  await f.tick();
+  assert.equal(f.calls.apply.length, 0);
+  assert.deepEqual((await f.returns.read()).obligations, []);
+
+  // A project PM relabelled into an excluded project (or main PM) while awaiting the fresh remote SSH check is not written.
+  f.add("raced-main", "pm", { labels: { role: "pm", project: "fixture-proj" } });
+  f.add("raced-excl", "pm", { labels: { role: "pm", project: "fixture-proj" } });
+  f.setRemotePace(async () => {
+    if (await f.returns.get("raced-main")) f.agents.get("raced-main")!.labels = { role: "pm", project: "work" };
+    if (await f.returns.get("raced-excl")) f.agents.get("raced-excl")!.labels = { role: "pm", project: "fixture-excluded" };
+    return { stdout: `${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, Date.now()))}\n` };
+  });
+  await f.tick();
+  assert.equal(f.calls.apply.length, 0);
+  assert.ok(logs.some((l) => /pm-swap-deferred agentId=raced-main \S+ reason=main-pm/.test(l)));
+  assert.ok(logs.some((l) => /pm-swap-deferred agentId=raced-excl \S+ reason=excluded-project/.test(l)));
+  await f.tick();
+  assert.equal(await f.returns.get("raced-main"), null);
+  assert.equal(await f.returns.get("raced-excl"), null);
+  assert.equal(f.agents.get("raced-main")!.model, OPUS);
+  assert.equal(f.agents.get("raced-excl")!.model, OPUS);
 }));

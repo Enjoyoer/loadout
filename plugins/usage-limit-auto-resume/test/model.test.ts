@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { access, chmod, copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { SETTINGS_VERSION } from "../server/config.ts";
 import { MAX_KEPT_ATTEMPTS, afterTransientFailure, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, endedTurnRows, isTransientErrorMessage, configFingerprint, continuationPrompt, failureSignature, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, shouldResume, transientDelaySeconds, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { quotaDecision, scheduleUsage } from "../server/model.ts";
-import { agentPool, paceOf, poolQuota, QuotaReader, runPq, type PqResult } from "../server/quota.ts";
+import { readLocalHostPace } from "../server/pace-read.ts";
+import { agentPool, formatRemotePace, paceOf, parseRemotePace, poolQuota, QuotaReader, RemotePaceReader, remotePaceSshArgv, runPq, runRemotePaceSsh, type PqResult, type RemotePaceRunResult } from "../server/quota.ts";
 
 const NOW = Date.parse("2026-09-25T12:00:00.000Z");
 const config: ResumeConfig = {
@@ -522,5 +528,275 @@ describe("pace mode rule", () => {
     assert.equal(paceOf({ ...doc([weekly("a", 58, 84)]), snapshotStale: true }, ["a"]).state, "undecided");
     assert.equal(paceOf({ ...doc([weekly("a", 58, 84)]), schemaVersion: 2 }, ["a"]).state, "undecided");
     assert.equal(paceOf(null, ["a"]).state, "undecided");
+  });
+});
+
+describe("remote pace transport", () => {
+  const weekly = (label: string, usedPct: number, resetHours: number, extra: unknown[] = []) => ({
+    provider: "claude",
+    label,
+    fresh: true,
+    windows: [{ id: "seven_day", fresh: true, usedPct, leftPct: 100 - usedPct, resetInSeconds: resetHours * 3600 }, ...extra],
+  });
+  const doc = (accounts: unknown[], snapshotStale = false) => ({ schemaVersion: 1, snapshotStale, accounts });
+
+  it("produces and validates tri-state verdicts via explicit ULR settings file and QuotaReader.pace with no quota/account leakage", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "ulr-pace-read-"));
+    try {
+      const cfgPath = path.join(home, "settings", "auto-resume-config.json");
+      await mkdir(path.dirname(cfgPath), { recursive: true });
+      if (process.platform !== "win32") await chmod(path.dirname(cfgPath), 0o755);
+      const writeCfg = async (values: Record<string, unknown>) => {
+        await writeFile(cfgPath, JSON.stringify({ version: SETTINGS_VERSION, values }), "utf8");
+        if (process.platform !== "win32") await chmod(cfgPath, 0o644);
+      };
+      await writeCfg({ quotaAware: true, pacePoolAccounts: ["acct-secret-1", "acct-secret-2"] });
+
+      let currentDoc: unknown = doc([weekly("acct-secret-1", 30, 84), weekly("acct-secret-2", 30, 84)]);
+      const reader = new QuotaReader(async () => ({ document: currentDoc }), () => NOW);
+
+      const onPayload = await readLocalHostPace({ settingsFile: cfgPath, quota: reader, clock: () => NOW });
+      assert.deepEqual(Object.keys(onPayload).sort(), ["asOf", "reason", "schemaVersion", "state"]);
+      assert.deepEqual(onPayload, { schemaVersion: 1, state: "on", reason: "on-pace", asOf: new Date(NOW).toISOString() });
+      const onWire = JSON.stringify(onPayload);
+      assert.doesNotMatch(onWire, /acct-secret|usedPct|leftPct|reset|accounts/);
+      assert.deepEqual(parseRemotePace(onWire, NOW + 5_000, 120_000).pace, { state: "on", reason: "on-pace" });
+
+      currentDoc = doc([weekly("acct-secret-1", 80, 84), weekly("acct-secret-2", 70, 84)]);
+      const offPayload = await readLocalHostPace({ settingsFile: cfgPath, quota: reader, clock: () => NOW });
+      assert.deepEqual(offPayload, { schemaVersion: 1, state: "off", reason: "behind-pace", asOf: new Date(NOW).toISOString() });
+      assert.deepEqual(parseRemotePace(JSON.stringify(offPayload), NOW + 5_000, 120_000).pace, { state: "off", reason: "behind-pace" });
+
+      currentDoc = doc([weekly("acct-secret-1", 10, 84, [{ id: "five_hour", fresh: true, usedPct: 100, leftPct: 0, resetAt: Math.floor(NOW / 1000) + 600, resetInSeconds: 600 }]), weekly("acct-secret-2", 10, 84)]);
+      const outPayload = await readLocalHostPace({ settingsFile: cfgPath, quota: reader, clock: () => NOW });
+      assert.deepEqual(outPayload, { schemaVersion: 1, state: "off", reason: "account-out", asOf: new Date(NOW).toISOString() });
+      assert.deepEqual(parseRemotePace(JSON.stringify(outPayload), NOW, 120_000).pace, { state: "off", reason: "account-out" });
+
+      currentDoc = doc([weekly("acct-secret-1", 80, 84)], true);
+      const stalePayload = await readLocalHostPace({ settingsFile: cfgPath, quota: reader, clock: () => NOW });
+      assert.deepEqual(stalePayload, { schemaVersion: 1, state: "undecided", reason: "pq-stale", asOf: new Date(NOW).toISOString() });
+      assert.deepEqual(parseRemotePace(JSON.stringify(stalePayload), NOW, 120_000).pace, { state: "undecided", reason: "pq-stale" });
+
+      await writeCfg({ quotaAware: false, pacePoolAccounts: ["acct-secret-1"] });
+      assert.deepEqual(await readLocalHostPace({ settingsFile: cfgPath, quota: reader, clock: () => NOW }), { schemaVersion: 1, state: "undecided", reason: "quotaAware-off", asOf: new Date(NOW).toISOString() });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on missing, timed-out, stale, or invalid remote pace inputs", async () => {
+    const emptyHome = await mkdtemp(path.join(tmpdir(), "ulr-pace-missing-"));
+    try {
+      let pqCalls = 0;
+      const spyReader = new QuotaReader(async () => {
+        pqCalls++;
+        return { document: doc([weekly("acct-a", 80, 84)]) };
+      }, () => NOW);
+      const cfgDir = path.join(emptyHome, "settings");
+      const cfgPath = path.join(cfgDir, "auto-resume-config.json");
+      const invalidExpect = { schemaVersion: 1, state: "undecided", reason: "config-invalid", asOf: new Date(NOW).toISOString() };
+      // Missing path, relative path, wrong filename, or missing file all fail closed without calling pq.
+      for (const badPath of [undefined, "", "auto-resume-config.json", path.join(cfgDir, "other.json"), cfgPath]) {
+        assert.deepEqual(await readLocalHostPace({ settingsFile: badPath, quota: spyReader, clock: () => NOW }), invalidExpect);
+        assert.equal(pqCalls, 0);
+      }
+      await mkdir(cfgDir, { recursive: true });
+      // Oversized file fails closed before parsing.
+      await writeFile(cfgPath, " ".repeat(70_000), "utf8");
+      assert.deepEqual(await readLocalHostPace({ settingsFile: cfgPath, quota: spyReader, clock: () => NOW }), invalidExpect);
+      assert.equal(pqCalls, 0);
+      // Remote-configured host refuses to chain-hop as a producer, and full ConfigSchema rejects invalid unrelated
+      // settings (such as paceFallback as a string), unknown keys, or out-of-range fields without calling pq.
+      for (const badValues of [
+        { paceRemoteHost: "peer-host", paceRemoteCommand: ["node", "~/plugins/usage-limit-auto-resume/dist/pace-read.mjs", cfgPath] },
+        { quotaAware: true, pacePoolAccounts: ["acct-a"], paceFallback: "true" },
+        { quotaAware: true, pacePoolAccounts: ["acct-a"], baseDelaySeconds: 1 },
+        { quotaAware: true, pacePoolAccounts: ["acct-a"], unknownSetting: true },
+      ]) {
+        await writeFile(cfgPath, JSON.stringify({ version: SETTINGS_VERSION, values: badValues }), "utf8");
+        assert.deepEqual(await readLocalHostPace({ settingsFile: cfgPath, quota: spyReader, clock: () => NOW }), invalidExpect);
+        assert.equal(pqCalls, 0);
+      }
+      // Valid fixture with unrelated settings passes full ConfigSchema and reuses the same QuotaReader.
+      await writeFile(cfgPath, JSON.stringify({ version: SETTINGS_VERSION, values: { armed: true, paceFallback: true, quotaAware: true, pacePoolAccounts: ["acct-a"] } }), "utf8");
+      if (process.platform !== "win32") {
+        // Symlinked file, symlinked parent dir, group-writable file/parent, and world-writable file all fail closed without calling pq.
+        await chmod(cfgDir, 0o755);
+        await chmod(cfgPath, 0o644);
+        const linkFileDir = path.join(emptyHome, "link-file");
+        await mkdir(linkFileDir, { recursive: true });
+        const linkFile = path.join(linkFileDir, "auto-resume-config.json");
+        await symlink(cfgPath, linkFile);
+        assert.deepEqual(await readLocalHostPace({ settingsFile: linkFile, quota: spyReader, clock: () => NOW }), invalidExpect);
+        const linkDir = path.join(emptyHome, "link-dir");
+        await symlink(cfgDir, linkDir);
+        assert.deepEqual(await readLocalHostPace({ settingsFile: path.join(linkDir, "auto-resume-config.json"), quota: spyReader, clock: () => NOW }), invalidExpect);
+        await chmod(cfgPath, 0o664);
+        assert.deepEqual(await readLocalHostPace({ settingsFile: cfgPath, quota: spyReader, clock: () => NOW }), invalidExpect);
+        await chmod(cfgPath, 0o644);
+        await chmod(cfgDir, 0o775);
+        assert.deepEqual(await readLocalHostPace({ settingsFile: cfgPath, quota: spyReader, clock: () => NOW }), invalidExpect);
+        await chmod(cfgDir, 0o755);
+        await chmod(cfgPath, 0o666);
+        assert.deepEqual(await readLocalHostPace({ settingsFile: cfgPath, quota: spyReader, clock: () => NOW }), invalidExpect);
+        await chmod(cfgPath, 0o644);
+        assert.equal(pqCalls, 0);
+      }
+      assert.deepEqual(await readLocalHostPace({ settingsFile: cfgPath, quota: spyReader, clock: () => NOW }), { schemaVersion: 1, state: "off", reason: "behind-pace", asOf: new Date(NOW).toISOString() });
+      assert.equal(pqCalls, 1);
+    } finally {
+      await rm(emptyHome, { recursive: true, force: true });
+    }
+
+    // Stale, future, blank-line-padded, duplicate-key (including conflicts and escapes), extra-key, bad-schema,
+    // bad-reason, multiline, and oversized payloads all fail closed.
+    const validLine = JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, NOW));
+    assert.equal(parseRemotePace(validLine, NOW, 120_000).pace.state, "on");
+    assert.equal(parseRemotePace(`${validLine}\n`, NOW, 120_000).pace.state, "on");
+    assert.equal(parseRemotePace(`${validLine}\r\n`, NOW, 120_000).pace.state, "on");
+    const stale = JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, NOW - 121_000));
+    assert.deepEqual(parseRemotePace(stale, NOW, 120_000).pace, { state: "undecided", reason: "remote-stale" });
+    const future = JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, NOW + 60_000));
+    assert.deepEqual(parseRemotePace(future, NOW, 120_000).pace, { state: "undecided", reason: "remote-invalid" });
+    const iso = new Date(NOW).toISOString();
+    for (const bad of [
+      "",
+      "\n",
+      `\n${validLine}\n`,
+      `${validLine}\n\n`,
+      ` ${validLine}\n`,
+      `${validLine} \n`,
+      "not json",
+      `{"schemaVersion":1,"state":"on","state":"off","reason":"behind-pace","asOf":"${iso}"}`,
+      `{"schemaVersion":1,"state":"off","state":"off","reason":"behind-pace","asOf":"${iso}"}`,
+      `{"schemaVersion":1,"state":"on","\\u0073tate":"off","reason":"behind-pace","asOf":"${iso}"}`,
+      `{"schemaVersion":1,"state":"off","reason":"account-out","reason":"behind-pace","asOf":"${iso}"}`,
+      JSON.stringify({ schemaVersion: 1, state: "off", reason: "behind-pace", asOf: iso, accounts: [] }),
+      JSON.stringify({ schemaVersion: 2, state: "off", reason: "behind-pace", asOf: iso }),
+      JSON.stringify({ schemaVersion: 1, state: "unknown", reason: "pq-stale", asOf: iso }),
+      JSON.stringify({ schemaVersion: 1, state: "off", reason: "on-pace", asOf: iso }),
+      JSON.stringify({ schemaVersion: 1, state: "off", reason: "acct-secret", asOf: iso }),
+      JSON.stringify({ schemaVersion: 1, state: "off", reason: "behind-pace", asOf: "2026-02-30T00:00:00Z" }),
+      `${validLine}\nextra-line`,
+      "x".repeat(5000),
+    ]) {
+      assert.deepEqual(parseRemotePace(bad, NOW, 120_000).pace, { state: "undecided", reason: "remote-invalid" }, bad.slice(0, 80));
+    }
+
+    // SSH argv enforces BatchMode, StrictHostKeyChecking=yes, ControlMaster=no, ControlPath=none, no forwarding/TTY, --, and safe ~/ quoting.
+    const argv = remotePaceSshArgv("peer-host", ["node", "~/plugins/usage-limit-auto-resume/dist/pace-read.mjs", "/Users/fixture/settings/auto-resume-config.json"], 10_000);
+    for (const opt of ["BatchMode=yes", "StrictHostKeyChecking=yes", "ControlMaster=no", "ControlPath=none", "ClearAllForwardings=yes", "ForwardAgent=no", "ForwardX11=no", "RequestTTY=no"]) {
+      assert.ok(argv.includes(opt), `missing ssh option ${opt}`);
+    }
+    assert.deepEqual(argv.slice(-3), ["--", "peer-host", "'node' ~/'plugins/usage-limit-auto-resume/dist/pace-read.mjs' '/Users/fixture/settings/auto-resume-config.json'"]);
+
+    // Bundled producer artifact (dist/pace-read.mjs) is built and runs with absolute Node in an installed bare-env
+    // layout with no node_modules: requires one explicit absolute settings file path, rejects missing/extra/unsafe
+    // args and wrong-type unrelated settings (paceFallback string) without invoking pq or leaking file contents, and
+    // reads valid host settings via QuotaReader.
+    const builtProducer = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "pace-read.mjs");
+    await access(builtProducer);
+    const installed = await mkdtemp(path.join(tmpdir(), "ulr-bare-installed-"));
+    try {
+      const dstDist = path.join(installed, "plugin", "dist");
+      const dstProducer = path.join(dstDist, "pace-read.mjs");
+      await mkdir(dstDist, { recursive: true });
+      await copyFile(builtProducer, dstProducer);
+      await assert.rejects(() => access(path.join(installed, "plugin", "node_modules")));
+      const bareHome = path.join(installed, "home");
+      const bareCfg = path.join(bareHome, "private-settings", "auto-resume-config.json");
+      await mkdir(path.dirname(bareCfg), { recursive: true });
+      if (process.platform !== "win32") await chmod(path.dirname(bareCfg), 0o755);
+      await mkdir(path.join(bareHome, ".local", "bin"), { recursive: true });
+      const pqCalledMarker = path.join(installed, "pq-called");
+      const fakePq = path.join(bareHome, ".local", "bin", process.platform === "win32" ? "pq.mjs" : "pq");
+      const pqBody = `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(pqCalledMarker)}, "1");\nprocess.stdout.write(JSON.stringify({schemaVersion:1,snapshotStale:false,accounts:[{provider:"claude",label:"acct-a",fresh:true,windows:[{id:"seven_day",fresh:true,usedPct:80,leftPct:20,resetInSeconds:84*3600}]}]}));\n`;
+      await writeFile(fakePq, process.platform === "win32" ? pqBody : `#!${process.execPath}\n${pqBody}`, { mode: 0o755 });
+      if (process.platform === "win32") {
+        const routingPath = path.join(bareHome, ".config", "opc", "routing.json");
+        await mkdir(path.dirname(routingPath), { recursive: true });
+        await writeFile(routingPath, JSON.stringify({ pq: [process.execPath, fakePq] }), "utf8");
+      }
+      const bareEnv: NodeJS.ProcessEnv = process.platform === "win32"
+        ? { HOME: bareHome, USERPROFILE: bareHome, PATH: process.env.PATH ?? "", ...(process.env.SYSTEMROOT ? { SYSTEMROOT: process.env.SYSTEMROOT } : {}) }
+        : { HOME: bareHome, PATH: "/usr/bin:/bin" };
+
+      // Regression: known unrelated setting of wrong type (paceFallback string) returns undecided/config-invalid, never calls pq, never leaks file contents.
+      await writeFile(bareCfg, JSON.stringify({ version: SETTINGS_VERSION, values: { paceFallback: "secret-sentinel", quotaAware: true, pacePoolAccounts: ["acct-a"] } }), "utf8");
+      const invalidRun = await promisify(execFile)(process.execPath, [dstProducer, bareCfg], { env: bareEnv, timeout: 10_000 });
+      assert.equal(invalidRun.stderr, "");
+      assert.doesNotMatch(invalidRun.stdout, /secret-sentinel|acct-a|private-settings/);
+      assert.deepEqual(parseRemotePace(invalidRun.stdout, Date.now(), 120_000).pace, { state: "undecided", reason: "config-invalid" });
+      await assert.rejects(() => access(pqCalledMarker), "quota subprocess must not run on invalid settings");
+
+      // Missing arg, extra arg, and relative arg all fail closed without calling pq.
+      for (const badArgs of [[dstProducer], [dstProducer, bareCfg, "extra"], [dstProducer, "auto-resume-config.json"]]) {
+        const badRun = await promisify(execFile)(process.execPath, badArgs, { env: bareEnv, timeout: 10_000 });
+        assert.equal(badRun.stderr, "");
+        assert.deepEqual(parseRemotePace(badRun.stdout, Date.now(), 120_000).pace, { state: "undecided", reason: "config-invalid" });
+        await assert.rejects(() => access(pqCalledMarker));
+      }
+
+      // Valid settings with explicit absolute path reject group-writable file/parent without calling pq, then pass on 0644 file / 0755 parent.
+      await writeFile(bareCfg, JSON.stringify({ version: SETTINGS_VERSION, values: { paceFallback: true, quotaAware: true, pacePoolAccounts: ["acct-a"] } }), "utf8");
+      if (process.platform !== "win32") {
+        await chmod(bareCfg, 0o664);
+        const groupFileRun = await promisify(execFile)(process.execPath, [dstProducer, bareCfg], { env: bareEnv, timeout: 10_000 });
+        assert.equal(groupFileRun.stderr, "");
+        assert.deepEqual(parseRemotePace(groupFileRun.stdout, Date.now(), 120_000).pace, { state: "undecided", reason: "config-invalid" });
+        await chmod(bareCfg, 0o644);
+        await chmod(path.dirname(bareCfg), 0o775);
+        const groupDirRun = await promisify(execFile)(process.execPath, [dstProducer, bareCfg], { env: bareEnv, timeout: 10_000 });
+        assert.equal(groupDirRun.stderr, "");
+        assert.deepEqual(parseRemotePace(groupDirRun.stdout, Date.now(), 120_000).pace, { state: "undecided", reason: "config-invalid" });
+        await assert.rejects(() => access(pqCalledMarker), "quota subprocess must not run on group-writable settings or parent");
+        await chmod(path.dirname(bareCfg), 0o755);
+      }
+      const validRun = await promisify(execFile)(process.execPath, [dstProducer, bareCfg], { env: bareEnv, timeout: 10_000 });
+      assert.equal(validRun.stderr, "");
+      assert.deepEqual(parseRemotePace(validRun.stdout, Date.now(), 120_000).pace, { state: "off", reason: "behind-pace" });
+      await access(pqCalledMarker);
+    } finally {
+      await rm(installed, { recursive: true, force: true });
+    }
+
+    // Missing ssh binary, timeout, non-zero exit, and oversized stdout all fail closed.
+    assert.deepEqual(await runRemotePaceSsh("peer-host", ["echo"], 5000, path.join(tmpdir(), "no-such-ssh-fixture")), { error: "remote-unavailable" });
+    // Directly executing a shebang fixture requires POSIX. Keep the parser and guard checks on all hosts.
+    if (process.platform !== "win32") {
+      const fakeDir = await mkdtemp(path.join(tmpdir(), "ulr-fake-ssh-"));
+      try {
+        const mkScript = async (name: string, body: string) => {
+          const script = path.join(fakeDir, name);
+          await writeFile(script, `#!/usr/bin/env node\n${body}\n`, { mode: 0o755 });
+          return script;
+        };
+        const slow = await mkScript("slow-ssh", "setTimeout(() => {}, 20000);");
+        assert.deepEqual(await runRemotePaceSsh("peer-host", ["cmd"], 250, slow), { error: "remote-timeout" });
+        const failExit = await mkScript("fail-ssh", `process.stdout.write(${JSON.stringify(JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, NOW)))}); process.exit(1);`);
+        assert.deepEqual(await runRemotePaceSsh("peer-host", ["cmd"], 5000, failExit), { error: "remote-unavailable" });
+        const bigOut = await mkScript("big-ssh", "process.stdout.write('a'.repeat(5000));");
+        assert.deepEqual(await runRemotePaceSsh("peer-host", ["cmd"], 5000, bigOut), { error: "remote-invalid" });
+        const ok = await mkScript("ok-ssh", `process.stdout.write(${JSON.stringify(JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, NOW)) + "\n")});`);
+        const got = await runRemotePaceSsh("peer-host", ["cmd"], 5000, ok);
+        assert.ok("stdout" in got && parseRemotePace(got.stdout, NOW, 120_000).pace.state === "on");
+      } finally {
+        await rm(fakeDir, { recursive: true, force: true });
+      }
+    }
+
+    // RemotePaceReader caches within TTL, skips cache when fresh (ttlMs=0), and fails closed when the runner throws.
+    let clock = NOW, calls = 0;
+    const reader = new RemotePaceReader(async (): Promise<RemotePaceRunResult> => {
+      calls++;
+      if (calls === 2) throw new Error("ssh boom");
+      return { stdout: `${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, clock))}\n` };
+    }, () => clock);
+    assert.equal((await reader.read("peer", ["node", "pace-read.ts"], { ttlMs: 60_000, timeoutMs: 5000, maxAgeMs: 120_000 })).state, "off");
+    clock += 30_000;
+    assert.equal((await reader.read("peer", ["node", "pace-read.ts"], { ttlMs: 60_000, timeoutMs: 5000, maxAgeMs: 120_000 })).state, "off");
+    assert.equal(calls, 1);
+    assert.deepEqual(await reader.read("peer", ["node", "pace-read.ts"], { ttlMs: 0, timeoutMs: 5000, maxAgeMs: 120_000 }), { state: "undecided", reason: "remote-unavailable" });
+    assert.equal(calls, 2);
   });
 });

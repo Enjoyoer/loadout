@@ -9,14 +9,14 @@ import { ReturnStore, type Profile } from "./server/fallback.ts";
 import { readStoredProfiles, readStoredUserMessageAt } from "./server/stored-agent.ts";
 import { daemonRun, sameDaemonRun } from "./server/daemon-run.ts";
 import { createFallbackRunner } from "./server/fallback-runner.ts";
-import { agentPool, QuotaReader, type Pace, type PoolQuota, type QuotaPool } from "./server/quota.ts";
+import { agentPool, QuotaReader, RemotePaceReader, type Pace, type PoolQuota, type QuotaPool } from "./server/quota.ts";
 import { afterTransientFailure, applyClaimTurn, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, boundUser, cancelClaim, closeDecision, failureSignature, restartSettle, resumeInterrupted, holdsClaim, isActive, RESTART_SETTLE_MS, isExpectedUser, isOwnLatestMessage, isRpcTimeoutWaiting, lastInput, endedTurnRows, turnInput, verifyUsageInput, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, isPark, messageId, presendCancel, quotaDecision, releaseClaim, resumePrompt, rpcTimeoutDecision, runsOwnTurn, scheduleUsage, shouldResume, supersedeForNewUserTurn, transientRejectionState, turnMark, turnText, USAGE_ENDING_GATES, verificationDecision, verifyTransientTimeline, staleFailure, type AgentClose, type AgentSnapshot, type ClaimCancel, type ResumeRecord, type ResumeState, type InFlightClaim, type TimelineEntry, type TurnInput } from "./server/model.ts";
 import { ResumeStore, StateUnreadableError, TurnLedger, TurnsUnreadableError, type RunningTurn } from "./server/store.ts";
 import { endedReads, killAgent } from "./server/vendor/ended-read.ts";
 
 const log = (line: string) => console.log(`[usage-limit-auto-resume] ${line}`);
 // Logged once at startup so a deploy can confirm what is running. Keep equal to package.json "version".
-const VERSION = "0.9.0";
+const VERSION = "0.9.1";
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 // Thrown before anything reaches the socket, so the message was never delivered.
 const isTransportNotConnected = (error: unknown) => /^Transport not connected\b/.test(errorMessage(error));
@@ -49,7 +49,7 @@ const REPROBE_SWEEP_MS = 3_000;
 // The failure a turn cut off by a graceful stop or a crash is resumed for (cutTurn).
 const CUT_OFF = "turn cut off by a daemon stop";
 
-export default function contribute(server: PluginServerContext, openClient: () => Promise<OpenedClient> = openDaemonClient, quota = new QuotaReader(), returns = new ReturnStore(), stored: (agentId: string) => Promise<Profile[]> = readStoredProfiles, daemon: () => string = currentDaemon, kill: (agentId: string) => Promise<void> = killAgent, storedUserAt: (agentId: string) => Promise<string | null> = readStoredUserMessageAt) {
+export default function contribute(server: PluginServerContext, openClient: () => Promise<OpenedClient> = openDaemonClient, quota = new QuotaReader(), returns = new ReturnStore(), stored: (agentId: string) => Promise<Profile[]> = readStoredProfiles, daemon: () => string = currentDaemon, kill: (agentId: string) => Promise<void> = killAgent, storedUserAt: (agentId: string) => Promise<string | null> = readStoredUserMessageAt, remotePace = new RemotePaceReader()) {
   const settings = server.registerSettings(defineSettings({ id: SETTINGS_ID, scope: "host", version: SETTINGS_VERSION, schema: ConfigSchema }));
   const store = new ResumeStore();
   // Each agent's running turn, noted at its start and removed at its end (noteRunning, settleRunning).
@@ -226,10 +226,22 @@ export default function contribute(server: PluginServerContext, openClient: () =
     quota: (pool: QuotaPool, currentConfig: Config, options?: { fresh?: boolean }): Promise<PoolQuota> => currentConfig.quotaAware
       ? quota.pool(pool, { ...quotaOptions(currentConfig), ...(options?.fresh ? { ttlMs: 0 } : {}) })
       : Promise.resolve({ status: "unknown", pool, reason: "quotaAware off" }),
-    // Pace mode reads the same shared pq reading; with quota awareness off it cannot decide.
-    pace: (currentConfig: Config, options?: { fresh?: boolean }): Promise<Pace> => currentConfig.quotaAware
-      ? quota.pace(currentConfig.pacePoolAccounts, { ttlMs: options?.fresh ? 0 : currentConfig.quotaCacheSeconds * 1000, timeoutMs: currentConfig.pqTimeoutSeconds * 1000 })
-      : Promise.resolve({ state: "undecided", reason: "quotaAware-off" }),
+    // Pace mode reads the local shared pq reading, or the remote host's validated tri-state verdict over SSH when
+    // configured; with quota awareness off, or an incomplete/ambiguous remote config, it cannot decide.
+    pace: (currentConfig: Config, options?: { fresh?: boolean }): Promise<Pace> => {
+      if (!currentConfig.quotaAware) return Promise.resolve({ state: "undecided", reason: "quotaAware-off" });
+      if (currentConfig.paceRemoteHost !== null || currentConfig.paceRemoteCommand !== null) {
+        if (currentConfig.pacePoolAccounts.length > 0 || currentConfig.paceRemoteHost === null || currentConfig.paceRemoteCommand === null) {
+          return Promise.resolve({ state: "undecided", reason: "config-invalid" });
+        }
+        return remotePace.read(currentConfig.paceRemoteHost, currentConfig.paceRemoteCommand, {
+          ttlMs: options?.fresh ? 0 : currentConfig.quotaCacheSeconds * 1000,
+          timeoutMs: currentConfig.paceRemoteTimeoutSeconds * 1000,
+          maxAgeMs: currentConfig.paceRemoteMaxAgeSeconds * 1000,
+        });
+      }
+      return quota.pace(currentConfig.pacePoolAccounts, { ttlMs: options?.fresh ? 0 : currentConfig.quotaCacheSeconds * 1000, timeoutMs: currentConfig.pqTimeoutSeconds * 1000 });
+    },
     stored,
     sending: (agentId) => inFlight.has(agentId),
     log,

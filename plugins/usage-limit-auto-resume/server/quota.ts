@@ -271,3 +271,223 @@ export class QuotaReader {
     return "error" in result ? { state: "undecided", reason: "pq-unavailable" } : paceOf(result.document, labels, this.clock());
   }
 }
+
+export const REMOTE_PACE_SCHEMA_VERSION = 1;
+export const MAX_REMOTE_PACE_BYTES = 4096;
+const MAX_REMOTE_FUTURE_SKEW_MS = 30_000;
+
+// The exact reason words that may cross the remote pace wire for each state: never figures, labels or arbitrary text.
+const PACE_REASONS: Readonly<Record<Pace["state"], readonly string[]>> = {
+  on: ["on-pace"],
+  off: ["behind-pace", "account-out"],
+  undecided: [
+    "no-pool-accounts", "pq-unparseable", "pq-schema", "pq-no-accounts",
+    "pq-stale", "no-fresh-weekly", "pq-unavailable", "quotaAware-off", "config-invalid",
+  ],
+};
+
+export type RemotePacePayload = {
+  schemaVersion: 1;
+  state: Pace["state"];
+  reason: string;
+  asOf: string;
+};
+
+const RFC3339_UTC = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,3}))?Z$/;
+
+function parseUtcIso(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const match = RFC3339_UTC.exec(value);
+  if (!match) return null;
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number) as [number, number, number, number, number, number];
+  const ms = Number((match[7] ?? "0").padEnd(3, "0"));
+  const time = Date.UTC(year, month - 1, day, hour, minute, second, ms);
+  const date = new Date(time);
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day &&
+    date.getUTCHours() === hour && date.getUTCMinutes() === minute && date.getUTCSeconds() === second ? time : null;
+}
+
+/** Encodes a local Pace verdict into the minimal strict wire payload (no pq, labels, or quota/reset data). */
+export function formatRemotePace(pace: Pace, now = Date.now()): RemotePacePayload {
+  const allowed = PACE_REASONS[pace.state];
+  const safe: Pace = allowed?.includes(pace.reason) ? pace : { state: "undecided", reason: "pq-unavailable" };
+  return { schemaVersion: REMOTE_PACE_SCHEMA_VERSION, state: safe.state, reason: safe.reason, asOf: new Date(now).toISOString() };
+}
+
+export type ValidatedRemotePace = { pace: Pace; asOfMs: number | null };
+
+/** Whether already-parsed JSON text repeats any key in any object (decoding escaped spellings). */
+export function repeatsKey(text: string): boolean {
+  const objects: Array<Set<string> | null> = [];
+  let expectKey = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      let end = i + 1;
+      while (text[end] !== '"') end += text[end] === "\\" ? 2 : 1;
+      const keys = objects.at(-1);
+      if (keys && expectKey) {
+        const key = JSON.parse(text.slice(i, end + 1)) as string;
+        if (keys.has(key)) return true;
+        keys.add(key);
+        expectKey = false;
+      }
+      i = end;
+    } else if (c === "{") {
+      objects.push(new Set());
+      expectKey = true;
+    } else if (c === "[") {
+      objects.push(null);
+      expectKey = false;
+    } else if (c === "}" || c === "]") {
+      objects.pop();
+      expectKey = false;
+    } else if (c === ",") {
+      expectKey = objects.at(-1) != null;
+    }
+  }
+  return false;
+}
+
+/**
+ * Strictly validates one single-line JSON wire payload from the remote pace producer (only an optional final line
+ * terminator, no surrounding blank lines or whitespace, and four unique canonical keys with no duplicate keys). Any
+ * unknown/duplicate key, bad schema, unallowlisted reason, malformed or future timestamp, stale reading, or oversized
+ * output fails closed as undecided.
+ */
+export function parseRemotePace(raw: string, now = Date.now(), maxAgeMs = 120_000): ValidatedRemotePace {
+  const fail = (reason: string): ValidatedRemotePace => ({ pace: { state: "undecided", reason }, asOfMs: null });
+  if (Buffer.byteLength(raw, "utf8") > MAX_REMOTE_PACE_BYTES) return fail("remote-invalid");
+  let line = raw;
+  if (line.endsWith("\r\n")) line = line.slice(0, -2);
+  else if (line.endsWith("\n")) line = line.slice(0, -1);
+  if (!line || line.includes("\n") || line.includes("\r") || !line.startsWith("{") || !line.endsWith("}")) {
+    return fail("remote-invalid");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return fail("remote-invalid");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || repeatsKey(line)) return fail("remote-invalid");
+  const keys = Object.keys(parsed).sort();
+  if (keys.length !== 4 || keys[0] !== "asOf" || keys[1] !== "reason" || keys[2] !== "schemaVersion" || keys[3] !== "state") {
+    return fail("remote-invalid");
+  }
+  const doc = parsed as Record<string, unknown>;
+  if (doc.schemaVersion !== REMOTE_PACE_SCHEMA_VERSION) return fail("remote-invalid");
+  if (doc.state !== "on" && doc.state !== "off" && doc.state !== "undecided") return fail("remote-invalid");
+  if (typeof doc.reason !== "string" || !PACE_REASONS[doc.state].includes(doc.reason)) return fail("remote-invalid");
+  const asOfMs = parseUtcIso(doc.asOf);
+  if (asOfMs === null || asOfMs > now + MAX_REMOTE_FUTURE_SKEW_MS) return fail("remote-invalid");
+  if (now - asOfMs > maxAgeMs) return fail("remote-stale");
+  return { pace: { state: doc.state, reason: doc.reason }, asOfMs };
+}
+
+function posixQuote(arg: string): string {
+  if (arg === "~") return "~";
+  if (arg.startsWith("~/")) return `~/'${arg.slice(2).replace(/'/g, "'\\''")}'`;
+  return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+export function remotePaceSshArgv(host: string, command: readonly string[], timeoutMs: number, sshBin = "ssh"): string[] {
+  const connectSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  return [
+    sshBin,
+    "-o", "BatchMode=yes",
+    "-o", "StrictHostKeyChecking=yes",
+    "-o", "ControlMaster=no",
+    "-o", "ControlPath=none",
+    "-o", "ClearAllForwardings=yes",
+    "-o", "ForwardAgent=no",
+    "-o", "ForwardX11=no",
+    "-o", "RequestTTY=no",
+    "-o", `ConnectTimeout=${connectSeconds}`,
+    "-o", "ServerAliveInterval=5",
+    "-o", "ServerAliveCountMax=2",
+    "--",
+    host,
+    command.map(posixQuote).join(" "),
+  ];
+}
+
+export type RemotePaceRunResult = { stdout: string } | { error: "remote-timeout" | "remote-unavailable" | "remote-invalid" };
+
+/**
+ * Runs the remote pace command over existing authenticated SSH without a local shell. Enforces timeoutMs,
+ * MAX_REMOTE_PACE_BYTES, exit status 0, and discards stderr so remote diagnostics never reach local logs.
+ */
+export function runRemotePaceSsh(host: string, command: readonly string[], timeoutMs: number, sshBin = "ssh"): Promise<RemotePaceRunResult> {
+  return new Promise((resolve) => {
+    const [file, ...args] = remotePaceSshArgv(host, command, timeoutMs, sshBin);
+    let stdout = "", stdoutBytes = 0, done = false;
+    let child: ReturnType<typeof spawn> | undefined;
+    const finish = (result: RemotePaceRunResult) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (child && child.exitCode === null && child.signalCode === null) child.kill();
+      child?.stdout?.destroy();
+      child?.stderr?.destroy();
+      child?.unref();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({ error: "remote-timeout" }), timeoutMs);
+    try {
+      child = spawn(file!, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    } catch {
+      finish({ error: "remote-unavailable" });
+      return;
+    }
+    if (!child) return;
+    child.stdout!.setEncoding("utf8");
+    child.stdout!.on("data", (chunk: string) => {
+      stdoutBytes += Buffer.byteLength(chunk, "utf8");
+      if (stdoutBytes > MAX_REMOTE_PACE_BYTES) return finish({ error: "remote-invalid" });
+      stdout += chunk;
+    });
+    // Drain stderr without storing or logging it so remote messages never reach local logs.
+    child.stderr!.resume();
+    child.on("error", () => finish({ error: "remote-unavailable" }));
+    child.on("close", (exit: number | null, signal: NodeJS.Signals | null) => {
+      if (exit === 0 && signal === null) finish({ stdout });
+      else finish({ error: "remote-unavailable" });
+    });
+  });
+}
+
+export type RemotePaceRunner = (host: string, command: readonly string[], timeoutMs: number) => Promise<RemotePaceRunResult>;
+
+/**
+ * One remote pace verdict shared in memory for ttlMs (never written to disk), keyed by host and command.
+ * Missing, timed-out, stale, or invalid responses fail closed as undecided.
+ */
+export class RemotePaceReader {
+  private cached: { key: string; at: number; result: Promise<ValidatedRemotePace> } | null = null;
+  private readonly run: RemotePaceRunner;
+  private readonly clock: () => number;
+
+  constructor(run: RemotePaceRunner = runRemotePaceSsh, clock: () => number = () => Date.now()) {
+    this.run = run;
+    this.clock = clock;
+  }
+
+  async read(host: string, command: readonly string[], options: { ttlMs: number; timeoutMs: number; maxAgeMs: number }): Promise<Pace> {
+    const now = this.clock();
+    const key = JSON.stringify([host, command]);
+    if (this.cached && this.cached.key === key && now - this.cached.at < options.ttlMs) {
+      const hit = await this.cached.result;
+      if (hit.asOfMs === null) return hit.pace;
+      const current = this.clock();
+      if (hit.asOfMs <= current + MAX_REMOTE_FUTURE_SKEW_MS && current - hit.asOfMs <= options.maxAgeMs) return hit.pace;
+    }
+    const result = this.run(host, command, options.timeoutMs)
+      .then((raw): ValidatedRemotePace => "error" in raw
+        ? { pace: { state: "undecided", reason: raw.error }, asOfMs: null }
+        : parseRemotePace(raw.stdout, this.clock(), options.maxAgeMs))
+      .catch((): ValidatedRemotePace => ({ pace: { state: "undecided", reason: "remote-unavailable" }, asOfMs: null }));
+    this.cached = { key, at: now, result };
+    return (await result).pace;
+  }
+}
