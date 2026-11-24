@@ -52,9 +52,16 @@ const ConfigObjectSchema = z.object({
   pacePoolAccounts: z.array(z.string().min(1)).max(50).default([]),
   // PMs pace mode never moves: by `project` label, in addition to the built-in main PM projects (config, work,
   // personal), which no setting removes; and by agent id prefix. The prefixes belong only in the host settings file;
-  // while that list is empty (or pacePoolAccounts is), the host is unconfigured and pace mode moves nothing.
+  // while that list is empty (or neither local pacePoolAccounts nor a complete remote pace source is set), the host is
+  // unconfigured and pace mode moves nothing.
   paceFallbackExcludedProjects: z.array(z.string().min(1)).max(50).default([]),
   paceFallbackExcludedAgents: z.array(z.string().min(1)).max(50).default([]),
+  // Remote pace source (optional, off by default): reads a strictly validated tri-state pace verdict computed by
+  // another host over existing authenticated SSH instead of local pq. Local pacePoolAccounts must stay empty when set.
+  paceRemoteHost: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/).nullable().default(null),
+  paceRemoteCommand: z.array(z.string().min(1).max(512).refine((arg) => !/[\0\r\n]/.test(arg), "control character not allowed")).min(1).max(16).nullable().default(null),
+  paceRemoteTimeoutSeconds: z.number().int().min(1).max(30).default(10),
+  paceRemoteMaxAgeSeconds: z.number().int().min(10).max(600).default(120),
 });
 
 export const ConfigSchema = ConfigObjectSchema.strict();

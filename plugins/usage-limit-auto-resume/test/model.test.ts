@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { SETTINGS_VERSION } from "../server/config.ts";
 import { MAX_KEPT_ATTEMPTS, afterTransientFailure, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, endedTurnRows, isTransientErrorMessage, configFingerprint, continuationPrompt, failureSignature, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, shouldResume, transientDelaySeconds, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { quotaDecision, scheduleUsage } from "../server/model.ts";
-import { agentPool, paceOf, poolQuota, QuotaReader, runPq, type PqResult } from "../server/quota.ts";
+import { readLocalHostPace, settingsPath } from "../server/pace-read.ts";
+import { agentPool, formatRemotePace, paceOf, parseRemotePace, poolQuota, QuotaReader, RemotePaceReader, remotePaceSshArgv, runPq, runRemotePaceSsh, type PqResult, type RemotePaceRunResult } from "../server/quota.ts";
 
 const NOW = Date.parse("2026-09-25T12:00:00.000Z");
 const config: ResumeConfig = {
@@ -522,5 +525,130 @@ describe("pace mode rule", () => {
     assert.equal(paceOf({ ...doc([weekly("a", 58, 84)]), snapshotStale: true }, ["a"]).state, "undecided");
     assert.equal(paceOf({ ...doc([weekly("a", 58, 84)]), schemaVersion: 2 }, ["a"]).state, "undecided");
     assert.equal(paceOf(null, ["a"]).state, "undecided");
+  });
+});
+
+describe("remote pace transport", () => {
+  const weekly = (label: string, usedPct: number, resetHours: number, extra: unknown[] = []) => ({
+    provider: "claude",
+    label,
+    fresh: true,
+    windows: [{ id: "seven_day", fresh: true, usedPct, leftPct: 100 - usedPct, resetInSeconds: resetHours * 3600 }, ...extra],
+  });
+  const doc = (accounts: unknown[], snapshotStale = false) => ({ schemaVersion: 1, snapshotStale, accounts });
+
+  it("produces and validates tri-state verdicts via local ULR settings and QuotaReader.pace with no quota/account leakage", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "ulr-pace-read-"));
+    try {
+      const cfgPath = settingsPath(home);
+      await mkdir(path.dirname(cfgPath), { recursive: true });
+      const writeCfg = (values: Record<string, unknown>) => writeFile(cfgPath, JSON.stringify({ version: SETTINGS_VERSION, values }), "utf8");
+      await writeCfg({ quotaAware: true, pacePoolAccounts: ["acct-secret-1", "acct-secret-2"] });
+
+      let currentDoc: unknown = doc([weekly("acct-secret-1", 30, 84), weekly("acct-secret-2", 30, 84)]);
+      const reader = new QuotaReader(async () => ({ document: currentDoc }), () => NOW);
+
+      const onPayload = await readLocalHostPace({ home, quota: reader, clock: () => NOW });
+      assert.deepEqual(Object.keys(onPayload).sort(), ["asOf", "reason", "schemaVersion", "state"]);
+      assert.deepEqual(onPayload, { schemaVersion: 1, state: "on", reason: "on-pace", asOf: new Date(NOW).toISOString() });
+      const onWire = JSON.stringify(onPayload);
+      assert.doesNotMatch(onWire, /acct-secret|usedPct|leftPct|reset|accounts/);
+      assert.deepEqual(parseRemotePace(onWire, NOW + 5_000, 120_000).pace, { state: "on", reason: "on-pace" });
+
+      currentDoc = doc([weekly("acct-secret-1", 80, 84), weekly("acct-secret-2", 70, 84)]);
+      const offPayload = await readLocalHostPace({ home, quota: reader, clock: () => NOW });
+      assert.deepEqual(offPayload, { schemaVersion: 1, state: "off", reason: "behind-pace", asOf: new Date(NOW).toISOString() });
+      assert.deepEqual(parseRemotePace(JSON.stringify(offPayload), NOW + 5_000, 120_000).pace, { state: "off", reason: "behind-pace" });
+
+      currentDoc = doc([weekly("acct-secret-1", 10, 84, [{ id: "five_hour", fresh: true, usedPct: 100, leftPct: 0, resetAt: Math.floor(NOW / 1000) + 600, resetInSeconds: 600 }]), weekly("acct-secret-2", 10, 84)]);
+      const outPayload = await readLocalHostPace({ home, quota: reader, clock: () => NOW });
+      assert.deepEqual(outPayload, { schemaVersion: 1, state: "off", reason: "account-out", asOf: new Date(NOW).toISOString() });
+      assert.deepEqual(parseRemotePace(JSON.stringify(outPayload), NOW, 120_000).pace, { state: "off", reason: "account-out" });
+
+      currentDoc = doc([weekly("acct-secret-1", 80, 84)], true);
+      const stalePayload = await readLocalHostPace({ home, quota: reader, clock: () => NOW });
+      assert.deepEqual(stalePayload, { schemaVersion: 1, state: "undecided", reason: "pq-stale", asOf: new Date(NOW).toISOString() });
+      assert.deepEqual(parseRemotePace(JSON.stringify(stalePayload), NOW, 120_000).pace, { state: "undecided", reason: "pq-stale" });
+
+      await writeCfg({ quotaAware: false, pacePoolAccounts: ["acct-secret-1"] });
+      assert.deepEqual(await readLocalHostPace({ home, quota: reader, clock: () => NOW }), { schemaVersion: 1, state: "undecided", reason: "quotaAware-off", asOf: new Date(NOW).toISOString() });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on missing, timed-out, stale, or invalid remote pace inputs", async () => {
+    const emptyHome = await mkdtemp(path.join(tmpdir(), "ulr-pace-missing-"));
+    try {
+      assert.equal((await readLocalHostPace({ home: emptyHome, clock: () => NOW })).state, "undecided");
+      // Remote-configured host refuses to chain-hop as a producer.
+      const cfgPath = settingsPath(emptyHome);
+      await mkdir(path.dirname(cfgPath), { recursive: true });
+      await writeFile(cfgPath, JSON.stringify({ version: SETTINGS_VERSION, values: { paceRemoteHost: "peer-host", paceRemoteCommand: ["node", "~/pace-read.ts"] } }), "utf8");
+      assert.deepEqual(await readLocalHostPace({ home: emptyHome, clock: () => NOW }), { schemaVersion: 1, state: "undecided", reason: "config-invalid", asOf: new Date(NOW).toISOString() });
+    } finally {
+      await rm(emptyHome, { recursive: true, force: true });
+    }
+
+    // Stale, future, extra-key, bad-schema, bad-reason, multiline, and oversized payloads all fail closed.
+    const stale = JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, NOW - 121_000));
+    assert.deepEqual(parseRemotePace(stale, NOW, 120_000).pace, { state: "undecided", reason: "remote-stale" });
+    const future = JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, NOW + 60_000));
+    assert.deepEqual(parseRemotePace(future, NOW, 120_000).pace, { state: "undecided", reason: "remote-invalid" });
+    for (const bad of [
+      "",
+      "not json",
+      JSON.stringify({ schemaVersion: 1, state: "off", reason: "behind-pace", asOf: new Date(NOW).toISOString(), accounts: [] }),
+      JSON.stringify({ schemaVersion: 2, state: "off", reason: "behind-pace", asOf: new Date(NOW).toISOString() }),
+      JSON.stringify({ schemaVersion: 1, state: "unknown", reason: "pq-stale", asOf: new Date(NOW).toISOString() }),
+      JSON.stringify({ schemaVersion: 1, state: "off", reason: "on-pace", asOf: new Date(NOW).toISOString() }),
+      JSON.stringify({ schemaVersion: 1, state: "off", reason: "acct-secret", asOf: new Date(NOW).toISOString() }),
+      JSON.stringify({ schemaVersion: 1, state: "off", reason: "behind-pace", asOf: "2026-02-30T00:00:00Z" }),
+      `${JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, NOW))}\nextra-line`,
+      "x".repeat(5000),
+    ]) {
+      assert.deepEqual(parseRemotePace(bad, NOW, 120_000).pace, { state: "undecided", reason: "remote-invalid" }, bad.slice(0, 80));
+    }
+
+    // SSH argv enforces BatchMode, no forwarding/TTY, -- separator, and safe ~/ quoting.
+    const argv = remotePaceSshArgv("peer-host", ["node", "~/plugins/usage-limit-auto-resume/server/pace-read.ts"], 10_000);
+    assert.ok(argv.includes("BatchMode=yes") && argv.includes("ClearAllForwardings=yes") && argv.includes("ForwardAgent=no") && argv.includes("RequestTTY=no"));
+    assert.deepEqual(argv.slice(-3), ["--", "peer-host", "'node' ~/'plugins/usage-limit-auto-resume/server/pace-read.ts'"]);
+
+    // Missing ssh binary, timeout, non-zero exit, and oversized stdout all fail closed.
+    assert.deepEqual(await runRemotePaceSsh("peer-host", ["echo"], 5000, path.join(tmpdir(), "no-such-ssh-fixture")), { error: "remote-unavailable" });
+    const fakeDir = await mkdtemp(path.join(tmpdir(), "ulr-fake-ssh-"));
+    try {
+      const mkScript = async (name: string, body: string) => {
+        const script = path.join(fakeDir, name);
+        await writeFile(script, `#!/usr/bin/env node\n${body}\n`, { mode: 0o755 });
+        return script;
+      };
+      const slow = await mkScript("slow-ssh", "setTimeout(() => {}, 20000);");
+      assert.deepEqual(await runRemotePaceSsh("peer-host", ["cmd"], 250, slow), { error: "remote-timeout" });
+      const failExit = await mkScript("fail-ssh", `process.stdout.write(${JSON.stringify(JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, NOW)))}); process.exit(1);`);
+      assert.deepEqual(await runRemotePaceSsh("peer-host", ["cmd"], 5000, failExit), { error: "remote-unavailable" });
+      const bigOut = await mkScript("big-ssh", "process.stdout.write('a'.repeat(5000));");
+      assert.deepEqual(await runRemotePaceSsh("peer-host", ["cmd"], 5000, bigOut), { error: "remote-invalid" });
+      const ok = await mkScript("ok-ssh", `process.stdout.write(${JSON.stringify(JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, NOW)) + "\n")});`);
+      const got = await runRemotePaceSsh("peer-host", ["cmd"], 5000, ok);
+      assert.ok("stdout" in got && parseRemotePace(got.stdout, NOW, 120_000).pace.state === "on");
+    } finally {
+      await rm(fakeDir, { recursive: true, force: true });
+    }
+
+    // RemotePaceReader caches within TTL, skips cache when fresh (ttlMs=0), and fails closed when the runner throws.
+    let clock = NOW, calls = 0;
+    const reader = new RemotePaceReader(async (): Promise<RemotePaceRunResult> => {
+      calls++;
+      if (calls === 2) throw new Error("ssh boom");
+      return { stdout: `${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, clock))}\n` };
+    }, () => clock);
+    assert.equal((await reader.read("peer", ["node", "pace-read.ts"], { ttlMs: 60_000, timeoutMs: 5000, maxAgeMs: 120_000 })).state, "off");
+    clock += 30_000;
+    assert.equal((await reader.read("peer", ["node", "pace-read.ts"], { ttlMs: 60_000, timeoutMs: 5000, maxAgeMs: 120_000 })).state, "off");
+    assert.equal(calls, 1);
+    assert.deepEqual(await reader.read("peer", ["node", "pace-read.ts"], { ttlMs: 0, timeoutMs: 5000, maxAgeMs: 120_000 }), { state: "undecided", reason: "remote-unavailable" });
+    assert.equal(calls, 2);
   });
 });

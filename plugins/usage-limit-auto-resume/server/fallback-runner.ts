@@ -295,8 +295,14 @@ export function createFallbackRunner(deps: FallbackDeps) {
     return (await deps.pace(config)).state === "off";
   }
 
-  // Pace mode fails closed on a host not configured for it: no excluded agent prefix or no pool account set.
-  const paceUnconfigured = (config: Config) => !config.paceFallbackExcludedAgents.length || !config.pacePoolAccounts.length;
+  // Pace mode fails closed on a host not configured for it: no excluded agent prefix, neither local pool accounts nor
+  // a complete remote pace source set, or both local and remote set at once.
+  const paceUnconfigured = (config: Config) => {
+    const local = config.pacePoolAccounts.length > 0;
+    const anyRemote = config.paceRemoteHost !== null || config.paceRemoteCommand !== null;
+    const fullRemote = config.paceRemoteHost !== null && config.paceRemoteCommand !== null;
+    return !config.paceFallbackExcludedAgents.length || !((local && !anyRemote) || (fullRemote && !local));
+  };
 
   // The live PMs, by their `role=pm` label; a page cap keeps one sweep bounded.
   async function livePms(api: FallbackApi): Promise<AgentSnapshot[]> {
@@ -443,14 +449,17 @@ export function createFallbackRunner(deps: FallbackDeps) {
 
   // The fresh read right before a settings write: no write (false) when the read fails, the agent's profile moved since
   // the snapshot the decision used (`before`), a write is blocked (cancel, archive, no session), or a move away from the
-  // original (`swap`) would hit a main PM. The obligation is kept, and the next trigger decides again on fresh state.
-  // Paseo has no conditional write, so a relabel landing during the write itself is not seen here.
+  // original (`swap`) would hit a main PM (or, for a pace swap, an ineligible/excluded PM). The obligation is kept, and
+  // the next trigger decides again on fresh state. Paseo has no conditional write, so a relabel landing during the write
+  // itself is not seen here.
   async function writable(api: FallbackApi, obligation: ReturnObligation, goal: "swap" | "restore", config: Config, before?: AgentSnapshot): Promise<boolean> {
     const fresh = await fetchAgent(api, obligation.agentId).catch(() => null);
     const was = before ? profileOf(before) : null;
     const reason = !fresh ? "agent-unreadable"
       : was && !sameProfile(profileOf(fresh), was) ? "profile-moved"
-      : writeBlocked(obligation, fresh, config) ?? (goal === "swap" && isMainPm(fresh) ? "main-pm" : null);
+      : writeBlocked(obligation, fresh, config) ?? (goal === "swap"
+        ? (isMainPm(fresh) ? "main-pm" : obligation.pace ? paceIneligible(fresh, config, obligation.original.model) : null)
+        : null);
     if (reason) once(obligation.agentId, `pm-${goal}-deferred agentId=${obligation.agentId} obligationId=${obligation.obligationId} reason=${reason} retry=next-trigger`);
     return !reason;
   }
