@@ -545,7 +545,11 @@ describe("remote pace transport", () => {
     try {
       const cfgPath = path.join(home, "settings", "auto-resume-config.json");
       await mkdir(path.dirname(cfgPath), { recursive: true });
-      const writeCfg = (values: Record<string, unknown>) => writeFile(cfgPath, JSON.stringify({ version: SETTINGS_VERSION, values }), "utf8");
+      if (process.platform !== "win32") await chmod(path.dirname(cfgPath), 0o755);
+      const writeCfg = async (values: Record<string, unknown>) => {
+        await writeFile(cfgPath, JSON.stringify({ version: SETTINGS_VERSION, values }), "utf8");
+        if (process.platform !== "win32") await chmod(cfgPath, 0o644);
+      };
       await writeCfg({ quotaAware: true, pacePoolAccounts: ["acct-secret-1", "acct-secret-2"] });
 
       let currentDoc: unknown = doc([weekly("acct-secret-1", 30, 84), weekly("acct-secret-2", 30, 84)]);
@@ -616,7 +620,9 @@ describe("remote pace transport", () => {
       // Valid fixture with unrelated settings passes full ConfigSchema and reuses the same QuotaReader.
       await writeFile(cfgPath, JSON.stringify({ version: SETTINGS_VERSION, values: { armed: true, paceFallback: true, quotaAware: true, pacePoolAccounts: ["acct-a"] } }), "utf8");
       if (process.platform !== "win32") {
-        // Symlinked file, symlinked parent dir, and world-writable file all fail closed without calling pq.
+        // Symlinked file, symlinked parent dir, group-writable file/parent, and world-writable file all fail closed without calling pq.
+        await chmod(cfgDir, 0o755);
+        await chmod(cfgPath, 0o644);
         const linkFileDir = path.join(emptyHome, "link-file");
         await mkdir(linkFileDir, { recursive: true });
         const linkFile = path.join(linkFileDir, "auto-resume-config.json");
@@ -625,9 +631,15 @@ describe("remote pace transport", () => {
         const linkDir = path.join(emptyHome, "link-dir");
         await symlink(cfgDir, linkDir);
         assert.deepEqual(await readLocalHostPace({ settingsFile: path.join(linkDir, "auto-resume-config.json"), quota: spyReader, clock: () => NOW }), invalidExpect);
+        await chmod(cfgPath, 0o664);
+        assert.deepEqual(await readLocalHostPace({ settingsFile: cfgPath, quota: spyReader, clock: () => NOW }), invalidExpect);
+        await chmod(cfgPath, 0o644);
+        await chmod(cfgDir, 0o775);
+        assert.deepEqual(await readLocalHostPace({ settingsFile: cfgPath, quota: spyReader, clock: () => NOW }), invalidExpect);
+        await chmod(cfgDir, 0o755);
         await chmod(cfgPath, 0o666);
         assert.deepEqual(await readLocalHostPace({ settingsFile: cfgPath, quota: spyReader, clock: () => NOW }), invalidExpect);
-        await chmod(cfgPath, 0o600);
+        await chmod(cfgPath, 0o644);
         assert.equal(pqCalls, 0);
       }
       assert.deepEqual(await readLocalHostPace({ settingsFile: cfgPath, quota: spyReader, clock: () => NOW }), { schemaVersion: 1, state: "off", reason: "behind-pace", asOf: new Date(NOW).toISOString() });
@@ -694,6 +706,7 @@ describe("remote pace transport", () => {
       const bareHome = path.join(installed, "home");
       const bareCfg = path.join(bareHome, "private-settings", "auto-resume-config.json");
       await mkdir(path.dirname(bareCfg), { recursive: true });
+      if (process.platform !== "win32") await chmod(path.dirname(bareCfg), 0o755);
       await mkdir(path.join(bareHome, ".local", "bin"), { recursive: true });
       const pqCalledMarker = path.join(installed, "pq-called");
       const fakePq = path.join(bareHome, ".local", "bin", process.platform === "win32" ? "pq.mjs" : "pq");
@@ -724,8 +737,21 @@ describe("remote pace transport", () => {
         await assert.rejects(() => access(pqCalledMarker));
       }
 
-      // Valid settings with explicit absolute path reuse QuotaReader and return the expected tri-state pace verdict.
+      // Valid settings with explicit absolute path reject group-writable file/parent without calling pq, then pass on 0644 file / 0755 parent.
       await writeFile(bareCfg, JSON.stringify({ version: SETTINGS_VERSION, values: { paceFallback: true, quotaAware: true, pacePoolAccounts: ["acct-a"] } }), "utf8");
+      if (process.platform !== "win32") {
+        await chmod(bareCfg, 0o664);
+        const groupFileRun = await promisify(execFile)(process.execPath, [dstProducer, bareCfg], { env: bareEnv, timeout: 10_000 });
+        assert.equal(groupFileRun.stderr, "");
+        assert.deepEqual(parseRemotePace(groupFileRun.stdout, Date.now(), 120_000).pace, { state: "undecided", reason: "config-invalid" });
+        await chmod(bareCfg, 0o644);
+        await chmod(path.dirname(bareCfg), 0o775);
+        const groupDirRun = await promisify(execFile)(process.execPath, [dstProducer, bareCfg], { env: bareEnv, timeout: 10_000 });
+        assert.equal(groupDirRun.stderr, "");
+        assert.deepEqual(parseRemotePace(groupDirRun.stdout, Date.now(), 120_000).pace, { state: "undecided", reason: "config-invalid" });
+        await assert.rejects(() => access(pqCalledMarker), "quota subprocess must not run on group-writable settings or parent");
+        await chmod(path.dirname(bareCfg), 0o755);
+      }
       const validRun = await promisify(execFile)(process.execPath, [dstProducer, bareCfg], { env: bareEnv, timeout: 10_000 });
       assert.equal(validRun.stderr, "");
       assert.deepEqual(parseRemotePace(validRun.stdout, Date.now(), 120_000).pace, { state: "off", reason: "behind-pace" });

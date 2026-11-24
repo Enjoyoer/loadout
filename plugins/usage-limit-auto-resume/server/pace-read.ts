@@ -32,8 +32,8 @@ async function readSafeSettingsFile(filePath: string): Promise<SafeSettingsRead>
     if (fileStat.size <= 0 || fileStat.size > MAX_SETTINGS_BYTES) return invalid;
     if (typeof process.getuid === "function") {
       const uid = process.getuid();
-      if (dirStat.uid !== uid || (dirStat.mode & 0o002) !== 0) return invalid;
-      if (fileStat.uid !== uid || (fileStat.mode & 0o002) !== 0) return invalid;
+      if (dirStat.uid !== uid || (dirStat.mode & 0o022) !== 0) return invalid;
+      if (fileStat.uid !== uid || (fileStat.mode & 0o022) !== 0) return invalid;
     }
     const [realDir, realFile] = await Promise.all([realpath(parentDir), realpath(filePath)]);
     if (realFile !== path.join(realDir, SETTINGS_FILENAME)) return invalid;
