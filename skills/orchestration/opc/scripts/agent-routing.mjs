@@ -169,17 +169,22 @@ const FORMER_CLASS_MINIMUMS = Object.freeze({ 'review-security': 'high' });
 function laneProblem(route, taskClass, rows, recorded = false) {
   taskClass = canonicalWorkerClass(taskClass);
   if (route.source === 'task-default' && canonicalWorkerClass(route.kind) !== taskClass) return `it is a ${route.kind} route`;
-  if (uiClass(taskClass)) return isUiRoute(route, rows) ? null : `a ${taskClass} lane runs only Fable high, Fast off`;
+  if (offPaceRoute(route)) {
+    if (route.kind !== taskClass) return `it is a ${route.kind} route`;
+    if (unapprovedOffPace(route)) return `recorded ${route.source} is not its approved runtime`;
+  }
+  const offPace = offPaceRoute(route);
+  if (uiClass(taskClass)) return offPace || isUiRoute(route, rows) ? null : `a ${taskClass} lane runs only Fable high, Fast off`;
   const ownerRule = fableProblem(route, rows) ?? classFastProblem(route, taskClass, rows);
   if (ownerRule) return ownerRule;
   const rule = WORKER_DEFAULT_ROUTES[taskClass];
-  // The one GPT exception: the exact off-pace backup in a code lane, which records only while off pace and launches only
-  // from its own recorded lane (owner decisions 310 and 316). Every other class never takes it.
-  const backup = route.source === 'pace-backup' && taskClass === 'code' && !unapprovedBackup(route);
+  // The one GPT exception: the exact off-pace backup in an eligible off-pace class, which records only through its
+  // admitted off-pace resolution and launches only from its own recorded lane (owner decisions 310, 316, 366a).
+  const backup = route.source === 'pace-backup' && offPace;
   if (CLAUDE_ONLY_CLASSES.includes(taskClass) && isGptOrWebModel(route.model, rows) && !backup) {
     return `${route.model} is a GPT or web model and the ${taskClass} class runs ${rule.label}`;
   }
-  // The backup's medium is the owner's own level for it (2026-11-21), below the code minimum by decision.
+  // The backup's medium is the owner's own level for it (2026-11-21), below the class minimum by decision.
   const former = recorded && Object.hasOwn(FORMER_CLASS_MINIMUMS, taskClass) && !isGptOrWebModel(route.model, rows)
     ? FORMER_CLASS_MINIMUMS[taskClass] : rule.effort;
   const minimum = Math.min(effortOrder.indexOf(rule.effort), effortOrder.indexOf(former));
@@ -256,30 +261,41 @@ function materializeRule(rule, catalog, surface) {
   return { ...rule, model: row.id, provider: `${provider}/${row.id}` };
 }
 
-// While Claude is off pace (owner decision 314a, 2026-11-21), a new code Worker lane on the Opus high, Fast off default
-// runs instead on the generic ACP provider Config names agy-opc, on exactly this model and thinking, in agy's native auto
-// mode with the generic ACP auto_accept feature on, the unattended equivalent the owner authorized; never default,
-// accept-edits, plan, another mode or another feature. route.mjs admits it; a lane records it with a receipt binding
-// task, lane, target and placement, never the routing.json state; it launches only from that recorded lane, and only
-// while the record is exactly this runtime.
+// While Claude is off pace (owner decision 314a, 2026-11-21; extended to default plan, ui-design and ui-check by
+// decision 366a), a new Worker lane on a default Claude route (code Opus high, or plan/ui-design/ui-check Fable high,
+// Fast off) runs instead on the generic ACP provider Config names agy-opc, on exactly this model and thinking, in agy's
+// native auto mode with the generic ACP auto_accept feature on, the unattended equivalent the owner authorized; never
+// default, accept-edits, plan, another mode or another feature. route.mjs admits it; a lane records it with a receipt
+// binding task, lane, target and placement, never the routing.json state; it launches only from that recorded lane, and
+// only while the record is exactly this runtime.
+export const OFF_PACE_CLASSES = Object.freeze(['code', 'plan', 'ui-design', 'ui-check']);
 export const REPLACEMENT_RUNTIME = Object.freeze({ provider: 'agy-opc', extends: 'acp', model: 'gemini-4-neon-high',
   effort: 'high', fastMode: false, mode: 'auto' });
 export const REPLACEMENT_REASON = 'code replacement for Opus high, Fast off while Claude is off pace: Neon high on the verified ACP runtime';
+export const replacementReason = kind => kind === 'code' ? REPLACEMENT_REASON
+  : OFF_PACE_CLASSES.includes(kind)
+    ? `${kind} replacement for Fable high, Fast off while Claude is off pace: Neon high on the verified ACP runtime` : null;
 // Decision 359: while the switch says not forced (a valid fresh false), new eligible code lanes of one launcher alternate
 // Opus high and Neon high, one each. A Neon turn records the same runtime and receipt as the replacement, with this
 // reason; it claims nothing about quota.
 export const PARITY_REASON = 'code equal default, Neon turn of the per-launcher Opus and Neon alternation: Neon high on the verified ACP runtime';
-const REPLACEMENT_REASONS = Object.freeze([REPLACEMENT_REASON, PARITY_REASON]);
+const approvedReplacementReasons = kind => kind === 'code' ? [REPLACEMENT_REASON, PARITY_REASON]
+  : OFF_PACE_CLASSES.includes(kind) ? [replacementReason(kind)] : [];
 const RECEIPT_KEYS = ['provider', 'mode', 'target', 'task', 'lane', 'placement'];
-// The backup when Neon cannot launch (owner decisions 310 and 316, medium per owner 2026-11-21): Pi Sol medium, Fast off, the one GPT route a
-// code lane may run, and only as a lane recorded with this source and one of its reasons, while off pace or on a decision
-// 359 Neon turn (route.mjs).
+// The backup when Neon cannot launch (owner decisions 310, 316, 366a, medium per owner 2026-11-21): Pi Sol medium, Fast
+// off, the one GPT route an eligible off-pace lane may run, and only as a lane recorded with this source and its class's
+// approved reason, while off pace or (for code) on a decision 359 Neon turn (route.mjs).
 export const PACE_BACKUP_RUNTIME = Object.freeze({ model: 'fleet/gpt-6.2-sol', label: 'Sol', effort: 'medium', fastMode: false });
 export const PACE_BACKUP_REASON = 'code backup while Claude is off pace and Neon cannot launch: Sol medium, Fast off';
+export const paceBackupReason = kind => kind === 'code' ? PACE_BACKUP_REASON
+  : OFF_PACE_CLASSES.includes(kind)
+    ? `${kind} backup while Claude is off pace and Neon cannot launch: Sol medium, Fast off` : null;
 // The same backup taken on a decision 359 Neon turn, only with fresh evidence that Neon cannot launch.
 export const PARITY_BACKUP_REASON = 'code backup on a Neon turn of the per-launcher alternation when Neon cannot launch: Sol medium, Fast off';
-const BACKUP_REASONS = Object.freeze([PACE_BACKUP_REASON, PARITY_BACKUP_REASON]);
+const approvedBackupReasons = kind => kind === 'code' ? [PACE_BACKUP_REASON, PARITY_BACKUP_REASON]
+  : OFF_PACE_CLASSES.includes(kind) ? [paceBackupReason(kind)] : [];
 const BACKUP_RECEIPT_KEYS = ['task', 'lane', 'placement'];
+const BOUND_BACKUP_RECEIPT_KEYS = ['target', 'task', 'lane', 'placement'];
 // Whether already-parsed JSON text repeats a key in any object, with escaped spellings decoded.
 function repeatsKey(text) {
   const objects = [];
@@ -374,13 +390,15 @@ export const isReplacementMode = mode => mode === REPLACEMENT_RUNTIME.mode;
 // The request settings of every replacement launch, fixed: thinking and the one generic ACP feature, auto_accept, set
 // explicitly so nothing depends on what the launching parent would pass on; a caller cannot change or add to them.
 export const replacementSettings = () => ({ thinkingOptionId: REPLACEMENT_RUNTIME.effort, features: { auto_accept: true } });
-// A record or route that is not exactly the approved runtime (provider, model, thinking, Fast, reason, mode).
-const unapprovedReplacement = route => route.model !== REPLACEMENT_RUNTIME.model || route.effort !== REPLACEMENT_RUNTIME.effort ||
-  route.fastMode !== REPLACEMENT_RUNTIME.fastMode || !REPLACEMENT_REASONS.includes(route.reason) ||
+// A record or route that is not exactly the approved runtime (class, provider, model, thinking, Fast, reason, mode).
+const unapprovedReplacement = route => !OFF_PACE_CLASSES.includes(route.kind) ||
+  route.model !== REPLACEMENT_RUNTIME.model || route.effort !== REPLACEMENT_RUNTIME.effort ||
+  route.fastMode !== REPLACEMENT_RUNTIME.fastMode || !approvedReplacementReasons(route.kind).includes(route.reason) ||
   route.receipt?.provider !== REPLACEMENT_RUNTIME.provider || !isReplacementMode(route.receipt?.mode);
-// A record or route that is not exactly the off-pace backup (model, thinking, Fast, reason).
-const unapprovedBackup = route => route.model !== PACE_BACKUP_RUNTIME.model || route.effort !== PACE_BACKUP_RUNTIME.effort ||
-  route.fastMode !== PACE_BACKUP_RUNTIME.fastMode || !BACKUP_REASONS.includes(route.reason);
+// A record or route that is not exactly the off-pace backup (class, model, thinking, Fast, reason).
+const unapprovedBackup = route => !OFF_PACE_CLASSES.includes(route.kind) ||
+  route.model !== PACE_BACKUP_RUNTIME.model || route.effort !== PACE_BACKUP_RUNTIME.effort ||
+  route.fastMode !== PACE_BACKUP_RUNTIME.fastMode || !approvedBackupReasons(route.kind).includes(route.reason);
 const unapprovedOffPace = route => route.source === 'replacement' ? unapprovedReplacement(route) : unapprovedBackup(route);
 export const OFF_PACE_SOURCES = Object.freeze(['replacement', 'pace-backup']);
 const offPaceRoute = route => OFF_PACE_SOURCES.includes(route?.source);
@@ -390,8 +408,12 @@ const exactKeys = (value, keys) => value != null && typeof value === 'object' &&
 const validBinding = receipt => /^[A-Za-z0-9-]{8,128}$/.test(receipt.task ?? '') &&
   /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(receipt.lane ?? '') && receipt.lane.length <= 40 &&
   /^opc\/[a-z0-9-]+-[0-9a-f]{16}$/.test(receipt.placement ?? '');
-function validReceipt(source, receipt) {
-  if (source === 'pace-backup') return exactKeys(receipt, BACKUP_RECEIPT_KEYS) && validBinding(receipt);
+function validReceipt(source, receipt, kind) {
+  if (source === 'pace-backup') {
+    return kind === 'code'
+      ? exactKeys(receipt, BACKUP_RECEIPT_KEYS) && validBinding(receipt)
+      : exactKeys(receipt, BOUND_BACKUP_RECEIPT_KEYS) && isTargetId(receipt.target) && validBinding(receipt);
+  }
   return exactKeys(receipt, RECEIPT_KEYS) && receipt.provider === REPLACEMENT_RUNTIME.provider &&
     typeof receipt.mode === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(receipt.mode) &&
     isTargetId(receipt.target) && validBinding(receipt);
@@ -400,12 +422,12 @@ function validReceipt(source, receipt) {
 // a launch also requires it to be exactly its approved runtime (validateLaunchedWorkerRoute).
 function validateRecordedOffPace(route) {
   if (!exactKeys(route, ['role', 'source', 'kind', 'model', 'effort', 'fastMode', 'reason', 'receipt']) ||
-      route.role !== 'worker' || route.kind !== 'code' || !isValidModelId(route.model) || !efforts.has(route.effort) ||
+      route.role !== 'worker' || !OFF_PACE_CLASSES.includes(route.kind) || !isValidModelId(route.model) || !efforts.has(route.effort) ||
       route.fastMode !== false || typeof route.reason !== 'string' || !route.reason.trim() || /[\r\n]/.test(route.reason) ||
-      !validReceipt(route.source, route.receipt)) {
+      !validReceipt(route.source, route.receipt, route.kind)) {
     throw Error(`recorded ${route?.source} route required for worker`);
   }
-  return Object.freeze({ model: route.model, effort: route.effort, fastMode: false, source: route.source, kind: 'code',
+  return Object.freeze({ model: route.model, effort: route.effort, fastMode: false, source: route.source, kind: route.kind,
     reason: route.reason, receipt: Object.freeze({ ...route.receipt }) });
 }
 
@@ -565,25 +587,34 @@ function validateLaunchedWorkerRoute(route, { task = null, lane = null, taskClas
   const laneClass = uiTaskLaneClass(task, taskClass);
   if (task != null && task.ui !== true && taskClass == null) throw Error('a Worker bound to a task record needs its lane class (taskClass)');
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
-  if (task?.ui === true && !isUiRoute(route, rows)) {
-    throw Error(`UI task: a ${laneClass} lane launches only Fable high, Fast off (owner rule); the build goes to a code task`);
-  }
-  requireFableRule(route, rows);
   if (offPaceRoute(route)) {
-    const { receipt } = validateRecordedWorkerRoute(route);
-    if (task == null || canonicalWorkerClass(laneClass) !== 'code' || receipt.task !== task.id || receipt.lane !== lane ||
-        !recordedLaneEntry(task, lane, route)) throw Error(`a ${route.source} route launches only from its own recorded code lane`);
+    const { receipt, kind } = validateRecordedWorkerRoute(route);
+    if (task == null || canonicalWorkerClass(laneClass) !== kind || receipt.task !== task.id || receipt.lane !== lane ||
+        !recordedLaneEntry(task, lane, route)) throw Error(`a ${route.source} route launches only from its own recorded ${kind} lane`);
     if (!offPaceLaunchAllowed()) {
       throw Error(`no ${route.source} launch: the launcher is excluded, or the excluded-launcher list or launcher chain is unreadable`);
     }
     // Every launch and rebuild: the record must still be exactly its approved runtime, or the lane stops (no switch).
     if (unapprovedOffPace(route)) throw Error(`recorded ${route.source} is not its approved runtime; the lane stops`);
-    // A decision 359 parity Neon lane launches only on the local daemon its receipt names, by that daemon's own status.
-    // A receipt naming a mapped remote server is bound instead by its fresh attestation at launch (replacementMode).
-    if (route.source === 'replacement' && route.reason === PARITY_REASON && !isMappedServer(route.receipt.target) &&
-        localServerId() !== route.receipt.target) {
-      throw Error('the local daemon is not the parity Neon receipt target, or its status is unreadable; the lane stops');
+    // A decision 359 parity Neon lane, and any decision 366a forced Neon lane (plan, ui-design, ui-check), launches only
+    // on the local daemon its receipt names, by that daemon's own status. A receipt naming a mapped remote server is
+    // bound instead by its fresh attestation at launch (replacementMode).
+    if (route.source === 'replacement' && (route.reason === PARITY_REASON || kind !== 'code') &&
+        !isMappedServer(route.receipt.target) && localServerId() !== route.receipt.target) {
+      throw Error(route.reason === PARITY_REASON
+        ? 'the local daemon is not the parity Neon receipt target, or its status is unreadable; the lane stops'
+        : 'the local daemon is not the Neon receipt target, or its status is unreadable; the lane stops');
     }
+    // A decision 366a backup lane (plan, ui-design, ui-check) is local-only and bound to the admitted local daemon.
+    if (route.source === 'pace-backup' && kind !== 'code' &&
+        (isMappedServer(route.receipt.target) || localServerId() !== route.receipt.target)) {
+      throw Error('the local daemon is not the backup receipt target, or its status is unreadable; the lane stops');
+    }
+  } else {
+    if (task?.ui === true && !isUiRoute(route, rows)) {
+      throw Error(`UI task: a ${laneClass} lane launches only Fable high, Fast off (owner rule); the build goes to a code task`);
+    }
+    requireFableRule(route, rows);
   }
   if (recordedLaneEntry(task, lane, route)) return validateRebuild(route, laneClass, rows);
   const valid = validateWorkerRoute(route);
@@ -837,7 +868,18 @@ export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'wor
     return { provider: mapped, agentSettings: settings, modeId };
   }
   // The off-pace backup runs only on Pi, on its exact catalog row at its thinking; never native or unserved.
+  // Decision 366a backup lanes (plan, ui-design, ui-check) also bind the launch target and workspace to the admitted
+  // local daemon; legacy code backup receipts stay unchanged.
   if (selected.source === 'pace-backup') {
+    if (selected.kind !== 'code') {
+      if (!isTargetId(serverId) || serverId !== selected.receipt.target) {
+        throw Error('the managed workspace is not on the recorded target server; the backup lane stops');
+      }
+      if (!exactKeys(target, ['daemon', 'local', 'platform']) || target.daemon !== selected.receipt.target ||
+          target.local !== true || target.platform !== 'darwin' || remote != null || isMappedServer(target.daemon)) {
+        throw Error('backup launch target is not the recorded local Mac target; the lane stops');
+      }
+    }
     const served = (rows ?? []).filter(row => row?.id === selected.model && row.label === PACE_BACKUP_RUNTIME.label &&
       row.thinkingOptions?.some(option => option?.id === selected.effort));
     if (served.length !== 1) throw Error(`the Pi catalog does not serve exactly ${selected.model} at ${selected.effort}; the backup lane stops`);

@@ -934,6 +934,755 @@ class OpcDeliveryTest(unittest.TestCase):
         self.assertEqual((tests["status"], tests["reason"]),
                          ("failed", "submodule sub is not a checked-out directory with its own .git; its bytes cannot be fingerprinted"))
 
+    @unittest.skipUnless(sys.platform == "darwin", "OPC local routing switch is macOS-only")
+    def test_decision_366a_forced_off_pace_default_claude_classes_and_invariants(self):
+        root = Path(self.task).parent.parent
+        scratch_home = root / "scratch-home"
+        opc_dir = scratch_home / ".config" / "opc"
+        opc_dir.mkdir(parents=True, mode=0o700)
+        fake_bin = root / "fake-bin"
+        fake_bin.mkdir()
+        paseo_shim = fake_bin / "paseo"
+        paseo_shim.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = daemon ] && [ \"$2\" = status ]; then\n"
+            "  printf '{\"localDaemon\":\"running\",\"serverId\":\"srv-local-example\"}\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1\" = inspect ]; then\n"
+            "  case \"$2\" in\n"
+            "    allowed-pm-0001) printf '{\"Id\":\"allowed-pm-0001\",\"ParentAgentId\":null}\\n' ;;\n"
+            "    excluded-pm-0001) printf '{\"Id\":\"excluded-pm-0001\",\"ParentAgentId\":null}\\n' ;;\n"
+            "    child-of-excl-01) printf '{\"Id\":\"child-of-excl-01\",\"ParentAgentId\":\"excluded-pm-0001\"}\\n' ;;\n"
+            "    *) exit 1 ;;\n"
+            "  esac\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 1\n"
+        )
+        paseo_shim.chmod(0o755)
+        ui_task = self.ui_task()
+        env = {
+            **os.environ,
+            "HOME": str(scratch_home),
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "PASEO_AGENT_ID": "allowed-pm-0001",
+        }
+        done = run("node", "--input-type=module", "-e", f"""
+            import assert from 'node:assert/strict';
+            import {{ chmodSync, existsSync, writeFileSync }} from 'node:fs';
+            import {{ execFileSync }} from 'node:child_process';
+            import {{ join }} from 'node:path';
+            import {{ buildDelegatedBrief, PACE_BACKUP_RUNTIME, paceBackupReason, REPLACEMENT_RUNTIME, replacementReason }} from {json.dumps((SCRIPTS / 'agent-routing.mjs').as_uri())};
+            import {{ buildManagedWorkerRequest, managedWorkerNames }} from {json.dumps((SCRIPTS / 'paseo-worker.mjs').as_uri())};
+            import {{ recordWorkerRoute, resolveWorkerRoute }} from {json.dumps((SCRIPTS / 'route.mjs').as_uri())};
+            import {{ readTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+
+            const opcDir = {json.dumps(str(opc_dir))};
+            const routingPath = join(opcDir, 'routing.json');
+            const remoteMapPath = join(opcDir, 'neon-remote-targets.json');
+            const altPath = join(opcDir, 'code-alternation.json');
+            const taskPath = {json.dumps(self.task)};
+            const uiTaskPath = {json.dumps(ui_task)};
+            const routeCli = {json.dumps(str(SCRIPTS / 'route.mjs'))};
+
+            const writeOwner = (path, obj) => {{
+              writeFileSync(path, JSON.stringify(obj, null, 2) + '\\n', {{ mode: 0o600 }});
+              chmodSync(path, 0o600);
+            }};
+            const setSwitch = (forced) => {{
+              const now = Date.now();
+              writeOwner(routingPath, {{
+                replacementExcludedLaunchers: ['excluded-'],
+                antigravityFallback: {{
+                  enabled: forced,
+                  state: {{
+                    off_pace: forced,
+                    as_of: new Date(now - 60_000).toISOString(),
+                    expires_at: new Date(now + 3_600_000).toISOString(),
+                  }},
+                }},
+              }});
+            }};
+            writeOwner(remoteMapPath, {{
+              targets: {{ 'srv-remote-example': {{ endpoint: 'ssh://remote-example', platform: 'linux', state: 'held' }} }},
+            }});
+
+            const levels = ids => ids.map(id => ({{ id }}));
+            const catalog = [
+              ['claude-opus-5-5', 'Opus'],
+              ['claude-fable-5-1', 'Fable'],
+              ['gpt-6.2-sol', 'Sol'],
+              ['gpt-6.1-terra', 'Terra'],
+              ['gpt-6-luna', 'Luna'],
+            ].map(([id, label]) => ({{ id: 'fleet/' + id, label, thinkingOptions: levels(['low', 'medium', 'high', 'xhigh']) }}));
+            const piCaps = {{ enabled: true, status: 'available', modes: [], models: catalog }};
+            const target = {{ daemon: 'srv-local-example', local: true, platform: 'darwin' }};
+            const nowIso = new Date().toISOString();
+            const olderIso = new Date(Date.now() - 120_000).toISOString();
+            const staleIso = new Date(Date.now() - 2 * 3_600_000).toISOString();
+            const proofFor = (t = target, at = olderIso) => ({{
+              provider: 'agy-opc', extends: 'acp', model: 'gemini-4-neon-high', thinking: 'high',
+              mode: 'auto', sandboxed: true, write: true, target: t, verified_at: at,
+            }});
+            const unavailableFor = (t = target, at = nowIso) => ({{
+              provider: 'agy-opc', target: t, checked_at: at, finding: 'not-available',
+            }});
+            const neonCaps = {{
+              provider: 'agy-opc', enabled: true, status: 'available',
+              models: [{{ id: 'gemini-4-neon-high', thinkingOptions: [{{ id: 'high' }}] }}],
+              modes: [{{ id: 'auto' }}],
+              selectedModel: 'gemini-4-neon-high',
+              features: [{{ id: 'auto_accept', type: 'toggle', value: true }}],
+            }};
+
+            // 1. Forced off pace: default plan, ui-design (and alias ui), ui-check take Neon replacement.
+            setSwitch(true);
+            for (const [tPath, cls, replayCls, lane] of [
+              [taskPath, 'plan', 'plan', 'plan-neon'],
+              [uiTaskPath, 'ui', 'ui-design', 'ui-design-neon'],
+              [uiTaskPath, 'ui-check', 'ui-check', 'ui-check-neon'],
+            ]) {{
+              const task = readTask(tPath);
+              const replacement = {{ task, lane, target, proof: proofFor(target, nowIso) }};
+              const resolved = await resolveWorkerRoute({{ taskClass: cls, catalog, replacement }});
+              assert.equal(resolved.route.source, 'replacement');
+              assert.equal(resolved.route.kind, replayCls);
+              assert.equal(resolved.route.model, REPLACEMENT_RUNTIME.model);
+              assert.equal(resolved.route.effort, 'high');
+              assert.equal(resolved.route.fastMode, false);
+              assert.equal(resolved.reason, replacementReason(replayCls));
+              assert.equal(resolved.route.receipt.placement, managedWorkerNames({{ taskId: task.id, lane }}).branchName);
+
+              recordWorkerRoute(tPath, {{ lane, ...resolved, taskClass: cls, catalog, replacement }});
+              assert.equal(existsSync(altPath), false, 'forced 366a lane must not touch code-alternation.json');
+
+              const updated = readTask(tPath);
+              const req = buildManagedWorkerRequest({{
+                taskId: updated.id, lane, title: 'Worker', initialPrompt: 'Check',
+                workspace: {{ workspaceId: 'wks-1', cwd: '/tmp/wt-1', serverId: target.daemon }},
+                capabilities: neonCaps, route: resolved.route, task: updated, taskClass: cls, target,
+              }});
+              assert.equal(req.request.provider, 'agy-opc/gemini-4-neon-high');
+              assert.deepEqual(req.request.settings, {{ thinkingOptionId: 'high', features: {{ auto_accept: true }}, modeId: 'auto' }});
+              assert.equal(req.request.labels['opc.route-source'], 'replacement');
+
+              const brief = buildDelegatedBrief({{
+                role: 'worker', route: resolved.route, reason: resolved.reason, brief: 'Inspect',
+                task: updated, lane, taskClass: cls, catalog,
+              }});
+              assert.match(brief, /^Fixed route for this worker lane: model=gemini-4-neon-high; effort=high; Fast=off;/);
+              assert.match(brief, /Read-only lane: do not edit, implement, or publish\\./);
+
+              // CLI replay with no route flags or matching class succeeds; mismatched class fails.
+              const replayed = JSON.parse(execFileSync(process.execPath, [routeCli, '--task', tPath, '--lane', lane], {{ encoding: 'utf8' }}));
+              assert.deepEqual(replayed.route, resolved.route);
+              const replayedCls = JSON.parse(execFileSync(process.execPath, [routeCli, '--task', tPath, '--lane', lane, '--class', cls], {{ encoding: 'utf8' }}));
+              assert.deepEqual(replayedCls.route, resolved.route);
+              const wrongCls = replayCls === 'plan' ? 'code' : replayCls === 'ui-design' ? 'ui-check' : 'ui-design';
+              assert.throws(() => execFileSync(process.execPath, [routeCli, '--task', tPath, '--lane', lane, '--class', wrongCls], {{ stdio: 'pipe' }}));
+            }}
+
+            // 2. Forced off pace with positive fresh unavailable evidence (newer than fresh proof): Sol medium backup.
+            for (const [tPath, cls, canon, lane] of [
+              [taskPath, 'plan', 'plan', 'plan-sol'],
+              [uiTaskPath, 'ui-design', 'ui-design', 'ui-design-sol'],
+              [uiTaskPath, 'ui-check', 'ui-check', 'ui-check-sol'],
+            ]) {{
+              const task = readTask(tPath);
+              const replacement = {{ task, lane, target, proof: proofFor(target, olderIso), unavailable: unavailableFor(target, nowIso) }};
+              const resolved = await resolveWorkerRoute({{ taskClass: cls, catalog, replacement }});
+              assert.equal(resolved.route.source, 'pace-backup');
+              assert.equal(resolved.route.kind, canon);
+              assert.equal(resolved.route.model, PACE_BACKUP_RUNTIME.model);
+              assert.equal(resolved.route.effort, 'medium');
+              assert.equal(resolved.route.fastMode, false);
+              assert.equal(resolved.reason, paceBackupReason(canon));
+              assert.equal(resolved.route.receipt.target, target.daemon);
+
+              recordWorkerRoute(tPath, {{ lane, ...resolved, taskClass: cls, catalog, replacement }});
+              const updated = readTask(tPath);
+              const req = buildManagedWorkerRequest({{
+                taskId: updated.id, lane, title: 'Worker', initialPrompt: 'Check',
+                workspace: {{ workspaceId: 'wks-2', cwd: '/tmp/wt-2', serverId: target.daemon }},
+                capabilities: piCaps, route: resolved.route, task: updated, taskClass: cls, target,
+              }});
+              assert.equal(req.request.provider, 'pi/fleet/gpt-6.2-sol');
+              assert.deepEqual(req.request.settings, {{ thinkingOptionId: 'medium' }});
+              assert.equal(req.request.labels['opc.service-tier'], 'standard');
+              assert.equal(req.request.labels['opc.route-source'], 'pace-backup');
+
+              const brief = buildDelegatedBrief({{
+                role: 'worker', route: resolved.route, reason: resolved.reason, brief: 'Inspect',
+                task: updated, lane, taskClass: cls, catalog,
+              }});
+              assert.match(brief, /Read-only lane: do not edit, implement, or publish\\./);
+            }}
+
+            // 3. Missing proof and stale unavailable evidence stay Fable high (never Sol backup).
+            for (const [tPath, cls, lane] of [[taskPath, 'plan', 'plan-none'], [uiTaskPath, 'ui-design', 'ui-none']]) {{
+              const task = readTask(tPath);
+              const none = await resolveWorkerRoute({{ taskClass: cls, catalog, replacement: {{ task, lane, target }} }});
+              assert.equal(none.route.model, 'fleet/claude-fable-5-1');
+              const stale = await resolveWorkerRoute({{
+                taskClass: cls, catalog, replacement: {{ task, lane, target, unavailable: unavailableFor(target, staleIso) }},
+              }});
+              assert.equal(stale.route.model, 'fleet/claude-fable-5-1');
+            }}
+
+            // 4. Local daemon binding on new paths (no caller-only shortcut) and mapped remote never local.
+            const wrongTarget = {{ daemon: 'srv-other-local', local: true, platform: 'darwin' }};
+            const mappedAsLocal = {{ daemon: 'srv-remote-example', local: true, platform: 'darwin' }};
+            for (const badTarget of [wrongTarget, mappedAsLocal]) {{
+              for (const [tPath, cls, lane] of [[taskPath, 'plan', 'plan-bad'], [uiTaskPath, 'ui-design', 'ui-bad']]) {{
+                const task = readTask(tPath);
+                const rProof = await resolveWorkerRoute({{
+                  taskClass: cls, catalog, replacement: {{ task, lane, target: badTarget, proof: proofFor(badTarget, nowIso) }},
+                }});
+                assert.equal(rProof.route.model, 'fleet/claude-fable-5-1');
+                const rDown = await resolveWorkerRoute({{
+                  taskClass: cls, catalog, replacement: {{ task, lane, target: badTarget, unavailable: unavailableFor(badTarget, nowIso) }},
+                }});
+                assert.equal(rDown.route.model, 'fleet/claude-fable-5-1');
+              }}
+            }}
+            // A hand-crafted local replacement record with a non-local daemon fails at launch.
+            const fakePlanTask = readTask(taskPath);
+            const forgedPlanRoute = {{
+              role: 'worker', source: 'replacement', kind: 'plan', model: 'gemini-4-neon-high', effort: 'high',
+              fastMode: false, reason: replacementReason('plan'),
+              receipt: {{
+                provider: 'agy-opc', mode: 'auto', target: 'srv-other-local', task: fakePlanTask.id,
+                lane: 'forged-plan', placement: managedWorkerNames({{ taskId: fakePlanTask.id, lane: 'forged-plan' }}).branchName,
+              }},
+            }};
+            const forgedTask = {{ ...fakePlanTask, routes: {{ ...fakePlanTask.routes, 'forged-plan': {{ route: forgedPlanRoute, reason: forgedPlanRoute.reason, recorded_at: nowIso }} }} }};
+            assert.throws(() => buildDelegatedBrief({{
+              role: 'worker', route: forgedPlanRoute, reason: forgedPlanRoute.reason, brief: 'Inspect',
+              task: forgedTask, lane: 'forged-plan', taskClass: 'plan', catalog,
+            }}), /local daemon is not the Neon receipt target/);
+
+            // 5. Non-Claude classes stay unchanged while forced on.
+            const nonTask = readTask(taskPath);
+            for (const [cls, model, effort, fastMode] of [
+              ['review', 'fleet/gpt-6.2-sol', 'high', true],
+              ['review-security', 'fleet/gpt-6.2-sol', 'xhigh', true],
+              ['research', 'fleet/gpt-6.1-terra', 'high', false],
+              ['watcher', 'fleet/gpt-6.2-sol', 'low', false],
+              ['smoke', 'fleet/gpt-6-luna', 'low', true],
+            ]) {{
+              const res = await resolveWorkerRoute({{
+                taskClass: cls, catalog, replacement: {{ task: nonTask, lane: cls + '-lane', target, proof: proofFor(target, nowIso) }},
+              }});
+              assert.equal(res.route.source, 'task-default');
+              assert.equal(res.route.model, model);
+              assert.equal(res.route.effort, effort);
+              assert.equal(res.route.fastMode, fastMode);
+            }}
+
+            // 6. Owner-named routes stay unchanged while forced on, and old UI guard stays strict for owner-explicit routes.
+            const ownerFable = {{ role: 'worker', source: 'owner-explicit', model: 'fleet/claude-fable-5-1', effort: 'high', fastMode: false }};
+            const ownerSec = {{ role: 'worker', source: 'owner-explicit', model: 'fleet/claude-opus-5-5', effort: 'xhigh', fastMode: false }};
+            for (const [tPath, cls, ownerRoute] of [
+              [taskPath, 'plan', ownerFable],
+              [uiTaskPath, 'ui-design', ownerFable],
+              [uiTaskPath, 'ui-check', ownerFable],
+              [taskPath, 'review-security', ownerSec],
+            ]) {{
+              const t = readTask(tPath);
+              const res = await resolveWorkerRoute({{
+                taskClass: cls, ownerRoute, catalog, replacement: {{ task: t, lane: 'owner-lane', target, proof: proofFor(target, nowIso) }},
+              }});
+              assert.equal(res.route.source, 'owner-explicit');
+              assert.equal(res.route.model, ownerRoute.model);
+            }}
+            for (const badOwner of [
+              {{ role: 'worker', source: 'owner-explicit', model: 'fleet/claude-opus-5-5', effort: 'high', fastMode: false }},
+              {{ role: 'worker', source: 'owner-explicit', model: 'fleet/gpt-6.2-sol', effort: 'medium', fastMode: false }},
+              {{ role: 'worker', source: 'owner-explicit', model: 'gemini-4-neon-high', effort: 'high', fastMode: false }},
+            ]) {{
+              assert.throws(() => recordWorkerRoute(uiTaskPath, {{
+                lane: 'bad-owner-ui', route: badOwner, reason: 'owner-named, never adjusted', taskClass: 'ui-design', catalog,
+              }}), /UI task: a ui-design lane records only Fable high, Fast off/);
+            }}
+            // Cross-class off-pace replay is refused.
+            const planNeonRec = readTask(taskPath).routes['plan-neon'];
+            assert.throws(() => buildDelegatedBrief({{
+              role: 'worker', route: planNeonRec.route, reason: planNeonRec.reason, brief: 'x',
+              task: readTask(taskPath), lane: 'plan-neon', taskClass: 'code', catalog,
+            }}), /launches only from its own recorded plan lane/);
+
+            // 7. Excluded launcher and excluded parent chain stay Fable high and refuse launch.
+            for (const launcher of ['excluded-pm-0001', 'child-of-excl-01']) {{
+              process.env.PASEO_AGENT_ID = launcher;
+              const t = readTask(uiTaskPath);
+              const res = await resolveWorkerRoute({{
+                taskClass: 'ui-design', catalog, replacement: {{ task: t, lane: 'excl-lane', target, proof: proofFor(target, nowIso) }},
+              }});
+              assert.equal(res.route.model, 'fleet/claude-fable-5-1');
+              const rec = t.routes['ui-design-neon'];
+              assert.throws(() => buildDelegatedBrief({{
+                role: 'worker', route: rec.route, reason: rec.reason, brief: 'x',
+                task: t, lane: 'ui-design-neon', taskClass: 'ui-design', catalog,
+              }}), /launcher is excluded/);
+            }}
+            process.env.PASEO_AGENT_ID = 'allowed-pm-0001';
+
+            // 8. When pace recovers (switch false/false, 359 parity): plan/ui-design/ui-check stay Fable high (no alternation),
+            // already-recorded 366a lanes still rebuild, and code parity (359) still alternates Opus then Neon.
+            setSwitch(false);
+            for (const [tPath, cls, lane] of [
+              [taskPath, 'plan', 'plan-on-pace'],
+              [uiTaskPath, 'ui-design', 'ui-design-on-pace'],
+              [uiTaskPath, 'ui-check', 'ui-check-on-pace'],
+            ]) {{
+              const t = readTask(tPath);
+              const res = await resolveWorkerRoute({{
+                taskClass: cls, catalog, replacement: {{ task: t, lane, target, proof: proofFor(target, nowIso) }},
+              }});
+              assert.equal(res.route.model, 'fleet/claude-fable-5-1');
+              recordWorkerRoute(tPath, {{ lane, ...res, taskClass: cls, catalog, replacement: {{ task: t, lane, target, proof: proofFor(target, nowIso) }} }});
+            }}
+            assert.equal(existsSync(altPath), false, 'on-pace plan/ui lanes must not touch code-alternation.json');
+            // Recorded 366a lane still rebuilds after switch turns off.
+            const uiRec = readTask(uiTaskPath).routes['ui-design-neon'];
+            const rebuilt = buildManagedWorkerRequest({{
+              taskId: readTask(uiTaskPath).id, lane: 'ui-design-neon', title: 'Worker', initialPrompt: 'Check',
+              workspace: {{ workspaceId: 'wks-3', cwd: '/tmp/wt-3', serverId: target.daemon }},
+              capabilities: neonCaps, route: uiRec.route, task: readTask(uiTaskPath), taskClass: 'ui-design', target,
+            }});
+            assert.equal(rebuilt.request.provider, 'agy-opc/gemini-4-neon-high');
+            // Decision 359 code parity still works (Opus first, then Neon).
+            const c1Task = readTask(taskPath);
+            const c1Ctx = {{ task: c1Task, lane: 'code-p1', target, proof: proofFor(target, nowIso) }};
+            const c1 = await resolveWorkerRoute({{ taskClass: 'code', catalog, replacement: c1Ctx }});
+            assert.equal(c1.route.source, 'task-default');
+            assert.equal(c1.route.model, 'fleet/claude-opus-5-5');
+            recordWorkerRoute(taskPath, {{ lane: 'code-p1', ...c1, taskClass: 'code', catalog, replacement: c1Ctx }});
+            const c2Task = readTask(taskPath);
+            const c2Ctx = {{ task: c2Task, lane: 'code-p2', target, proof: proofFor(target, nowIso) }};
+            const c2 = await resolveWorkerRoute({{ taskClass: 'code', catalog, replacement: c2Ctx }});
+            assert.equal(c2.route.source, 'replacement');
+            assert.equal(c2.route.kind, 'code');
+            assert.match(c2.reason, /alternation/);
+        """, env=env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    @unittest.skipUnless(sys.platform == "darwin", "OPC local routing switch is macOS-only")
+    def test_decision_366a_remote_attestation_armed_and_held(self):
+        root = Path(self.task).parent.parent
+        scratch_home = root / "scratch-home-remote"
+        opc_dir = scratch_home / ".config" / "opc"
+        opc_dir.mkdir(parents=True, mode=0o700)
+        # Fake @getpaseo/cli 0.15.3 package with bin/paseo symlink on PATH.
+        pkg_root = root / "fake-cli-pkg"
+        (pkg_root / "bin").mkdir(parents=True)
+        (pkg_root / "dist" / "utils").mkdir(parents=True)
+        (pkg_root / "package.json").write_text(json.dumps({"name": "@getpaseo/cli", "version": "0.15.3"}))
+        (pkg_root / "dist" / "utils" / "client.js").write_text(
+            "export async function connectToDaemon({ target }) {\n"
+            "  const host = target?.host;\n"
+            "  const serverId = host === 'ssh://armed-example' ? 'srv-armed-example' : 'srv-other-example';\n"
+            "  return {\n"
+            "    getLastServerInfoMessage: () => ({ serverId, version: '0.15.3' }),\n"
+            "    fetchWorkspaces: async () => ({\n"
+            "      entries: JSON.parse(process.env.FAKE_REMOTE_WORKSPACES || '[]'),\n"
+            "      pageInfo: { hasMore: false },\n"
+            "    }),\n"
+            "    getProvidersSnapshot: async () => ({\n"
+            "      entries: [{ provider: 'agy-opc', enabled: true, status: 'ready' }],\n"
+            "    }),\n"
+            "    listProviderModels: async () => ({\n"
+            "      models: [{ id: 'gemini-4-neon-high', thinkingOptions: [{ id: 'high' }] }],\n"
+            "    }),\n"
+            "    listProviderModes: async () => ({ modes: [{ id: 'auto' }] }),\n"
+            "    listProviderFeatures: async () => ({ features: [{ id: 'auto_accept', type: 'toggle', value: true }] }),\n"
+            "    close: async () => {},\n"
+            "  };\n"
+            "}\n"
+        )
+        paseo_real = pkg_root / "bin" / "paseo"
+        paseo_real.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = inspect ] && [ \"$2\" = allowed-pm-0001 ]; then\n"
+            "  printf '{\"Id\":\"allowed-pm-0001\",\"ParentAgentId\":null}\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 1\n"
+        )
+        paseo_real.chmod(0o755)
+        fake_bin = root / "fake-remote-bin"
+        fake_bin.mkdir()
+        (fake_bin / "paseo").symlink_to(paseo_real)
+        ui_task = self.ui_task()
+        env = {
+            **os.environ,
+            "HOME": str(scratch_home),
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "PASEO_AGENT_ID": "allowed-pm-0001",
+        }
+        done = run("node", "--input-type=module", "-e", f"""
+            import assert from 'node:assert/strict';
+            import {{ chmodSync, writeFileSync }} from 'node:fs';
+            import {{ join }} from 'node:path';
+            import {{ replacementReason }} from {json.dumps((SCRIPTS / 'agent-routing.mjs').as_uri())};
+            import {{ buildManagedWorkerRequest, managedWorkerNames, validateManagedWorkerLaunch }} from {json.dumps((SCRIPTS / 'paseo-worker.mjs').as_uri())};
+            import {{ readRemoteNeonTarget }} from {json.dumps((SCRIPTS / 'remote-target.mjs').as_uri())};
+            import {{ recordWorkerRoute, resolveWorkerRoute }} from {json.dumps((SCRIPTS / 'route.mjs').as_uri())};
+            import {{ readTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+
+            const opcDir = {json.dumps(str(opc_dir))};
+            const writeOwner = (path, obj) => {{
+              writeFileSync(path, JSON.stringify(obj, null, 2) + '\\n', {{ mode: 0o600 }});
+              chmodSync(path, 0o600);
+            }};
+            const now = Date.now();
+            writeOwner(join(opcDir, 'routing.json'), {{
+              replacementExcludedLaunchers: ['excluded-'],
+              antigravityFallback: {{
+                enabled: true,
+                state: {{
+                  off_pace: true,
+                  as_of: new Date(now - 60_000).toISOString(),
+                  expires_at: new Date(now + 3_600_000).toISOString(),
+                }},
+              }},
+            }});
+            writeOwner(join(opcDir, 'neon-remote-targets.json'), {{
+              targets: {{
+                'srv-armed-example': {{ endpoint: 'ssh://armed-example', platform: 'linux', state: 'armed' }},
+                'srv-held-example': {{ endpoint: 'ssh://held-example', platform: 'linux', state: 'held' }},
+              }},
+            }});
+
+            const catalog = [
+              ['claude-opus-5-5', 'Opus'],
+              ['claude-fable-5-1', 'Fable'],
+              ['gpt-6.2-sol', 'Sol'],
+            ].map(([id, label]) => ({{ id: 'fleet/' + id, label, thinkingOptions: [{{ id: 'medium' }}, {{ id: 'high' }}] }}));
+            const armedTarget = {{ daemon: 'srv-armed-example', local: false, platform: 'linux' }};
+            const heldTarget = {{ daemon: 'srv-held-example', local: false, platform: 'linux' }};
+            const nowIso = new Date().toISOString();
+            const proofFor = t => ({{
+              provider: 'agy-opc', extends: 'acp', model: 'gemini-4-neon-high', thinking: 'high',
+              mode: 'auto', sandboxed: true, write: true, target: t, verified_at: nowIso,
+            }});
+
+            // Held and unlisted remote hosts are refused.
+            await assert.rejects(() => readRemoteNeonTarget({{ serverId: 'srv-held-example' }}), /not an armed entry/);
+            await assert.rejects(() => readRemoteNeonTarget({{ serverId: 'srv-unlisted' }}), /not an armed entry/);
+
+            // Armed remote host admits forced plan and ui-design with fresh attestation, never caller capabilities or Sol backup.
+            const resolveAttestation = await readRemoteNeonTarget({{ serverId: 'srv-armed-example' }});
+            for (const [tPath, cls, lane] of [[{json.dumps(self.task)}, 'plan', 'remote-plan'], [{json.dumps(ui_task)}, 'ui-design', 'remote-ui']]) {{
+              const task = readTask(tPath);
+              // Without attestation (caller-only remote) stays Fable high.
+              const noAtt = await resolveWorkerRoute({{
+                taskClass: cls, catalog, replacement: {{ task, lane, target: armedTarget, proof: proofFor(armedTarget) }},
+              }});
+              assert.equal(noAtt.route.model, 'fleet/claude-fable-5-1');
+              // Remote unavailable evidence admits nothing (no Sol backup on remote).
+              const withUnavailable = await resolveWorkerRoute({{
+                taskClass: cls, catalog, replacement: {{
+                  task, lane, target: armedTarget, remote: resolveAttestation,
+                  unavailable: {{ provider: 'agy-opc', target: armedTarget, checked_at: nowIso, finding: 'not-available' }},
+                }},
+              }});
+              assert.equal(withUnavailable.route.model, 'fleet/claude-fable-5-1');
+              // Held target stays Fable high even with another host's attestation.
+              const heldRes = await resolveWorkerRoute({{
+                taskClass: cls, catalog, replacement: {{ task, lane, target: heldTarget, proof: proofFor(heldTarget), remote: resolveAttestation }},
+              }});
+              assert.equal(heldRes.route.model, 'fleet/claude-fable-5-1');
+
+              // Genuine armed attestation admits, records, and builds remote request.
+              const ctx = {{ task, lane, target: armedTarget, proof: proofFor(armedTarget), remote: resolveAttestation }};
+              const resolved = await resolveWorkerRoute({{ taskClass: cls, catalog, replacement: ctx }});
+              assert.equal(resolved.route.source, 'replacement');
+              assert.equal(resolved.route.kind, cls);
+              assert.equal(resolved.reason, replacementReason(cls));
+              recordWorkerRoute(tPath, {{ lane, ...resolved, taskClass: cls, catalog, replacement: ctx }});
+
+              const names = managedWorkerNames({{ taskId: task.id, lane }});
+              process.env.FAKE_REMOTE_WORKSPACES = JSON.stringify([{{
+                id: 'wks-remote-1', workspaceKind: 'worktree', worktreeSlug: names.worktreeSlug,
+                workspaceDirectory: '/tmp/remote-wt', gitRuntime: {{ currentBranch: names.branchName }}, archivingAt: null,
+              }}]);
+              const launchAttestation = await readRemoteNeonTarget({{
+                serverId: 'srv-armed-example',
+                workspace: {{ workspaceId: 'wks-remote-1', worktreeSlug: names.worktreeSlug, branchName: names.branchName }},
+              }});
+              const updated = readTask(tPath);
+              const ws = {{ workspaceId: 'wks-remote-1', cwd: '/tmp/remote-wt', serverId: 'srv-armed-example' }};
+              // Caller capabilities are refused on remote launches.
+              assert.throws(() => buildManagedWorkerRequest({{
+                taskId: updated.id, lane, title: 'Worker', initialPrompt: 'Check',
+                workspace: ws, capabilities: launchAttestation.capabilities, route: resolved.route,
+                task: updated, taskClass: cls, target: armedTarget, remote: launchAttestation,
+              }}), /takes no caller capabilities/);
+              const req = buildManagedWorkerRequest({{
+                taskId: updated.id, lane, title: 'Worker', initialPrompt: 'Check',
+                workspace: ws, route: resolved.route, task: updated, taskClass: cls, target: armedTarget, remote: launchAttestation,
+              }});
+              assert.equal(req.request.serverId, 'srv-armed-example');
+              assert.equal(req.request.provider, 'agy-opc/gemini-4-neon-high');
+              assert.deepEqual(req.request.settings, {{ thinkingOptionId: 'high', features: {{ auto_accept: true }}, modeId: 'auto' }});
+              const launched = validateManagedWorkerLaunch(req, {{ agentId: 'agt-remote-1', workspaceId: 'wks-remote-1', serverId: 'srv-armed-example' }});
+              assert.equal(launched.agentId, 'agt-remote-1');
+              assert.throws(() => validateManagedWorkerLaunch(req, {{ agentId: 'agt-remote-1', workspaceId: 'wks-remote-1', serverId: 'srv-wrong' }}),
+                /verified remote server/);
+            }}
+        """, env=env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    @unittest.skipUnless(sys.platform == "darwin", "OPC local routing switch is macOS-only")
+    def test_decision_366a_opn_managed_handoff_and_sol_backup_daemon_binding(self):
+        root = Path(self.task).parent.parent
+        scratch_home = root / "scratch-home-handoff"
+        opc_dir = scratch_home / ".config" / "opc"
+        opc_dir.mkdir(parents=True, mode=0o700)
+        daemon_id_file = root / "current-daemon-id"
+        daemon_id_file.write_text("srv-daemon-a\n")
+        fake_bin = root / "fake-bin-handoff"
+        fake_bin.mkdir()
+        paseo_shim = fake_bin / "paseo"
+        paseo_shim.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = daemon ] && [ \"$2\" = status ]; then\n"
+            f"  id=$(tr -d '\\r\\n' < {shlex.quote(str(daemon_id_file))})\n"
+            "  printf '{\"localDaemon\":\"running\",\"serverId\":\"%s\"}\\n' \"$id\"\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1\" = inspect ] && [ \"$2\" = opn-pm-0001 ]; then\n"
+            "  printf '{\"Id\":\"opn-pm-0001\",\"ParentAgentId\":null}\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 1\n"
+        )
+        paseo_shim.chmod(0o755)
+        opn_repo = root / "opn-repo"
+        opn_run = root / "opn-run"
+        opn_repo.mkdir()
+        opn_run.mkdir()
+        for args in (["init", "-q", "-b", "main"], ["remote", "add", "origin", "https://github.com/example/opn-work.git"],
+                     ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"]):
+            subprocess.run(["git", "-C", str(opn_repo), *args], check=True, capture_output=True)
+        ui_task = self.ui_task()
+        env = {
+            **os.environ,
+            "HOME": str(scratch_home),
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "PASEO_AGENT_ID": "opn-pm-0001",
+        }
+        done = run("node", "--input-type=module", "-e", f"""
+            import assert from 'node:assert/strict';
+            import {{ execFileSync }} from 'node:child_process';
+            import {{ chmodSync, writeFileSync }} from 'node:fs';
+            import {{ join }} from 'node:path';
+            import {{ buildDelegatedBrief, paceBackupReason }} from {json.dumps((SCRIPTS / 'agent-routing.mjs').as_uri())};
+            import {{ buildManagedWorkerRequest, managedWorkerNames }} from {json.dumps((SCRIPTS / 'paseo-worker.mjs').as_uri())};
+            import {{ recordWorkerRoute, resolveWorkerRoute }} from {json.dumps((SCRIPTS / 'route.mjs').as_uri())};
+            import {{ createTask, readTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+
+            const opcDir = {json.dumps(str(opc_dir))};
+            const daemonIdFile = {json.dumps(str(daemon_id_file))};
+            const routeCli = {json.dumps(str(SCRIPTS / 'route.mjs'))};
+            const catalogPath = {json.dumps(str(root / 'handoff-catalog.json'))};
+            const uiTaskPath = {json.dumps(ui_task)};
+
+            const writeOwner = (path, obj) => {{
+              writeFileSync(path, JSON.stringify(obj, null, 2) + '\\n', {{ mode: 0o600 }});
+              chmodSync(path, 0o600);
+            }};
+            const now = Date.now();
+            writeOwner(join(opcDir, 'routing.json'), {{
+              replacementExcludedLaunchers: ['excluded-'],
+              antigravityFallback: {{
+                enabled: true,
+                state: {{
+                  off_pace: true,
+                  as_of: new Date(now - 60_000).toISOString(),
+                  expires_at: new Date(now + 3_600_000).toISOString(),
+                }},
+              }},
+            }});
+            writeOwner(join(opcDir, 'neon-remote-targets.json'), {{
+              targets: {{ 'srv-remote-example': {{ endpoint: 'ssh://remote-example', platform: 'linux', state: 'held' }} }},
+            }});
+
+            const levels = ids => ids.map(id => ({{ id }}));
+            const catalog = [
+              ['claude-opus-5-5', 'Opus'],
+              ['claude-fable-5-1', 'Fable'],
+              ['gpt-6.2-sol', 'Sol'],
+              ['gpt-6.1-terra', 'Terra'],
+              ['gpt-6-luna', 'Luna'],
+            ].map(([id, label]) => ({{ id: 'fleet/' + id, label, thinkingOptions: levels(['low', 'medium', 'high', 'xhigh']) }}));
+            writeFileSync(catalogPath, JSON.stringify(catalog));
+            const piCaps = {{ enabled: true, status: 'available', modes: [], models: catalog }};
+            const neonCaps = {{
+              provider: 'agy-opc', enabled: true, status: 'available',
+              models: [{{ id: 'gemini-4-neon-high', thinkingOptions: [{{ id: 'high' }}] }}],
+              modes: [{{ id: 'auto' }}],
+              selectedModel: 'gemini-4-neon-high',
+              features: [{{ id: 'auto_accept', type: 'toggle', value: true }}],
+            }};
+            const targetA = {{ daemon: 'srv-daemon-a', local: true, platform: 'darwin' }};
+            const targetB = {{ daemon: 'srv-daemon-b', local: true, platform: 'darwin' }};
+            const targetMapped = {{ daemon: 'srv-remote-example', local: true, platform: 'darwin' }};
+            const nowIso = new Date().toISOString();
+            const proofA = {{
+              provider: 'agy-opc', extends: 'acp', model: 'gemini-4-neon-high', thinking: 'high',
+              mode: 'auto', sandboxed: true, write: true, target: targetA, verified_at: nowIso,
+            }};
+            const unavailableFor = t => ({{ provider: 'agy-opc', target: t, checked_at: nowIso, finding: 'not-available' }});
+
+            // Part A: Actual documented OPN managed handoff on a git checkout.
+            const {{ taskPath: opnTaskPath }} = createTask({{
+              workingDirectory: {json.dumps(str(opn_repo))}, runDirectory: {json.dumps(str(opn_run))}, owner: 'opn-pm',
+            }});
+            // Raw CLI --class (even with --task/--lane) carries no target/evidence and prints only plain defaults.
+            const cliCode = JSON.parse(execFileSync(process.execPath,
+              [routeCli, '--class', 'code', '--catalog', catalogPath], {{ encoding: 'utf8' }}));
+            assert.equal(cliCode.route.source, 'task-default');
+            assert.equal(cliCode.route.model, 'fleet/claude-opus-5-5');
+            const cliPlanBound = JSON.parse(execFileSync(process.execPath,
+              [routeCli, '--class', 'plan', '--catalog', catalogPath, '--task', opnTaskPath, '--lane', 'cli-plan-raw'], {{ encoding: 'utf8' }}));
+            assert.equal(cliPlanBound.route.source, 'task-default');
+            assert.equal(cliPlanBound.route.model, 'fleet/claude-fable-5-1');
+            // Normal non-Claude OPN classes keep working through raw CLI unchanged.
+            for (const [cls, model] of [['research', 'fleet/gpt-6.1-terra'], ['review', 'fleet/gpt-6.2-sol'],
+              ['watcher', 'fleet/gpt-6.2-sol'], ['smoke', 'fleet/gpt-6-luna']]) {{
+              const res = JSON.parse(execFileSync(process.execPath,
+                [routeCli, '--class', cls, '--catalog', catalogPath], {{ encoding: 'utf8' }}));
+              assert.equal(res.route.model, model);
+            }}
+            // Genuine OPN managed handoff via resolveWorkerRoute + recordWorkerRoute + buildManagedWorkerRequest.
+            for (const [cls, lane] of [['code', 'opn-code-neon'], ['plan', 'opn-plan-neon']]) {{
+              const t = readTask(opnTaskPath);
+              const ctx = {{ task: t, lane, target: targetA, proof: proofA }};
+              const res = await resolveWorkerRoute({{ taskClass: cls, catalog, replacement: ctx }});
+              assert.equal(res.route.source, 'replacement');
+              assert.equal(res.route.kind, cls);
+              recordWorkerRoute(opnTaskPath, {{ lane, ...res, taskClass: cls, catalog, replacement: ctx }});
+              const updated = readTask(opnTaskPath);
+              const req = buildManagedWorkerRequest({{
+                taskId: updated.id, lane, title: 'OPN Worker', initialPrompt: 'Do OPN task',
+                workspace: {{ workspaceId: 'wks-opn-1', cwd: '/tmp/opn-wt-1', serverId: 'srv-daemon-a' }},
+                capabilities: neonCaps, route: res.route, task: updated, taskClass: cls, target: targetA,
+              }});
+              assert.equal(req.request.provider, 'agy-opc/gemini-4-neon-high');
+              assert.deepEqual(req.request.settings, {{ thinkingOptionId: 'high', features: {{ auto_accept: true }}, modeId: 'auto' }});
+              assert.equal(req.request.labels['opc.route-source'], 'replacement');
+            }}
+
+            // Part B: New-class Sol backup receipts bind admitted local daemon A; launch/rebuild rejects B and mapped-as-local.
+            const admittedBackups = [];
+            for (const [tPath, cls, lane] of [
+              [opnTaskPath, 'plan', 'opn-plan-sol'],
+              [uiTaskPath, 'ui-design', 'ui-design-sol-ab'],
+              [uiTaskPath, 'ui-check', 'ui-check-sol-ab'],
+            ]) {{
+              const t = readTask(tPath);
+              const ctx = {{ task: t, lane, target: targetA, unavailable: unavailableFor(targetA) }};
+              const res = await resolveWorkerRoute({{ taskClass: cls, catalog, replacement: ctx }});
+              assert.equal(res.route.source, 'pace-backup');
+              assert.equal(res.route.kind, cls);
+              assert.equal(res.route.receipt.target, 'srv-daemon-a');
+              assert.deepEqual(Object.keys(res.route.receipt).sort(), ['lane', 'placement', 'target', 'task']);
+              recordWorkerRoute(tPath, {{ lane, ...res, taskClass: cls, catalog, replacement: ctx }});
+              admittedBackups.push([tPath, cls, lane, res]);
+
+              // Matching daemon A + workspace A + target A succeeds.
+              const updated = readTask(tPath);
+              const okReq = buildManagedWorkerRequest({{
+                taskId: updated.id, lane, title: 'Sol Backup', initialPrompt: 'Check',
+                workspace: {{ workspaceId: 'wks-a', cwd: '/tmp/wt-a', serverId: 'srv-daemon-a' }},
+                capabilities: piCaps, route: res.route, task: updated, taskClass: cls, target: targetA,
+              }});
+              assert.equal(okReq.request.provider, 'pi/fleet/gpt-6.2-sol');
+              assert.equal(okReq.request.labels['opc.service-tier'], 'standard');
+              assert.equal(okReq.request.labels['opc.route-source'], 'pace-backup');
+
+              // Workspace on B (while daemon is A) is refused.
+              assert.throws(() => buildManagedWorkerRequest({{
+                taskId: updated.id, lane, title: 'Sol Backup', initialPrompt: 'Check',
+                workspace: {{ workspaceId: 'wks-b', cwd: '/tmp/wt-b', serverId: 'srv-daemon-b' }},
+                capabilities: piCaps, route: res.route, task: updated, taskClass: cls, target: targetA,
+              }}), /managed workspace is not on the recorded target server/);
+
+              // Target B or omitted target is refused.
+              for (const badTarget of [targetB, undefined]) {{
+                assert.throws(() => buildManagedWorkerRequest({{
+                  taskId: updated.id, lane, title: 'Sol Backup', initialPrompt: 'Check',
+                  workspace: {{ workspaceId: 'wks-a', cwd: '/tmp/wt-a', serverId: 'srv-daemon-a' }},
+                  capabilities: piCaps, route: res.route, task: updated, taskClass: cls, target: badTarget,
+                }}), /backup launch target is not the recorded local Mac target/);
+              }}
+            }}
+
+            // Legacy code Sol backup receipt has no target key and stays unchanged and rebuildable across daemons.
+            const codeTask = readTask(opnTaskPath);
+            const codeCtx = {{ task: codeTask, lane: 'opn-code-sol', target: targetA, unavailable: unavailableFor(targetA) }};
+            const codeSol = await resolveWorkerRoute({{ taskClass: 'code', catalog, replacement: codeCtx }});
+            assert.equal(codeSol.route.source, 'pace-backup');
+            assert.deepEqual(Object.keys(codeSol.route.receipt).sort(), ['lane', 'placement', 'task']);
+            recordWorkerRoute(opnTaskPath, {{ lane: 'opn-code-sol', ...codeSol, taskClass: 'code', catalog, replacement: codeCtx }});
+
+            // Switch local daemon from A to B (A-admit / B-launch): every new-class Sol backup stops on request AND brief.
+            writeFileSync(daemonIdFile, 'srv-daemon-b\\n');
+            for (const [tPath, cls, lane, res] of admittedBackups) {{
+              const updated = readTask(tPath);
+              assert.throws(() => buildManagedWorkerRequest({{
+                taskId: updated.id, lane, title: 'Sol Backup', initialPrompt: 'Check',
+                workspace: {{ workspaceId: 'wks-a', cwd: '/tmp/wt-a', serverId: 'srv-daemon-a' }},
+                capabilities: piCaps, route: res.route, task: updated, taskClass: cls, target: targetA,
+              }}), /local daemon is not the backup receipt target/);
+              assert.throws(() => buildDelegatedBrief({{
+                role: 'worker', route: res.route, reason: res.reason, brief: 'Check',
+                task: updated, lane, taskClass: cls, catalog,
+              }}), /local daemon is not the backup receipt target/);
+            }}
+            // Legacy code Sol backup still launches without target or workspace.serverId even on daemon B.
+            const legacyTask = readTask(opnTaskPath);
+            const legacyReq = buildManagedWorkerRequest({{
+              taskId: legacyTask.id, lane: 'opn-code-sol', title: 'Legacy Code Backup', initialPrompt: 'Build',
+              workspace: {{ workspaceId: 'wks-legacy', cwd: '/tmp/wt-legacy' }},
+              capabilities: piCaps, route: codeSol.route, task: legacyTask, taskClass: 'code',
+            }});
+            assert.equal(legacyReq.request.provider, 'pi/fleet/gpt-6.2-sol');
+
+            // Mapped remote server claimed as local is refused at admission and at launch/brief.
+            writeFileSync(daemonIdFile, 'srv-remote-example\\n');
+            const mappedAdmit = await resolveWorkerRoute({{
+              taskClass: 'plan', catalog,
+              replacement: {{ task: readTask(opnTaskPath), lane: 'mapped-sol', target: targetMapped, unavailable: unavailableFor(targetMapped) }},
+            }});
+            assert.equal(mappedAdmit.route.model, 'fleet/claude-fable-5-1');
+            const forgedMappedRoute = {{
+              role: 'worker', source: 'pace-backup', kind: 'plan', model: 'fleet/gpt-6.2-sol', effort: 'medium',
+              fastMode: false, reason: paceBackupReason('plan'),
+              receipt: {{
+                target: 'srv-remote-example', task: legacyTask.id, lane: 'forged-mapped',
+                placement: managedWorkerNames({{ taskId: legacyTask.id, lane: 'forged-mapped' }}).branchName,
+              }},
+            }};
+            const forgedTask = {{
+              ...legacyTask,
+              routes: {{ ...legacyTask.routes, 'forged-mapped': {{ route: forgedMappedRoute, reason: forgedMappedRoute.reason, recorded_at: nowIso }} }},
+            }};
+            assert.throws(() => buildManagedWorkerRequest({{
+              taskId: forgedTask.id, lane: 'forged-mapped', title: 'Mapped Backup', initialPrompt: 'Check',
+              workspace: {{ workspaceId: 'wks-m', cwd: '/tmp/wt-m', serverId: 'srv-remote-example' }},
+              capabilities: piCaps, route: forgedMappedRoute, task: forgedTask, taskClass: 'plan', target: targetMapped,
+            }}), /local daemon is not the backup receipt target/);
+            assert.throws(() => buildDelegatedBrief({{
+              role: 'worker', route: forgedMappedRoute, reason: forgedMappedRoute.reason, brief: 'Check',
+              task: forgedTask, lane: 'forged-mapped', taskClass: 'plan', catalog,
+            }}), /local daemon is not the backup receipt target/);
+        """, env=env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,19 +13,19 @@ Follow this state machine, reading linked references only when their branch appl
 
 ## 1. Scope
 
-Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks: observable behaviors from the owner's intent, preferably end-to-end or live. Escalate scope or authority changes to the owner.
+Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks (observable, preferably end-to-end or live). Escalate scope or authority changes to the owner.
 
 Enable browser review only when the initial request explicitly asks; the choice is immutable through repairs, resumes, and reinvocation. Initialize the [execution mechanics](references/imp-execution.md "runtime") before launching lanes.
 
 ## 2. Optional scouting
 
-Default to one scout; add another only for an independent question expected to take 30+ minutes. Trivial, localized, or inherently sequential work skips scouting and planning. Synthesize findings first. Only material residual ambiguity or unresolved cross-lane decisions justify a read-only `plan` Worker.
+Default to one scout; add another only for an independent question expected to take 30+ minutes. Trivial, localized, or inherently sequential work skips scouting and planning. Synthesize findings first. Use a read-only `plan` Worker only for material ambiguity or cross-lane decisions.
 
 ## 3. Worker
 
-Resolve every route, PMs included, via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted.
+Resolve every route, PMs included, via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted. Manual Claude-class worker launches off pace prefer verified `agy-opc` Neon High (`auto`, `auto_accept: true`); use Pi Sol medium only with positive fresh unavailable evidence (never assume Sol without it), keeping owner, recorded, review, and non-Claude routes unchanged.
 
-Default to one implementer Worker for the whole task, building its items in sequence: server, UI and docs together, with tests only when the owner or the PM names the cases. Never split by work type (frontend, backend, tests) or file. Use parallel lanes only when the pieces are independent (no shared files or ordering) and each is expected to take 30+ minutes; one owner per file, and the PM writes any shared contract (flags, schemas, shared docs) before those lanes start. Use fresh agents only where fresh context helps: a reviewer given only the spec and diff, a verifier given only the user flows, and research needing no project context. One Worker lineage per lane; shared live resources serialize only live checks.
+Default to one implementer Worker building items sequentially (server, UI, docs together), adding tests only when owner or PM names cases. Never split by work type (frontend, backend, tests) or file. Parallelize only independent 30+ minute pieces (no shared files/ordering); one owner per file, PM writes shared contracts first. Use fresh agents only where fresh context helps: reviewer (spec and diff), verifier (user flows), and context-free research. One Worker lineage per lane; shared live resources serialize only live checks.
 
 Visual design (new screen, layout, component) gets one read-only `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`.
 
