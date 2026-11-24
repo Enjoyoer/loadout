@@ -1098,13 +1098,14 @@ class OpcDeliveryTest(unittest.TestCase):
               assert.equal(resolved.route.effort, 'medium');
               assert.equal(resolved.route.fastMode, false);
               assert.equal(resolved.reason, paceBackupReason(canon));
+              assert.equal(resolved.route.receipt.target, target.daemon);
 
               recordWorkerRoute(tPath, {{ lane, ...resolved, taskClass: cls, catalog, replacement }});
               const updated = readTask(tPath);
               const req = buildManagedWorkerRequest({{
                 taskId: updated.id, lane, title: 'Worker', initialPrompt: 'Check',
                 workspace: {{ workspaceId: 'wks-2', cwd: '/tmp/wt-2', serverId: target.daemon }},
-                capabilities: piCaps, route: resolved.route, task: updated, taskClass: cls,
+                capabilities: piCaps, route: resolved.route, task: updated, taskClass: cls, target,
               }});
               assert.equal(req.request.provider, 'pi/fleet/gpt-6.2-sol');
               assert.deepEqual(req.request.settings, {{ thinkingOptionId: 'medium' }});
@@ -1431,6 +1432,254 @@ class OpcDeliveryTest(unittest.TestCase):
               assert.throws(() => validateManagedWorkerLaunch(req, {{ agentId: 'agt-remote-1', workspaceId: 'wks-remote-1', serverId: 'srv-wrong' }}),
                 /verified remote server/);
             }}
+        """, env=env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    @unittest.skipUnless(sys.platform == "darwin", "OPC local routing switch is macOS-only")
+    def test_decision_366a_opn_managed_handoff_and_sol_backup_daemon_binding(self):
+        root = Path(self.task).parent.parent
+        scratch_home = root / "scratch-home-handoff"
+        opc_dir = scratch_home / ".config" / "opc"
+        opc_dir.mkdir(parents=True, mode=0o700)
+        daemon_id_file = root / "current-daemon-id"
+        daemon_id_file.write_text("srv-daemon-a\n")
+        fake_bin = root / "fake-bin-handoff"
+        fake_bin.mkdir()
+        paseo_shim = fake_bin / "paseo"
+        paseo_shim.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = daemon ] && [ \"$2\" = status ]; then\n"
+            f"  id=$(tr -d '\\r\\n' < {shlex.quote(str(daemon_id_file))})\n"
+            "  printf '{\"localDaemon\":\"running\",\"serverId\":\"%s\"}\\n' \"$id\"\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1\" = inspect ] && [ \"$2\" = opn-pm-0001 ]; then\n"
+            "  printf '{\"Id\":\"opn-pm-0001\",\"ParentAgentId\":null}\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 1\n"
+        )
+        paseo_shim.chmod(0o755)
+        opn_repo = root / "opn-repo"
+        opn_run = root / "opn-run"
+        opn_repo.mkdir()
+        opn_run.mkdir()
+        for args in (["init", "-q", "-b", "main"], ["remote", "add", "origin", "https://github.com/example/opn-work.git"],
+                     ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"]):
+            subprocess.run(["git", "-C", str(opn_repo), *args], check=True, capture_output=True)
+        ui_task = self.ui_task()
+        env = {
+            **os.environ,
+            "HOME": str(scratch_home),
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "PASEO_AGENT_ID": "opn-pm-0001",
+        }
+        done = run("node", "--input-type=module", "-e", f"""
+            import assert from 'node:assert/strict';
+            import {{ execFileSync }} from 'node:child_process';
+            import {{ chmodSync, writeFileSync }} from 'node:fs';
+            import {{ join }} from 'node:path';
+            import {{ buildDelegatedBrief, paceBackupReason }} from {json.dumps((SCRIPTS / 'agent-routing.mjs').as_uri())};
+            import {{ buildManagedWorkerRequest, managedWorkerNames }} from {json.dumps((SCRIPTS / 'paseo-worker.mjs').as_uri())};
+            import {{ recordWorkerRoute, resolveWorkerRoute }} from {json.dumps((SCRIPTS / 'route.mjs').as_uri())};
+            import {{ createTask, readTask }} from {json.dumps((SCRIPTS / 'task-state.mjs').as_uri())};
+
+            const opcDir = {json.dumps(str(opc_dir))};
+            const daemonIdFile = {json.dumps(str(daemon_id_file))};
+            const routeCli = {json.dumps(str(SCRIPTS / 'route.mjs'))};
+            const catalogPath = {json.dumps(str(root / 'handoff-catalog.json'))};
+            const uiTaskPath = {json.dumps(ui_task)};
+
+            const writeOwner = (path, obj) => {{
+              writeFileSync(path, JSON.stringify(obj, null, 2) + '\\n', {{ mode: 0o600 }});
+              chmodSync(path, 0o600);
+            }};
+            const now = Date.now();
+            writeOwner(join(opcDir, 'routing.json'), {{
+              replacementExcludedLaunchers: ['excluded-'],
+              antigravityFallback: {{
+                enabled: true,
+                state: {{
+                  off_pace: true,
+                  as_of: new Date(now - 60_000).toISOString(),
+                  expires_at: new Date(now + 3_600_000).toISOString(),
+                }},
+              }},
+            }});
+            writeOwner(join(opcDir, 'neon-remote-targets.json'), {{
+              targets: {{ 'srv-remote-example': {{ endpoint: 'ssh://remote-example', platform: 'linux', state: 'held' }} }},
+            }});
+
+            const levels = ids => ids.map(id => ({{ id }}));
+            const catalog = [
+              ['claude-opus-5-5', 'Opus'],
+              ['claude-fable-5-1', 'Fable'],
+              ['gpt-6.2-sol', 'Sol'],
+              ['gpt-6.1-terra', 'Terra'],
+              ['gpt-6-luna', 'Luna'],
+            ].map(([id, label]) => ({{ id: 'fleet/' + id, label, thinkingOptions: levels(['low', 'medium', 'high', 'xhigh']) }}));
+            writeFileSync(catalogPath, JSON.stringify(catalog));
+            const piCaps = {{ enabled: true, status: 'available', modes: [], models: catalog }};
+            const neonCaps = {{
+              provider: 'agy-opc', enabled: true, status: 'available',
+              models: [{{ id: 'gemini-4-neon-high', thinkingOptions: [{{ id: 'high' }}] }}],
+              modes: [{{ id: 'auto' }}],
+              selectedModel: 'gemini-4-neon-high',
+              features: [{{ id: 'auto_accept', type: 'toggle', value: true }}],
+            }};
+            const targetA = {{ daemon: 'srv-daemon-a', local: true, platform: 'darwin' }};
+            const targetB = {{ daemon: 'srv-daemon-b', local: true, platform: 'darwin' }};
+            const targetMapped = {{ daemon: 'srv-remote-example', local: true, platform: 'darwin' }};
+            const nowIso = new Date().toISOString();
+            const proofA = {{
+              provider: 'agy-opc', extends: 'acp', model: 'gemini-4-neon-high', thinking: 'high',
+              mode: 'auto', sandboxed: true, write: true, target: targetA, verified_at: nowIso,
+            }};
+            const unavailableFor = t => ({{ provider: 'agy-opc', target: t, checked_at: nowIso, finding: 'not-available' }});
+
+            // Part A: Actual documented OPN managed handoff on a git checkout.
+            const {{ taskPath: opnTaskPath }} = createTask({{
+              workingDirectory: {json.dumps(str(opn_repo))}, runDirectory: {json.dumps(str(opn_run))}, owner: 'opn-pm',
+            }});
+            // Raw CLI --class (even with --task/--lane) carries no target/evidence and prints only plain defaults.
+            const cliCode = JSON.parse(execFileSync(process.execPath,
+              [routeCli, '--class', 'code', '--catalog', catalogPath], {{ encoding: 'utf8' }}));
+            assert.equal(cliCode.route.source, 'task-default');
+            assert.equal(cliCode.route.model, 'fleet/claude-opus-5-5');
+            const cliPlanBound = JSON.parse(execFileSync(process.execPath,
+              [routeCli, '--class', 'plan', '--catalog', catalogPath, '--task', opnTaskPath, '--lane', 'cli-plan-raw'], {{ encoding: 'utf8' }}));
+            assert.equal(cliPlanBound.route.source, 'task-default');
+            assert.equal(cliPlanBound.route.model, 'fleet/claude-fable-5-1');
+            // Normal non-Claude OPN classes keep working through raw CLI unchanged.
+            for (const [cls, model] of [['research', 'fleet/gpt-6.1-terra'], ['review', 'fleet/gpt-6.2-sol'],
+              ['watcher', 'fleet/gpt-6.2-sol'], ['smoke', 'fleet/gpt-6-luna']]) {{
+              const res = JSON.parse(execFileSync(process.execPath,
+                [routeCli, '--class', cls, '--catalog', catalogPath], {{ encoding: 'utf8' }}));
+              assert.equal(res.route.model, model);
+            }}
+            // Genuine OPN managed handoff via resolveWorkerRoute + recordWorkerRoute + buildManagedWorkerRequest.
+            for (const [cls, lane] of [['code', 'opn-code-neon'], ['plan', 'opn-plan-neon']]) {{
+              const t = readTask(opnTaskPath);
+              const ctx = {{ task: t, lane, target: targetA, proof: proofA }};
+              const res = await resolveWorkerRoute({{ taskClass: cls, catalog, replacement: ctx }});
+              assert.equal(res.route.source, 'replacement');
+              assert.equal(res.route.kind, cls);
+              recordWorkerRoute(opnTaskPath, {{ lane, ...res, taskClass: cls, catalog, replacement: ctx }});
+              const updated = readTask(opnTaskPath);
+              const req = buildManagedWorkerRequest({{
+                taskId: updated.id, lane, title: 'OPN Worker', initialPrompt: 'Do OPN task',
+                workspace: {{ workspaceId: 'wks-opn-1', cwd: '/tmp/opn-wt-1', serverId: 'srv-daemon-a' }},
+                capabilities: neonCaps, route: res.route, task: updated, taskClass: cls, target: targetA,
+              }});
+              assert.equal(req.request.provider, 'agy-opc/gemini-4-neon-high');
+              assert.deepEqual(req.request.settings, {{ thinkingOptionId: 'high', features: {{ auto_accept: true }}, modeId: 'auto' }});
+              assert.equal(req.request.labels['opc.route-source'], 'replacement');
+            }}
+
+            // Part B: New-class Sol backup receipts bind admitted local daemon A; launch/rebuild rejects B and mapped-as-local.
+            const admittedBackups = [];
+            for (const [tPath, cls, lane] of [
+              [opnTaskPath, 'plan', 'opn-plan-sol'],
+              [uiTaskPath, 'ui-design', 'ui-design-sol-ab'],
+              [uiTaskPath, 'ui-check', 'ui-check-sol-ab'],
+            ]) {{
+              const t = readTask(tPath);
+              const ctx = {{ task: t, lane, target: targetA, unavailable: unavailableFor(targetA) }};
+              const res = await resolveWorkerRoute({{ taskClass: cls, catalog, replacement: ctx }});
+              assert.equal(res.route.source, 'pace-backup');
+              assert.equal(res.route.kind, cls);
+              assert.equal(res.route.receipt.target, 'srv-daemon-a');
+              assert.deepEqual(Object.keys(res.route.receipt).sort(), ['lane', 'placement', 'target', 'task']);
+              recordWorkerRoute(tPath, {{ lane, ...res, taskClass: cls, catalog, replacement: ctx }});
+              admittedBackups.push([tPath, cls, lane, res]);
+
+              // Matching daemon A + workspace A + target A succeeds.
+              const updated = readTask(tPath);
+              const okReq = buildManagedWorkerRequest({{
+                taskId: updated.id, lane, title: 'Sol Backup', initialPrompt: 'Check',
+                workspace: {{ workspaceId: 'wks-a', cwd: '/tmp/wt-a', serverId: 'srv-daemon-a' }},
+                capabilities: piCaps, route: res.route, task: updated, taskClass: cls, target: targetA,
+              }});
+              assert.equal(okReq.request.provider, 'pi/fleet/gpt-6.2-sol');
+              assert.equal(okReq.request.labels['opc.service-tier'], 'standard');
+              assert.equal(okReq.request.labels['opc.route-source'], 'pace-backup');
+
+              // Workspace on B (while daemon is A) is refused.
+              assert.throws(() => buildManagedWorkerRequest({{
+                taskId: updated.id, lane, title: 'Sol Backup', initialPrompt: 'Check',
+                workspace: {{ workspaceId: 'wks-b', cwd: '/tmp/wt-b', serverId: 'srv-daemon-b' }},
+                capabilities: piCaps, route: res.route, task: updated, taskClass: cls, target: targetA,
+              }}), /managed workspace is not on the recorded target server/);
+
+              // Target B or omitted target is refused.
+              for (const badTarget of [targetB, undefined]) {{
+                assert.throws(() => buildManagedWorkerRequest({{
+                  taskId: updated.id, lane, title: 'Sol Backup', initialPrompt: 'Check',
+                  workspace: {{ workspaceId: 'wks-a', cwd: '/tmp/wt-a', serverId: 'srv-daemon-a' }},
+                  capabilities: piCaps, route: res.route, task: updated, taskClass: cls, target: badTarget,
+                }}), /backup launch target is not the recorded local Mac target/);
+              }}
+            }}
+
+            // Legacy code Sol backup receipt has no target key and stays unchanged and rebuildable across daemons.
+            const codeTask = readTask(opnTaskPath);
+            const codeCtx = {{ task: codeTask, lane: 'opn-code-sol', target: targetA, unavailable: unavailableFor(targetA) }};
+            const codeSol = await resolveWorkerRoute({{ taskClass: 'code', catalog, replacement: codeCtx }});
+            assert.equal(codeSol.route.source, 'pace-backup');
+            assert.deepEqual(Object.keys(codeSol.route.receipt).sort(), ['lane', 'placement', 'task']);
+            recordWorkerRoute(opnTaskPath, {{ lane: 'opn-code-sol', ...codeSol, taskClass: 'code', catalog, replacement: codeCtx }});
+
+            // Switch local daemon from A to B (A-admit / B-launch): every new-class Sol backup stops on request AND brief.
+            writeFileSync(daemonIdFile, 'srv-daemon-b\\n');
+            for (const [tPath, cls, lane, res] of admittedBackups) {{
+              const updated = readTask(tPath);
+              assert.throws(() => buildManagedWorkerRequest({{
+                taskId: updated.id, lane, title: 'Sol Backup', initialPrompt: 'Check',
+                workspace: {{ workspaceId: 'wks-a', cwd: '/tmp/wt-a', serverId: 'srv-daemon-a' }},
+                capabilities: piCaps, route: res.route, task: updated, taskClass: cls, target: targetA,
+              }}), /local daemon is not the backup receipt target/);
+              assert.throws(() => buildDelegatedBrief({{
+                role: 'worker', route: res.route, reason: res.reason, brief: 'Check',
+                task: updated, lane, taskClass: cls, catalog,
+              }}), /local daemon is not the backup receipt target/);
+            }}
+            // Legacy code Sol backup still launches without target or workspace.serverId even on daemon B.
+            const legacyTask = readTask(opnTaskPath);
+            const legacyReq = buildManagedWorkerRequest({{
+              taskId: legacyTask.id, lane: 'opn-code-sol', title: 'Legacy Code Backup', initialPrompt: 'Build',
+              workspace: {{ workspaceId: 'wks-legacy', cwd: '/tmp/wt-legacy' }},
+              capabilities: piCaps, route: codeSol.route, task: legacyTask, taskClass: 'code',
+            }});
+            assert.equal(legacyReq.request.provider, 'pi/fleet/gpt-6.2-sol');
+
+            // Mapped remote server claimed as local is refused at admission and at launch/brief.
+            writeFileSync(daemonIdFile, 'srv-remote-example\\n');
+            const mappedAdmit = await resolveWorkerRoute({{
+              taskClass: 'plan', catalog,
+              replacement: {{ task: readTask(opnTaskPath), lane: 'mapped-sol', target: targetMapped, unavailable: unavailableFor(targetMapped) }},
+            }});
+            assert.equal(mappedAdmit.route.model, 'fleet/claude-fable-5-1');
+            const forgedMappedRoute = {{
+              role: 'worker', source: 'pace-backup', kind: 'plan', model: 'fleet/gpt-6.2-sol', effort: 'medium',
+              fastMode: false, reason: paceBackupReason('plan'),
+              receipt: {{
+                target: 'srv-remote-example', task: legacyTask.id, lane: 'forged-mapped',
+                placement: managedWorkerNames({{ taskId: legacyTask.id, lane: 'forged-mapped' }}).branchName,
+              }},
+            }};
+            const forgedTask = {{
+              ...legacyTask,
+              routes: {{ ...legacyTask.routes, 'forged-mapped': {{ route: forgedMappedRoute, reason: forgedMappedRoute.reason, recorded_at: nowIso }} }},
+            }};
+            assert.throws(() => buildManagedWorkerRequest({{
+              taskId: forgedTask.id, lane: 'forged-mapped', title: 'Mapped Backup', initialPrompt: 'Check',
+              workspace: {{ workspaceId: 'wks-m', cwd: '/tmp/wt-m', serverId: 'srv-remote-example' }},
+              capabilities: piCaps, route: forgedMappedRoute, task: forgedTask, taskClass: 'plan', target: targetMapped,
+            }}), /local daemon is not the backup receipt target/);
+            assert.throws(() => buildDelegatedBrief({{
+              role: 'worker', route: forgedMappedRoute, reason: forgedMappedRoute.reason, brief: 'Check',
+              task: forgedTask, lane: 'forged-mapped', taskClass: 'plan', catalog,
+            }}), /local daemon is not the backup receipt target/);
         """, env=env)
         self.assertEqual(done.returncode, 0, done.stderr)
 

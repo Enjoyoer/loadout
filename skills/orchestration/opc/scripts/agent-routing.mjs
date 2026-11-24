@@ -295,6 +295,7 @@ export const PARITY_BACKUP_REASON = 'code backup on a Neon turn of the per-launc
 const approvedBackupReasons = kind => kind === 'code' ? [PACE_BACKUP_REASON, PARITY_BACKUP_REASON]
   : OFF_PACE_CLASSES.includes(kind) ? [paceBackupReason(kind)] : [];
 const BACKUP_RECEIPT_KEYS = ['task', 'lane', 'placement'];
+const BOUND_BACKUP_RECEIPT_KEYS = ['target', 'task', 'lane', 'placement'];
 // Whether already-parsed JSON text repeats a key in any object, with escaped spellings decoded.
 function repeatsKey(text) {
   const objects = [];
@@ -407,8 +408,12 @@ const exactKeys = (value, keys) => value != null && typeof value === 'object' &&
 const validBinding = receipt => /^[A-Za-z0-9-]{8,128}$/.test(receipt.task ?? '') &&
   /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(receipt.lane ?? '') && receipt.lane.length <= 40 &&
   /^opc\/[a-z0-9-]+-[0-9a-f]{16}$/.test(receipt.placement ?? '');
-function validReceipt(source, receipt) {
-  if (source === 'pace-backup') return exactKeys(receipt, BACKUP_RECEIPT_KEYS) && validBinding(receipt);
+function validReceipt(source, receipt, kind) {
+  if (source === 'pace-backup') {
+    return kind === 'code'
+      ? exactKeys(receipt, BACKUP_RECEIPT_KEYS) && validBinding(receipt)
+      : exactKeys(receipt, BOUND_BACKUP_RECEIPT_KEYS) && isTargetId(receipt.target) && validBinding(receipt);
+  }
   return exactKeys(receipt, RECEIPT_KEYS) && receipt.provider === REPLACEMENT_RUNTIME.provider &&
     typeof receipt.mode === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(receipt.mode) &&
     isTargetId(receipt.target) && validBinding(receipt);
@@ -419,7 +424,7 @@ function validateRecordedOffPace(route) {
   if (!exactKeys(route, ['role', 'source', 'kind', 'model', 'effort', 'fastMode', 'reason', 'receipt']) ||
       route.role !== 'worker' || !OFF_PACE_CLASSES.includes(route.kind) || !isValidModelId(route.model) || !efforts.has(route.effort) ||
       route.fastMode !== false || typeof route.reason !== 'string' || !route.reason.trim() || /[\r\n]/.test(route.reason) ||
-      !validReceipt(route.source, route.receipt)) {
+      !validReceipt(route.source, route.receipt, route.kind)) {
     throw Error(`recorded ${route?.source} route required for worker`);
   }
   return Object.freeze({ model: route.model, effort: route.effort, fastMode: false, source: route.source, kind: route.kind,
@@ -599,6 +604,11 @@ function validateLaunchedWorkerRoute(route, { task = null, lane = null, taskClas
       throw Error(route.reason === PARITY_REASON
         ? 'the local daemon is not the parity Neon receipt target, or its status is unreadable; the lane stops'
         : 'the local daemon is not the Neon receipt target, or its status is unreadable; the lane stops');
+    }
+    // A decision 366a backup lane (plan, ui-design, ui-check) is local-only and bound to the admitted local daemon.
+    if (route.source === 'pace-backup' && kind !== 'code' &&
+        (isMappedServer(route.receipt.target) || localServerId() !== route.receipt.target)) {
+      throw Error('the local daemon is not the backup receipt target, or its status is unreadable; the lane stops');
     }
   } else {
     if (task?.ui === true && !isUiRoute(route, rows)) {
@@ -858,7 +868,18 @@ export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'wor
     return { provider: mapped, agentSettings: settings, modeId };
   }
   // The off-pace backup runs only on Pi, on its exact catalog row at its thinking; never native or unserved.
+  // Decision 366a backup lanes (plan, ui-design, ui-check) also bind the launch target and workspace to the admitted
+  // local daemon; legacy code backup receipts stay unchanged.
   if (selected.source === 'pace-backup') {
+    if (selected.kind !== 'code') {
+      if (!isTargetId(serverId) || serverId !== selected.receipt.target) {
+        throw Error('the managed workspace is not on the recorded target server; the backup lane stops');
+      }
+      if (!exactKeys(target, ['daemon', 'local', 'platform']) || target.daemon !== selected.receipt.target ||
+          target.local !== true || target.platform !== 'darwin' || remote != null || isMappedServer(target.daemon)) {
+        throw Error('backup launch target is not the recorded local Mac target; the lane stops');
+      }
+    }
     const served = (rows ?? []).filter(row => row?.id === selected.model && row.label === PACE_BACKUP_RUNTIME.label &&
       row.thinkingOptions?.some(option => option?.id === selected.effort));
     if (served.length !== 1) throw Error(`the Pi catalog does not serve exactly ${selected.model} at ${selected.effort}; the backup lane stops`);

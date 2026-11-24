@@ -179,7 +179,7 @@ function offPaceAdmission(context, { taskClass, catalog }, state, pre = null) {
         effort: runtime.effort, fastMode: runtime.fastMode,
         reason: neon ? (forced ? replacementReason(kind) : PARITY_REASON) : (forced ? paceBackupReason(kind) : PARITY_BACKUP_REASON),
         receipt: Object.freeze(neon ? { provider: runtime.provider, mode: proof.mode, target: target.daemon, task: task.id, lane,
-          placement: branchName } : { task: task.id, lane, placement: branchName }) });
+          placement: branchName } : { ...(kind !== 'code' ? { target: target.daemon } : {}), task: task.id, lane, placement: branchName }) });
     };
     if (mode === 'forced') {
       if (kind !== 'code' && target.local !== false && (pre ? pre.localServer : localServerId()) !== target.daemon) return null;
