@@ -116,6 +116,7 @@ The code enforces exact equality of these fields with the approved runtime; re-a
 
 Owner decision 359: while the switch is valid, fresh and not forced (both booleans false), new eligible `code` lanes (aliases included) alternate between Opus high and Neon high, one each per launching agent, starting with Opus. A not-forced switch says only that the lane is not forced to Neon; it proves nothing about quota. Forced (both true) is the replacement above and takes no turn.
 
+- For every fresh local `code` lane, resolve and record with the full context: `task`, `lane`, `target`, and the `proof` or `unavailable` evidence when you have them. Without the context a lane never alternates.
 - Eligible: a fresh bound lane of a non-UI task, resolved and recorded through `resolveWorkerRoute` and `recordWorkerRoute` with the same `replacement` context as Neon, whose `target` is the local Mac target, from a launcher that is not excluded. The launcher is `PASEO_AGENT_ID`, with the excluded-launcher check above. Remote, Linux, Windows or missing targets stay Opus and take no turn.
 - An Opus turn records the plain Opus high default. A Neon turn records Neon high with a fresh `proof`, under its own reason, with the same runtime, receipt and launch checks as the replacement. With fresh `unavailable` evidence newer than any fresh proof, it records the Sol medium, Fast off backup under its own reason. With neither, it records Opus and the Neon turn stays next.
 - What counts: a newly recorded eligible lane that took its turn's route. Nothing else counts: a resolve, dry run or replay of a recorded lane, a forced lane, an owner-named route, a decline (resolved, never recorded), another class, another launcher, a refused record, and a Neon turn that fell back to Opus. `route.mjs --class code --task T --lane L` passes no target, so it stays Opus and takes no turn.
@@ -125,7 +126,7 @@ Owner decision 359: while the switch is valid, fresh and not forced (both boolea
 
 OPN `code` workers take the same path. An OPN `code` worker joins the alternation only through OPC's managed code-lane path: `createTask` on its git checkout, then resolve and record with the full context, `create_workspace`, `buildManagedWorkerRequest` and `create_agent`, as in [Worker placement](imp-execution.md#worker-placement "runtime"). A worker started any other way, such as in the PM's own workspace with no task record, runs Opus high and takes no turn. Non-code OPN workers are unchanged.
 
-Remote targets: Neon admission is for the local Mac target only. MCP `inspect_provider` and `list_models` read only the local daemon, so a remote target's mode and feature draft cannot be read on the launching path, and a caller-supplied remote proof is never accepted. A launch on any other host stays Opus.
+Remote targets: this admission takes only the local Mac target. A caller-supplied remote proof or capability is never accepted, and a lane for any other host stays Opus and takes no turn. A PM on another host reads no switch (it is read only on a Mac), so its own launches stay Opus.
 
 ## Errors
 
