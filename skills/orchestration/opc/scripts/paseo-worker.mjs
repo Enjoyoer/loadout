@@ -111,13 +111,16 @@ export function buildManagedWorkspaceRequest({ taskId, lane, sourcePath, baseBra
 // replacement provider on it with MCP list_models rows as models. An off-pace lane runs only on its recorded branch.
 export function buildManagedWorkerRequest({ taskId, lane, title, provider, initialPrompt,
   agentSettings = {}, workerLabels = {}, workspace, capabilities, role = 'worker', route, surface = 'pi',
-  nativeAuthorization = null, task = null, taskClass = null, target = null }) {
+  nativeAuthorization = null, task = null, taskClass = null, target = null, remote = null }) {
   if (role !== 'worker') throw Error(`buildManagedWorkerRequest builds only Workers (role worker), not ${String(role)}`);
+  // A remote target is only a recorded replacement lane's, with the attestation readRemoteNeonTarget returned (decision 359).
+  const remoteLaunch = target?.local === false;
+  if ((remote != null || remoteLaunch) && route?.source !== 'replacement') throw Error('only a recorded replacement lane launches on a remote target');
   const names = managedWorkerNames({ taskId, lane });
   const agentTitle = required(title, 'Worker title');
   if (task != null && task.id !== taskId) throw Error('Worker task id must be the bound task record id');
   const mappedRoute = resolveWorkerSurface({ provider, agentSettings, role, route, surface, nativeAuthorization,
-    catalog: capabilities?.models, task, lane, taskClass, capabilities, target, serverId: workspace?.serverId });
+    catalog: capabilities?.models, task, lane, taskClass, capabilities, target, serverId: workspace?.serverId, remote, workspace });
   const replacement = route?.source === 'replacement';
   if (OFF_PACE_SOURCES.includes(route?.source) && route.receipt?.placement !== names.branchName) {
     throw Error(`${route.source} receipt placement is not this lane's branch`);
@@ -145,6 +148,8 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
       workspaceId: workspace.workspaceId,
       initialPrompt: prompt,
       notifyOnFinish: true,
+      // MCP create_agent on exactly the verified remote server; a local launch names none.
+      ...(remoteLaunch ? { serverId: remote.serverId } : {}),
       settings: { ...requestedSettings, ...(modeId ? { modeId } : {}) },
       // Fast is the Pi Fast toggle label. A GPT route with no label runs Standard (Fast is off by default), and Off
       // on a GPT route is still an explicit Standard; other routes have no service tier and get no label.
@@ -165,6 +170,9 @@ export function validateManagedWorkerLaunch(prepared, created) {
   }
   if (created.workspaceId != null && created.workspaceId !== prepared.workspaceId) {
     throw Error('Paseo created the Worker in the wrong workspace; retain both for reconciliation');
+  }
+  if (prepared.request.serverId != null && created.serverId !== prepared.request.serverId) {
+    throw Error('Paseo did not report the Worker on the verified remote server; retain both for reconciliation');
   }
   return Object.freeze({
     agentId: created.agentId,

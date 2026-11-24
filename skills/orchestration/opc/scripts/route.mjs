@@ -15,6 +15,7 @@ import { canonicalWorkerClass, isReplacementMode, isTargetId, isUiRoute, launche
   REPLACEMENT_RUNTIME, routeReason, selectWorkerRoute, uiTaskLaneClass, validateLaneClass, readLocalRouting, validateRoleRoute,
   WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
 import { managedWorkerNames } from './paseo-worker.mjs';
+import { isMappedServer, remoteServesNeon, verifiedRemote } from './remote-target.mjs';
 import { readTask, updateTask, withFileLock } from './task-state.mjs';
 
 const usage = 'usage: route.mjs --class <class> [--catalog FILE] ' +
@@ -96,8 +97,7 @@ const REPLACEMENT_PROOF_MAX_AGE_MS = 60 * 60 * 1000;
 // Whether proof and target show the replacement runtime verified on the local Mac target within the window.
 function neonReady(proof, target, now) {
   const runtime = REPLACEMENT_RUNTIME, verifiedAt = utcTime(proof?.verified_at);
-  return exactKeys(target, ['daemon', 'local', 'platform']) && isTargetId(target.daemon) && target.local === true &&
-    target.platform === 'darwin' &&
+  return exactKeys(target, ['daemon', 'local', 'platform']) && isTargetId(target.daemon) &&
     exactKeys(proof, ['provider', 'extends', 'model', 'thinking', 'mode', 'sandboxed', 'write', 'target', 'verified_at']) &&
     proof.provider === runtime.provider && proof.extends === runtime.extends && proof.model === runtime.model &&
     proof.thinking === runtime.effort && isReplacementMode(proof.mode) && proof.sandboxed === true && proof.write === true &&
@@ -112,13 +112,19 @@ function neonReady(proof, target, now) {
 // another class or a PM), never one from an excluded launcher (offPaceLaunchAllowed), and only a fresh lane (a recorded lane keeps its route). With
 // unavailable, the PM's evidence that Neon cannot launch on the target (newer than any fresh proof), it takes the Sol
 // backup when the catalog serves it; else with a fresh proof it takes Neon; else (no proof, no evidence) the Opus default. The opt-in is read last.
-const REPLACEMENT_CONTEXT_KEYS = ['task', 'lane', 'proof', 'target', 'unavailable'];
+// remote: for a remote target only, the attestation readRemoteNeonTarget returned for it (remote-target.mjs).
+const REPLACEMENT_CONTEXT_KEYS = ['task', 'lane', 'proof', 'target', 'unavailable', 'remote'];
 // unavailable {provider: 'agy-opc', target, checked_at, finding}: what MCP inspect_provider (with list_models) showed on
 // the same local target within the last hour: agy-opc missing, disabled, not available, or not serving the model at
 // high with mode auto.
 const UNAVAILABLE_FINDINGS = ['missing', 'disabled', 'not-available', 'not-serving'];
 const validTarget = target => exactKeys(target, ['daemon', 'local', 'platform']) && isTargetId(target.daemon) &&
   target.local === true && target.platform === 'darwin';
+// The admissible launch target of a context: the local Mac target with no attestation, or a remote target with a fresh
+// verified attestation of it that shows Neon served and no caller unavailable evidence (a remote takes no Sol backup).
+const admissibleTarget = context => context?.target?.local === false
+  ? verifiedRemote(context.remote, context.target) && remoteServesNeon(context.remote) && context.unavailable === undefined
+  : validTarget(context?.target) && context?.remote === undefined && !isMappedServer(context.target.daemon);
 const recent = (value, now) => { const at = utcTime(value); return at != null && at <= now && now - at <= REPLACEMENT_PROOF_MAX_AGE_MS; };
 function neonUnavailable(unavailable, target, now) {
   return validTarget(target) && exactKeys(unavailable, ['provider', 'target', 'checked_at', 'finding']) &&
@@ -146,8 +152,8 @@ function codeAdmission(context, { taskClass, catalog }, state, pre = null) {
     const base = selectWorkerRoute({ taskKind: 'code', catalog });
     if (base.effort !== 'high' || base.fastMode !== false || !task || typeof task !== 'object' || task.ui === true ||
         typeof task.id !== 'string' || typeof lane !== 'string' || (task.routes && Object.hasOwn(task.routes, lane))) return null;
-    // Only the local Mac target is supported; any other target keeps the Opus default and consumes nothing.
-    if (!validTarget(target)) return null;
+    // Only the local Mac target, or a verified armed remote one; any other target keeps the Opus default and consumes nothing.
+    if (!admissibleTarget(context)) return null;
     const ready = neonReady(proof, target, now);
     // Both fresh: the newer one decides.
     const down = neonUnavailable(unavailable, target, now) &&
@@ -168,7 +174,8 @@ function codeAdmission(context, { taskClass, catalog }, state, pre = null) {
           placement: branchName } : { task: task.id, lane, placement: branchName }) });
     };
     if (mode === 'forced') return Object.freeze({ route: offPace(true), parity: null });
-    if ((pre ? pre.localServer : localServerId()) !== target.daemon) return null;
+    // A local target is the local daemon's own serverId; a remote one is bound by its attestation (admissibleTarget).
+    if (target.local !== false && (pre ? pre.localServer : localServerId()) !== target.daemon) return null;
     const launcher = process.env.PASEO_AGENT_ID, alternation = state === undefined ? readAlternation() : state;
     if (!launcherId(launcher) || alternation == null) return null;
     const admitted = Object.hasOwn(alternation.launchers, launcher) ? alternation.launchers[launcher].admitted : 0;
@@ -236,7 +243,7 @@ function recordLane(task, { lane, route, reason, taskClass = null, catalog = nul
 }
 
 // Records a lane's route. Only a fresh lane of the code class (or an alias) on a task default or off-pace route, with a
-// local target in its replacement context, while the switch says not forced (decision 359), can take an alternation turn.
+// local or verified remote target in its replacement context, while the switch says not forced (decision 359), can take an alternation turn.
 // For it the slow reads (launcher chain, local daemon serverId) are taken first, without any lock, and an unlocked dry
 // admission decides whether it takes a turn. Only a lane that does takes the alternation lock: under it the admission is
 // decided again against the locked state, the task record is written, and only then is the launcher's admitted count
@@ -252,7 +259,7 @@ export function recordWorkerRoute(taskPath, { lane, route, reason, taskClass = n
     return result;
   };
   const candidate = replacement != null && ALTERNATION_SOURCES.includes(route?.source) &&
-    canonicalWorkerClass(taskClass ?? route.kind) === 'code' && validTarget(replacement.target) &&
+    canonicalWorkerClass(taskClass ?? route.kind) === 'code' && admissibleTarget(replacement) &&
     !Object.hasOwn(readTask(taskPath).routes ?? {}, lane ?? '') && switchMode(readLocalRouting(), Date.now()) === 'parity';
   if (!candidate) return write(undefined, null, false).entry;
   const pre = { chain: launcherChain(), localServer: localServerId() };
