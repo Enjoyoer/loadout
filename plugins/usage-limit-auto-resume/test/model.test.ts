@@ -762,24 +762,27 @@ describe("remote pace transport", () => {
 
     // Missing ssh binary, timeout, non-zero exit, and oversized stdout all fail closed.
     assert.deepEqual(await runRemotePaceSsh("peer-host", ["echo"], 5000, path.join(tmpdir(), "no-such-ssh-fixture")), { error: "remote-unavailable" });
-    const fakeDir = await mkdtemp(path.join(tmpdir(), "ulr-fake-ssh-"));
-    try {
-      const mkScript = async (name: string, body: string) => {
-        const script = path.join(fakeDir, name);
-        await writeFile(script, `#!/usr/bin/env node\n${body}\n`, { mode: 0o755 });
-        return script;
-      };
-      const slow = await mkScript("slow-ssh", "setTimeout(() => {}, 20000);");
-      assert.deepEqual(await runRemotePaceSsh("peer-host", ["cmd"], 250, slow), { error: "remote-timeout" });
-      const failExit = await mkScript("fail-ssh", `process.stdout.write(${JSON.stringify(JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, NOW)))}); process.exit(1);`);
-      assert.deepEqual(await runRemotePaceSsh("peer-host", ["cmd"], 5000, failExit), { error: "remote-unavailable" });
-      const bigOut = await mkScript("big-ssh", "process.stdout.write('a'.repeat(5000));");
-      assert.deepEqual(await runRemotePaceSsh("peer-host", ["cmd"], 5000, bigOut), { error: "remote-invalid" });
-      const ok = await mkScript("ok-ssh", `process.stdout.write(${JSON.stringify(JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, NOW)) + "\n")});`);
-      const got = await runRemotePaceSsh("peer-host", ["cmd"], 5000, ok);
-      assert.ok("stdout" in got && parseRemotePace(got.stdout, NOW, 120_000).pace.state === "on");
-    } finally {
-      await rm(fakeDir, { recursive: true, force: true });
+    // Directly executing a shebang fixture requires POSIX. Keep the parser and guard checks on all hosts.
+    if (process.platform !== "win32") {
+      const fakeDir = await mkdtemp(path.join(tmpdir(), "ulr-fake-ssh-"));
+      try {
+        const mkScript = async (name: string, body: string) => {
+          const script = path.join(fakeDir, name);
+          await writeFile(script, `#!/usr/bin/env node\n${body}\n`, { mode: 0o755 });
+          return script;
+        };
+        const slow = await mkScript("slow-ssh", "setTimeout(() => {}, 20000);");
+        assert.deepEqual(await runRemotePaceSsh("peer-host", ["cmd"], 250, slow), { error: "remote-timeout" });
+        const failExit = await mkScript("fail-ssh", `process.stdout.write(${JSON.stringify(JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, NOW)))}); process.exit(1);`);
+        assert.deepEqual(await runRemotePaceSsh("peer-host", ["cmd"], 5000, failExit), { error: "remote-unavailable" });
+        const bigOut = await mkScript("big-ssh", "process.stdout.write('a'.repeat(5000));");
+        assert.deepEqual(await runRemotePaceSsh("peer-host", ["cmd"], 5000, bigOut), { error: "remote-invalid" });
+        const ok = await mkScript("ok-ssh", `process.stdout.write(${JSON.stringify(JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, NOW)) + "\n")});`);
+        const got = await runRemotePaceSsh("peer-host", ["cmd"], 5000, ok);
+        assert.ok("stdout" in got && parseRemotePace(got.stdout, NOW, 120_000).pace.state === "on");
+      } finally {
+        await rm(fakeDir, { recursive: true, force: true });
+      }
     }
 
     // RemotePaceReader caches within TTL, skips cache when fresh (ttlMs=0), and fails closed when the runner throws.
