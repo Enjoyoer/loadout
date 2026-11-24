@@ -23,7 +23,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGINS = ROOT / "plugins"
-EXEMPT = re.compile(r"(^plugins/_shared/|/vendor/|/test/|\.test\.tsx?$|/scripts/dry-run\.ts$)")
+EXEMPT = re.compile(
+    r"(^plugins/_shared/|/vendor/|/test/|\.test\.tsx?$|/scripts/dry-run\.ts$"
+    r"|^plugins/usage-limit-auto-resume/dist/pace-read\.mjs$)"
+)
 PATTERN = re.compile(r"env\.PASEO_HOME|env\.PASEO_HOST|['\"`]\.paseo['\"`]|127\.0\.0\.1:6767")
 ALLOW = re.compile(r"daemon-env-ok:(?:\s*(?P<reason>[^;]*\S)\s*;\s*expires\s+(?P<date>\d{4}-\d{2}-\d{2}))?")
 MESSAGE = ("resolves the Paseo home or daemon address itself. Import paseoHome() or resolveDaemonTarget() "

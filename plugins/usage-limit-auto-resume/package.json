@@ -6,9 +6,10 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.ts",
-    "build": "esbuild index.server.ts --bundle --platform=node --format=cjs --target=node20 --outfile=node_modules/.cache/usage-limit-auto-resume/index.server.cjs --external:@getpaseo/plugin --external:@getpaseo/plugin/server --external:zod --log-level=warning && echo build ok",
-    "check": "npm run typecheck && npm test && npm run build"
+    "build:pace-read": "esbuild server/pace-read.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/pace-read.mjs --log-level=warning",
+    "test": "npm run build:pace-read && node --test test/*.test.ts",
+    "build": "esbuild index.server.ts --bundle --platform=node --format=cjs --target=node20 --outfile=node_modules/.cache/usage-limit-auto-resume/index.server.cjs --external:@getpaseo/plugin --external:@getpaseo/plugin/server --external:zod --log-level=warning && npm run build:pace-read && echo build ok",
+    "check": "npm run typecheck && npm run build && npm test"
   },
   "dependencies": {
     "@getpaseo/client": "0.15.3"

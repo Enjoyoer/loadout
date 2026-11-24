@@ -1576,7 +1576,7 @@ const REMOTE_PACE_ON = {
   paceFallback: true,
   pacePoolAccounts: [] as string[],
   paceRemoteHost: "pace-source-host",
-  paceRemoteCommand: ["/usr/local/bin/node", "~/plugins/usage-limit-auto-resume/server/pace-read.ts"],
+  paceRemoteCommand: ["/usr/local/bin/node", "~/plugins/usage-limit-auto-resume/dist/pace-read.mjs"],
   paceFallbackExcludedProjects: [] as string[],
   paceFallbackExcludedAgents: [] as string[],
 };

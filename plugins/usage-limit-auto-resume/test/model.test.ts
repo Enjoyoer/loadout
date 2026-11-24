@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { ConfigSchema, SETTINGS_VERSION } from "../server/config.ts";
+import { SETTINGS_VERSION } from "../server/config.ts";
 import { MAX_KEPT_ATTEMPTS, afterTransientFailure, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, endedTurnRows, isTransientErrorMessage, configFingerprint, continuationPrompt, failureSignature, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, shouldResume, transientDelaySeconds, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { quotaDecision, scheduleUsage } from "../server/model.ts";
-import { KNOWN_CONFIG_KEYS, readLocalHostPace, settingsPath } from "../server/pace-read.ts";
+import { readLocalHostPace, settingsPath } from "../server/pace-read.ts";
 import { agentPool, formatRemotePace, paceOf, parseRemotePace, poolQuota, QuotaReader, RemotePaceReader, remotePaceSshArgv, runPq, runRemotePaceSsh, type PqResult, type RemotePaceRunResult } from "../server/quota.ts";
 
 const NOW = Date.parse("2026-09-25T12:00:00.000Z");
@@ -583,12 +583,31 @@ describe("remote pace transport", () => {
   it("fails closed on missing, timed-out, stale, or invalid remote pace inputs", async () => {
     const emptyHome = await mkdtemp(path.join(tmpdir(), "ulr-pace-missing-"));
     try {
-      assert.equal((await readLocalHostPace({ home: emptyHome, clock: () => NOW })).state, "undecided");
-      // Remote-configured host refuses to chain-hop as a producer.
+      let pqCalls = 0;
+      const spyReader = new QuotaReader(async () => {
+        pqCalls++;
+        return { document: doc([weekly("acct-a", 80, 84)]) };
+      }, () => NOW);
+      assert.equal((await readLocalHostPace({ home: emptyHome, quota: spyReader, clock: () => NOW })).state, "undecided");
+      assert.equal(pqCalls, 0);
       const cfgPath = settingsPath(emptyHome);
       await mkdir(path.dirname(cfgPath), { recursive: true });
-      await writeFile(cfgPath, JSON.stringify({ version: SETTINGS_VERSION, values: { paceRemoteHost: "peer-host", paceRemoteCommand: ["node", "~/pace-read.ts"] } }), "utf8");
-      assert.deepEqual(await readLocalHostPace({ home: emptyHome, clock: () => NOW }), { schemaVersion: 1, state: "undecided", reason: "config-invalid", asOf: new Date(NOW).toISOString() });
+      // Remote-configured host refuses to chain-hop as a producer, and full ConfigSchema rejects invalid unrelated
+      // settings (such as paceFallback as a string), unknown keys, or out-of-range fields without calling pq.
+      for (const badValues of [
+        { paceRemoteHost: "peer-host", paceRemoteCommand: ["node", "~/plugins/usage-limit-auto-resume/dist/pace-read.mjs"] },
+        { quotaAware: true, pacePoolAccounts: ["acct-a"], paceFallback: "true" },
+        { quotaAware: true, pacePoolAccounts: ["acct-a"], baseDelaySeconds: 1 },
+        { quotaAware: true, pacePoolAccounts: ["acct-a"], unknownSetting: true },
+      ]) {
+        await writeFile(cfgPath, JSON.stringify({ version: SETTINGS_VERSION, values: badValues }), "utf8");
+        assert.deepEqual(await readLocalHostPace({ home: emptyHome, quota: spyReader, clock: () => NOW }), { schemaVersion: 1, state: "undecided", reason: "config-invalid", asOf: new Date(NOW).toISOString() });
+        assert.equal(pqCalls, 0);
+      }
+      // Valid fixture with unrelated settings passes full ConfigSchema and reuses the same QuotaReader.
+      await writeFile(cfgPath, JSON.stringify({ version: SETTINGS_VERSION, values: { armed: true, paceFallback: true, quotaAware: true, pacePoolAccounts: ["acct-a"] } }), "utf8");
+      assert.deepEqual(await readLocalHostPace({ home: emptyHome, quota: spyReader, clock: () => NOW }), { schemaVersion: 1, state: "off", reason: "behind-pace", asOf: new Date(NOW).toISOString() });
+      assert.equal(pqCalls, 1);
     } finally {
       await rm(emptyHome, { recursive: true, force: true });
     }
@@ -628,39 +647,55 @@ describe("remote pace transport", () => {
       assert.deepEqual(parseRemotePace(bad, NOW, 120_000).pace, { state: "undecided", reason: "remote-invalid" }, bad.slice(0, 80));
     }
 
-    // KNOWN_CONFIG_KEYS in zero-dep pace-read.ts matches ConfigSchema.shape exactly.
-    assert.deepEqual([...KNOWN_CONFIG_KEYS].sort(), Object.keys(ConfigSchema.shape).sort());
-
     // SSH argv enforces BatchMode, StrictHostKeyChecking=yes, ControlMaster=no, ControlPath=none, no forwarding/TTY, --, and safe ~/ quoting.
-    const argv = remotePaceSshArgv("peer-host", ["node", "~/plugins/usage-limit-auto-resume/server/pace-read.ts"], 10_000);
+    const argv = remotePaceSshArgv("peer-host", ["node", "~/plugins/usage-limit-auto-resume/dist/pace-read.mjs"], 10_000);
     for (const opt of ["BatchMode=yes", "StrictHostKeyChecking=yes", "ControlMaster=no", "ControlPath=none", "ClearAllForwardings=yes", "ForwardAgent=no", "ForwardX11=no", "RequestTTY=no"]) {
       assert.ok(argv.includes(opt), `missing ssh option ${opt}`);
     }
-    assert.deepEqual(argv.slice(-3), ["--", "peer-host", "'node' ~/'plugins/usage-limit-auto-resume/server/pace-read.ts'"]);
+    assert.deepEqual(argv.slice(-3), ["--", "peer-host", "'node' ~/'plugins/usage-limit-auto-resume/dist/pace-read.mjs'"]);
 
-    // Producer runs in an installed layout (no node_modules) under a bare env with absolute Node and local pq.
+    // Bundled producer artifact (dist/pace-read.mjs) is built and runs with absolute Node in an installed bare-env
+    // layout with no node_modules: rejects wrong-type unrelated settings (paceFallback string) without invoking pq,
+    // and reads valid host settings via QuotaReader.
+    const builtProducer = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "pace-read.mjs");
+    await access(builtProducer);
     const installed = await mkdtemp(path.join(tmpdir(), "ulr-bare-installed-"));
     try {
-      const srcServer = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "server");
-      const dstServer = path.join(installed, "plugin", "server");
-      await mkdir(path.join(dstServer, "vendor"), { recursive: true });
-      await copyFile(path.join(srcServer, "pace-read.ts"), path.join(dstServer, "pace-read.ts"));
-      await copyFile(path.join(srcServer, "quota.ts"), path.join(dstServer, "quota.ts"));
-      await copyFile(path.join(srcServer, "vendor", "daemon-target.ts"), path.join(dstServer, "vendor", "daemon-target.ts"));
+      const dstDist = path.join(installed, "plugin", "dist");
+      const dstProducer = path.join(dstDist, "pace-read.mjs");
+      await mkdir(dstDist, { recursive: true });
+      await copyFile(builtProducer, dstProducer);
+      await assert.rejects(() => access(path.join(installed, "plugin", "node_modules")));
       const bareHome = path.join(installed, "home");
-      await mkdir(path.join(bareHome, ".paseo", "plugin-settings", "usage-limit-auto-resume"), { recursive: true });
+      const bareCfg = path.join(bareHome, ".paseo", "plugin-settings", "usage-limit-auto-resume", "auto-resume-config.json");
+      await mkdir(path.dirname(bareCfg), { recursive: true });
       await mkdir(path.join(bareHome, ".local", "bin"), { recursive: true });
-      await writeFile(path.join(bareHome, ".paseo", "plugin-settings", "usage-limit-auto-resume", "auto-resume-config.json"),
-        JSON.stringify({ version: SETTINGS_VERSION, values: { quotaAware: true, pacePoolAccounts: ["acct-a"] } }), "utf8");
-      const fakePq = path.join(bareHome, ".local", "bin", "pq");
-      await writeFile(fakePq, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({schemaVersion:1,snapshotStale:false,accounts:[{provider:"claude",label:"acct-a",fresh:true,windows:[{id:"seven_day",fresh:true,usedPct:80,leftPct:20,resetInSeconds:84*3600}]}]}));\n`, { mode: 0o755 });
-      const { stdout, stderr } = await promisify(execFile)(process.execPath, [path.join(dstServer, "pace-read.ts")], {
-        env: { HOME: bareHome, PATH: "/usr/bin:/bin" },
-        timeout: 10_000,
-      });
-      assert.equal(stderr, "");
-      const parsed = parseRemotePace(stdout, Date.now(), 120_000);
-      assert.deepEqual(parsed.pace, { state: "off", reason: "behind-pace" });
+      const pqCalledMarker = path.join(installed, "pq-called");
+      const fakePq = path.join(bareHome, ".local", "bin", process.platform === "win32" ? "pq.mjs" : "pq");
+      const pqBody = `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(pqCalledMarker)}, "1");\nprocess.stdout.write(JSON.stringify({schemaVersion:1,snapshotStale:false,accounts:[{provider:"claude",label:"acct-a",fresh:true,windows:[{id:"seven_day",fresh:true,usedPct:80,leftPct:20,resetInSeconds:84*3600}]}]}));\n`;
+      await writeFile(fakePq, process.platform === "win32" ? pqBody : `#!${process.execPath}\n${pqBody}`, { mode: 0o755 });
+      if (process.platform === "win32") {
+        const routingPath = path.join(bareHome, ".config", "opc", "routing.json");
+        await mkdir(path.dirname(routingPath), { recursive: true });
+        await writeFile(routingPath, JSON.stringify({ pq: [process.execPath, fakePq] }), "utf8");
+      }
+      const bareEnv: NodeJS.ProcessEnv = process.platform === "win32"
+        ? { HOME: bareHome, USERPROFILE: bareHome, PATH: process.env.PATH ?? "", ...(process.env.SYSTEMROOT ? { SYSTEMROOT: process.env.SYSTEMROOT } : {}) }
+        : { HOME: bareHome, PATH: "/usr/bin:/bin" };
+
+      // Regression: known unrelated setting of wrong type (paceFallback string) returns undecided/config-invalid and never calls pq.
+      await writeFile(bareCfg, JSON.stringify({ version: SETTINGS_VERSION, values: { paceFallback: "true", quotaAware: true, pacePoolAccounts: ["acct-a"] } }), "utf8");
+      const invalidRun = await promisify(execFile)(process.execPath, [dstProducer], { env: bareEnv, timeout: 10_000 });
+      assert.equal(invalidRun.stderr, "");
+      assert.deepEqual(parseRemotePace(invalidRun.stdout, Date.now(), 120_000).pace, { state: "undecided", reason: "config-invalid" });
+      await assert.rejects(() => access(pqCalledMarker), "quota subprocess must not run on invalid settings");
+
+      // Valid settings reuse QuotaReader and return the expected tri-state pace verdict.
+      await writeFile(bareCfg, JSON.stringify({ version: SETTINGS_VERSION, values: { paceFallback: true, quotaAware: true, pacePoolAccounts: ["acct-a"] } }), "utf8");
+      const validRun = await promisify(execFile)(process.execPath, [dstProducer], { env: bareEnv, timeout: 10_000 });
+      assert.equal(validRun.stderr, "");
+      assert.deepEqual(parseRemotePace(validRun.stdout, Date.now(), 120_000).pace, { state: "off", reason: "behind-pace" });
+      await access(pqCalledMarker);
     } finally {
       await rm(installed, { recursive: true, force: true });
     }
