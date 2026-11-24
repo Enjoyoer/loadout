@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "35b50abaff148fd6ee59cfe86e3bc122a2ae8523",
+  "source_commit": "5c6bd66e449c5a79a37c4d42b7038dfa7889f843",
   "skill_count": 25,
   "file_count": 152,
   "files": [
@@ -1797,7 +1797,7 @@
       "path": "plugins/usage-limit-auto-resume/server/pace-read.ts",
       "plugin": "usage-limit-auto-resume",
       "bytes": 5524,
-      "sha256": "2470cdb2c70a90e213c30ac34c1ccb25ff72623375a4bad51b8c0e48b767b73c"
+      "sha256": "3159273d65d9a5d24418f3b00bce7196ae058c8709344dc165b54e34402003ed"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/quota.ts",
@@ -1868,8 +1868,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/test/model.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 56249,
-      "sha256": "0b2614c603dc2583f515881c98e8cdf58d38b720b5922c226440cf175bc217a3"
+      "bytes": 58041,
+      "sha256": "577c38460f2220c49963407637e3d7c0473234eeba2267aad00a29cf5f8dad32"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/pm-fallback.test.ts",
