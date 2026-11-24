@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "d8655def587141b1ac49ec853f3633e0070cec82",
+  "source_commit": "f64c02af7471eff2b9d491d04b6c46ca17f9e80e",
   "skill_count": 25,
   "file_count": 151,
   "files": [
@@ -499,8 +499,8 @@
       "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/host-idle.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 13784,
-      "sha256": "7d7e0cb1e100e254a26c2e20640ee3d3ac16e4f48c393c2a12a80532b89b3e6f"
+      "bytes": 14098,
+      "sha256": "46fd91571fa9f12f16b56242a50ad55aa167233e3b78988f4c47e7464cdbfdad"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/interactive-idle.ps1",
@@ -513,8 +513,8 @@
       "path": "skills/orchestration/personal-skills/scripts/auto-update/auto-update.mjs",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 75728,
-      "sha256": "400a3f5a0b15800e2fd95ad223aff714688295c3f5b71d143b081aa493edb325"
+      "bytes": 77064,
+      "sha256": "00321393c71c363675f40c175e7294632f0f14f2b1a1ad6f6e3d36a98f003609"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/com.loadout.auto-update.plist",
@@ -555,15 +555,15 @@
       "path": "skills/orchestration/personal-skills/scripts/auto_update_relay.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 7697,
-      "sha256": "09a4241ea8966edaaa87f683f157da9f3624cdb0e5afc40630dcae49833b59c4"
+      "bytes": 7988,
+      "sha256": "0264bded879cf3801bf089074d6a0a4b7cc240f40d09956d767c99423179cee1"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/auto_update_relay_remote.js",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 8968,
-      "sha256": "5353a5b69e2e7615f0aaf3c698bf4e61ea6738c0bbe68978bae55cba46fbb24a"
+      "bytes": 8998,
+      "sha256": "6d1545162bb90a84d8c64646af3227a9e43356f8104263d782e3d075df42a541"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/client_config.py",
