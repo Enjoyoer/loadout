@@ -497,9 +497,11 @@ function runArgv(argv, timeoutSeconds, log) {
     const tail = (s) => (s || "").slice(-4000);
     log(`$ ${argv.map((a) => JSON.stringify(a)).join(" ")}\nexit=${done.status} signal=${done.signal || ""}${done.error ? ` error=${done.error.code}` : ""}\n${tail(done.stdout)}${tail(done.stderr)}`);
   }
-  // Killed (its timeout, a signal, output over the limit) rather than exited: whatever it started may still run.
-  // A step that never started (no such file, no permission) is not uncertain.
-  const uncertain = done.status === null && !(done.error && ["ENOENT", "EACCES", "EPERM"].includes(done.error.code));
+  // Killed (its timeout, a signal, output over the limit) rather than exited, or exited while something it started
+  // still held its output open until the timeout: whatever it started may still run. A step that never started (no
+  // such file, no permission) is not uncertain.
+  const spawnFailed = done.error && ["ENOENT", "EACCES", "EPERM"].includes(done.error.code);
+  const uncertain = !spawnFailed && (done.status === null || Boolean(done.error));
   return { ok: done.status === 0 && !done.error, stdout: done.stdout || "", status: done.status, error: done.error && done.error.code, uncertain };
 }
 
@@ -1114,7 +1116,7 @@ function cmdTxn(dir) {
     if (!setStatus(plan, "applying")) { log("attempt ended before apply; nothing changed"); return; }
     mutated = true;
     const ar = runArgv(plan.apply, plan.apply_timeout, log);
-    if (ar.status === NOT_NOW && claimDecision(dir, "not-now")) { mutated = false; return notNow("apply"); }
+    if (ar.status === NOT_NOW && !ar.uncertain && claimDecision(dir, "not-now")) { mutated = false; return notNow("apply"); }
     if (ar.uncertain) {
       uncertain = true;
       // Killed, not finished: what it started may still be changing the tool, and only the step's whole process group

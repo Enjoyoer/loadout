@@ -662,21 +662,33 @@ class AutoUpdate(unittest.TestCase):
 
     def test_apply_that_did_not_finish_is_held_and_never_restored(self):
         installed = self.fx / "tool-a.installed"
-        # apply is killed at its 2 s timeout, and the child it started changes the tool 4 s in
-        self.behavior["components"]["tool-a"] = {"apply_sleep": 10, "apply_late_write": [[str(installed), "1.3.0\n", 4]]}
-        self.registry["components"] = [dict(self.row("tool-a", 1), timeouts={"apply": 2})]
-        self.run_and_wait()
-        a = self.attempts()["h1/tool-a@1.3.0"]
-        self.assertEqual(a["status"], "intervention-required")
-        self.assertNotIn("tool-a rollback", (self.fx / "calls.log").read_text(), "nothing restored while the child may run")
-        self.assertEqual(len(self.sent()), 1)
-        self.assertIn("nothing was restored, backups kept, fix by hand", self.sent()[0])
-        self.assertTrue((self.state / "txn" / a["txn"] / "plan.json").exists())
-        time.sleep(4)
-        self.run_and_wait()
-        self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "intervention-required", "held, not retried")
-        self.assertEqual(len(self.sent()), 1)
-        self.assertNotIn("tool-a rollback", (self.fx / "calls.log").read_text())
+        cases = {  # apply has a 2 s timeout; the child it started changes the tool 4 s in
+            "killed at its timeout": {"apply_sleep": 10, "apply_late_write": [[str(installed), "1.3.0\n", 4]]},
+            "exited, child kept its output": {"apply_exit": 1, "apply_late_write": [[str(installed), "1.3.0\n", 4, True]]},
+            "said not now, child kept its output": {"apply_exit": 75, "apply_late_write": [[str(installed), "1.3.0\n", 4, True]]},
+        }
+        if WINDOWS:  # a child there does not hold the step's output open, so a clean exit is all the runner sees
+            cases = {k: v for k, v in cases.items() if "kept its output" not in k}
+        for name, behavior in cases.items():
+            with self.subTest(name):
+                (self.state / "state.json").unlink(missing_ok=True)
+                self.sent_reset()
+                (self.fx / "calls.log").unlink(missing_ok=True)
+                installed.write_text("1.2.0\n")
+                self.behavior["components"]["tool-a"] = behavior
+                self.registry["components"] = [dict(self.row("tool-a", 1), timeouts={"apply": 2})]
+                self.run_and_wait()
+                a = self.attempts()["h1/tool-a@1.3.0"]
+                self.assertEqual(a["status"], "intervention-required")
+                self.assertNotIn("tool-a rollback", (self.fx / "calls.log").read_text(), "nothing restored while the child may run")
+                self.assertEqual(len(self.sent()), 1)
+                self.assertIn("nothing was restored, backups kept, fix by hand", self.sent()[0])
+                self.assertTrue((self.state / "txn" / a["txn"] / "plan.json").exists())
+                time.sleep(4)
+                self.run_and_wait()
+                self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "intervention-required", "held, not retried")
+                self.assertEqual(len(self.sent()), 1)
+                self.assertNotIn("tool-a rollback", (self.fx / "calls.log").read_text())
 
     @unittest.skipIf(WINDOWS, "the rollback watchdog is POSIX only")
     def test_apply_that_did_not_finish_is_left_to_the_watchdog(self):

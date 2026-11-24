@@ -34,9 +34,10 @@ if (step === "stage" && b.stage_artifact && rest[1]) fs.writeFileSync(path.join(
 for (const [from, to] of b[`${step}_copy`] || []) fs.copyFileSync(from, to);
 for (const [to, text] of b[`${step}_write`] || []) fs.writeFileSync(to, text);
 // A child the step leaves running in its process group, which changes the tool later (a slow installer, say).
-for (const [to, text, after] of b[`${step}_late_write`] || []) {
+// With keep_output it also keeps the step's output open, so the step's exit is not the end of its work.
+for (const [to, text, after, keepOutput] of b[`${step}_late_write`] || []) {
   spawn(process.execPath, ["-e", `setTimeout(() => require("fs").writeFileSync(${JSON.stringify(to)}, ${JSON.stringify(text)}), ${after * 1000})`],
-        { stdio: "ignore" }).unref();
+        { stdio: keepOutput ? ["ignore", "inherit", "inherit"] : "ignore" }).unref();
 }
 if (b[`${step}_sleep`]) sleep(b[`${step}_sleep`]);
 if (b[`${step}_probes`]) { // the host gets busy while this step runs
