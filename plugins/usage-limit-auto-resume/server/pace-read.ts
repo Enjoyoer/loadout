@@ -1,19 +1,52 @@
 // Host-local tri-state pace CLI for remote ULR callers over existing authenticated SSH.
 // Bundled by `npm run build` to `dist/pace-read.mjs` (self-contained ESM with no runtime node_modules dependency)
-// so it runs directly with absolute Node from an installed plugin layout under a bare environment. Validates this
-// host's own ULR settings (auto-resume-config.json) with the exact full ConfigSchema, reuses QuotaReader.pace /
-// paceOf, and prints exactly one strictly validated JSON line ({schemaVersion, state, reason, asOf}) to stdout. Never
-// prints raw pq, account labels, quota/reset data, or error details.
+// so it runs directly with absolute Node from an installed plugin layout under a bare environment. Requires one
+// explicit absolute path to the host's auto-resume-config.json as argv[2] (never derives a daemon home), validates
+// owner/regular-file/symlink/size safety and the exact full ConfigSchema, reuses QuotaReader.pace / paceOf, and prints
+// exactly one strictly validated JSON line ({schemaVersion, state, reason, asOf}) to stdout. Never prints file
+// contents, raw pq, account labels, quota/reset data, or error details.
 import { realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConfigSchema, SETTINGS_ID, SETTINGS_VERSION, type Config } from "./config.ts";
 import { formatRemotePace, QuotaReader, repeatsKey, type RemotePacePayload } from "./quota.ts";
-import { paseoHome } from "./vendor/daemon-target.ts";
 
-export function settingsPath(home = paseoHome()): string {
-  return path.join(home, "plugin-settings", "usage-limit-auto-resume", `${SETTINGS_ID}.json`);
+const MAX_SETTINGS_BYTES = 64 * 1024;
+const MAX_PATH_CHARS = 4096;
+const SETTINGS_FILENAME = `${SETTINGS_ID}.json`;
+
+type SafeSettingsRead = { ok: true; text: string } | { ok: false };
+
+async function readSafeSettingsFile(filePath: string): Promise<SafeSettingsRead> {
+  const invalid: SafeSettingsRead = { ok: false };
+  if (!filePath || filePath.length > MAX_PATH_CHARS || /[\0\r\n]/.test(filePath) || !path.isAbsolute(filePath)) {
+    return invalid;
+  }
+  if (path.basename(filePath) !== SETTINGS_FILENAME) return invalid;
+  const parentDir = path.dirname(filePath);
+  try {
+    const [dirStat, fileStat] = await Promise.all([lstat(parentDir), lstat(filePath)]);
+    if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) return invalid;
+    if (!fileStat.isFile() || fileStat.isSymbolicLink()) return invalid;
+    if (fileStat.size <= 0 || fileStat.size > MAX_SETTINGS_BYTES) return invalid;
+    if (typeof process.getuid === "function") {
+      const uid = process.getuid();
+      if (dirStat.uid !== uid || (dirStat.mode & 0o002) !== 0) return invalid;
+      if (fileStat.uid !== uid || (fileStat.mode & 0o002) !== 0) return invalid;
+    }
+    const [realDir, realFile] = await Promise.all([realpath(parentDir), realpath(filePath)]);
+    if (realFile !== path.join(realDir, SETTINGS_FILENAME)) return invalid;
+    const raw = await readFile(realFile);
+    if (raw.byteLength <= 0 || raw.byteLength > MAX_SETTINGS_BYTES) return invalid;
+    const afterStat = await lstat(filePath);
+    if (!afterStat.isFile() || afterStat.isSymbolicLink() || afterStat.ino !== fileStat.ino || afterStat.dev !== fileStat.dev) {
+      return invalid;
+    }
+    return { ok: true, text: raw.toString("utf8") };
+  } catch {
+    return invalid;
+  }
 }
 
 type ParsedLocalPaceConfig = { ok: true; config: Config } | { ok: false };
@@ -38,24 +71,21 @@ function parseLocalPaceConfig(text: string): ParsedLocalPaceConfig {
 }
 
 /**
- * Computes this host's tri-state pace verdict from its local ULR settings file and QuotaReader.pace.
- * Missing, unreadable, invalid, or remote-configured settings fail closed as undecided.
+ * Computes this host's tri-state pace verdict from an explicit absolute ULR settings file and QuotaReader.pace.
+ * Missing, unsafe, unreadable, invalid, or remote-configured settings fail closed as undecided.
  */
 export async function readLocalHostPace(options: {
-  home?: string;
+  settingsFile?: string;
   quota?: QuotaReader;
   clock?: () => number;
 } = {}): Promise<RemotePacePayload> {
   const clock = options.clock ?? (() => Date.now());
   const quota = options.quota ?? new QuotaReader(undefined, clock);
   const fail = (reason: string) => formatRemotePace({ state: "undecided", reason }, clock());
-  let text: string;
-  try {
-    text = await readFile(settingsPath(options.home), "utf8");
-  } catch {
-    return fail("config-invalid");
-  }
-  const parsed = parseLocalPaceConfig(text);
+  if (!options.settingsFile) return fail("config-invalid");
+  const read = await readSafeSettingsFile(options.settingsFile);
+  if (!read.ok) return fail("config-invalid");
+  const parsed = parseLocalPaceConfig(read.text);
   if (!parsed.ok) return fail("config-invalid");
   const { config } = parsed;
   if (!config.quotaAware) return fail("quotaAware-off");
@@ -74,9 +104,9 @@ function isDirectEntry(): boolean {
 }
 
 async function main(): Promise<void> {
-  const payload = process.argv.length > 2
+  const payload = process.argv.length !== 3
     ? formatRemotePace({ state: "undecided", reason: "config-invalid" })
-    : await readLocalHostPace().catch(() => formatRemotePace({ state: "undecided", reason: "pq-unavailable" }));
+    : await readLocalHostPace({ settingsFile: process.argv[2] }).catch(() => formatRemotePace({ state: "undecided", reason: "pq-unavailable" }));
   process.stdout.write(`${JSON.stringify(payload)}\n`);
 }
 
