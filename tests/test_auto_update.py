@@ -660,6 +660,67 @@ class AutoUpdate(unittest.TestCase):
         self.assertEqual(self.version_of("tool-a"), "1.2.0", "the step's child was stopped with the group, not left to write")
         self.assertEqual(len(self.sent()), 1)
 
+    def test_apply_that_did_not_finish_is_held_and_never_restored(self):
+        installed = self.fx / "tool-a.installed"
+        # apply is killed at its 2 s timeout, and the child it started changes the tool 4 s in
+        self.behavior["components"]["tool-a"] = {"apply_sleep": 10, "apply_late_write": [[str(installed), "1.3.0\n", 4]]}
+        self.registry["components"] = [dict(self.row("tool-a", 1), timeouts={"apply": 2})]
+        self.run_and_wait()
+        a = self.attempts()["h1/tool-a@1.3.0"]
+        self.assertEqual(a["status"], "intervention-required")
+        self.assertNotIn("tool-a rollback", (self.fx / "calls.log").read_text(), "nothing restored while the child may run")
+        self.assertEqual(len(self.sent()), 1)
+        self.assertIn("nothing was restored, backups kept, fix by hand", self.sent()[0])
+        self.assertTrue((self.state / "txn" / a["txn"] / "plan.json").exists())
+        time.sleep(4)
+        self.run_and_wait()
+        self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "intervention-required", "held, not retried")
+        self.assertEqual(len(self.sent()), 1)
+        self.assertNotIn("tool-a rollback", (self.fx / "calls.log").read_text())
+
+    @unittest.skipIf(WINDOWS, "the rollback watchdog is POSIX only")
+    def test_apply_that_did_not_finish_is_left_to_the_watchdog(self):
+        installed = self.fx / "tool-a.installed"
+        # apply is killed at its 5 s timeout; its child would change the tool 40 s in, after the 30 s watchdog
+        self.behavior["components"]["tool-a"] = {"apply_sleep": 20, "apply_late_write": [[str(installed), "1.3.0\n", 40]]}
+        self.registry["components"] = [self.row("tool-a", 2)]
+        started = time.time()
+        self.run_and_wait()
+        self.wait_idle(timeout=90)
+        self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "rolled-back-by-watchdog")
+        self.assertIn("leaving the decision to the watchdog", next(self.state.glob("txn/*/log.txt")).read_text())
+        time.sleep(max(0, started + 45 - time.time()))
+        self.assertEqual(self.version_of("tool-a"), "1.2.0", "the child was stopped with the group before the restore")
+        self.assertEqual(len(self.sent()), 1)
+
+    @unittest.skipIf(WINDOWS, "the rollback watchdog is POSIX only")
+    def test_watchdog_outcome_reaches_the_pm_once_after_the_registry_is_readable_again(self):
+        self.behavior["components"]["tool-a"] = {"health_sleep": 3}
+        self.registry["components"] = [self.row("tool-a", 2)]
+        self.assertEqual(self.cli("run").returncode, 0)
+        a = self.wait_status("health")
+        reg, sw = self.fleet / "auto-update" / "registry.json", self.fleet / "auto-update" / "switch.json"
+        reg.write_text("{not json")
+        sw.write_text("{not json")
+        os.kill(a["txn_proc"]["pid"], signal.SIGSTOP)
+        self.wait_idle(timeout=90)
+        self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "rolled-back-by-watchdog")
+        self.assertEqual(self.version_of("tool-a"), "1.2.0")
+        self.assertEqual(self.sent(), [], "nobody to send to yet")
+        pending = json.loads((self.state / "state.json").read_text())["alerts"]["attempt:h1/tool-a@1.3.0"]
+        self.assertFalse(pending["delivered"])
+        self.assertIn("watchdog rolled back to 1.2.0", pending["line"])
+        tick = [NODE, str(RUNNER), "run", "--host", "h1", "--now", NOW]
+        subprocess.run(tick, env=self.env, capture_output=True, text=True, timeout=60)  # registry still unreadable
+        self.assertEqual(self.sent(), [])
+        self.write(reg, self.registry)  # readable again; the switch still is not
+        for _ in range(2):
+            done = subprocess.run(tick, env=self.env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.wait_idle()
+        self.assertEqual(self.sent(), [pending["line"]], "delivered once")
+        self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "rolled-back-by-watchdog")
+
     @unittest.skipIf(WINDOWS, "a symbolic link to the runner")
     def test_runner_started_by_a_link_keeps_its_lock(self):
         link = self.tmp / "linked" / "auto-update.mjs"

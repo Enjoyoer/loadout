@@ -497,7 +497,10 @@ function runArgv(argv, timeoutSeconds, log) {
     const tail = (s) => (s || "").slice(-4000);
     log(`$ ${argv.map((a) => JSON.stringify(a)).join(" ")}\nexit=${done.status} signal=${done.signal || ""}${done.error ? ` error=${done.error.code}` : ""}\n${tail(done.stdout)}${tail(done.stderr)}`);
   }
-  return { ok: done.status === 0 && !done.error, stdout: done.stdout || "", status: done.status, error: done.error && done.error.code };
+  // Killed (its timeout, a signal, output over the limit) rather than exited: whatever it started may still run.
+  // A step that never started (no such file, no permission) is not uncertain.
+  const uncertain = done.status === null && !(done.error && ["ENOENT", "EACCES", "EPERM"].includes(done.error.code));
+  return { ok: done.status === 0 && !done.error, stdout: done.stdout || "", status: done.status, error: done.error && done.error.code, uncertain };
 }
 
 function installedVersion(adapter, vars, timeouts) {
@@ -719,15 +722,18 @@ function sendLine(registry, line) {
   return runArgv([...base, "send", "--no-wait", ...host, agents[0].id, line], 60).ok;
 }
 
-// Record an alert once per key and deliver it; an undelivered alert is retried once on the next scheduled run.
+// Record an alert once per key and deliver it; an undelivered alert is retried on each later run until delivered. It is
+// recorded even with no readable registry (nobody to send it to yet), and the next run with one delivers it. One
+// line of plain text, at most 400 characters.
 function alert(dir, registry, key, line) {
+  line = String(line).replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 400);
   const fresh = updateState(dir, (s) => {
     const a = s.alerts[key];
     if (a && a.line === line) return false;
     s.alerts[key] = { line, at: iso(Date.now()), delivered: false };
     return true;
   });
-  if (fresh) deliver(dir, registry, key);
+  if (fresh && registry) deliver(dir, registry, key);
 }
 
 function deliver(dir, registry, key) {
@@ -1058,6 +1064,7 @@ function cmdTxn(dir) {
   let registry = null;
   try { registry = validateRegistry(JSON.parse(fs.readFileSync(path.join(plan.fleet, "auto-update", "registry.json"), "utf8"))); } catch {}
   let mutated = false; // the apply step has started: from here on an error needs a verified rollback
+  let uncertain = false; // the apply step was killed, not finished: nothing may be restored while its children may run
   const me = procRecord(process.pid, [SELF, "txn", dir]);
   const notNow = (step) => {
     updateState(plan.state, (s) => { const a = s.attempts[plan.key]; if (a && a.txn === plan.id) delete s.attempts[plan.key]; });
@@ -1068,7 +1075,7 @@ function cmdTxn(dir) {
     if (!setStatus(plan, status, { finished_at: iso(Date.now()), reason: why })) { log(`not recorded (${status}): the attempt had already ended`); return; }
     writeReceipt(plan, "fail");
     if (!mutated) pruneArtifacts(dir);
-    if (registry) alert(plan.state, registry, `attempt:${plan.key}`, `auto-update HOLD ${plan.key}: ${why}; held, no retry (txn ${plan.id})`);
+    alert(plan.state, registry, `attempt:${plan.key}`, `auto-update HOLD ${plan.key}: ${why}; held, no retry (txn ${plan.id})`);
   };
   try {
     if (!setStatus(plan, "staging", { txn_proc: me })) { log("attempt is no longer this transaction's; nothing done"); return; }
@@ -1108,6 +1115,15 @@ function cmdTxn(dir) {
     mutated = true;
     const ar = runArgv(plan.apply, plan.apply_timeout, log);
     if (ar.status === NOT_NOW && claimDecision(dir, "not-now")) { mutated = false; return notNow("apply"); }
+    if (ar.uncertain) {
+      uncertain = true;
+      // Killed, not finished: what it started may still be changing the tool, and only the step's whole process group
+      // stopping proves otherwise. A watchdog stops that group and sees it gone before it restores; without one the
+      // attempt is held for a person, backups kept, and nothing is restored.
+      if (plan.watchdog_seconds) { log(`apply did not finish (${ar.error || "killed"}); leaving the decision to the watchdog`); return; }
+      if (!claimDecision(dir, "txn-hold")) { log("watchdog decided first; leaving the attempt to it"); return; }
+      return fail("intervention-required", `apply did not finish (${ar.error || "killed"}) and what it started may still be running; nothing was restored, backups kept, fix by hand`);
+    }
     let healthy = ar.ok;
     if (healthy) {
       setStatus(plan, "health");
@@ -1132,6 +1148,8 @@ function cmdTxn(dir) {
     try {
       if (!mutated) {
         fail("failed", `transaction error before apply, nothing changed: ${String(e.message).slice(0, 120)}`);
+      } else if (uncertain) {
+        if (!plan.watchdog_seconds && claimDecision(dir, "txn-hold")) fail("intervention-required", "transaction error after an apply that did not finish; nothing was restored, backups kept, fix by hand");
       } else if (claimDecision(dir, "txn-rollback")) {
         // An error once apply has started: restore the previous version before anything else, then record it.
         const rolled = rollbackVerified(plan, log);
@@ -1176,7 +1194,8 @@ function cmdWatchdog(dir) {
     try { registry = validateRegistry(JSON.parse(fs.readFileSync(path.join(plan.fleet, "auto-update", "registry.json"), "utf8"))); } catch {}
     notifyFrom = plan.host;
     const a = loadState(plan.state).attempts[plan.key];
-    const say = (line) => { if (registry) alert(plan.state, registry, `attempt:${plan.key}`, `auto-update HOLD ${plan.key}: ${line} (txn ${plan.id})`); };
+    // Recorded even when the registry cannot be read now; the next run that can read it delivers the line once.
+    const say = (line) => alert(plan.state, registry, `attempt:${plan.key}`, `auto-update HOLD ${plan.key}: ${line} (txn ${plan.id})`);
     if (!a || !a.txn_proc || !stopTransaction(a.txn_proc, log)) {
       if (setStatus(plan, "rollback-failed", { finished_at: iso(Date.now()), reason: "transaction could not be stopped" }, "watchdog")) {
         say(`not confirmed within ${plan.watchdog_seconds}s and the transaction could not be stopped; nothing was rolled back, fix by hand`);
@@ -1197,7 +1216,7 @@ function cmdWatchdog(dir) {
 // result: a pass only after a confirmed apply, a fail only after a held failure. A version found installed (by hand,
 // or by discovery) never yields a receipt, and an interrupted attempt yields none either.
 const PASS_STATUS = ["applied"];
-const FAIL_STATUS = ["failed", "rolled-back", "rollback-failed", "rolled-back-by-watchdog"];
+const FAIL_STATUS = ["failed", "rolled-back", "rollback-failed", "rolled-back-by-watchdog", "intervention-required"];
 function fromCanaryTxn(r, st) {
   const a = st.attempts[attemptKey(r.host, r.component, r.version)];
   if (!a || a.txn !== r.txn) return "receipt not from a completed canary transaction here";
