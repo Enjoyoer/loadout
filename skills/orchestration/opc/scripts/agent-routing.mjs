@@ -264,11 +264,19 @@ function materializeRule(rule, catalog, surface) {
 export const REPLACEMENT_RUNTIME = Object.freeze({ provider: 'agy-opc', extends: 'acp', model: 'gemini-4-neon-high',
   effort: 'high', fastMode: false, mode: 'auto' });
 export const REPLACEMENT_REASON = 'code replacement for Opus high, Fast off while Claude is off pace: Neon high on the verified ACP runtime';
+// Decision 359: while the switch says not forced (a valid fresh false), new eligible code lanes of one launcher alternate
+// Opus high and Neon high, one each. A Neon turn records the same runtime and receipt as the replacement, with this
+// reason; it claims nothing about quota.
+export const PARITY_REASON = 'code equal default, Neon turn of the per-launcher Opus and Neon alternation: Neon high on the verified ACP runtime';
+const REPLACEMENT_REASONS = Object.freeze([REPLACEMENT_REASON, PARITY_REASON]);
 const RECEIPT_KEYS = ['provider', 'mode', 'target', 'task', 'lane', 'placement'];
 // The off-pace backup when Neon cannot launch (owner decisions 310 and 316, medium per owner 2026-11-21): Pi Sol medium, Fast off, the one GPT route a
 // code lane may run, and only as a lane recorded with this source and reason while off pace (route.mjs).
 export const PACE_BACKUP_RUNTIME = Object.freeze({ model: 'fleet/gpt-6.2-sol', label: 'Sol', effort: 'medium', fastMode: false });
 export const PACE_BACKUP_REASON = 'code backup while Claude is off pace and Neon cannot launch: Sol medium, Fast off';
+// The same backup taken on a decision 359 Neon turn, only with fresh evidence that Neon cannot launch.
+export const PARITY_BACKUP_REASON = 'code backup on a Neon turn of the per-launcher alternation when Neon cannot launch: Sol medium, Fast off';
+const BACKUP_REASONS = Object.freeze([PACE_BACKUP_REASON, PARITY_BACKUP_REASON]);
 const BACKUP_RECEIPT_KEYS = ['task', 'lane', 'placement'];
 // Whether already-parsed JSON text repeats a key in any object, with escaped spellings decoded.
 function repeatsKey(text) {
@@ -350,11 +358,11 @@ export const isReplacementMode = mode => mode === REPLACEMENT_RUNTIME.mode;
 export const replacementSettings = () => ({ thinkingOptionId: REPLACEMENT_RUNTIME.effort, features: { auto_accept: true } });
 // A record or route that is not exactly the approved runtime (provider, model, thinking, Fast, reason, mode).
 const unapprovedReplacement = route => route.model !== REPLACEMENT_RUNTIME.model || route.effort !== REPLACEMENT_RUNTIME.effort ||
-  route.fastMode !== REPLACEMENT_RUNTIME.fastMode || route.reason !== REPLACEMENT_REASON ||
+  route.fastMode !== REPLACEMENT_RUNTIME.fastMode || !REPLACEMENT_REASONS.includes(route.reason) ||
   route.receipt?.provider !== REPLACEMENT_RUNTIME.provider || !isReplacementMode(route.receipt?.mode);
 // A record or route that is not exactly the off-pace backup (model, thinking, Fast, reason).
 const unapprovedBackup = route => route.model !== PACE_BACKUP_RUNTIME.model || route.effort !== PACE_BACKUP_RUNTIME.effort ||
-  route.fastMode !== PACE_BACKUP_RUNTIME.fastMode || route.reason !== PACE_BACKUP_REASON;
+  route.fastMode !== PACE_BACKUP_RUNTIME.fastMode || !BACKUP_REASONS.includes(route.reason);
 const unapprovedOffPace = route => route.source === 'replacement' ? unapprovedReplacement(route) : unapprovedBackup(route);
 export const OFF_PACE_SOURCES = Object.freeze(['replacement', 'pace-backup']);
 const offPaceRoute = route => OFF_PACE_SOURCES.includes(route?.source);

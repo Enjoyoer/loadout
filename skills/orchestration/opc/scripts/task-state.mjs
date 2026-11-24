@@ -288,20 +288,32 @@ export function unlockTask(taskPath) {
   return `task lock removed: held by ${holderText(held)}`;
 }
 
-export function updateTask(taskPath, mutator) {
-  canonicalPath(taskPath);
-  const lock = `${taskPath}.lock`, token = randomUUID();
+// Runs fn while holding path's lock (path.lock), with held() telling whether the lock still holds this writer's token.
+// The same lock as a task's: a writer that finds it waits, then fails naming its holder; only unlock removes a lock whose
+// holder is gone.
+export function withFileLock(path, fn, name = 'lock') {
+  const lock = `${path}.lock`, token = randomUUID();
   const holder = `${process.pid}\n${ownStartTime() ?? ''}\n${token}`;
   const deadline = Date.now() + 2000;
   while (true) {
     try { publish(lock, holder); break; } catch (error) { if (error.code !== 'EEXIST') throw error; }
     if (Date.now() >= deadline) {
       const held = lockHolder(lock);
-      if (held) throw Error(`task lock busy: held by ${holderText(held)}; if that writer is no longer running, ` +
-        `run node ${SCRIPT} unlock ${taskPath}`);
+      if (held) throw Error(`${name} busy: held by ${holderText(held)}; if that writer is no longer running, ` +
+        `run node ${SCRIPT} unlock ${path}`);
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
+  // Release only our own lock; a lock holding another token belongs to someone else.
+  try { return fn(() => lockToken(lock) === token); } finally { releaseOwn(lock, token); }
+}
+
+export function updateTask(taskPath, mutator) {
+  canonicalPath(taskPath);
+  return withFileLock(taskPath, held => writeLockedTask(taskPath, mutator, held), 'task lock');
+}
+
+function writeLockedTask(taskPath, mutator, held) {
   let temporary;
   try {
     const old = readTask(taskPath), task = structuredClone(old);
@@ -315,7 +327,7 @@ export function updateTask(taskPath, mutator) {
     temporary = join(dirname(taskPath), `.task-${randomUUID()}.tmp`);
     const fd = openSync(temporary, 'wx', 0o600);
     try { writeFileSync(fd, JSON.stringify(task, null, 2) + '\n'); fsyncSync(fd); } finally { closeSync(fd); }
-    if (lockToken(lock) !== token) throw Error('task lock lost; it no longer holds this writer\'s token');
+    if (!held()) throw Error('task lock lost; it no longer holds this writer\'s token');
     renameSync(temporary, taskPath);
     // POSIX syncs the file and then the directory entry the rename wrote, so an update it returned survives an OS crash or power loss. Node cannot sync a directory on Windows: there an update gets
     // a flushed file and an atomic rename only.
@@ -323,8 +335,6 @@ export function updateTask(taskPath, mutator) {
     return task;
   } finally {
     if (temporary && existsSync(temporary)) unlinkSync(temporary);
-    // Release only our own lock; a lock holding another token belongs to someone else.
-    releaseOwn(lock, token);
   }
 }
 
