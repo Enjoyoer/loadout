@@ -10,7 +10,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual, promisify } from 'node:util';
-import { canonicalWorkerClass, isReplacementMode, isTargetId, isUiRoute, OFF_PACE_SOURCES, offPaceLaunchAllowed, OWNER_RULE_ROUTES,
+import { canonicalWorkerClass, isReplacementMode, isTargetId, isUiRoute, launcherChain, localServerId, OFF_PACE_SOURCES, offPaceLaunchAllowed, OWNER_RULE_ROUTES,
   PACE_BACKUP_REASON, PACE_BACKUP_RUNTIME, PARITY_BACKUP_REASON, PARITY_REASON, recordedLaneEntry, REPLACEMENT_REASON,
   REPLACEMENT_RUNTIME, routeReason, selectWorkerRoute, uiTaskLaneClass, validateLaneClass, readLocalRouting, validateRoleRoute,
   WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
@@ -131,9 +131,12 @@ function neonUnavailable(unavailable, target, now) {
 // decision 359): parity {launcher, admitted, consumes} from the launcher's alternation state; an even admitted count is an
 // Opus turn (route null, consumes), an odd one a Neon turn that takes Neon or, with that evidence, the backup (consumes),
 // and with neither stays Opus without consuming. state is the alternation state already read under its lock; omitted, it
-// is read now (a resolve, which writes nothing); null (unreadable or malformed) admits nothing.
+// is read now (a resolve, which writes nothing); null (unreadable or malformed) admits nothing. pre {chain, localServer} holds
+// the slow reads (the launcher chain and the local daemon's serverId) taken earlier by recordWorkerRoute, so nothing slow
+// runs under the alternation lock; omitted, they are read now. Not forced, the lane's local target must be the local
+// daemon's own serverId (decision 359); a forced lane keeps the 314a rule, which takes the caller's target as local.
 const ALTERNATION_SOURCES = Object.freeze(['task-default', ...OFF_PACE_SOURCES]);
-function codeAdmission(context, { taskClass, catalog }, state) {
+function codeAdmission(context, { taskClass, catalog }, state, pre = null) {
   try {
     const { task, lane, proof, target, unavailable } = context ?? {};
     const rule = WORKER_DEFAULT_ROUTES.code, now = Date.now();
@@ -155,7 +158,7 @@ function codeAdmission(context, { taskClass, catalog }, state) {
       row.thinkingOptions?.some(option => option?.id === PACE_BACKUP_RUNTIME.effort)).length === 1;
     const { branchName } = managedWorkerNames({ taskId: task.id, lane });
     const doc = readLocalRouting(), mode = switchMode(doc, now);
-    if (mode == null || (mode === 'forced' && !neon && !backup) || !offPaceLaunchAllowed(doc)) return null;
+    if (mode == null || (mode === 'forced' && !neon && !backup) || !offPaceLaunchAllowed(doc, pre ? pre.chain : undefined)) return null;
     const offPace = (forced) => {
       const runtime = neon ? REPLACEMENT_RUNTIME : PACE_BACKUP_RUNTIME;
       return Object.freeze({ role: 'worker', source: neon ? 'replacement' : 'pace-backup', kind: 'code', model: runtime.model,
@@ -165,6 +168,7 @@ function codeAdmission(context, { taskClass, catalog }, state) {
           placement: branchName } : { task: task.id, lane, placement: branchName }) });
     };
     if (mode === 'forced') return Object.freeze({ route: offPace(true), parity: null });
+    if ((pre ? pre.localServer : localServerId()) !== target.daemon) return null;
     const launcher = process.env.PASEO_AGENT_ID, alternation = state === undefined ? readAlternation() : state;
     if (!launcherId(launcher) || alternation == null) return null;
     const admitted = Object.hasOwn(alternation.launchers, launcher) ? alternation.launchers[launcher].admitted : 0;
@@ -200,7 +204,9 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
 // (taskClass, or a task default's own class): the owner rules, and a task default's model by its catalog row when a
 // catalog is given, else by name. That happens here, once; later reads check only its shape. A UI task records only its
 // ui-design and ui-check lanes, on Fable high, Fast off.
-function recordLane(task, { lane, route, reason, taskClass = null, catalog = null, replacement = null }, state) {
+// counting: the caller holds the alternation lock and counts a turn this lane takes; without it a lane whose admission
+// now takes a turn is refused, so an uncounted turn is never recorded.
+function recordLane(task, { lane, route, reason, taskClass = null, catalog = null, replacement = null }, state, pre = null, counting = false) {
   if (task.ui) {
     taskClass = uiTaskLaneClass(task, taskClass);
     if (!isUiRoute(route)) throw Error(`UI task: a ${taskClass} lane records only Fable high, Fast off (owner rule); the build goes to a code task`);
@@ -213,13 +219,13 @@ function recordLane(task, { lane, route, reason, taskClass = null, catalog = nul
   // A fresh off-pace route records only as its admission resolves now, against this locked record (and, not forced, the
   // locked alternation state). An owner-named route is never admitted and consumes nothing.
   const admission = replacement != null && ALTERNATION_SOURCES.includes(route?.source)
-    ? codeAdmission({ ...replacement, task, lane }, { taskClass, catalog }, state) : null;
+    ? codeAdmission({ ...replacement, task, lane }, { taskClass, catalog }, state, pre) : null;
   if (OFF_PACE_SOURCES.includes(route?.source) && (reason !== route.reason || !isDeepStrictEqual(admission?.route, route))) {
     throw Error(`a ${route.source} route records only through its admitted resolution for this task and lane`);
   }
   // Not forced, an eligible task default records only on the turn it resolved for: when a competing admission of the same
   // launcher took that turn first, the lane is refused and may be resolved again.
-  if (admission?.parity && route.source === 'task-default' && admission.route != null) {
+  if ((admission?.parity && route.source === 'task-default' && admission.route != null) || (admission?.parity?.consumes && !counting)) {
     throw Error(`lane ${lane}: the launcher's alternation turn changed since this route was resolved; resolve the lane again`);
   }
   validateRoleRoute('worker', route);
@@ -229,19 +235,29 @@ function recordLane(task, { lane, route, reason, taskClass = null, catalog = nul
   return { entry: task.routes[lane], admission };
 }
 
-// Records a lane's route. While the switch says not forced (decision 359) an eligible code lane (a fresh bound code lane
-// with a Mac target in its replacement context, from a launcher that is not excluded) records under the alternation lock:
-// its admission is decided against the locked state, the task record is written, and only then is the launcher's
-// admitted count raised, once, when the lane took its turn. A replayed lane, a refused one, an owner-named route and a
-// forced lane write no alternation state.
+// Records a lane's route. Only a fresh lane of the code class (or an alias) on a task default or off-pace route, with a
+// local target in its replacement context, while the switch says not forced (decision 359), can take an alternation turn.
+// For it the slow reads (launcher chain, local daemon serverId) are taken first, without any lock, and an unlocked dry
+// admission decides whether it takes a turn. Only a lane that does takes the alternation lock: under it the admission is
+// decided again against the locked state, the task record is written, and only then is the launcher's admitted count
+// raised, once. Every other record (a replay, an owner-named route, another class, a forced lane, a lane that falls back
+// to Opus without a turn) never touches the lock or the state. A crash between the two writes leaves the lane recorded and
+// its turn uncounted, so the launcher repeats that one turn; it never records a wrong route or counts a turn twice.
+const ALTERNATION_LOCK_WAIT_MS = 10000;
 export function recordWorkerRoute(taskPath, { lane, route, reason, taskClass = null, catalog = null, replacement = null }) {
-  const write = state => {
+  const options = { lane, route, reason, taskClass, catalog, replacement };
+  const write = (state, pre, counting) => {
     let result;
-    updateTask(taskPath, task => { result = recordLane(task, { lane, route, reason, taskClass, catalog, replacement }, state); });
+    updateTask(taskPath, task => { result = recordLane(task, options, state, pre, counting); });
     return result;
   };
-  if (replacement == null || !ALTERNATION_SOURCES.includes(route?.source) || !validTarget(replacement.target) ||
-      switchMode(readLocalRouting(), Date.now()) !== 'parity') return write(undefined).entry;
+  const candidate = replacement != null && ALTERNATION_SOURCES.includes(route?.source) &&
+    canonicalWorkerClass(taskClass ?? route.kind) === 'code' && validTarget(replacement.target) &&
+    !Object.hasOwn(readTask(taskPath).routes ?? {}, lane ?? '') && switchMode(readLocalRouting(), Date.now()) === 'parity';
+  if (!candidate) return write(undefined, null, false).entry;
+  const pre = { chain: launcherChain(), localServer: localServerId() };
+  const dry = codeAdmission({ ...replacement, task: readTask(taskPath), lane }, { taskClass, catalog }, undefined, pre);
+  if (!dry?.parity?.consumes) return write(undefined, pre, false).entry;
   const path = alternationPath();
   mkdirSync(join(homedir(), '.config', 'opc'), { recursive: true, mode: 0o700 });
   // The file exists before its lock is taken, so a writer that crashed holding the lock leaves a path that unlock takes.
@@ -250,15 +266,16 @@ export function recordWorkerRoute(taskPath, { lane, route, reason, taskClass = n
   return withFileLock(path, held => {
     // Unreadable or malformed (null) admits nothing.
     const current = readAlternation(path);
-    const { entry, admission } = write(current);
+    const { entry, admission } = write(current, pre, true);
     if (admission?.parity?.consumes) {
       if (!held()) throw Error(`lane ${lane} recorded, but the alternation lock was lost; its turn was not counted`);
       const { launcher, admitted } = admission.parity;
       writeAlternation(path, { launchers: { ...current.launchers, [launcher]: { admitted: admitted + 1, at: new Date().toISOString() } } });
     }
     return entry;
-  }, 'alternation lock');
+  }, 'alternation lock', ALTERNATION_LOCK_WAIT_MS);
 }
+
 // The route-selection flags (--class, --owner-model, --owner-effort, --owner-fast) given for a lane that already has a
 // recorded route that they would not select. A task default records its class; an owner-named route must keep the named
 // class's owner rules, and a class alone selects an owner-named route only for ui-design and ui-check.

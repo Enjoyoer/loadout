@@ -270,8 +270,9 @@ export const REPLACEMENT_REASON = 'code replacement for Opus high, Fast off whil
 export const PARITY_REASON = 'code equal default, Neon turn of the per-launcher Opus and Neon alternation: Neon high on the verified ACP runtime';
 const REPLACEMENT_REASONS = Object.freeze([REPLACEMENT_REASON, PARITY_REASON]);
 const RECEIPT_KEYS = ['provider', 'mode', 'target', 'task', 'lane', 'placement'];
-// The off-pace backup when Neon cannot launch (owner decisions 310 and 316, medium per owner 2026-11-21): Pi Sol medium, Fast off, the one GPT route a
-// code lane may run, and only as a lane recorded with this source and reason while off pace (route.mjs).
+// The backup when Neon cannot launch (owner decisions 310 and 316, medium per owner 2026-11-21): Pi Sol medium, Fast off, the one GPT route a
+// code lane may run, and only as a lane recorded with this source and one of its reasons, while off pace or on a decision
+// 359 Neon turn (route.mjs).
 export const PACE_BACKUP_RUNTIME = Object.freeze({ model: 'fleet/gpt-6.2-sol', label: 'Sol', effort: 'medium', fastMode: false });
 export const PACE_BACKUP_REASON = 'code backup while Claude is off pace and Neon cannot launch: Sol medium, Fast off';
 // The same backup taken on a decision 359 Neon turn, only with fresh evidence that Neon cannot launch.
@@ -328,7 +329,7 @@ export function readLocalRouting() {
 // the local daemon, at most 16 agents, must all be readable and none may match. A missing or malformed list, or a chain
 // that cannot be read in full, allows no off-pace route.
 const MAX_LAUNCHER_CHAIN = 16;
-function launcherChain() {
+export function launcherChain() {
   const env = { ...process.env };
   delete env.PASEO_HOST;
   const chain = [];
@@ -346,11 +347,24 @@ function launcherChain() {
   }
   return null;
 }
-export function offPaceLaunchAllowed(doc = readLocalRouting()) {
+// chain: a launcher chain read earlier in this process (launcherChain), so a caller holding a lock need not wait on it.
+export function offPaceLaunchAllowed(doc = readLocalRouting(), chain = undefined) {
   const prefixes = doc?.replacementExcludedLaunchers;
   if (!Array.isArray(prefixes) || prefixes.some(prefix => typeof prefix !== 'string' || !prefix || prefix.length > 128)) return false;
-  const chain = launcherChain();
-  return chain != null && !chain.some(id => prefixes.some(prefix => id.startsWith(prefix)));
+  if (chain === undefined) chain = launcherChain();
+  return Array.isArray(chain) && chain.length > 0 && chain[0] === process.env.PASEO_AGENT_ID &&
+    !chain.some(id => prefixes.some(prefix => id.startsWith(prefix)));
+}
+// The local daemon's own serverId, from its read-only `paseo daemon status --json` (local home, never PASEO_HOST), or null
+// when the daemon is not running or the status cannot be read. Decision 359 binds a parity lane's local target to it.
+export function localServerId() {
+  const env = { ...process.env };
+  delete env.PASEO_HOST;
+  try {
+    const status = JSON.parse(execFileSync('paseo', ['daemon', 'status', '--json'],
+      { env, timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', maxBuffer: 1 << 20 }));
+    return status?.localDaemon === 'running' && isTargetId(status.serverId) ? status.serverId : null;
+  } catch { return null; } // probe-ok: fails closed, an unreadable local daemon status admits no parity lane; expires 2027-05-22
 }
 export const isReplacementMode = mode => mode === REPLACEMENT_RUNTIME.mode;
 // The request settings of every replacement launch, fixed: thinking and the one generic ACP feature, auto_accept, set
@@ -548,6 +562,10 @@ function validateLaunchedWorkerRoute(route, { task = null, lane = null, taskClas
     }
     // Every launch and rebuild: the record must still be exactly its approved runtime, or the lane stops (no switch).
     if (unapprovedOffPace(route)) throw Error(`recorded ${route.source} is not its approved runtime; the lane stops`);
+    // A decision 359 parity Neon lane launches only on the local daemon its receipt names, by that daemon's own status.
+    if (route.source === 'replacement' && route.reason === PARITY_REASON && localServerId() !== route.receipt.target) {
+      throw Error('the local daemon is not the parity Neon receipt target, or its status is unreadable; the lane stops');
+    }
   }
   if (recordedLaneEntry(task, lane, route)) return validateRebuild(route, laneClass, rows);
   const valid = validateWorkerRoute(route);

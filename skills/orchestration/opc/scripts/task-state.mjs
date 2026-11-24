@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   closeSync, existsSync, fsyncSync, linkSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { validateRecordedWorkerRoute } from './agent-routing.mjs';
 
@@ -279,28 +279,33 @@ function releaseOwn(path, token) {
 // time. A running or unknown holder, or a lock with no pid, is refused. Nothing calls this implicitly.
 export function unlockTask(taskPath) {
   canonicalPath(taskPath);
+  // The same lock guards a task record and the decision 359 alternation state (route.mjs).
+  const name = basename(taskPath) === 'code-alternation.json' ? 'alternation lock' : 'task lock';
   const lock = `${taskPath}.lock`, held = lockHolder(lock);
-  if (!held) return 'no task lock';
-  if (!['gone', 'reused'].includes(held.state)) throw Error(`task lock kept: held by ${holderText(held)}`);
+  if (!held) return `no ${name}`;
+  if (!['gone', 'reused'].includes(held.state)) throw Error(`${name} kept: held by ${holderText(held)}`);
   // Writers never remove another's lock, so only a concurrent unlock could have changed it since it was read.
   if (readFileSync(lock, 'utf8') !== held.content) throw Error('task lock changed while it was checked; nothing removed');
   unlinkSync(lock);
-  return `task lock removed: held by ${holderText(held)}`;
+  return `${name} removed: held by ${holderText(held)}`;
 }
 
 // Runs fn while holding path's lock (path.lock), with held() telling whether the lock still holds this writer's token.
 // The same lock as a task's: a writer that finds it waits, then fails naming its holder; only unlock removes a lock whose
 // holder is gone.
-export function withFileLock(path, fn, name = 'lock') {
+export function withFileLock(path, fn, name = 'lock', waitMs = 2000) {
   const lock = `${path}.lock`, token = randomUUID();
   const holder = `${process.pid}\n${ownStartTime() ?? ''}\n${token}`;
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + waitMs;
   while (true) {
     try { publish(lock, holder); break; } catch (error) { if (error.code !== 'EEXIST') throw error; }
     if (Date.now() >= deadline) {
       const held = lockHolder(lock);
-      if (held) throw Error(`${name} busy: held by ${holderText(held)}; if that writer is no longer running, ` +
-        `run node ${SCRIPT} unlock ${path}`);
+      // A running holder (or one alive whose start time cannot be read) is a writer at work: retry; unlock refuses it.
+      // Only a holder confirmed gone is unlocked.
+      if (held) throw Error(`${name} busy: held by ${holderText(held)}; ` + (['same', 'unknown'].includes(held.state)
+        ? 'that writer is still running, so retry once it finishes'
+        : `if that writer is no longer running, run node ${SCRIPT} unlock ${path}, which removes the lock only when its holder is gone`));
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
@@ -341,7 +346,7 @@ function writeLockedTask(taskPath, mutator, held) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     const [command, path, ...rest] = process.argv.slice(2);
-    if (command !== 'unlock' || !path || rest.length) throw Error('usage: task-state.mjs unlock <task.json>');
+    if (command !== 'unlock' || !path || rest.length) throw Error('usage: task-state.mjs unlock <task.json | code-alternation.json>');
     console.log(unlockTask(path));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
