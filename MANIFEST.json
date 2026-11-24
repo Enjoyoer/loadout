@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "22d77e54c4a43c22082806b4f34909a6130494b9",
+  "source_commit": "a51ef9990e4bfbad1e6e4038245346eff29c3a7d",
   "skill_count": 25,
   "file_count": 133,
   "files": [
@@ -240,8 +240,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 29781,
-      "sha256": "ac91e1305b2d3b4e3c33bf7f5904406fb6586273b98c566db9890dd7f2f0bbc6"
+      "bytes": 29968,
+      "sha256": "681817b6f7961062f3b59960035641c600519d3a175cc80b82c1e3d3a18aa6a1"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -324,8 +324,8 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 9861,
-      "sha256": "f42a09cb3f1a6742313d3919fa257326eb6f1ae07e98bcba91a6b8d4220aac0c"
+      "bytes": 9969,
+      "sha256": "dae590d94da9800ed732fdca904f879558ea48a027f45a338eb0b844004d7283"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
