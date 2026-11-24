@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "4bc9af2fc03fc2c242023dce3b0fe27a1f44cd96",
+  "source_commit": "f3b47c01910eb674bfe7b1b80f1cd66fe3fabc5b",
   "skill_count": 25,
   "file_count": 152,
   "files": [
@@ -198,8 +198,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5082,
-      "sha256": "335ab3c4733ff3bf653efddea28885bb4c5a5757d951706a7a77c4f9cd3d18a3"
+      "bytes": 5110,
+      "sha256": "f48d2ad2aca65a7cde8d9eca5042b19bd2aa79b6f4022ad82fd18d35f203d8db"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -240,8 +240,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 37869,
-      "sha256": "7b56a0be5ef25ffa2519edc5b87e0bde916ddb1f336f9c7a19f3f7acf0dad1ee"
+      "bytes": 38825,
+      "sha256": "32f7cef087a1c3edd894306e278092ab71b01ed607aa644d356aa8b0fcb26b4d"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -275,8 +275,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 63182,
-      "sha256": "490c0f41d5b510733316dda6277eaa3c266adcb9c30d1586e640dd5b7ff9bcb6"
+      "bytes": 64559,
+      "sha256": "ef5bdbc656e8c1abd9a356cdcdc238eefd5c5048023ddb1ee0cb7bc26e60df31"
     },
     {
       "path": "skills/orchestration/opc/scripts/delivery.mjs",
@@ -303,8 +303,8 @@
       "path": "skills/orchestration/opc/scripts/route.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 28721,
-      "sha256": "cfbb4e569fa1a8c8ce46098681be79289f53ecc843aceb96f3c33fe79115e157"
+      "bytes": 28776,
+      "sha256": "1d492cabfd2cc20b81c03a9a7502e92374e4128394d720a533e5a334ada026e7"
     },
     {
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
@@ -331,8 +331,8 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 10398,
-      "sha256": "691cfe7548098f94076b533d62352c4563f508a681c60c22b1b000e7bc52c802"
+      "bytes": 11259,
+      "sha256": "bd248597dd7e520bbade5a197933004e01608c0e772392a592bae5e37f95c17a"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
@@ -352,8 +352,8 @@
       "path": "skills/orchestration/opn/references/host-adapters.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 2651,
-      "sha256": "162823135e7ae121ade8575dfed97d4f763c765ed1398b9315cb8c12c06eef33"
+      "bytes": 3973,
+      "sha256": "02c3d070091f51bdf637873e7d9f657f53f00243e2469c8a7e7c7d0c50b78a4d"
     },
     {
       "path": "skills/orchestration/opn/scripts/test_validate_opn.py",
