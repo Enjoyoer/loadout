@@ -354,12 +354,14 @@ class AutoUpdate(unittest.TestCase):
 
     def test_quarantine_holds_newer_versions_until_a_person_clears_it(self):
         installed = self.fx / "tool-a.installed"
-        self.behavior["components"]["tool-a"] = {"apply_sleep": 10, "apply_late_write": [[str(installed), "1.3.0\n", 3]]}
+        # apply changes the tool, then hangs past its 2 s timeout: an uncertain apply with a known result on every
+        # platform (a late child's write is covered separately, and on Windows a child dies with the killed step)
+        self.behavior["components"]["tool-a"] = {"apply_write": [[str(installed), "1.3.0\n"]], "apply_sleep": 10}
         self.registry["components"][0]["timeouts"] = {"apply": 2}
         self.run_and_wait()
         self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "intervention-required")
         self.assertIn("tool-a paused on h1 until cleared", self.sent()[0])
-        time.sleep(2)  # the child has written
+        self.assertEqual(self.version_of("tool-a"), "1.3.0")
         self.behavior["components"]["tool-a"] = {}
         self.feed["components"]["tool-a"] = self.entry("1.3.1")
         for _ in range(2):
