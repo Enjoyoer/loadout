@@ -52,8 +52,8 @@ const ConfigObjectSchema = z.object({
   pacePoolAccounts: z.array(z.string().min(1)).max(50).default([]),
   // PMs pace mode never moves: by `project` label, in addition to the built-in main PM projects (config, work,
   // personal), which no setting removes; and by agent id prefix. The prefixes belong only in the host settings file;
-  // while that list is empty (or neither local pacePoolAccounts nor a complete remote pace source is set), the host is
-  // unconfigured and pace mode moves nothing.
+  // in host-local mode, while that list or pacePoolAccounts is empty, the host is unconfigured and pace mode moves
+  // nothing. A complete remote pace source requires no private exclusion list entries (optional exclusions still apply).
   paceFallbackExcludedProjects: z.array(z.string().min(1)).max(50).default([]),
   paceFallbackExcludedAgents: z.array(z.string().min(1)).max(50).default([]),
   // Remote pace source (optional, off by default): reads a strictly validated tri-state pace verdict computed by

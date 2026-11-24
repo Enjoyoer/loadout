@@ -316,22 +316,61 @@ export function formatRemotePace(pace: Pace, now = Date.now()): RemotePacePayloa
 
 export type ValidatedRemotePace = { pace: Pace; asOfMs: number | null };
 
+/** Whether already-parsed JSON text repeats any key in any object (decoding escaped spellings). */
+export function repeatsKey(text: string): boolean {
+  const objects: Array<Set<string> | null> = [];
+  let expectKey = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      let end = i + 1;
+      while (text[end] !== '"') end += text[end] === "\\" ? 2 : 1;
+      const keys = objects.at(-1);
+      if (keys && expectKey) {
+        const key = JSON.parse(text.slice(i, end + 1)) as string;
+        if (keys.has(key)) return true;
+        keys.add(key);
+        expectKey = false;
+      }
+      i = end;
+    } else if (c === "{") {
+      objects.push(new Set());
+      expectKey = true;
+    } else if (c === "[") {
+      objects.push(null);
+      expectKey = false;
+    } else if (c === "}" || c === "]") {
+      objects.pop();
+      expectKey = false;
+    } else if (c === ",") {
+      expectKey = objects.at(-1) != null;
+    }
+  }
+  return false;
+}
+
 /**
- * Strictly validates one single-line JSON wire payload from the remote pace producer. Any unknown key, bad schema,
- * unallowlisted reason, malformed or future timestamp, stale reading, or oversized output fails closed as undecided.
+ * Strictly validates one single-line JSON wire payload from the remote pace producer (only an optional final line
+ * terminator, no surrounding blank lines or whitespace, and four unique canonical keys with no duplicate keys). Any
+ * unknown/duplicate key, bad schema, unallowlisted reason, malformed or future timestamp, stale reading, or oversized
+ * output fails closed as undecided.
  */
 export function parseRemotePace(raw: string, now = Date.now(), maxAgeMs = 120_000): ValidatedRemotePace {
   const fail = (reason: string): ValidatedRemotePace => ({ pace: { state: "undecided", reason }, asOfMs: null });
   if (Buffer.byteLength(raw, "utf8") > MAX_REMOTE_PACE_BYTES) return fail("remote-invalid");
-  const trimmed = raw.trim();
-  if (!trimmed || trimmed.includes("\n") || trimmed.includes("\r")) return fail("remote-invalid");
+  let line = raw;
+  if (line.endsWith("\r\n")) line = line.slice(0, -2);
+  else if (line.endsWith("\n")) line = line.slice(0, -1);
+  if (!line || line.includes("\n") || line.includes("\r") || !line.startsWith("{") || !line.endsWith("}")) {
+    return fail("remote-invalid");
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(trimmed);
+    parsed = JSON.parse(line);
   } catch {
     return fail("remote-invalid");
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fail("remote-invalid");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || repeatsKey(line)) return fail("remote-invalid");
   const keys = Object.keys(parsed).sort();
   if (keys.length !== 4 || keys[0] !== "asOf" || keys[1] !== "reason" || keys[2] !== "schemaVersion" || keys[3] !== "state") {
     return fail("remote-invalid");
@@ -357,6 +396,9 @@ export function remotePaceSshArgv(host: string, command: readonly string[], time
   return [
     sshBin,
     "-o", "BatchMode=yes",
+    "-o", "StrictHostKeyChecking=yes",
+    "-o", "ControlMaster=no",
+    "-o", "ControlPath=none",
     "-o", "ClearAllForwardings=yes",
     "-o", "ForwardAgent=no",
     "-o", "ForwardX11=no",

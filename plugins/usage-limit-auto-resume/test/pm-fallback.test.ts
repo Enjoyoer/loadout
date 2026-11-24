@@ -1571,16 +1571,17 @@ it("M9: with Claude and Codex both out a main PM still alerts once; a late compl
   assert.deepEqual(f.calls.apply, []);
 }));
 
-// Decision 386: narrow remote tri-state pace transport for a host without local pq. Fixture host/prefixes only.
+// Decision 386: narrow remote tri-state pace transport for a host without local pq. No private exclusion entries required.
 const REMOTE_PACE_ON = {
   paceFallback: true,
   pacePoolAccounts: [] as string[],
   paceRemoteHost: "pace-source-host",
-  paceRemoteCommand: ["node", "~/plugins/usage-limit-auto-resume/server/pace-read.ts"],
-  paceFallbackExcludedAgents: ["excl0001"],
+  paceRemoteCommand: ["/usr/local/bin/node", "~/plugins/usage-limit-auto-resume/server/pace-read.ts"],
+  paceFallbackExcludedProjects: [] as string[],
+  paceFallbackExcludedAgents: [] as string[],
 };
 
-it("R1: remote tri-state pace swaps and restores a project PM through the exact existing path without local pq or retained pace state", () => scenario(async (f, logs) => {
+it("R1: remote tri-state pace swaps and restores a project PM with both exclusion lists empty, without local pq or retained pace state", () => scenario(async (f, logs) => {
   f.setPqUnavailable(true);
   f.setConfig(REMOTE_PACE_ON);
   let wire: RemotePaceRunResult = { stdout: `${JSON.stringify(formatRemotePace({ state: "undecided", reason: "pq-stale" }, Date.now()))}\n` };
@@ -1620,14 +1621,18 @@ it("R1: remote tri-state pace swaps and restores a project PM through the exact 
   for (const line of logs.filter((l) => /pace/.test(l))) assert.doesNotMatch(line, /acct-|usedPct|gap|%|pace-source-host/);
 }));
 
-it("R2: remote pace fails closed on missing, timeout, stale, invalid, or misconfigured inputs for both swap and restore", () => scenario(async (f) => {
+it("R2: remote pace fails closed on missing, timeout, stale, invalid, duplicate-key, blank-line, or misconfigured inputs for both swap and restore", () => scenario(async (f) => {
   f.setPqUnavailable(true);
   f.add("pm-swap", "pm", { labels: { role: "pm", project: "fixture-proj" } });
+  const nowIso = () => new Date(Date.now()).toISOString();
   const badResults = (): RemotePaceRunResult[] => [
     { error: "remote-unavailable" },
     { error: "remote-timeout" },
     { stdout: `${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, Date.now() - 180_000))}\n` },
-    { stdout: `${JSON.stringify({ schemaVersion: 1, state: "off", reason: "behind-pace", asOf: new Date(Date.now()).toISOString(), accounts: [] })}\n` },
+    { stdout: `${JSON.stringify({ schemaVersion: 1, state: "off", reason: "behind-pace", asOf: nowIso(), accounts: [] })}\n` },
+    { stdout: `{"schemaVersion":1,"state":"on","state":"off","reason":"behind-pace","asOf":"${nowIso()}"}\n` },
+    { stdout: `\n${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, Date.now()))}\n` },
+    { stdout: `${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, Date.now()))}\n\n` },
     { stdout: "not-json\n" },
   ];
   f.setConfig(REMOTE_PACE_ON);
@@ -1641,14 +1646,13 @@ it("R2: remote pace fails closed on missing, timeout, stale, invalid, or misconf
   for (const patch of [
     { paceRemoteCommand: null },
     { paceRemoteHost: null },
-    { paceFallbackExcludedAgents: [] },
     { pacePoolAccounts: ["acct-a"] },
   ]) {
     f.setConfig({ ...REMOTE_PACE_ON, ...patch });
     await f.tick();
     assert.equal(f.agents.get("pm-swap")!.model, OPUS);
   }
-  // Swap cleanly, advance past flap guard, then confirm missing/timeout/stale/invalid never trigger a restore.
+  // Swap cleanly, advance past flap guard, then confirm missing/timeout/stale/invalid/duplicate-key never trigger a restore.
   f.setConfig(REMOTE_PACE_ON);
   await f.tick();
   assert.equal(f.agents.get("pm-swap")!.model, SOL);
@@ -1657,7 +1661,9 @@ it("R2: remote pace fails closed on missing, timeout, stale, invalid, or misconf
     { error: "remote-unavailable" } as RemotePaceRunResult,
     { error: "remote-timeout" } as RemotePaceRunResult,
     { stdout: `${JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, Date.now() - 180_000))}\n` },
-    { stdout: `${JSON.stringify({ schemaVersion: 1, state: "on", reason: "on-pace", asOf: new Date(Date.now()).toISOString(), extra: 1 })}\n` },
+    { stdout: `${JSON.stringify({ schemaVersion: 1, state: "on", reason: "on-pace", asOf: nowIso(), extra: 1 })}\n` },
+    { stdout: `{"schemaVersion":1,"state":"off","state":"on","reason":"on-pace","asOf":"${nowIso()}"}\n` },
+    { stdout: `\n${JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, Date.now()))}\n` },
   ]) {
     f.setRemotePace(async () => bad);
     await f.tick();
@@ -1666,9 +1672,9 @@ it("R2: remote pace fails closed on missing, timeout, stale, invalid, or misconf
   }
 }));
 
-it("R3: remote pace protects main PMs, explicit exclusions, and re-checks fresh live labels before writes", () => scenario(async (f, logs) => {
+it("R3: remote pace protects hardcoded main PMs, optional user exclusions, and re-checks fresh live labels before writes", () => scenario(async (f, logs) => {
   f.setPqUnavailable(true);
-  f.setConfig({ ...REMOTE_PACE_ON, paceFallbackExcludedProjects: ["fixture-excluded"] });
+  f.setConfig({ ...REMOTE_PACE_ON, paceFallbackExcludedProjects: ["fixture-excluded"], paceFallbackExcludedAgents: ["excl0001"] });
   f.setRemotePace(async () => ({ stdout: `${JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, Date.now()))}\n` }));
   for (const [id, project] of MAIN_PMS) f.add(id, "pm", { labels: { role: "pm", project } });
   f.add("excl-proj", "pm", { labels: { role: "pm", project: "fixture-excluded" } });

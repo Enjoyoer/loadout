@@ -295,13 +295,17 @@ export function createFallbackRunner(deps: FallbackDeps) {
     return (await deps.pace(config)).state === "off";
   }
 
-  // Pace mode fails closed on a host not configured for it: no excluded agent prefix, neither local pool accounts nor
-  // a complete remote pace source set, or both local and remote set at once.
+  // Pace mode fails closed on a host not configured for it: local mode needs both pacePoolAccounts and
+  // paceFallbackExcludedAgents (with no remote fields); a complete remote source (both paceRemoteHost and
+  // paceRemoteCommand, with pacePoolAccounts empty) needs no private exclusion list entries (optional exclusions
+  // and built-in main PM protections still apply).
   const paceUnconfigured = (config: Config) => {
     const local = config.pacePoolAccounts.length > 0;
     const anyRemote = config.paceRemoteHost !== null || config.paceRemoteCommand !== null;
     const fullRemote = config.paceRemoteHost !== null && config.paceRemoteCommand !== null;
-    return !config.paceFallbackExcludedAgents.length || !((local && !anyRemote) || (fullRemote && !local));
+    const localOk = local && !anyRemote && config.paceFallbackExcludedAgents.length > 0;
+    const remoteOk = fullRemote && !local;
+    return !(localOk || remoteOk);
   };
 
   // The live PMs, by their `role=pm` label; a page cap keeps one sweep bounded.

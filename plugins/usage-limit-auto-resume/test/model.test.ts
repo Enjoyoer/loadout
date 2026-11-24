@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { SETTINGS_VERSION } from "../server/config.ts";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { ConfigSchema, SETTINGS_VERSION } from "../server/config.ts";
 import { MAX_KEPT_ATTEMPTS, afterTransientFailure, attemptCount, buildFailedTransientRecord, buildRecord, buildTransientRecord, endedTurnRows, isTransientErrorMessage, configFingerprint, continuationPrompt, failureSignature, isSameAgentAndSession, isTransientAssistantText, isUsageLimitAssistantText, messageId, shouldResume, transientDelaySeconds, transientRejectionState, turnText, verificationDecision, verifyTransientTimeline, type AgentSnapshot, type ResumeConfig } from "../server/model.ts";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { quotaDecision, scheduleUsage } from "../server/model.ts";
-import { readLocalHostPace, settingsPath } from "../server/pace-read.ts";
+import { KNOWN_CONFIG_KEYS, readLocalHostPace, settingsPath } from "../server/pace-read.ts";
 import { agentPool, formatRemotePace, paceOf, parseRemotePace, poolQuota, QuotaReader, RemotePaceReader, remotePaceSshArgv, runPq, runRemotePaceSsh, type PqResult, type RemotePaceRunResult } from "../server/quota.ts";
 
 const NOW = Date.parse("2026-09-25T12:00:00.000Z");
@@ -590,30 +593,77 @@ describe("remote pace transport", () => {
       await rm(emptyHome, { recursive: true, force: true });
     }
 
-    // Stale, future, extra-key, bad-schema, bad-reason, multiline, and oversized payloads all fail closed.
+    // Stale, future, blank-line-padded, duplicate-key (including conflicts and escapes), extra-key, bad-schema,
+    // bad-reason, multiline, and oversized payloads all fail closed.
+    const validLine = JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, NOW));
+    assert.equal(parseRemotePace(validLine, NOW, 120_000).pace.state, "on");
+    assert.equal(parseRemotePace(`${validLine}\n`, NOW, 120_000).pace.state, "on");
+    assert.equal(parseRemotePace(`${validLine}\r\n`, NOW, 120_000).pace.state, "on");
     const stale = JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, NOW - 121_000));
     assert.deepEqual(parseRemotePace(stale, NOW, 120_000).pace, { state: "undecided", reason: "remote-stale" });
     const future = JSON.stringify(formatRemotePace({ state: "off", reason: "behind-pace" }, NOW + 60_000));
     assert.deepEqual(parseRemotePace(future, NOW, 120_000).pace, { state: "undecided", reason: "remote-invalid" });
+    const iso = new Date(NOW).toISOString();
     for (const bad of [
       "",
+      "\n",
+      `\n${validLine}\n`,
+      `${validLine}\n\n`,
+      ` ${validLine}\n`,
+      `${validLine} \n`,
       "not json",
-      JSON.stringify({ schemaVersion: 1, state: "off", reason: "behind-pace", asOf: new Date(NOW).toISOString(), accounts: [] }),
-      JSON.stringify({ schemaVersion: 2, state: "off", reason: "behind-pace", asOf: new Date(NOW).toISOString() }),
-      JSON.stringify({ schemaVersion: 1, state: "unknown", reason: "pq-stale", asOf: new Date(NOW).toISOString() }),
-      JSON.stringify({ schemaVersion: 1, state: "off", reason: "on-pace", asOf: new Date(NOW).toISOString() }),
-      JSON.stringify({ schemaVersion: 1, state: "off", reason: "acct-secret", asOf: new Date(NOW).toISOString() }),
+      `{"schemaVersion":1,"state":"on","state":"off","reason":"behind-pace","asOf":"${iso}"}`,
+      `{"schemaVersion":1,"state":"off","state":"off","reason":"behind-pace","asOf":"${iso}"}`,
+      `{"schemaVersion":1,"state":"on","\\u0073tate":"off","reason":"behind-pace","asOf":"${iso}"}`,
+      `{"schemaVersion":1,"state":"off","reason":"account-out","reason":"behind-pace","asOf":"${iso}"}`,
+      JSON.stringify({ schemaVersion: 1, state: "off", reason: "behind-pace", asOf: iso, accounts: [] }),
+      JSON.stringify({ schemaVersion: 2, state: "off", reason: "behind-pace", asOf: iso }),
+      JSON.stringify({ schemaVersion: 1, state: "unknown", reason: "pq-stale", asOf: iso }),
+      JSON.stringify({ schemaVersion: 1, state: "off", reason: "on-pace", asOf: iso }),
+      JSON.stringify({ schemaVersion: 1, state: "off", reason: "acct-secret", asOf: iso }),
       JSON.stringify({ schemaVersion: 1, state: "off", reason: "behind-pace", asOf: "2026-02-30T00:00:00Z" }),
-      `${JSON.stringify(formatRemotePace({ state: "on", reason: "on-pace" }, NOW))}\nextra-line`,
+      `${validLine}\nextra-line`,
       "x".repeat(5000),
     ]) {
       assert.deepEqual(parseRemotePace(bad, NOW, 120_000).pace, { state: "undecided", reason: "remote-invalid" }, bad.slice(0, 80));
     }
 
-    // SSH argv enforces BatchMode, no forwarding/TTY, -- separator, and safe ~/ quoting.
+    // KNOWN_CONFIG_KEYS in zero-dep pace-read.ts matches ConfigSchema.shape exactly.
+    assert.deepEqual([...KNOWN_CONFIG_KEYS].sort(), Object.keys(ConfigSchema.shape).sort());
+
+    // SSH argv enforces BatchMode, StrictHostKeyChecking=yes, ControlMaster=no, ControlPath=none, no forwarding/TTY, --, and safe ~/ quoting.
     const argv = remotePaceSshArgv("peer-host", ["node", "~/plugins/usage-limit-auto-resume/server/pace-read.ts"], 10_000);
-    assert.ok(argv.includes("BatchMode=yes") && argv.includes("ClearAllForwardings=yes") && argv.includes("ForwardAgent=no") && argv.includes("RequestTTY=no"));
+    for (const opt of ["BatchMode=yes", "StrictHostKeyChecking=yes", "ControlMaster=no", "ControlPath=none", "ClearAllForwardings=yes", "ForwardAgent=no", "ForwardX11=no", "RequestTTY=no"]) {
+      assert.ok(argv.includes(opt), `missing ssh option ${opt}`);
+    }
     assert.deepEqual(argv.slice(-3), ["--", "peer-host", "'node' ~/'plugins/usage-limit-auto-resume/server/pace-read.ts'"]);
+
+    // Producer runs in an installed layout (no node_modules) under a bare env with absolute Node and local pq.
+    const installed = await mkdtemp(path.join(tmpdir(), "ulr-bare-installed-"));
+    try {
+      const srcServer = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "server");
+      const dstServer = path.join(installed, "plugin", "server");
+      await mkdir(path.join(dstServer, "vendor"), { recursive: true });
+      await copyFile(path.join(srcServer, "pace-read.ts"), path.join(dstServer, "pace-read.ts"));
+      await copyFile(path.join(srcServer, "quota.ts"), path.join(dstServer, "quota.ts"));
+      await copyFile(path.join(srcServer, "vendor", "daemon-target.ts"), path.join(dstServer, "vendor", "daemon-target.ts"));
+      const bareHome = path.join(installed, "home");
+      await mkdir(path.join(bareHome, ".paseo", "plugin-settings", "usage-limit-auto-resume"), { recursive: true });
+      await mkdir(path.join(bareHome, ".local", "bin"), { recursive: true });
+      await writeFile(path.join(bareHome, ".paseo", "plugin-settings", "usage-limit-auto-resume", "auto-resume-config.json"),
+        JSON.stringify({ version: SETTINGS_VERSION, values: { quotaAware: true, pacePoolAccounts: ["acct-a"] } }), "utf8");
+      const fakePq = path.join(bareHome, ".local", "bin", "pq");
+      await writeFile(fakePq, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({schemaVersion:1,snapshotStale:false,accounts:[{provider:"claude",label:"acct-a",fresh:true,windows:[{id:"seven_day",fresh:true,usedPct:80,leftPct:20,resetInSeconds:84*3600}]}]}));\n`, { mode: 0o755 });
+      const { stdout, stderr } = await promisify(execFile)(process.execPath, [path.join(dstServer, "pace-read.ts")], {
+        env: { HOME: bareHome, PATH: "/usr/bin:/bin" },
+        timeout: 10_000,
+      });
+      assert.equal(stderr, "");
+      const parsed = parseRemotePace(stdout, Date.now(), 120_000);
+      assert.deepEqual(parsed.pace, { state: "off", reason: "behind-pace" });
+    } finally {
+      await rm(installed, { recursive: true, force: true });
+    }
 
     // Missing ssh binary, timeout, non-zero exit, and oversized stdout all fail closed.
     assert.deepEqual(await runRemotePaceSsh("peer-host", ["echo"], 5000, path.join(tmpdir(), "no-such-ssh-fixture")), { error: "remote-unavailable" });
