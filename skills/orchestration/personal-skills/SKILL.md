@@ -110,6 +110,10 @@ The skills step (`scripts/skills_sync.py`) implements this for skills and global
 
 After a successful preflight, write verified bytes, verify every installed hash, and run the available package validators. A preflight is not a lock: each write checks its directories and its file again right before it, and a file that changed meanwhile is not written over and fails the host. Report selected packages, commit IDs, destinations, files written, files already current, skipped clients, and blockers. A host without its own checkout may receive verified bytes from another eligible checkout, but must reverify them before the same preflight and write.
 
+## Fleet auto-update
+
+`scripts/auto-update/` holds a fixed-rule runner that a host scheduler starts to apply leaf-tool updates from the private fleet's `auto-update/registry.json`, behind `auto-update/switch.json` (missing means stopped). The sync never installs or schedules it. See `scripts/auto-update/README.md`.
+
 ## Publishing a package change
 
 This covers skills and plugins. Commit package content first. Generate the manifest from that committed tree with `source_commit` equal to the content commit, then commit the manifest separately. Verify that the complete active `skills/` and `plugins/` trees match manifest paths, byte counts, and SHA256 values. Review the diff before publishing. The public repository has its own clean history; do not import another repository's history or machine-local state.

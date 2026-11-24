@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "b0373e116ce1859e1d14c3aeae5ece7365f4c302",
+  "source_commit": "f64c02af7471eff2b9d491d04b6c46ca17f9e80e",
   "skill_count": 25,
-  "file_count": 133,
+  "file_count": 151,
   "files": [
     {
       "path": "skills/engineering/codebase-design/DEEPENING.md",
@@ -366,8 +366,8 @@
       "path": "skills/orchestration/personal-skills/SKILL.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 22653,
-      "sha256": "09c2ba31d2881ca3ca934e6a1139b3ce6c13afeb388d1dee9148361a12f11a29"
+      "bytes": 22971,
+      "sha256": "29c897fd168a648664ed4e9fc1613fbc480c8c2efab225b7ac9f6e5cbad12ca9"
     },
     {
       "path": "skills/orchestration/personal-skills/agents/openai.yaml",
@@ -380,8 +380,29 @@
       "path": "skills/orchestration/personal-skills/fleet/README.md",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 103307,
-      "sha256": "10526fbd3977fd82ba5d491b57a5cb07d74061977c887473f34583ec9ef5b721"
+      "bytes": 103597,
+      "sha256": "bd3bdf957a19e284bf540420bd9b92adeecce6ba755412607b0aa28cb3ad5076"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/fleet/example/auto-update/available.json",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 768,
+      "sha256": "2755921b3ffb740e1bf16972b35f69c3e1f7d38af4bad413a5572d72863ed7d1"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/fleet/example/auto-update/registry.json",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 17654,
+      "sha256": "1d973071882fe4f007edee23185f0991c41ef764e964d03a21274cf7b91d699c"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/fleet/example/auto-update/switch.json",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 200,
+      "sha256": "0fc4ed088ae7f51532c1f9a1cc03e819bca6f293a9da9b29f34ddc46906b70c6"
     },
     {
       "path": "skills/orchestration/personal-skills/fleet/example/bin/common/hello-fleet",
@@ -440,6 +461,111 @@
       "sha256": "215f92be59b23d7a274417a31d96d556d658981ae89ceef32d39f76e561605a9"
     },
     {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/README.md",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 23485,
+      "sha256": "b02c6df0cc5712c1f133ed6ffe5ad3488066b85be43ca0d00e8710e0e7c1ab59"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/access-health.sh",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 2081,
+      "sha256": "79c9802eb858adb060e74b2d0b2ba7cad5004fc16cd75de6ff41c2aa6b9860be"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/brew-formula.sh",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 2801,
+      "sha256": "375947c19485e29b25355fcc80962922364ae666b257f3de5bc738948bc6fa48"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/cli-posix.sh",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 7382,
+      "sha256": "eac542aaa266c06c7d600eb66e335a6c2d20879bc77aa03a6b4764615c874179"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/cli-windows.ps1",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 7625,
+      "sha256": "626abdcf9329005d95e92287f1b18ebf56cd203f6130a0b6927e85253ba8218f"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/host-idle.mjs",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 14098,
+      "sha256": "46fd91571fa9f12f16b56242a50ad55aa167233e3b78988f4c47e7464cdbfdad"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/adapters/interactive-idle.ps1",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 4412,
+      "sha256": "d5989cacbc00c16eeded34a2516236032859f701ec6ce0b3665a955ec8beef00"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/auto-update.mjs",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 77064,
+      "sha256": "00321393c71c363675f40c175e7294632f0f14f2b1a1ad6f6e3d36a98f003609"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/com.loadout.auto-update.plist",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 1746,
+      "sha256": "903e0fbdedb4e4f98783d8bae104880b504fabccf4d7de8e60a0d6efbefb9303"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/loadout-auto-update-pc.xml",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 2379,
+      "sha256": "011322e79accf4368f048670b8017a03fa2abe63210a0e657098f1346b8aaef1"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/loadout-auto-update.service",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 357,
+      "sha256": "12b77259dc9819ef680bcbac87ec07c3f27c9fea041c012c66e991a98c9ab28a"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/loadout-auto-update.timer",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 512,
+      "sha256": "ec8de4897ec89ff14812ada9fc452de352534f87b59fbfbf7a1780f6608e2898"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto-update/scheduler/loadout-auto-update.xml",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 2132,
+      "sha256": "77e00da421a833abe2c17dcb9bd83b8dba11fdae7a7df6515cc176c423d4f228"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto_update_relay.py",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 7988,
+      "sha256": "0264bded879cf3801bf089074d6a0a4b7cc240f40d09956d767c99423179cee1"
+    },
+    {
+      "path": "skills/orchestration/personal-skills/scripts/auto_update_relay_remote.js",
+      "category": "orchestration",
+      "skill": "personal-skills",
+      "bytes": 8998,
+      "sha256": "6d1545162bb90a84d8c64646af3227a9e43356f8104263d782e3d075df42a541"
+    },
+    {
       "path": "skills/orchestration/personal-skills/scripts/client_config.py",
       "category": "orchestration",
       "skill": "personal-skills",
@@ -457,8 +583,8 @@
       "path": "skills/orchestration/personal-skills/scripts/fleet.py",
       "category": "orchestration",
       "skill": "personal-skills",
-      "bytes": 23338,
-      "sha256": "f40a495e3b2325406f06b8405f0857a47d85a177bc80aa81d5b71559de7d74f8"
+      "bytes": 23407,
+      "sha256": "5059945ed3b5db62c0174c3c9bc51340bf3be20609c5b37ca856858367aa1b45"
     },
     {
       "path": "skills/orchestration/personal-skills/scripts/fleet_push_remote.js",

@@ -32,7 +32,8 @@ SYNC_RECORD = ".loadout-sync.json"
 # a pairing offer, a backup, the skills/ overlay, or any other unpublished file stays on the source host;
 # a token reaches only the hosts that name its env through the client-config step, and an offer is read only where
 # the sync runs. A file an earlier push copied and this list leaves out is removed while the host's copy is unedited.
-PUBLISHED = ("hosts.json", "paseo-providers.json", "client-config.json", "global/AGENTS.md")
+PUBLISHED = ("hosts.json", "paseo-providers.json", "client-config.json", "global/AGENTS.md",
+             "auto-update/registry.json", "auto-update/switch.json")
 # A remote program and its payload travel together on stdin as one base64 envelope, so the
 # command line holds only this fixed boot and the envelope's sha256: short enough for cmd.exe
 # whatever the program's size, and free of shell quoting. The boot runs nothing unless the

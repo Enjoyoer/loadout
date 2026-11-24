@@ -1,0 +1,5 @@
+{
+  "schema": "loadout.auto-update.switch/1",
+  "apply": "stopped",
+  "notes": "Set apply to \"allowed\" to let runners apply. Anything else, a missing file or an unreadable one stops every apply."
+}

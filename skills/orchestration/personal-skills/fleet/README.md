@@ -8,12 +8,15 @@ example/                     public, made up
   paseo-providers.json       optional
   client-config.json         optional
   global/AGENTS.md           optional
+  auto-update/               optional, see scripts/auto-update/README.md
   bin/common/hello-fleet    optional helper example
 <fleet directory>/           yours, private (copy example/ here and edit)
   hosts.json
   paseo-providers.json       optional
   client-config.json         optional
   global/AGENTS.md           optional
+  auto-update/registry.json  optional, the auto-update component registry
+  auto-update/switch.json    optional, the auto-update kill switch (missing = stopped)
   skills/<name>/SKILL.md     optional private skills (the overlay)
   bin/common/               optional helpers for every host
   bin/macos/                optional macOS helpers
@@ -32,7 +35,7 @@ With neither, `fleet.py resolve` reports `fleet: none (current host only)`, and 
 
 ### Fleet push
 
-Edit the fleet only on the source host. `python3 scripts/fleet.py push [--dry-run] [--host <name>]` copies its published files, `hosts.json`, `paseo-providers.json`, `client-config.json`, `global/AGENTS.md`, and `bin/`, to `~/.config/loadout/fleet/` (`%APPDATA%\loadout\fleet\` on Windows) on every other `ssh` host, and every sync run does this first. Every other file, such as a token file, a pairing offer, a backup, or notes, stays on the source host; a file an earlier push copied and the push no longer publishes is removed from a host whose copy is unedited. Hosts need `node`.
+Edit the fleet only on the source host. `python3 scripts/fleet.py push [--dry-run] [--host <name>]` copies its published files, `hosts.json`, `paseo-providers.json`, `client-config.json`, `global/AGENTS.md`, `auto-update/registry.json`, `auto-update/switch.json`, and `bin/`, to `~/.config/loadout/fleet/` (`%APPDATA%\loadout\fleet\` on Windows) on every other `ssh` host, and every sync run does this first. Every other file, such as a token file, a pairing offer, a backup, or notes, stays on the source host; a file an earlier push copied and the push no longer publishes is removed from a host whose copy is unedited. Hosts need `node`.
 
 - Each copy carries a `.loadout-sync.json` record of the hashes last synced, and a host's copy is replaced only while it still matches that record. Before writing, a push records there the versions it is about to write, so a push cut off part way recognizes its own writes.
 - A hand-edited, added, or unrecorded differing file is a conflict: nothing is written on that host until you resolve it, usually by deleting the host's copy.

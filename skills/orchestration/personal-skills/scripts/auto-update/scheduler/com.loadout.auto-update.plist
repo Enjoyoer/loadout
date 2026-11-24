@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- INERT TEMPLATE. Not installed by any sync. Replace @NODE@, @RUNNER@, @HOST@, @PYTHON@, @RELAY@ (the
+     auto_update_relay.py beside the runner's folder) and @HOME@, then load it only when Config approves phase 1. A
+     periodic tick every 10 minutes: the runner samples the host idle gates, applies at most one change when every
+     gate is open, and exits; then the relay tick sends the other hosts a feed or canary receipt that changed since
+     they last answered. The relay runs whatever the gates, the kill switch or a running transaction say (it carries
+     data only), and does nothing unless this host is the registry's feed.source_host. launchd runs a missed tick on
+     wake, so the runner enforces the Sunday 05:00-07:00 blackout and every window itself. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.loadout.auto-update</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string><string>-c</string>
+    <string>"$0" "$1" run --host "$2"; exec "$3" "$4" tick --self "$2" --node "$0"</string>
+    <string>@NODE@</string><string>@RUNNER@</string><string>@HOST@</string><string>@PYTHON@</string><string>@RELAY@</string>
+  </array>
+  <key>StartInterval</key><integer>600</integer>
+  <key>RunAtLoad</key><false/>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>StandardOutPath</key><string>@HOME@/.local/state/loadout/auto-update/launchd.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/.local/state/loadout/auto-update/launchd.log</string>
+  <key>AbandonProcessGroup</key><true/>
+</dict>
+</plist>
