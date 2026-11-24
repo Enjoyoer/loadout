@@ -33,7 +33,9 @@ When no Worker holds the checkout, the PM does work under about 20 tool calls it
 
 ## 4. Yield
 
-Launch every OPC agent and background follow-up through agent-scoped Paseo `create_agent` or `send_agent_prompt` MCP with `notifyOnFinish: true`; finish independent work, then end the turn. On completion, error, or permission notification, read `get_agent_status` and `get_agent_activity` once each. No babysitting, CLI waits, terminal inspection, status narration, retries, or replacements while running. Report terminal failures.
+Use agent-scoped `create_agent` and `send_agent_prompt` with `notifyOnFinish: true`; finish independent work and yield. On notification, read `get_agent_status` and `get_agent_activity` once each. No babysitting, CLI waits, terminal inspection, status narration, retries, or replacements while running. Report terminal failures.
+
+Keep Neon turns short; to change course before one ends, stop and resume it instead of steering.
 
 ## 5. Integrate
 
