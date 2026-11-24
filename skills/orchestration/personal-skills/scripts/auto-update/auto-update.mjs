@@ -7,6 +7,9 @@
 //                                                           --wait stays until the transaction and watchdog end
 //   node auto-update.mjs validate                           check the registry for every host
 //   node auto-update.mjs export --host <self> --for <host>  relay copies of this host's feed and canary receipts
+//   node auto-update.mjs clear --host <name> --component <id> --version <v> --installed <x>
+//                                                           by hand, after a person has checked the tool: lift the
+//                                                           quarantine a fix-by-hand attempt put on its component
 //   node auto-update.mjs txn <dir> | watchdog <dir>         internal: the detached transaction and its rollback timer
 //
 // Inputs: <fleet>/auto-update/registry.json and switch.json (Config-owned, private fleet), the available-versions
@@ -54,6 +57,14 @@ const OSES = ["macos", "linux", "windows"];
 const STEPS = ["check", "stage", "precheck", "apply", "health", "rollback"];
 const PLACEHOLDERS = new Set(["version", "installed", "digest", "adapters", "txn", "component", "host", "node"]);
 const ACTIVE = new Set(["started", "staging", "prechecking", "applying", "health", "rolling-back"]);
+// Outcomes that leave the tool in a state nobody has verified: the component is quarantined on that host, every
+// later version included, until a person checks it and runs `clear`. The exact version stays held after that.
+// A verified rollback (rolled-back, rolled-back-by-watchdog) or a failure before apply leaves it known-clean.
+const QUARANTINE = new Set(["intervention-required", "rollback-failed", "interrupted"]);
+function quarantineOf(st, host, component) {
+  return Object.entries(st.attempts).find(([, a]) => a.host === host && a.component === component && QUARANTINE.has(a.status) && !a.cleared) || null;
+}
+const pausedNote = (status, host, component) => (QUARANTINE.has(status) ? `; ${component} paused on ${host} until cleared` : "");
 const MAX_INPUT = 256 * 1024;
 const MAX_FEED = 64 * 1024;
 const FUTURE_SLACK_MS = 5 * 60 * 1000;
@@ -782,6 +793,8 @@ function decide(ctx, st, sw, feed, gates) {
     const got = installedVersion(adapter, { adapters: ADAPTERS, component: row.component, host }, row.timeouts);
     line.installed = got.version || null;
     if (row.mode === "observe") { line.decision = "observe"; line.reason = got.error || "observe only"; continue; }
+    const q = quarantineOf(st, host, row.component);
+    if (q) { line.reason = `quarantined: ${q[0]} ${q[1].status}; a person checks the tool, then clear`; continue; }
     if (feed.error) { line.reason = feed.error; continue; }
     const entry = feed.components[row.component];
     if (!entry) { line.reason = "no feed entry"; continue; }
@@ -867,7 +880,7 @@ function sweepInterrupted(ctx) {
   for (const [k, a] of found) {
     if (PRE_APPLY.has(a.interrupted_in)) pruneArtifacts(path.join(ctx.state, "txn", a.txn));
     const how = a.restarted ? "the host restarted" : "interrupted";
-    alert(ctx.state, ctx.registry, `attempt:${k}`, `auto-update HOLD ${k}: ${how} during ${a.interrupted_in}; nothing was rolled back, no retry, check by hand (txn ${a.txn})`);
+    alert(ctx.state, ctx.registry, `attempt:${k}`, `auto-update HOLD ${k}: ${how} during ${a.interrupted_in}; nothing was rolled back, no retry, check by hand${pausedNote(a.status, a.host, a.component)} (txn ${a.txn})`);
   }
 }
 
@@ -1037,6 +1050,10 @@ function writeReceipt(plan, result) {
   writeAtomic(plan.receipt, JSON.stringify({ schema: RECEIPT_SCHEMA, component: plan.component, version: plan.version, host: plan.host, result, finished_at: iso(Date.now()), txn: plan.id }, null, 2) + "\n");
 }
 
+function receiptBestEffort(plan, result, log) {
+  try { writeReceipt(plan, result); } catch (e) { log(`canary receipt not written: ${String(e.message).slice(0, 200)}`); }
+}
+
 // Right before the first change, after every wait: the kill switch and a local STOP file, the row's mode, tier and
 // this host's allow list as they are on disk now, and the attempt still this transaction's. Unreadable or changed
 // means not now. Rollback never asks: recovery is always allowed.
@@ -1073,11 +1090,12 @@ function cmdTxn(dir) {
     pruneArtifacts(dir);
     log(`${step}: not now; attempt dropped, nothing changed`);
   };
+  // The line is recorded before anything else can fail; the canary receipt is best effort after it.
   const fail = (status, why) => {
     if (!setStatus(plan, status, { finished_at: iso(Date.now()), reason: why })) { log(`not recorded (${status}): the attempt had already ended`); return; }
-    writeReceipt(plan, "fail");
+    alert(plan.state, registry, `attempt:${plan.key}`, `auto-update HOLD ${plan.key}: ${why}; held, no retry${pausedNote(status, plan.host, plan.component)} (txn ${plan.id})`);
+    receiptBestEffort(plan, "fail", log);
     if (!mutated) pruneArtifacts(dir);
-    alert(plan.state, registry, `attempt:${plan.key}`, `auto-update HOLD ${plan.key}: ${why}; held, no retry (txn ${plan.id})`);
   };
   try {
     if (!setStatus(plan, "staging", { txn_proc: me })) { log("attempt is no longer this transaction's; nothing done"); return; }
@@ -1152,6 +1170,7 @@ function cmdTxn(dir) {
         fail("failed", `transaction error before apply, nothing changed: ${String(e.message).slice(0, 120)}`);
       } else if (uncertain) {
         if (!plan.watchdog_seconds && claimDecision(dir, "txn-hold")) fail("intervention-required", "transaction error after an apply that did not finish; nothing was restored, backups kept, fix by hand");
+        else log(`error after an apply that did not finish; the ${decisionOf(dir) || "watchdog"} decision stands`);
       } else if (claimDecision(dir, "txn-rollback")) {
         // An error once apply has started: restore the previous version before anything else, then record it.
         const rolled = rollbackVerified(plan, log);
@@ -1197,18 +1216,19 @@ function cmdWatchdog(dir) {
     notifyFrom = plan.host;
     const a = loadState(plan.state).attempts[plan.key];
     // Recorded even when the registry cannot be read now; the next run that can read it delivers the line once.
-    const say = (line) => alert(plan.state, registry, `attempt:${plan.key}`, `auto-update HOLD ${plan.key}: ${line} (txn ${plan.id})`);
+    const say = (line, status) => alert(plan.state, registry, `attempt:${plan.key}`, `auto-update HOLD ${plan.key}: ${line}${pausedNote(status, plan.host, plan.component)} (txn ${plan.id})`);
     if (!a || !a.txn_proc || !stopTransaction(a.txn_proc, log)) {
       if (setStatus(plan, "rollback-failed", { finished_at: iso(Date.now()), reason: "transaction could not be stopped" }, "watchdog")) {
-        say(`not confirmed within ${plan.watchdog_seconds}s and the transaction could not be stopped; nothing was rolled back, fix by hand`);
+        say(`not confirmed within ${plan.watchdog_seconds}s and the transaction could not be stopped; nothing was rolled back, fix by hand`, "rollback-failed");
       }
       return;
     }
     if (!setStatus(plan, "rolling-back", {}, "watchdog")) return;
     const rolled = rollbackVerified(plan, log);
-    if (!setStatus(plan, rolled ? "rolled-back-by-watchdog" : "rollback-failed", { finished_at: iso(Date.now()) }, "watchdog")) return;
-    writeReceipt(plan, "fail");
-    say(`not confirmed within ${plan.watchdog_seconds}s; ${rolled ? `watchdog rolled back to ${plan.previous}` : "watchdog ROLLBACK FAILED, fix by hand"}`);
+    const status = rolled ? "rolled-back-by-watchdog" : "rollback-failed";
+    if (!setStatus(plan, status, { finished_at: iso(Date.now()) }, "watchdog")) return;
+    say(`not confirmed within ${plan.watchdog_seconds}s; ${rolled ? `watchdog rolled back to ${plan.previous}` : "watchdog ROLLBACK FAILED, fix by hand"}`, status);
+    receiptBestEffort(plan, "fail", log);
   } finally {
     leaveLock(plan.state);
   }
@@ -1275,12 +1295,40 @@ function cmdValidate() {
   return 0;
 }
 
+// By hand, once a person has checked the tool on this host: lift the quarantine of one fix-by-hand attempt. The
+// person states the version they found and the adapter's check must read the same; the attempt stays in state, so
+// that exact version is never tried again. Refused while a run, transaction or watchdog holds the host lock.
+function cmdClear(args) {
+  for (const k of ["component", "version", "installed"]) if (!args[k]) throw new Refusal(`clear needs --${k}`);
+  const ctx = context(args, "clear");
+  const key = attemptKey(ctx.host, args.component, args.version);
+  const lock = acquireLock(ctx.state, procRecord(process.pid, [path.basename(SELF), "clear"]));
+  if (!lock.ok) throw new Refusal("the host lock is held (a run, transaction or watchdog); nothing cleared, try again later");
+  try {
+    const a = loadState(ctx.state).attempts[key];
+    if (!a) throw new Refusal(`no attempt ${key}`);
+    if (!QUARANTINE.has(a.status)) throw new Refusal(`${key} is ${a.status}: nothing to clear`);
+    if (a.cleared) throw new Refusal(`${key} was already cleared at ${a.cleared.at}`);
+    const row = ctx.registry.components.find((c) => c.component === args.component);
+    const adapter = row && row.adapters[ctx.hostRow.os];
+    if (!adapter) throw new Refusal(`${args.component} has no ${ctx.hostRow.os} adapter in the registry: the installed version cannot be read`);
+    const got = installedVersion(adapter, { adapters: ADAPTERS, component: args.component, host: ctx.host }, row.timeouts);
+    if (got.error) throw new Refusal(`${got.error}: nothing cleared`);
+    if (got.version !== args.installed) throw new Refusal(`the check reads ${got.version}, not ${args.installed}: nothing cleared, check the tool again`);
+    updateState(ctx.state, (s) => { s.attempts[key].cleared = { at: iso(Date.now()), installed: got.version }; });
+    console.log(`cleared ${key} (installed ${got.version}); ${args.version} itself stays held, later versions may apply`);
+    return 0;
+  } finally {
+    releaseLock(ctx.state);
+  }
+}
+
 // ---------- main ----------
 
 function parseArgs(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--host" || argv[i] === "--now" || argv[i] === "--for") { out[argv[i].slice(2)] = argv[++i]; }
+    if (["--host", "--now", "--for", "--component", "--version", "--installed"].includes(argv[i])) { out[argv[i].slice(2)] = argv[++i]; }
     else if (argv[i] === "--wait") out.wait = true;
     else if (argv[i].startsWith("--")) throw new Refusal(`unknown option ${argv[i]}`);
     else out._.push(argv[i]);
@@ -1296,9 +1344,10 @@ function main() {
   if (cmd === "run") return cmdRun(args);
   if (cmd === "validate") return cmdValidate();
   if (cmd === "export") return cmdExport(args);
+  if (cmd === "clear") return cmdClear(args);
   if (cmd === "txn" && arg) return cmdTxn(arg);
   if (cmd === "watchdog" && arg) return cmdWatchdog(arg);
-  throw new Refusal("usage: auto-update.mjs plan|run --host <name> [--now <ISO>] [--wait] | validate | export --host <self> --for <host>");
+  throw new Refusal("usage: auto-update.mjs plan|run --host <name> [--now <ISO>] [--wait] | validate | export --host <self> --for <host> | clear --host <name> --component <id> --version <v> --installed <x>");
 }
 
 try {

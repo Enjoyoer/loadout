@@ -312,6 +312,82 @@ class AutoUpdate(unittest.TestCase):
         self.assertEqual((r["component"], r["version"], r["host"], r["result"]), ("tool-a", "1.3.0", "h1", "pass"))
         self.assertEqual(r["txn"], self.attempts()["h1/tool-a@1.3.0"]["txn"])
 
+    def test_receipt_write_failure_still_alerts_once(self):
+        blocked = self.tmp / "blocked"
+        blocked.write_text("a file where the receipt directory should be")
+        self.registry["components"][0]["canary"] = {"host": "h1", "receipt": str(blocked / "receipt.json"), "max_age_hours": 48}
+        self.registry["components"][0]["timeouts"] = {"apply": 2}
+        for name, behavior, status in (("health failed, rolled back", {"health_exit": 1}, "rolled-back"),
+                                       ("apply did not finish", {"apply_sleep": 10}, "intervention-required")):
+            with self.subTest(name):
+                (self.state / "state.json").unlink(missing_ok=True)
+                self.sent_reset()
+                self.installed("tool-a", "1.2.0")
+                self.behavior["components"]["tool-a"] = behavior
+                self.run_and_wait()
+                a = self.attempts()["h1/tool-a@1.3.0"]
+                self.assertEqual(a["status"], status)
+                self.run_and_wait()
+                self.assertEqual(len(self.sent()), 1, "delivered once")
+                self.assertIn("auto-update HOLD h1/tool-a@1.3.0", self.sent()[0])
+                self.assertIn("canary receipt not written", (self.state / "txn" / a["txn"] / "log.txt").read_text())
+
+    def test_fix_by_hand_outcome_quarantines_the_component_on_that_host(self):
+        self.registry["components"][0]["hosts"] = ["h1", "pc"]
+        self.feed["components"]["tool-a"] = self.entry("1.3.1")
+        for status, paused in (("intervention-required", True), ("rollback-failed", True), ("interrupted", True),
+                               ("rolled-back", False), ("rolled-back-by-watchdog", False), ("failed", False)):
+            with self.subTest(status):
+                self.state.mkdir(parents=True, exist_ok=True)
+                self.write(self.state / "state.json", {"schema": "loadout.auto-update.state/1", "applied": [], "alerts": {},
+                    "attempts": {"h1/tool-a@1.3.0": {"status": status, "host": "h1", "component": "tool-a", "group": None,
+                                                     "local_date": "2026-11-20", "txn": "20261120T080000Z-tool-a-0a0b0c"}}})
+                _, rows = self.plan()
+                if paused:
+                    self.assertEqual(rows["tool-a"]["decision"], "skip")
+                    self.assertIn(f"quarantined: h1/tool-a@1.3.0 {status}", rows["tool-a"]["reason"])
+                else:
+                    self.assertEqual(rows["tool-a"]["decision"], "would-apply", "a verified rollback or a failure before apply leaves it clean")
+                self.assertEqual(rows["tool-b"]["decision"], "would-apply", "another component on the host is not affected")
+                _, other = self.plan(host="pc")
+                self.assertEqual(other["tool-a"]["decision"], "would-apply", "the same component on another host is not affected")
+
+    def test_quarantine_holds_newer_versions_until_a_person_clears_it(self):
+        installed = self.fx / "tool-a.installed"
+        self.behavior["components"]["tool-a"] = {"apply_sleep": 10, "apply_late_write": [[str(installed), "1.3.0\n", 3]]}
+        self.registry["components"][0]["timeouts"] = {"apply": 2}
+        self.run_and_wait()
+        self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "intervention-required")
+        self.assertIn("tool-a paused on h1 until cleared", self.sent()[0])
+        time.sleep(2)  # the child has written
+        self.behavior["components"]["tool-a"] = {}
+        self.feed["components"]["tool-a"] = self.entry("1.3.1")
+        for _ in range(2):
+            self.run_and_wait()
+        self.assertNotIn("tool-a apply 1.3.1", (self.fx / "calls.log").read_text())
+        self.assertEqual(self.version_of("tool-a"), "1.3.0")
+        self.assertEqual(self.version_of("tool-b"), "3.0.1", "another component on the host still updates")
+        self.assertEqual(len(self.sent()), 1)
+        clear = lambda version, seen: self.cli("clear", "--component", "tool-a", "--version", version, "--installed", seen, now=None)
+        for (version, seen), why in {("1.3.0", "1.2.0"): "the check reads 1.3.0, not 1.2.0", ("1.3.1", "1.3.0"): "no attempt h1/tool-a@1.3.1",
+                                     ("1.3.0", "1.3.0"): None}.items():
+            done = clear(version, seen)
+            if why:
+                self.assertEqual(done.returncode, 2)
+                self.assertIn(why, done.stderr)
+            else:
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn("1.3.0 itself stays held, later versions may apply", done.stdout)
+        self.assertIn("already cleared", clear("1.3.0", "1.3.0").stderr)
+        self.run_and_wait()
+        self.assertEqual(self.version_of("tool-a"), "1.3.1", "cleared: the next version applies")
+        self.assertEqual(self.attempts()["h1/tool-a@1.3.0"]["status"], "intervention-required", "the record stays")
+        self.installed("tool-a", "1.2.0")
+        self.feed["components"]["tool-a"] = self.entry("1.3.0")
+        _, rows = self.plan()
+        self.assertEqual(rows["tool-a"]["reason"], "held: earlier attempt intervention-required", "that exact version never again")
+        self.assertEqual(len(self.sent()), 1)
+
     def test_feed_relay_copy_is_bound_intact_and_fresh(self):
         self.registry["hosts"]["src"] = {"os": OS, "tz": "America/New_York", "allow": ["tool-a"]}
         self.registry["feed"]["source_host"] = "src"
