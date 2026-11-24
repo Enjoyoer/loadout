@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "5c6bd66e449c5a79a37c4d42b7038dfa7889f843",
+  "source_commit": "8201fc7c797d45fbaed341fe2115d15edf45e82d",
   "skill_count": 25,
   "file_count": 152,
   "files": [
@@ -1868,8 +1868,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/test/model.test.ts",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 58041,
-      "sha256": "577c38460f2220c49963407637e3d7c0473234eeba2267aad00a29cf5f8dad32"
+      "bytes": 58232,
+      "sha256": "a9ae515d808672ec790ab84aca09e669189045a402cdb46f493154878223c2c0"
     },
     {
       "path": "plugins/usage-limit-auto-resume/test/pm-fallback.test.ts",
