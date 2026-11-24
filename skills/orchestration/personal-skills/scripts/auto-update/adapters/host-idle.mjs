@@ -31,6 +31,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+
+// Absence is only ENOENT or ENOTDIR; any other error is unknown state (remote_common.js in the scripts directory).
+const { probe } = createRequire(import.meta.url)("../../remote_common.js");
 
 const [cmd, ...all] = process.argv.slice(2);
 const dash = all.indexOf("--");
@@ -149,7 +153,9 @@ if (cmd === "load") {
   const why = [];
   const metrics = {};
   for (const dir of opts["job-lock"] || []) {
-    if (!fs.existsSync(dir)) continue;
+    let st;
+    try { st = probe(fs, dir); } catch { fail("job lock unreadable"); }
+    if (st === null) continue;
     let pid = null;
     try { pid = Number((/^pid=(\d+)$/m.exec(fs.readFileSync(`${dir}/owner`, "utf8")) || [])[1]) || null; } catch {}
     if (pid === null || alive(pid)) why.push("job lock held");

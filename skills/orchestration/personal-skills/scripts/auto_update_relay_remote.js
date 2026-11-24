@@ -5,8 +5,9 @@
 //
 // Destinations are fixed: <state>/relay/available.json and <state>/relay/canary/<component>.json, where <state> is
 // the runner's state directory (${XDG_STATE_HOME:-~/.local/state}/loadout/auto-update, %LOCALAPPDATA% on Windows).
-// No path comes from the payload. Directories are owner-only (0700), files 0600, written through a temp file in the
-// same directory, fsynced, then renamed over the old copy. A copy is refused when it is malformed, its digest does
+// No path comes from the payload. Directories are owner-only (0700), files 0600, written with replaceFile() from
+// remote_common.js (which fleet.run_node ships ahead of this program): an exclusive temp file in the same directory,
+// fsynced, then renamed over the old copy. A copy is refused when it is malformed, its digest does
 // not match, it was sent more than 10 minutes ago, its contents are stale or in the future, or it is older than (or
 // differs at the same time from) the copy already here, so an old envelope cannot be replayed. Which host a copy is
 // for is checked again by the runner, which knows its own registry name.
@@ -87,22 +88,15 @@ function readExisting(file, kind, name) {
   try { return inner(kind, JSON.parse(fs.readFileSync(file, "utf8")), name, 1e6, Date.now()); } catch { return { invalid: true }; }
 }
 
+// The directory is checked again right before the rename. On Windows a rename over a copy the runner has open at that
+// moment fails briefly: the whole write is tried again for up to 5 s (replaceFile removes its own temp file each time).
 function replace(dir, file, text) {
-  const tmp = path.join(dir, `.${path.basename(file)}.${crypto.randomBytes(8).toString("hex")}.tmp`);
-  const fd = fs.openSync(tmp, "wx", 0o600);
-  try {
-    fs.writeFileSync(fd, text);
-    fs.fsyncSync(fd);
-  } finally { fs.closeSync(fd); }
-  // On Windows a rename over a copy the runner has open at that moment fails briefly: try again for up to 5 s.
   for (let i = 0; ; i++) {
-    try { fs.renameSync(tmp, file); break; } catch (e) {
+    try { return replaceFile(fs, file, text, 0o600, (fd) => fs.fsyncSync(fd), () => checkDir(dir)); } catch (e) {
       if (WINDOWS && ["EPERM", "EACCES", "EBUSY"].includes(e.code) && i < 50) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); continue; }
-      fs.rmSync(tmp, { force: true });
       throw e;
     }
   }
-  if (!WINDOWS) { const d = fs.openSync(dir, "r"); try { fs.fsyncSync(d); } finally { fs.closeSync(d); } }
 }
 
 try {
@@ -137,7 +131,8 @@ try {
       const got = inner(kind, w, name, d.max_age_hours, now);
       const dir = kind === "feed" ? relay : canary;
       const file = path.join(dir, kind === "feed" ? "available.json" : `${name.slice(7)}.json`);
-      const exists = fs.existsSync(root) && fs.existsSync(relay) && (kind === "feed" || fs.existsSync(canary));
+      // Absent is only ENOENT or ENOTDIR; any other error rejects this copy (a file-system error, tried again later).
+      const exists = probe(fs, root) !== null && probe(fs, relay) !== null && (kind === "feed" || probe(fs, canary) !== null);
       if (exists) { checkDir(root); checkDir(relay); if (kind !== "feed") checkDir(canary); }
       const old = exists ? readExisting(file, kind, name) : null;
       if (old && !old.invalid) {

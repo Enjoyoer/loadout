@@ -22,8 +22,15 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const SELF = fileURLToPath(import.meta.url);
+// Absence is only ENOENT or ENOTDIR; any other error is unknown state and propagates (remote_common.js beside us).
+const { probe: probePath, isAbsent } = createRequire(import.meta.url)("../remote_common.js");
+// Text that is not JSON gives undefined; any other error propagates.
+function parseJsonText(text) {
+  try { return JSON.parse(text); } catch (e) { if (e instanceof SyntaxError) return undefined; throw e; }
+}
 const ADAPTERS = path.join(path.dirname(SELF), "adapters");
 const WINDOWS = process.platform === "win32";
 const OS_NAME = { darwin: "macos", linux: "linux", win32: "windows" }[process.platform];
@@ -159,7 +166,7 @@ function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0,
 function fleetDir() {
   const env = process.env.LOADOUT_FLEET;
   if (env) {
-    if (!fs.existsSync(env)) throw new Refusal(`LOADOUT_FLEET ${env} does not exist`);
+    if (probePath(fs, env, true) === null) throw new Refusal(`LOADOUT_FLEET ${env} does not exist`);
     return env;
   }
   if (WINDOWS) return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "loadout", "fleet");
@@ -334,7 +341,9 @@ function worstCaseSeconds(row, a) {
 // ---------- switch, feed, receipts ----------
 
 function readSwitch(fleet, state) {
-  if (fs.existsSync(path.join(state, "STOP"))) return { allowed: false, why: "local STOP file" };
+  let stop;
+  try { stop = probePath(fs, path.join(state, "STOP")); } catch (e) { return { allowed: false, why: `local STOP unreadable: ${e.code || e.message}` }; }
+  if (stop !== null) return { allowed: false, why: "local STOP file" };
   let doc;
   try { doc = readJson(path.join(fleet, "auto-update", "switch.json")); } catch (e) { return { allowed: false, why: `switch unreadable: ${e.message}` }; }
   if (doc.missing) return { allowed: false, why: "switch.json missing" };
@@ -666,11 +675,14 @@ function procState(rec) {
 const running = (rec) => procState(rec) !== "no";
 
 // The host lock: a directory holding owner.json with every process that may still act (runner, transaction, watchdog).
+// null when there is no owner file (the lock is being created, or its owner died first); unreadable when the file is
+// there but not an owner record, which is never taken over. Any other error propagates.
 function lockOwners(dir) {
-  try {
-    const o = JSON.parse(fs.readFileSync(path.join(dir, "lock", "owner.json"), "utf8"));
-    return isObj(o) ? { procs: Array.isArray(o.procs) ? o.procs : Array.isArray(o.pids) ? o.pids : [], at: o.at } : null;
-  } catch { return null; }
+  let text;
+  try { text = fs.readFileSync(path.join(dir, "lock", "owner.json"), "utf8"); } catch (e) { if (isAbsent(e)) return null; throw e; }
+  const o = parseJsonText(text);
+  if (!isObj(o)) return { procs: [], at: null, unreadable: true };
+  return { procs: Array.isArray(o.procs) ? o.procs : Array.isArray(o.pids) ? o.pids : [], at: o.at };
 }
 
 function acquireLock(dir, me) {
@@ -684,12 +696,16 @@ function acquireLock(dir, me) {
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
       const owner = lockOwners(dir);
+      if (owner && owner.unreadable) {
+        const st = probePath(fs, lock);
+        return { ok: false, since: st ? iso(st.mtimeMs) : undefined, unverified: true };
+      }
       if (owner) {
         const states = owner.procs.map(procState);
         if (states.includes("yes") || states.includes("unknown")) return { ok: false, since: owner.at, unverified: !states.includes("yes") };
       } else {
         let age = Infinity;
-        try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch {}
+        try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch (e) { if (!isAbsent(e)) throw e; }
         if (age < STALE_LOCK_MS) return { ok: false }; // being created right now
       }
       const aside = `${lock}.stale-${process.pid}-${crypto.randomBytes(3).toString("hex")}`;
@@ -706,6 +722,7 @@ function setLockProcs(dir, procs) {
 // Hand the lock to whichever of the others still run, or release it.
 function leaveLock(dir) {
   const owners = lockOwners(dir);
+  if (owners && owners.unreadable) return; // not ours to decide: kept, and the lock-age alert reports it
   const rest = owners ? owners.procs.filter((p) => (Number.isInteger(p) ? p : p && p.pid) !== process.pid && running(p)) : [];
   if (rest.length) setLockProcs(dir, rest); else releaseLock(dir);
 }
@@ -729,8 +746,7 @@ function sendLine(registry, line) {
   const base = fill(own || n.command, {});
   const ls = runArgv([...base, "ls", ...n.labels.flatMap((l) => ["--label", l]), "--json", ...host], 30);
   if (!ls.ok) return false;
-  let agents;
-  try { agents = JSON.parse(ls.stdout); } catch { return false; }
+  const agents = parseJsonText(ls.stdout);
   if (!Array.isArray(agents) || agents.length !== 1 || typeof agents[0].id !== "string") return false;
   return runArgv([...base, "send", "--no-wait", ...host, agents[0].id, line], 60).ok;
 }
@@ -878,9 +894,9 @@ function sweepInterrupted(ctx) {
     return out;
   });
   for (const [k, a] of found) {
-    if (PRE_APPLY.has(a.interrupted_in)) pruneArtifacts(path.join(ctx.state, "txn", a.txn));
     const how = a.restarted ? "the host restarted" : "interrupted";
     alert(ctx.state, ctx.registry, `attempt:${k}`, `auto-update HOLD ${k}: ${how} during ${a.interrupted_in}; nothing was rolled back, no retry, check by hand${pausedNote(a.status, a.host, a.component)} (txn ${a.txn})`);
+    if (PRE_APPLY.has(a.interrupted_in)) pruneArtifacts(path.join(ctx.state, "txn", a.txn));
   }
 }
 
@@ -889,8 +905,8 @@ function sweepInterrupted(ctx) {
 function pruneOldTxns(ctx, st) {
   const root = path.join(ctx.state, "txn");
   const keep = new Set(Object.values(st.attempts).map((a) => a.txn));
-  let dirs = [];
-  try { dirs = fs.readdirSync(root); } catch { return; }
+  let dirs;
+  try { dirs = fs.readdirSync(root); } catch (e) { if (isAbsent(e)) return; throw e; }
   for (const d of dirs) {
     if (keep.has(d) || !TXN_RE.test(d)) continue;
     try { if (Date.now() - fs.statSync(path.join(root, d)).mtimeMs > 7 * 86400e3) fs.rmSync(path.join(root, d), { recursive: true, force: true }); } catch {}
@@ -1004,8 +1020,8 @@ const TXN_KEEP = new Set(["plan.json", "log.txt", "txn.out", "watchdog.out", "de
 
 // Staged downloads of an attempt that never reached apply: nothing on the host depends on them.
 function pruneArtifacts(dir) {
-  let names = [];
-  try { names = fs.readdirSync(dir); } catch { return; }
+  let names;
+  try { names = fs.readdirSync(dir); } catch (e) { if (isAbsent(e)) return; throw e; }
   for (const f of names) if (!TXN_KEEP.has(f)) fs.rmSync(path.join(dir, f), { recursive: true, force: true });
 }
 
@@ -1017,9 +1033,9 @@ function txnLogger(dir) {
 // Exactly one of the transaction (confirm, roll back, not now) and the watchdog decides; the first to create the
 // decision file wins, and only the winner ends the attempt.
 function claimDecision(dir, who) {
-  try { fs.writeFileSync(path.join(dir, "decision"), who, { flag: "wx", mode: 0o600 }); return true; } catch { return false; }
+  try { fs.writeFileSync(path.join(dir, "decision"), who, { flag: "wx", mode: 0o600 }); return true; } catch (e) { if (e.code === "EEXIST") return false; throw e; }
 }
-function decisionOf(dir) { try { return fs.readFileSync(path.join(dir, "decision"), "utf8"); } catch { return null; } }
+function decisionOf(dir) { try { return fs.readFileSync(path.join(dir, "decision"), "utf8"); } catch (e) { if (isAbsent(e)) return null; throw e; } }
 
 // Status changes only while the attempt is this transaction's and still active, and the transaction's own writes
 // stop once the watchdog has decided: an ended attempt is never overwritten. Returns whether it was written.
@@ -1124,7 +1140,7 @@ function cmdTxn(dir) {
       log(`watchdog armed: pid ${pid}, ${plan.watchdog_seconds}s`);
       // Do not disrupt anything until the watchdog has proved it is running.
       const until = Date.now() + 10000;
-      while (!fs.existsSync(path.join(dir, "watchdog.armed"))) {
+      while (probePath(fs, path.join(dir, "watchdog.armed")) === null) {
         if (Date.now() > until) { claimDecision(dir, "txn-abort"); return fail("failed", "watchdog did not arm, nothing changed"); }
         sleepMs(100);
       }
@@ -1205,7 +1221,7 @@ function cmdWatchdog(dir) {
   fs.writeFileSync(path.join(dir, "watchdog.armed"), String(process.pid), { mode: 0o600 });
   // Wake early once the transaction has decided, so a confirmed change does not keep the host lock for the whole timer.
   const until = Date.now() + plan.watchdog_seconds * 1000;
-  while (Date.now() < until && !fs.existsSync(path.join(dir, "decision"))) sleepMs(Math.min(1000, Math.max(0, until - Date.now())));
+  while (Date.now() < until && probePath(fs, path.join(dir, "decision")) === null) sleepMs(Math.min(1000, Math.max(0, until - Date.now())));
   try {
     if (!claimDecision(dir, "watchdog")) return;
     // The budget covers apply, health and check, so a transaction still here is stuck or gone. Nothing is restored

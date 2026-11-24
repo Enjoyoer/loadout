@@ -29,6 +29,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fleet  # noqa: E402
+import probe  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 RECEIVER = HERE / "auto_update_relay_remote.js"
@@ -48,11 +49,17 @@ def state_dir() -> Path:
 
 
 def load_sent() -> dict:
+    """What each target last answered for. Absent or not valid JSON means nothing recorded, so everything is sent
+    again (data only); any other error reading it propagates and this tick sends nothing."""
     try:
-        doc = json.loads((state_dir() / "relay-sent.json").read_text(encoding="utf-8"))
-        return doc if isinstance(doc, dict) else {}
-    except (OSError, ValueError):
+        text = (state_dir() / "relay-sent.json").read_text(encoding="utf-8")
+    except probe.ABSENT:
         return {}
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return {}
+    return doc if isinstance(doc, dict) else {}
 
 
 def save_sent(sent: dict) -> None:

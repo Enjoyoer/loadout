@@ -141,7 +141,7 @@ class Transport(TransportBase):
         files = [relay / "available.json", relay / "canary" / "tool-a.json"]
         for f in files:
             self.assertTrue(f.is_file())
-        self.assertEqual([p.name for p in relay.rglob("*") if p.name.endswith(".tmp")], [], "no temp file left")
+        self.assertEqual([p.name for p in relay.rglob("*") if ".loadout-tmp-" in p.name or p.name.endswith(".tmp")], [], "no temp file left")
         if not WINDOWS:
             for d in (self.state("h1"), relay, relay / "canary"):
                 self.assertEqual(stat.S_IMODE(d.stat().st_mode), 0o700)
