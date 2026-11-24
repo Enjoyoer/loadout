@@ -3,6 +3,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } fr
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { isMappedServer, verifiedRemote } from './remote-target.mjs';
 
 const effortOrder = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const efforts = new Set(effortOrder);
@@ -306,8 +307,11 @@ function repeatsKey(text) {
 // The user's local OPC routing file, ~/.config/opc/routing.json, parsed, or null: read only on a Mac, from a regular file
 // (no symlink) owned by this user and writable by no one else, at most 1 MiB, with no repeated key anywhere.
 export function readLocalRouting() {
+  return readOwnerJson(join(homedir(), '.config', 'opc', 'routing.json'));
+}
+// Any owner-only local OPC file read the same strict way (routing.json, the remote target mapping), or null.
+export function readOwnerJson(path) {
   if (process.platform !== 'darwin' || typeof process.getuid !== 'function') return null;
-  const path = join(homedir(), '.config', 'opc', 'routing.json');
   let text;
   try {
     const link = lstatSync(path);
@@ -409,12 +413,24 @@ function validateRecordedOffPace(route) {
 // launch target is the recorded local Mac target and is the server the managed workspace was created on (its serverId),
 // capabilities are MCP inspect_provider's for exactly the replacement provider with MCP list_models rows as models, and
 // they serve exactly the recorded model at its thinking and advertise the pinned mode. Otherwise the lane stops.
-function replacementMode(route, capabilities, target, serverId) {
+function replacementMode(route, capabilities, target, serverId, remote = null, workspace = null) {
   const { receipt } = route;
-  if (!exactKeys(target, ['daemon', 'local', 'platform']) || target.daemon !== receipt.target || target.local !== true ||
-      target.platform !== 'darwin') throw Error('replacement launch target is not the recorded local Mac target; the lane stops');
   if (!isTargetId(serverId) || serverId !== receipt.target) {
     throw Error('the managed workspace is not on the recorded target server; the replacement lane stops');
+  }
+  if (target?.local === false) {
+    // A remote target (decision 359): only a fresh attestation read just now on that target's authenticated connection,
+    // for this managed workspace, stands in for capabilities; a caller's plain capabilities are refused.
+    if (capabilities != null) throw Error('a remote replacement launch takes no caller capabilities; read the target with readRemoteNeonTarget');
+    if (!verifiedRemote(remote, target) || target.daemon !== receipt.target || remote.workspace == null ||
+        remote.workspace.workspaceId !== workspace?.workspaceId || remote.workspace.cwd !== workspace?.cwd ||
+        remote.workspace.branchName !== receipt.placement) {
+      throw Error('no fresh verified attestation of the recorded remote target and its managed workspace; the replacement lane stops');
+    }
+    capabilities = remote.capabilities;
+  } else if (!exactKeys(target, ['daemon', 'local', 'platform']) || target.daemon !== receipt.target || target.local !== true ||
+      target.platform !== 'darwin' || remote != null || isMappedServer(target.daemon)) {
+    throw Error('replacement launch target is not the recorded local Mac target; the lane stops');
   }
   if (capabilities?.provider !== receipt.provider || capabilities.enabled !== true || capabilities.status !== 'available' ||
       !Array.isArray(capabilities.models) || !Array.isArray(capabilities.modes)) {
@@ -563,7 +579,9 @@ function validateLaunchedWorkerRoute(route, { task = null, lane = null, taskClas
     // Every launch and rebuild: the record must still be exactly its approved runtime, or the lane stops (no switch).
     if (unapprovedOffPace(route)) throw Error(`recorded ${route.source} is not its approved runtime; the lane stops`);
     // A decision 359 parity Neon lane launches only on the local daemon its receipt names, by that daemon's own status.
-    if (route.source === 'replacement' && route.reason === PARITY_REASON && localServerId() !== route.receipt.target) {
+    // A receipt naming a mapped remote server is bound instead by its fresh attestation at launch (replacementMode).
+    if (route.source === 'replacement' && route.reason === PARITY_REASON && !isMappedServer(route.receipt.target) &&
+        localServerId() !== route.receipt.target) {
       throw Error('the local daemon is not the parity Neon receipt target, or its status is unreadable; the lane stops');
     }
   }
@@ -789,7 +807,7 @@ const isClaudeModel = model => /(?:^|\/)claude-/i.test(model ?? '') || CLAUDE_LA
 // that provider and returns its modeId.
 export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'worker', route, catalog, surface = 'pi',
   nativeAuthorization = null, task = null, lane = null, taskClass = null, capabilities = null, target = null,
-  serverId = null } = {}) {
+  serverId = null, remote = null, workspace = null } = {}) {
   const replacement = role === 'worker' && route?.source === 'replacement';
   const backup = role === 'worker' && route?.source === 'pace-backup';
   if (role === 'worker') {
@@ -810,7 +828,7 @@ export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'wor
   const selected = role === 'worker' ? validateLaunchedWorkerRoute(route, { task, lane, taskClass, catalog: rows })
     : validateRoleRoute(role, route);
   if (selected.source === 'replacement') {
-    const modeId = replacementMode(selected, capabilities, target, serverId);
+    const modeId = replacementMode(selected, capabilities, target, serverId, remote, workspace);
     const mapped = `${selected.receipt.provider}/${selected.model}`, settings = replacementSettings();
     if (provider && (provider !== mapped || (Object.keys(agentSettings).length && !isDeepStrictEqual(agentSettings, settings)))) {
       throw Error(`explicit provider ${provider} is not what this lane's validated route maps to (${mapped})`);
