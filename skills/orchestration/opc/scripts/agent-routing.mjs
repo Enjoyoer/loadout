@@ -29,7 +29,8 @@ const FORMER_FIXED_ROLE_ROUTES = Object.freeze({
 // its default effort. ceiling is the highest effort an already recorded lane of the class may rebuild at (lanes
 // recorded before OPC 7.66 could sit above the default); null means the default.
 const workerClass = (label, effort, ceiling = null, fastMode = false) => Object.freeze({ label, effort, ceiling, fastMode });
-// Local code lanes default to Opus high (owner 2026-11-18); plan, ui-design and ui-check run Fable high. Routes are the minimum
+// Local code lanes default to Opus high (owner 2026-11-18); plan, ui-design and ui-check run Fable high; research runs
+// Terra high (owner item 111). Routes are the minimum
 // (owner rule): nothing lowers a route. Every class runs Fast off (owner 2026-11-07) except the Luna classes, which run
 // Fast on (owner 2026-11-17), review, browser and browser-hard, which run Fast on by default (owner decision 327,
 // 2026-11-22), and review-security (owner decision 332); otherwise Fast is an owner-named exception per task.
@@ -41,9 +42,12 @@ export const WORKER_DEFAULT_ROUTES = Object.freeze({
   // failure or a blocker verdict the PM may start one separate owner-named Opus xhigh, Fast off lane (routing.md);
   // FORMER_CLASS_ROUTES keeps earlier Opus high and xhigh lanes rebuildable.
   'review-security': workerClass('Sol', 'xhigh', null, true),
-  // Owner 2026-11-18 (decision 244): plan and research run read-only on Fable high, Fast off; FORMER_CLASS_ROUTES keeps
-  // earlier Sol high lanes rebuildable.
+  // Owner 2026-11-18 (decision 244): plan runs read-only on Fable high, Fast off; FORMER_CLASS_ROUTES keeps earlier Sol
+  // high lanes rebuildable.
   plan: workerClass('Fable', 'high'),
+  // Owner item 111: research is its own read-only class on Terra high, Fast off, no longer an alias of plan. A research
+  // lane recorded before the split carries kind plan and still rebuilds as a plan lane.
+  research: workerClass('Terra', 'high'),
   // Owner 2026-11-17: browser, including computer use and desktop application workflows (owner 2026-11-18), runs at Sol
   // low; ceiling high keeps earlier medium lanes rebuildable.
   browser: workerClass('Sol', 'low', 'high', true),
@@ -58,7 +62,7 @@ export const WORKER_DEFAULT_ROUTES = Object.freeze({
 });
 export const WORKER_CLASS_ALIASES = Object.freeze({
   'code-bounded': 'code', 'test-fix': 'code', automation: 'code', mechanical: 'code',
-  research: 'plan', 'review-critical': 'review', 'review-general': 'review', security: 'review-security',
+  'review-critical': 'review', 'review-general': 'review', security: 'review-security',
 });
 // The pre-7.53 ui class name, kept as a compatibility alias of ui-design.
 const OWNER_RULE_ALIASES = Object.freeze({ ui: 'ui-design' });
@@ -637,7 +641,10 @@ export function resolveAgentRoute(role, { explicitRoute = null, taskKind = null,
 const WORKER_TESTING_RULE = 'Testing rule: do not write new unit, integration, or end-to-end tests, and do not use test-driven development, unless the PM specifies the test cases. ' +
   'Verify against the acceptance checks, run the existing suites and keep them green, and keep existing tests unless the PM asks to remove them.';
 
+const READ_ONLY_CLASSES = Object.freeze(['plan', 'research', 'review', 'review-security', ...UI_CLASSES]);
 const READ_ONLY_BRIEFS = Object.freeze({
+  // Owner item 111: research runs on Terra and asks Fable for judgment, never runs on Fable by default.
+  research: 'Return findings with their sources. For a judgment call (which option to take, whether evidence settles a question), ask Fable through $ask-fable: write the question and every fact it needs to a file in your scratch folder and run python3 ~/.local/bin/fable-ask <question-file>. ',
   review: 'Review the exact PR head using references/simplifier-review.md as the brief. ',
   'review-security': 'Correctness review of the exact PR head: report concrete defects with file, line, and what breaks. ',
   'ui-design': 'From the current screens (screenshots and code), return a short design spec and a static mockup (HTML/CSS or images) at the scratch path the PM names. No repository edits, no PR. ',
@@ -659,7 +666,7 @@ export function buildDelegatedBrief({ role, route, brief, reason = null, task = 
   }
   // A UI task's lane is ui-design or ui-check even when the caller names no class and the route carries no kind.
   const kind = canonicalWorkerClass((role === 'worker' ? uiTaskLaneClass(task, taskClass) : taskClass) ?? route?.kind);
-  if (role === 'worker' && ['plan', 'review', 'review-security', ...UI_CLASSES].includes(kind)) {
+  if (role === 'worker' && READ_ONLY_CLASSES.includes(kind)) {
     brief = `Read-only lane: do not edit, implement, or publish. ${READ_ONLY_BRIEFS[kind] ?? ''}\n\n${brief}`;
   } else if (role === 'worker' && isFableModel(resolved?.model, Array.isArray(catalog) ? catalog : catalog?.pi)) {
     // Anthropic's Fable 5.2 prompting guidance: an ownership sentence makes Fable merge duplicated code.
