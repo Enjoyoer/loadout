@@ -35,7 +35,9 @@ description: Ask the owner questions and read his answers in his preferred forma
 ## Held items
 
 - Held items live in Todoist, not in the chat lists. When the owner holds an item, the owning PM files one Todoist task in its own project (the fleet's instructions name it), titled `Hold <n>: <item> (<PM>)`, always with a check date. With no natural date, pick one at most 4 weeks out, and set a new one at each check. Keep the stable number. Never put it in the Inbox.
-- When a hold is resolved or comes back to Open, complete its task with a pointer to where it went; never delete it.
+- Before filing a Hold, search your active Hold tasks for the same PM and stable number, and update the match instead of filing a duplicate.
+- Once a day, in a routine you already run, check your due and overdue Holds against your latest Open list.
+- When a Hold comes back to Open, complete its task with a pointer to that Open item; when it is resolved, complete it with a pointer to where it went. Never delete a Hold task.
 
 ## Reading his answers
 
