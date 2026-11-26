@@ -11,10 +11,10 @@ description: Ask the owner questions and read his answers in his preferred forma
 - The open list has a bold heading, **Open**, then one numbered line per item, `<stable number>. **<short title>** (<recommendation, deadline if any, reply hint if a step>)`, with a blank line between items.
 - Under each numbered line, add indented sub-bullets. A choice gets one bullet per option: `- **a.** ...`, `- **b.** ...`, `- **c.** ...`. A single step for the owner gets one bullet stating the exact step.
 - Each line is in plain words, answerable with a short reply: yes/no, a pick, a value, or "done" for a step.
-- An item stays on Open until it is done. A draft the owner needs to send stays on Open until he sends it or holds it. Do not use Todoist to get the owner to do something.
+- An item stays on Open until it is done or the owner holds it. A draft the owner needs to send stays on Open until he sends it or holds it. Do not use Todoist to get the owner to do something.
 - An item the owner tracks himself, as his own Todoist task (not a Hold task) or in a Codex thread or task he works in directly, stays off the Open list. The owning agent still follows up on it, and may send him a one-line FYI when its state changes.
 - A Codex app thread also sets its own pin at the end of every turn, as the fleet's global instructions say: pinned while it needs the owner, unpinned when it does not. A thread with no schedule of its own may pin itself but never unpins itself; it needs an "active check" schedule for that.
-- When a Codex app thread you own sends "NEEDS TRI: <title> <id8>: <step>", add that step to your Open list; on "RESOLVED: <title> <id8>", remove it. The owner acts on it in your chat. At `/wo`, also read the threads' pins fresh, add any pinned thread that is not on Open yet, and unpin each unscheduled thread whose need you have checked is gone.
+- When a Codex app thread you own sends "NEEDS TRI: <title> <id8>: <step>", add that step to your Open list; on "RESOLVED: <title> <id8>", remove it. The owner acts on it in your chat. At `/wo`, also read the threads' pins fresh, add any pinned thread that is not on Open yet and has no active Hold task, and unpin each unscheduled thread whose need you have checked is gone.
 - Each item keeps one stable number in your scope across lists; never renumber it. Nest only the option or step bullets under their item, one level deep.
 - Example:
 
@@ -35,7 +35,9 @@ description: Ask the owner questions and read his answers in his preferred forma
 ## Held items
 
 - Held items live in Todoist, not in the chat lists. When the owner holds an item, the owning PM files one Todoist task in its own project (the fleet's instructions name it), titled `Hold <n>: <item> (<PM>)`, always with a check date. With no natural date, pick one at most 4 weeks out, and set a new one at each check. Keep the stable number. Never put it in the Inbox.
-- When a hold is resolved or comes back to Open, complete its task with a pointer to where it went; never delete it.
+- Before filing a Hold, search your active Hold tasks for the same PM and stable number, and update the match instead of filing a duplicate.
+- Once a day, in a routine you already run, check your due and overdue Holds against your latest Open list.
+- When a Hold comes back to Open, complete its task with a pointer to that Open item; when it is resolved, complete it with a pointer to where it went. Never delete a Hold task.
 
 ## Reading his answers
 
