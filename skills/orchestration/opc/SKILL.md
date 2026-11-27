@@ -34,7 +34,7 @@ When no Worker holds the checkout, the PM does work under about 20 tool calls it
 ## 4. Yield
 
 Every hand-off to a Worker must either carry a finish notification or queue a one-shot check-back in the same step; never wait on a Worker without one.
-Finish independent work and yield. On notification, read `get_agent_status` and `get_agent_activity` once each. While running: no babysitting, CLI waits, terminal inspection, status narration, retries, or replacements. Report terminal failures.
+Finish independent work and yield. On notification, read worker status and activity once each. While running: no babysitting, CLI waits, terminal inspection, status narration, retries, or replacements. Report terminal failures.
 
 Keep Neon turns short; stop and resume instead of steering to change course mid-turn.
 

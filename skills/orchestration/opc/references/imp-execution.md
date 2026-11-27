@@ -6,9 +6,9 @@ Call `createTask({workingDirectory, runDirectory, owner, baseRef, delivery:'merg
 
 ## Agent launch
 
-Use Paseo children that survive PM steering. Inspect target providers: Pi must be available with no modes (omit `modeId`); others need one advertised unattended full-permission mode. Ambiguity stops the lane. Do not discover or narrate Paseo profiles. Never substitute CLI launch or wait; neither installs finish callbacks.
-On Pi, call `tools.mcp__paseo__create_agent` / `tools.mcp__paseo__send_agent_prompt` via codemode (`exposure: codemode`) with `notifyOnFinish: true`.
-`paseo send` never notifies on finish; without `PASEO_AGENT_ID`, it defaults to interrupt, not steer. Queue a same-step one-shot check-back for every CLI worker send.
+Use Paseo children that survive PM steering. Inspect providers: Pi must be available with no modes (omit `modeId`); others need one advertised unattended full-permission mode. Stop on ambiguity. Never discover or narrate Paseo profiles. CLI launch/wait lack finish callbacks; never substitute them.
+On Pi, call `tools.mcp__paseo__create_agent` / `tools.mcp__paseo__send_agent_prompt` via codemode (`exposure: codemode`) with `notifyOnFinish: true`. On finish, call `get_agent_status` and `get_agent_activity` once each.
+`paseo send` never notifies on finish; without `PASEO_AGENT_ID`, default steer becomes interrupt. Every CLI worker send requires a same-step one-shot check-back.
 
 Only explicitly read-only scouts, `plan` and `research` Workers, reviewers, and advisors may share the PM workspace with `workspaceId` omitted. Any possible editing requires the Worker placement below.
 
