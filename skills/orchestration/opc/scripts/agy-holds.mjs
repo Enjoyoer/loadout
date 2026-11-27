@@ -99,7 +99,8 @@ export function readDevinReady(now = Date.now(), path = devinReadyPath()) {
 // Exact root {ok: boolean, as_of: RFC3339Z, expires_at: RFC3339Z, reason?: string, buckets: Record<string, {group, left, reset}>}.
 // Exact producer group labels: 'Gemini Models' (gemini-5h, gemini-weekly) for Neon; 'Claude and GPT models' (3p-5h,
 // 3p-weekly) for agy Opus. A model is held iff either of its own buckets has left <= 0.02 and now < reset (past reset
-// cannot hold). Unreadable, stale, ok !== true, or invalid projection is ignored cleanly (error holds remain active).
+// cannot hold). A full bucket (left === 1) may have reset: null until its window starts, and never holds.
+// Unreadable, stale, ok !== true, or invalid projection is ignored cleanly (error holds remain active).
 export function evaluateAgyQuotaProjection(doc, now = Date.now()) {
   const none = Object.freeze({ [REPLACEMENT_RUNTIME.model]: false, [OPUS_REPLACEMENT_RUNTIME.model]: false });
   if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return none;
@@ -113,7 +114,7 @@ export function evaluateAgyQuotaProjection(doc, now = Date.now()) {
   for (const bucket of Object.values(doc.buckets)) {
     if (!exactKeys(bucket, ['group', 'left', 'reset']) || typeof bucket.group !== 'string' || !bucket.group ||
         typeof bucket.left !== 'number' || !Number.isFinite(bucket.left) || bucket.left < 0 || bucket.left > 1 ||
-        parseRfc3339Utc(bucket.reset) == null) {
+        (!(bucket.left === 1 && bucket.reset === null) && parseRfc3339Utc(bucket.reset) == null)) {
       return none;
     }
   }
@@ -126,7 +127,7 @@ export function evaluateAgyQuotaProjection(doc, now = Date.now()) {
       const bucket = doc.buckets[bucketKey];
       if (bucket.group !== spec.group) return none;
       const resetMs = parseRfc3339Utc(bucket.reset);
-      if (bucket.left <= AGY_QUOTA_HOLD_THRESHOLD && now < resetMs) modelHeld = true;
+      if (resetMs != null && bucket.left <= AGY_QUOTA_HOLD_THRESHOLD && now < resetMs) modelHeld = true;
     }
     held[modelId] = modelHeld;
   }
