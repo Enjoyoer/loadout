@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "7fdef1c9b75bbd165de3ce7b7ad1155af50ba458",
+  "source_commit": "cb344cf5edd336454e9ea43ecfa137b4b83a94fd",
   "skill_count": 25,
   "file_count": 153,
   "files": [
@@ -240,8 +240,8 @@
       "path": "skills/orchestration/opc/references/routing.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 36572,
-      "sha256": "683abeae12bebf014bb06cc42bc67d0629b2a3da377cea689bef34445774af22"
+      "bytes": 36640,
+      "sha256": "8e4cbfe8985385c02c4f4f00822cb8ac5742b0881648b871f76f6c953507be27"
     },
     {
       "path": "skills/orchestration/opc/references/simplifier-review.md",
@@ -275,8 +275,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 89113,
-      "sha256": "a370d16ca910d540798aa892fd9b512154205110123ce33370f604cce637bd3f"
+      "bytes": 89269,
+      "sha256": "cf6568de3a916e816820c5e19a167c32b54e5408ecdc444ae2b8281f4ad784a1"
     },
     {
       "path": "skills/orchestration/opc/scripts/agy-holds.mjs",
@@ -310,8 +310,8 @@
       "path": "skills/orchestration/opc/scripts/route.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 49170,
-      "sha256": "d1225b798b91350776e247d3b222fe219273df8ee227ad152fe89ebd264adcd5"
+      "bytes": 49193,
+      "sha256": "d20fabeb1781ce7743c2761263a5719ad371c3b28780f99aca55f3b1417e60c1"
     },
     {
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
