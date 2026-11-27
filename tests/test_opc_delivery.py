@@ -2139,8 +2139,17 @@ class OpcDeliveryTest(unittest.TestCase):
             assert.equal(mainPm2.nextFallback, 'cursor/gemini-4-neon');
 
             // 3. opn-browser resolves deterministically to native Codex gpt-6.2-sol low Fast on (owner 412a); browser stays
-            // native Codex Sol low Fast on.
-            const opnBr = runCli(['--class', 'opn-browser', '--catalog', catalogPath]);
+            // native Codex Sol low Fast on. opn-browser reads the native Codex catalog (unprefixed ids), never the Pi one.
+            const codexCatalog = [
+              {{ id: 'gpt-6.2-sol', label: 'Sol', thinkingOptions: [{{ id: 'low' }}, {{ id: 'high' }}] }},
+              {{ id: 'gpt-6.1-terra', label: 'Terra', thinkingOptions: [{{ id: 'low' }}] }},
+            ];
+            const codexCatalogPath = {json.dumps(str(root / 'live-codex-catalog.json'))};
+            writeFileSync(codexCatalogPath, JSON.stringify(codexCatalog));
+            const piOnly = runCli(['--class', 'opn-browser', '--catalog', catalogPath]);
+            assert.notEqual(piOnly.status, 0);
+            assert.match(piOnly.stderr, /exactly one native Codex gpt-6.2-sol at low thinking/);
+            const opnBr = runCli(['--class', 'opn-browser', '--catalog', codexCatalogPath]);
             assert.equal(opnBr.status, 0, opnBr.stderr);
             assert.match(opnBr.stderr, /route opn-browser: codex\\/gpt-6.2-sol effort=low fast=on host=srv-live-local next=none/);
             const opnBrJson = JSON.parse(opnBr.stdout);
@@ -2154,18 +2163,18 @@ class OpcDeliveryTest(unittest.TestCase):
             assert.equal(codexBr.effort, 'low');
             assert.equal(codexBr.fast, true);
             // opn-browser cannot be recorded as a managed Worker lane.
-            assert.notEqual(runCli(['--class', 'opn-browser', '--catalog', catalogPath, '--task', taskPath, '--lane', 'bad-opn-br']).status, 0);
+            assert.notEqual(runCli(['--class', 'opn-browser', '--catalog', codexCatalogPath, '--task', taskPath, '--lane', 'bad-opn-br']).status, 0);
             assert.equal(readTask(taskPath).routes?.['bad-opn-br'], undefined);
             // No caller override changes the opn-browser model, thinking, or Fast.
             for (const owner of [['--owner-model', 'fleet/claude-opus-5-5', '--owner-effort', 'high'],
               ['--owner-model', 'gpt-6.2-sol', '--owner-effort', 'high', '--owner-fast', 'off'], ['--owner-fast', 'off']]) {{
-              const refused = runCli(['--class', 'opn-browser', '--catalog', catalogPath, ...owner]);
+              const refused = runCli(['--class', 'opn-browser', '--catalog', codexCatalogPath, ...owner]);
               assert.notEqual(refused.status, 0);
               assert.match(refused.stderr, /opn-browser takes no --owner-model, --owner-effort, or --owner-fast/);
             }}
             // A catalog that does not serve exactly one gpt-6.2-sol at low thinking stops the lane.
             const noLowPath = {json.dumps(str(root / 'live-catalog-nolow.json'))};
-            writeFileSync(noLowPath, JSON.stringify(catalog.map(row => ({{ ...row, thinkingOptions: [{{ id: 'high' }}] }}))));
+            writeFileSync(noLowPath, JSON.stringify(codexCatalog.map(row => ({{ ...row, thinkingOptions: [{{ id: 'high' }}] }}))));
             const noLow = runCli(['--class', 'opn-browser', '--catalog', noLowPath]);
             assert.notEqual(noLow.status, 0);
             assert.match(noLow.stderr, /exactly one native Codex gpt-6.2-sol at low thinking/);
@@ -2173,7 +2182,7 @@ class OpcDeliveryTest(unittest.TestCase):
             const recBr = runCli(['--class', 'browser', '--catalog', catalogPath, '--task', taskPath, '--lane', 'rec-br']);
             assert.equal(recBr.status, 0, recBr.stderr);
             const recBrRoute = readTask(taskPath).routes['rec-br'];
-            assert.equal(runCli(['--class', 'opn-browser', '--catalog', catalogPath, '--task', taskPath, '--lane', 'rec-br']).status === 0, false);
+            assert.equal(runCli(['--class', 'opn-browser', '--catalog', codexCatalogPath, '--task', taskPath, '--lane', 'rec-br']).status === 0, false);
             const recReplay = runCli(['--task', taskPath, '--lane', 'rec-br']);
             assert.equal(recReplay.status, 0, recReplay.stderr);
             assert.deepEqual(JSON.parse(recReplay.stdout).route, recBrRoute.route);
@@ -2182,14 +2191,18 @@ class OpcDeliveryTest(unittest.TestCase):
 
             // In-process launch boundary: the validated in-place builder makes exactly the native Codex request in the PM's
             // workspace and refuses every caller override of model, thinking, Fast, or workspace.
-            await assert.rejects(resolveWorkerRoute({{ taskClass: 'opn-browser', catalog, lane: 'opn-br',
+            await assert.rejects(resolveWorkerRoute({{ taskClass: 'opn-browser', catalog: codexCatalog, lane: 'opn-br',
               ownerRoute: {{ role: 'worker', source: 'owner-explicit', model: 'fleet/gpt-6.2-sol', effort: 'high', fastMode: false }} }}),
               /opn-browser takes no owner-named route/);
-            const opnLive = await resolveWorkerRoute({{ taskClass: 'opn-browser', catalog, lane: 'opn-br' }});
+            // A Pi-only fleet/gpt-6.2-sol row never authorizes the lane, in the resolver or the builder.
+            await assert.rejects(resolveWorkerRoute({{ taskClass: 'opn-browser', catalog, lane: 'opn-br' }}),
+              /exactly one native Codex gpt-6.2-sol at low thinking/);
+            await assert.rejects(resolveWorkerRoute({{ taskClass: 'opn-browser', catalog: {{ pi: catalog }}, lane: 'opn-br' }}),
+              /exactly one native Codex gpt-6.2-sol at low thinking/);
+            const opnLive = await resolveWorkerRoute({{ taskClass: 'opn-browser', catalog: codexCatalog, lane: 'opn-br' }});
             assert.equal(opnLive.provider, 'codex/gpt-6.2-sol');
             const codexCaps = {{ enabled: true, status: 'available',
-              modes: [{{ id: 'read-only' }}, {{ id: 'full-access', isUnattended: true }}],
-              models: [{{ id: 'gpt-6.2-sol', thinkingOptions: [{{ id: 'low' }}, {{ id: 'high' }}] }}, {{ id: 'gpt-6.1-terra', thinkingOptions: [{{ id: 'low' }}] }}] }};
+              modes: [{{ id: 'read-only' }}, {{ id: 'full-access', isUnattended: true }}], models: codexCatalog }};
             const opnBuild = (extra, route = opnLive.route) => buildInPlaceWorkerRequest({{ title: 'Browse', initialPrompt: 'Go', route,
               taskClass: 'opn-browser', capabilities: codexCaps, lane: 'opn-br', ...extra }});
             const opnReq = opnBuild({{}});
@@ -2217,10 +2230,40 @@ class OpcDeliveryTest(unittest.TestCase):
               [{{ surface: 'codex' }}, /takes no surface or nativeAuthorization/],
               [{{ nativeAuthorization: 'owner-explicit' }}, /takes no surface or nativeAuthorization/],
               [{{ workerLabels: {{ 'opc.service-tier': 'standard' }} }}, /cannot set opc.service-tier/],
-              [{{ capabilities: piCaps }}, /exactly one unattended full-permission mode/],
               [{{ capabilities: {{ ...codexCaps, models: [{{ id: 'gpt-6.2-sol', thinkingOptions: [{{ id: 'high' }}] }}] }} }},
                 /exactly one native Codex gpt-6.2-sol at low thinking/],
+              [{{ capabilities: {{ ...codexCaps, models: catalog }} }}, /exactly one native Codex gpt-6.2-sol at low thinking/],
+              // Mode: exactly one native Codex full-access mode, and no other unattended mode beside it.
+              [{{ capabilities: piCaps }}, /exactly one native Codex gpt-6.2-sol at low thinking/],
+              [{{ capabilities: {{ ...codexCaps, modes: [] }} }}, /exactly one full-access mode and no other unattended mode/],
+              [{{ capabilities: {{ ...codexCaps, modes: [{{ id: 'full-access' }}, {{ id: 'full-access', isUnattended: true }}] }} }},
+                /exactly one full-access mode and no other unattended mode/],
+              [{{ capabilities: {{ ...codexCaps, modes: [{{ id: 'full-access' }}, {{ id: 'yolo', isUnattended: true }}] }} }},
+                /exactly one full-access mode and no other unattended mode/],
+              [{{ capabilities: {{ ...codexCaps, modes: [{{ id: 'auto', isUnattended: true }}] }} }},
+                /exactly one full-access mode and no other unattended mode/],
+              [{{ capabilities: {{ ...codexCaps, modes: [{{ id: 'full-access', isUnattended: false }}] }} }},
+                /exactly one full-access mode and no other unattended mode/],
+              // Class: an omitted or other taskClass never maps the opn-browser route to Pi or to browser.
+              [{{ taskClass: undefined }}, /launches only with taskClass opn-browser/],
+              [{{ taskClass: 'browser' }}, /launches only with taskClass opn-browser/],
+              [{{ taskClass: 'research' }}, /launches only with taskClass opn-browser/],
             ]) assert.throws(() => opnBuild(extra), pattern);
+            // Stock Paseo 0.15.3 Codex advertises full-access without isUnattended; that exact mode is the one selected.
+            const stockReq = opnBuild({{ capabilities: {{ ...codexCaps,
+              modes: [{{ id: 'read-only' }}, {{ id: 'auto' }}, {{ id: 'full-access' }}] }} }});
+            assert.equal(stockReq.modeId, 'full-access');
+            assert.deepEqual(stockReq.request, opnReq.request);
+            // The opn-browser route is never recorded or launched managed, whatever class the caller passes or omits.
+            const routesBefore = structuredClone(readTask(taskPath).routes);
+            for (const taskClass of [undefined, 'browser', 'opn-browser']) {{
+              assert.throws(() => recordWorkerRoute(taskPath, {{ lane: 'opn-rec', route: opnLive.route, reason: opnLive.reason, taskClass }}),
+                /opn-browser is a resolver-only policy and cannot be recorded/);
+              assert.throws(() => buildManagedWorkerRequest({{ taskId: readTask(taskPath).id, lane: 'opn-rec', title: 'Browse',
+                initialPrompt: 'Go', route: opnLive.route, task: readTask(taskPath), taskClass, capabilities: codexCaps,
+                workspace: {{ workspaceId: 'wks-managed', cwd: '/tmp/managed' }} }}), /never a managed worktree/);
+            }}
+            assert.deepEqual(readTask(taskPath).routes, routesBefore);
             // Pasted, other-lane, or other-class routes never launch as opn-browser.
             assert.throws(() => opnBuild({{}}, structuredClone(opnLive.route)), /pasted, remembered, or stale routes are refused/);
             assert.throws(() => opnBuild({{ lane: 'opn-other' }}), /bound to lane opn-br/);

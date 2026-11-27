@@ -1,6 +1,6 @@
 import {
   assertLiveResolution, CURSOR_OVERFLOW_LABEL, CURSOR_OVERFLOW_SOURCE, DEVIN_FIRST_SOURCE, isGptOrWebRoute, OFF_PACE_SOURCES, OPN_BROWSER_EXCEPTION,
-  replacementSettings, resolveOpnBrowserRow, resolveWorkerSurface,
+  isOpnBrowserRoute, replacementSettings, resolveOpnBrowserRow, resolveWorkerSurface, selectOpnBrowserMode,
 } from './agent-routing.mjs';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -117,6 +117,9 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
   agentSettings = {}, workerLabels = {}, workspace, capabilities, role = 'worker', route, surface = 'pi',
   nativeAuthorization = null, task = null, taskClass = null, target = null, remote = null }) {
   if (role !== 'worker') throw Error(`buildManagedWorkerRequest builds only Workers (role worker), not ${String(role)}`);
+  if (taskClass === 'opn-browser' || isOpnBrowserRoute(route)) {
+    throw Error('an opn-browser Worker runs in the PM\'s own workspace (buildInPlaceWorkerRequest), never a managed worktree');
+  }
   // A remote target is only a recorded off-pace lane's (replacement or bound pace-backup), with a fresh attestation
   // readRemoteAgyTarget / readRemoteNeonTarget returned.
   const remoteLaunch = target?.local === false;
@@ -191,6 +194,10 @@ export function buildInPlaceWorkerRequest({ title, initialPrompt, route, taskCla
   if (OFF_PACE_SOURCES.includes(route?.source) || route?.source === DEVIN_FIRST_SOURCE) {
     throw Error(`a ${route.source} route requires managed worktree placement (buildManagedWorkerRequest)`);
   }
+  // An opn-browser route keeps its own class: an omitted or other taskClass never maps it to Pi or to browser.
+  if (isOpnBrowserRoute(route) && taskClass !== 'opn-browser') {
+    throw Error('an opn-browser route launches only with taskClass opn-browser, never as Pi or the browser class');
+  }
   assertLiveResolution(route, { lane: laneSlug, taskClass, target, inPlace: true });
   if (taskClass === 'opn-browser') {
     // Owner decision 412a: native Codex gpt-6.2-sol, thinking low, Fast on, in the PM's own workspace (no workspaceId, so
@@ -210,7 +217,7 @@ export function buildInPlaceWorkerRequest({ title, initialPrompt, route, taskCla
     if (Object.keys(agentSettings ?? {}).length && !isDeepStrictEqual(agentSettings, requested)) {
       throw Error(`opn-browser settings must be exactly ${effort} thinking with Fast on; no caller override changes them`);
     }
-    const modeId = selectUnattendedMode(capabilities);
+    const modeId = selectOpnBrowserMode(capabilities);
     return Object.freeze({
       modeId,
       request: Object.freeze({

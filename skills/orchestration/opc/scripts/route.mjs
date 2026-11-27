@@ -14,7 +14,7 @@ import {
   assertLiveResolution, canonicalWorkerClass, CURSOR_OVERFLOW_REASON, CURSOR_OVERFLOW_RUNTIME, CURSOR_OVERFLOW_SOURCE,
   cursorEligibilityProblem, DEVIN_FIRST_CLASSES, DEVIN_FIRST_RUNTIME, DEVIN_FIRST_SOURCE,
   devinFirstReason, isReplacementMode, isTargetId, isUiRoute, launcherChain, LEGACY_OFF_PACE_CLASSES,
-  localServerId, MAIN_PM_POLICY, OFF_PACE_CLASSES, OFF_PACE_SOURCES, offPaceLaunchAllowed, OPN_BROWSER_EXCEPTION,
+  isOpnBrowserRoute, localServerId, MAIN_PM_POLICY, OFF_PACE_CLASSES, OFF_PACE_SOURCES, offPaceLaunchAllowed, OPN_BROWSER_EXCEPTION,
   OPUS_REPLACEMENT_RUNTIME, OWNER_RULE_ROUTES, PACE_BACKUP_RUNTIME, paceBackupReason, PARITY_BACKUP_REASON,
   parityReason, readLocalRouting, recordedLaneEntry, replacementReason, REPLACEMENT_RUNTIME,
   replacementRuntimeForModel, resolveOpnBrowserRow, routeReason, selectWorkerRoute, stampLiveResolution, UI_CLASSES,
@@ -511,8 +511,9 @@ function liveReadOnlyDecision({ taskClass, catalog, task = null, lane = null, no
   }
 
   if (taskClass === 'opn-browser') {
-    // Owner decision 412a: native Codex gpt-6.2-sol low, Fast on, in the PM's own workspace; the catalog must serve it.
-    resolveOpnBrowserRow(Array.isArray(catalog) ? catalog : catalog?.pi);
+    // Owner decision 412a: native Codex gpt-6.2-sol low, Fast on, in the PM's own workspace; the native Codex catalog
+    // (`paseo provider models codex`) must serve it, and a Pi catalog never does.
+    resolveOpnBrowserRow(Array.isArray(catalog) ? catalog : catalog?.codex);
     const { provider, model, effort, fastMode, reason } = OPN_BROWSER_EXCEPTION;
     const route = Object.freeze({ role: 'worker', source: 'owner-explicit', model, effort, fastMode });
     return decisionEnvelope({
@@ -701,6 +702,9 @@ function recordLane(task, { lane, route, reason, taskClass = null, catalog = nul
 
 const ALTERNATION_LOCK_WAIT_MS = 10000;
 export function recordWorkerRoute(taskPath, { lane, route, reason, taskClass = null, catalog = null, replacement = null }) {
+  if (taskClass === 'opn-browser' || isOpnBrowserRoute(route)) {
+    throw Error('opn-browser is a resolver-only policy and cannot be recorded as a managed Worker lane');
+  }
   const options = { lane, route, reason, taskClass, catalog, replacement };
   const write = (state, pre, counting) => {
     let result;
@@ -761,11 +765,12 @@ const readJson = (path, what) => {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch (error) { throw Error(`${what} ${path} unreadable (${error.message})`); }
 };
 
-async function readCatalog(path) {
+// provider is pi, or codex for opn-browser, whose --catalog FILE holds native Codex rows.
+async function readCatalog(path, provider = 'pi') {
   if (path) return catalogRows(readJson(path, 'catalog'));
   const [file, args, verbatim] = process.platform === 'win32'
-    ? [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '"paseo provider models pi --json"'], true]
-    : ['paseo', ['provider', 'models', 'pi', '--json'], false];
+    ? [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"paseo provider models ${provider} --json"`], true]
+    : ['paseo', ['provider', 'models', provider, '--json'], false];
   const { stdout } = await promisify(execFile)(file, args,
     { timeout: 60000, maxBuffer: 16 << 20, encoding: 'utf8', windowsVerbatimArguments: verbatim });
   return catalogRows(JSON.parse(stdout));
@@ -813,7 +818,8 @@ async function main(argv) {
   if (flags.task && (flags.class === 'main-pm' || flags.class === 'opn-browser')) {
     throw Error(`${flags.class} is a resolver-only policy and cannot be recorded as a managed Worker lane`);
   }
-  const catalog = ownerRoute || flags.class === 'main-pm' ? null : await readCatalog(flags.catalog);
+  const catalog = ownerRoute || flags.class === 'main-pm' ? null
+    : await readCatalog(flags.catalog, flags.class === 'opn-browser' ? 'codex' : 'pi');
   const resolved = await resolveWorkerRoute({ taskClass: flags.class ?? null, ownerRoute, catalog, task, lane: flags.lane ?? null });
   if (flags.task) {
     if (resolved.proofRequired || SPECIAL_SOURCES.includes(resolved.route?.source)) {
