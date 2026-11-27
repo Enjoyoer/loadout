@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "be2aca282219a12ba47b5bb34c8ae19eae4cf69c",
+  "source_commit": "b4cdb16917750fc4b536fc7ad563ceae5624659e",
   "skill_count": 25,
   "file_count": 153,
   "files": [
@@ -198,8 +198,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5107,
-      "sha256": "1bf899a7ec0ab042b715a66175273409f883603c49c697de8df624e173b3c48d"
+      "bytes": 4943,
+      "sha256": "89c473c6a5a57ecc3ca7d34039a4defd9e6e3a8ca83ef0387e7c02f24b98c329"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -219,8 +219,8 @@
       "path": "skills/orchestration/opc/references/imp-execution.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5542,
-      "sha256": "1608a7dd019e5c73d4c1e2535716ffb66344f905ce835950c2adbe0c7fa765f1"
+      "bytes": 5770,
+      "sha256": "b46f2f2809a6c9590c668cbafd642606d4a95d09af68795dc48a9dcb43419d93"
     },
     {
       "path": "skills/orchestration/opc/references/pr-evidence.md",
@@ -338,8 +338,8 @@
       "path": "skills/orchestration/opn/SKILL.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 10222,
-      "sha256": "e04f994106bb18d5f7e486f3fa4c8b461ce9cddb38ca9b52f8e562ee55227a52"
+      "bytes": 10332,
+      "sha256": "b25d2289b4bf2548ec58476f4da5aab5a699dd46b7a1e95d4e8c83d41511a23c"
     },
     {
       "path": "skills/orchestration/opn/agents/openai.yaml",
@@ -359,8 +359,8 @@
       "path": "skills/orchestration/opn/references/host-adapters.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 4107,
-      "sha256": "c13454d7f9b417cdb6d544dc5b503c81595d7c27dc32fdabce1290a3d2cceb3a"
+      "bytes": 4388,
+      "sha256": "c306c74eddb7023bdd0faf789a1dd65f1d8f8f14e46eb45f3bdb465dd3245bbc"
     },
     {
       "path": "skills/orchestration/opn/scripts/test_validate_opn.py",
