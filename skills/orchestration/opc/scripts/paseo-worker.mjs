@@ -1,6 +1,10 @@
-import { isGptOrWebRoute, OFF_PACE_SOURCES, replacementSettings, resolveWorkerSurface } from './agent-routing.mjs';
+import {
+  assertLiveResolution, CURSOR_OVERFLOW_LABEL, CURSOR_OVERFLOW_SOURCE, DEVIN_FIRST_SOURCE, isGptOrWebRoute, OFF_PACE_SOURCES, OPN_BROWSER_EXCEPTION,
+  replacementSettings, resolveCatalogLabel, resolveWorkerSurface,
+} from './agent-routing.mjs';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { readTask, recordWorkerLaunch } from './task-state.mjs';
 
 const lanePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const idPattern = /^[A-Za-z0-9-]{8,128}$/;
@@ -113,16 +117,23 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
   agentSettings = {}, workerLabels = {}, workspace, capabilities, role = 'worker', route, surface = 'pi',
   nativeAuthorization = null, task = null, taskClass = null, target = null, remote = null }) {
   if (role !== 'worker') throw Error(`buildManagedWorkerRequest builds only Workers (role worker), not ${String(role)}`);
-  // A remote target is only a recorded replacement lane's, with the attestation readRemoteNeonTarget returned (decision 359).
+  // A remote target is only a recorded off-pace lane's (replacement or bound pace-backup), with a fresh attestation
+  // readRemoteAgyTarget / readRemoteNeonTarget returned.
   const remoteLaunch = target?.local === false;
-  if ((remote != null || remoteLaunch) && route?.source !== 'replacement') throw Error('only a recorded replacement lane launches on a remote target');
+  if ((remote != null || remoteLaunch) && !OFF_PACE_SOURCES.includes(route?.source)) {
+    throw Error('only a recorded off-pace lane launches on a remote target');
+  }
   const names = managedWorkerNames({ taskId, lane });
   const agentTitle = required(title, 'Worker title');
-  if (task != null && task.id !== taskId) throw Error('Worker task id must be the bound task record id');
+  // Every managed Worker is bound to its task record, so a live route resolved for one task never launches for another.
+  if (task == null || typeof task !== 'object') throw Error('a managed Worker launch takes task: readTask(taskPath), whose id is taskId');
+  if (task.id !== taskId) throw Error('Worker task id must be the bound task record id');
   const mappedRoute = resolveWorkerSurface({ provider, agentSettings, role, route, surface, nativeAuthorization,
     catalog: capabilities?.models, task, lane, taskClass, capabilities, target, serverId: workspace?.serverId, remote, workspace });
   const replacement = route?.source === 'replacement';
-  if (OFF_PACE_SOURCES.includes(route?.source) && route.receipt?.placement !== names.branchName) {
+  const cursorOverflow = route?.source === CURSOR_OVERFLOW_SOURCE;
+  if ((OFF_PACE_SOURCES.includes(route?.source) || route?.source === DEVIN_FIRST_SOURCE) &&
+      route.receipt?.placement !== names.branchName) {
     throw Error(`${route.source} receipt placement is not this lane's branch`);
   }
   const agentProvider = mappedRoute.provider;
@@ -133,8 +144,9 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
   }
   // Pi exposes no modes and executes its tools without a permission-mode selector.
   // This exception applies only to advertised, available Pi, never other providers.
+  const effectiveCapabilities = mappedRoute.capabilities ?? capabilities;
   const pi = agentProvider.split('/')[0] === 'pi';
-  const modeId = replacement ? mappedRoute.modeId : pi ? selectPiMode(capabilities) : selectUnattendedMode(capabilities);
+  const modeId = replacement || cursorOverflow ? mappedRoute.modeId : pi ? selectPiMode(effectiveCapabilities) : selectUnattendedMode(effectiveCapabilities);
   const prompt = managedPrompt(initialPrompt, { workspaceId: workspace.workspaceId, worktreePath: workspace.cwd, branchName: names.branchName });
   return Object.freeze({
     workspaceId: workspace.workspaceId,
@@ -153,15 +165,78 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
       settings: { ...requestedSettings, ...(modeId ? { modeId } : {}) },
       // Fast is the Pi Fast toggle label. A GPT route with no label runs Standard (Fast is off by default), and Off
       // on a GPT route is still an explicit Standard; other routes have no service tier and get no label.
-      labels: { ...labels(workerLabels), role: 'worker', 'opc.worker-task': taskId, 'opc.worker-lane': lane,
+      labels: { ...labels(workerLabels), ...(cursorOverflow ? { lane: CURSOR_OVERFLOW_LABEL } : {}), role: 'worker',
+        'opc.worker-task': taskId, 'opc.worker-lane': lane,
         ...(pi && route?.fastMode === true ? { 'opc.service-tier': 'fast' }
-          : pi && isGptOrWebRoute(route, capabilities?.models) ? { 'opc.service-tier': 'standard' } : {}),
+          : pi && isGptOrWebRoute(route, effectiveCapabilities?.models) ? { 'opc.service-tier': 'standard' } : {}),
         ...(role === 'worker' && typeof route?.source === 'string' ? { 'opc.route-source': route.source } : {}) },
     }),
   });
 }
 
-export function validateManagedWorkerLaunch(prepared, created) {
+// Launch-boundary builder for in-place PM-workspace Workers (OPN non-managed workers and read-only lanes, including
+// opn-browser): enforces a fresh live route from resolveWorkerRoute bound to exact lane, class, target, and current
+// live policy/daemon state. Rejects pasted/remembered routes, stale local runtime, and routes requiring managed placement.
+export function buildInPlaceWorkerRequest({ title, initialPrompt, route, taskClass, capabilities, lane,
+  workerLabels = {}, target = null, provider, agentSettings = {}, surface = 'pi', nativeAuthorization = null }) {
+  const agentTitle = required(title, 'Worker title');
+  const prompt = required(initialPrompt, 'initial prompt');
+  const laneSlug = required(lane, 'Worker lane');
+  if (!lanePattern.test(laneSlug) || laneSlug.length > 40) throw Error('Worker lane must be a lowercase hyphenated slug');
+  if (target?.local === false) throw Error('in-place Worker launches stay in the local PM workspace');
+  // An in-place Worker runs its validated route's own mapping: no caller surface or native authorization moves it off Pi.
+  if (surface !== 'pi' || nativeAuthorization != null) {
+    throw Error('an in-place Worker takes no surface or nativeAuthorization; it runs its validated route\'s own mapping');
+  }
+  if (OFF_PACE_SOURCES.includes(route?.source) || route?.source === DEVIN_FIRST_SOURCE) {
+    throw Error(`a ${route.source} route requires managed worktree placement (buildManagedWorkerRequest)`);
+  }
+  assertLiveResolution(route, { lane: laneSlug, taskClass, target, inPlace: true });
+  if (taskClass === 'opn-browser') {
+    const modeId = selectPiMode(capabilities);
+    const row = resolveCatalogLabel(capabilities?.models, OPN_BROWSER_EXCEPTION.label);
+    if (route.model !== row.id || route.effort !== OPN_BROWSER_EXCEPTION.effort || route.fastMode !== true ||
+        !row.thinkingOptions?.some(option => option?.id === OPN_BROWSER_EXCEPTION.effort)) {
+      throw Error('opn-browser route does not match the target Pi Sol low catalog row');
+    }
+    return Object.freeze({
+      modeId,
+      request: Object.freeze({
+        title: agentTitle,
+        provider: `pi/${row.id}`,
+        initialPrompt: prompt,
+        notifyOnFinish: true,
+        settings: { thinkingOptionId: route.effort },
+        labels: { ...labels(workerLabels), role: 'worker', 'opc.worker-lane': laneSlug,
+          'opc.service-tier': 'fast', 'opc.route-source': 'opn-browser' },
+      }),
+    });
+  }
+  const mappedRoute = resolveWorkerSurface({ provider, agentSettings, role: 'worker', route, surface, nativeAuthorization,
+    catalog: capabilities?.models, lane: laneSlug, taskClass, capabilities, target, inPlace: true });
+  const agentProvider = mappedRoute.provider;
+  const requestedSettings = settings(mappedRoute.agentSettings);
+  const pi = agentProvider.split('/')[0] === 'pi';
+  const modeId = pi ? selectPiMode(capabilities) : selectUnattendedMode(capabilities);
+  return Object.freeze({
+    modeId,
+    request: Object.freeze({
+      title: agentTitle,
+      provider: agentProvider,
+      initialPrompt: prompt,
+      notifyOnFinish: true,
+      settings: { ...requestedSettings, ...(modeId ? { modeId } : {}) },
+      labels: { ...labels(workerLabels), role: 'worker', 'opc.worker-lane': laneSlug,
+        ...(pi && route?.fastMode === true ? { 'opc.service-tier': 'fast' }
+          : pi && isGptOrWebRoute(route, capabilities?.models) ? { 'opc.service-tier': 'standard' } : {}),
+        ...(typeof route?.source === 'string' ? { 'opc.route-source': route.source } : {}) },
+    }),
+  });
+}
+
+// With taskPath (the documented launch workflow), an agy-opc replacement lane's created Worker agent and workspace ids are
+// recorded on that lane for the error backstop (agy-holds.mjs record-terminal); other lanes record nothing.
+export function validateManagedWorkerLaunch(prepared, created, taskPath = undefined) {
   if (!prepared?.workspaceId || !prepared?.request || prepared.request.notifyOnFinish !== true) {
     throw Error('prepared MCP create_agent request required');
   }
@@ -173,6 +248,13 @@ export function validateManagedWorkerLaunch(prepared, created) {
   }
   if (prepared.request.serverId != null && created.serverId !== prepared.request.serverId) {
     throw Error('Paseo did not report the Worker on the verified remote server; retain both for reconciliation');
+  }
+  if (taskPath !== undefined) {
+    const lane = prepared.request.labels?.['opc.worker-lane'], task = readTask(taskPath);
+    if (task.id !== prepared.request.labels?.['opc.worker-task']) throw Error('the prepared Worker is not this task\'s');
+    if (typeof lane === 'string' && task.routes && Object.hasOwn(task.routes, lane) && task.routes[lane].route?.source === 'replacement') {
+      recordWorkerLaunch(taskPath, { lane, agentId: created.agentId, workspaceId: prepared.workspaceId });
+    }
   }
   return Object.freeze({
     agentId: created.agentId,

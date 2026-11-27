@@ -12,6 +12,7 @@ const efforts = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 const identity = task => JSON.stringify([
   task.schema, task.id, task.owner, task.repository, task.contract_version, task.delivery, task.browser_review, task.ui ?? false,
+  task.payment_data ?? null,
 ]);
 
 const SCRIPT = fileURLToPath(import.meta.url);
@@ -150,6 +151,36 @@ function validateRoutes(routes) {
   }
 }
 
+// Launched managed Workers, per lane: the daemon's agent and workspace ids written at launch (validateManagedWorkerLaunch),
+// append-only. The agy error backstop binds a hold to one of these, never to an agent that only carries the lane's labels.
+const MAX_LANE_LAUNCHES = 16;
+function validateLaunches(launches) {
+  if (launches == null) return;
+  const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const id = value => typeof value === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(value);
+  if (!object(launches)) throw Error('invalid Worker launch records');
+  const agents = new Set();
+  for (const [lane, entries] of Object.entries(launches)) {
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(lane) || !Array.isArray(entries) || !entries.length || entries.length > MAX_LANE_LAUNCHES) {
+      throw Error(`invalid Worker launch records for lane ${lane}`);
+    }
+    for (const entry of entries) {
+      if (!object(entry) || Object.keys(entry).length !== 3 || !id(entry.agent_id) || !id(entry.workspace_id) ||
+          typeof entry.recorded_at !== 'string' || Number.isNaN(Date.parse(entry.recorded_at)) || agents.has(entry.agent_id)) {
+        throw Error(`invalid Worker launch record for lane ${lane}`);
+      }
+      agents.add(entry.agent_id);
+    }
+  }
+}
+
+export function recordWorkerLaunch(taskPath, { lane, agentId, workspaceId }) {
+  return updateTask(taskPath, task => {
+    task.launches ??= {};
+    (task.launches[lane] ??= []).push({ agent_id: agentId, workspace_id: workspaceId, recorded_at: new Date().toISOString() });
+  });
+}
+
 function validate(task, path) {
   if (task.schema !== 'opc_task_v2' || task.contract_version !== 2) {
     throw Error('incompatible task contract; create a fresh task');
@@ -163,6 +194,9 @@ function validate(task, path) {
   if (!['local', 'pr', 'merge'].includes(task.delivery)) throw Error('invalid task delivery target');
   if (typeof task.browser_review !== 'boolean') throw Error('browser review choice required');
   if (typeof (task.ui ?? false) !== 'boolean') throw Error('UI choice must be boolean');
+  if (Object.hasOwn(task, 'payment_data') && typeof task.payment_data !== 'boolean') {
+    throw Error('payment_data sensitivity flag must be boolean');
+  }
   if (task.ui && task.browser_review) throw Error('UI work never uses the web reviewer (owner rule)');
   if (!['ready', 'cancelled'].includes(task.status)) throw Error('invalid task status');
   // Only the native CLI Worker (worker.mjs, removed in OPC 7.28) wrote task.worker; a leftover record is refused, never read or dropped.
@@ -173,6 +207,7 @@ function validate(task, path) {
   validateReviewer(task.reviewer, task);
   // task.cloud is a lane record from OPC 7.40 and earlier. Nothing reads or checks it; an update carries it unchanged.
   validateRoutes(task.routes);
+  validateLaunches(task.launches);
   return task;
 }
 
@@ -197,7 +232,9 @@ export function readTask(taskPath) {
 }
 
 // ui marks UI work: only read-only ui-design and ui-check lanes on Fable high, never a GPT or web lane (owner rule). It is immutable like browserReview.
-export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'HEAD', delivery = 'local', browserReview = false, ui = false }) {
+// paymentData (optional boolean) records task-level payment-data sensitivity (immutable; required false for Cursor overflow).
+export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'HEAD', delivery = 'local', browserReview = false, ui = false, paymentData = undefined }) {
+  if (paymentData !== undefined && typeof paymentData !== 'boolean') throw Error('paymentData sensitivity flag must be boolean');
   canonicalPath(workingDirectory);
   canonicalPath(runDirectory);
   if (within(runDirectory, workingDirectory) || within(workingDirectory, runDirectory)) {
@@ -214,6 +251,7 @@ export function createTask({ workingDirectory, runDirectory, owner, baseRef = 'H
   }
   const task = {
     schema: 'opc_task_v2', id: randomUUID(), owner, delivery, browser_review: browserReview, ui,
+    ...(paymentData !== undefined ? { payment_data: paymentData } : {}),
     repository: {
       working_directory: workingDirectory,
       remote: git(workingDirectory, 'remote', 'get-url', 'origin'),
@@ -279,8 +317,10 @@ function releaseOwn(path, token) {
 // time. A running or unknown holder, or a lock with no pid, is refused. Nothing calls this implicitly.
 export function unlockTask(taskPath) {
   canonicalPath(taskPath);
-  // The same lock guards a task record and the decision 359 alternation state (route.mjs).
-  const name = basename(taskPath) === 'code-alternation.json' ? 'alternation lock' : 'task lock';
+  // The same lock guards a task record, the decision 359 alternation state (route.mjs), and agy model holds (agy-holds.mjs).
+  const base = basename(taskPath);
+  const name = base === 'code-alternation.json' ? 'alternation lock'
+    : base === 'agy-model-holds.json' ? 'model-holds lock' : 'task lock';
   const lock = `${taskPath}.lock`, held = lockHolder(lock);
   if (!held) return `no ${name}`;
   if (!['gone', 'reused'].includes(held.state)) throw Error(`${name} kept: held by ${holderText(held)}`);
@@ -328,6 +368,11 @@ function writeLockedTask(taskPath, mutator, held) {
     for (const [lane, entry] of Object.entries(old.routes ?? {})) {
       if (JSON.stringify(entry) !== JSON.stringify(task.routes?.[lane])) throw Error(`immutable Worker route for lane ${lane} changed`);
     }
+    for (const [lane, entries] of Object.entries(old.launches ?? {})) {
+      if (JSON.stringify(entries) !== JSON.stringify(task.launches?.[lane]?.slice(0, entries.length))) {
+        throw Error(`recorded Worker launches for lane ${lane} changed`);
+      }
+    }
     validate(task, taskPath);
     temporary = join(dirname(taskPath), `.task-${randomUUID()}.tmp`);
     const fd = openSync(temporary, 'wx', 0o600);
@@ -346,7 +391,9 @@ function writeLockedTask(taskPath, mutator, held) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     const [command, path, ...rest] = process.argv.slice(2);
-    if (command !== 'unlock' || !path || rest.length) throw Error('usage: task-state.mjs unlock <task.json | code-alternation.json>');
+    if (command !== 'unlock' || !path || rest.length) {
+      throw Error('usage: task-state.mjs unlock <task.json | code-alternation.json | agy-model-holds.json>');
+    }
     console.log(unlockTask(path));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

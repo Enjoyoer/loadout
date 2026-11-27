@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Worker route resolver. A PM launch and `node scripts/route.mjs` share resolveWorkerRoute, so the task record,
-// the Worker brief, and the CLI all carry the same route and one-line reason.
+// Single deterministic Worker/policy route resolver. A PM launch (managed or in-place) and `node scripts/route.mjs`
+// share resolveWorkerRoute, binding every fresh launch to the exact lane, target, and live Mac policy/projections.
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
@@ -10,19 +10,29 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual, promisify } from 'node:util';
-import { canonicalWorkerClass, isReplacementMode, isTargetId, isUiRoute, launcherChain, localServerId, OFF_PACE_CLASSES,
-  OFF_PACE_SOURCES, offPaceLaunchAllowed, OWNER_RULE_ROUTES, PACE_BACKUP_RUNTIME, paceBackupReason, PARITY_BACKUP_REASON,
-  PARITY_REASON, recordedLaneEntry, replacementReason, REPLACEMENT_RUNTIME, routeReason, selectWorkerRoute, UI_CLASSES,
-  uiTaskLaneClass, validateLaneClass, readLocalRouting, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved } from './agent-routing.mjs';
+import {
+  assertLiveResolution, canonicalWorkerClass, CURSOR_OVERFLOW_REASON, CURSOR_OVERFLOW_RUNTIME, CURSOR_OVERFLOW_SOURCE,
+  cursorEligibilityProblem, DEVIN_FIRST_CLASSES, DEVIN_FIRST_RUNTIME, DEVIN_FIRST_SOURCE,
+  devinFirstReason, isReplacementMode, isTargetId, isUiRoute, launcherChain, LEGACY_OFF_PACE_CLASSES,
+  localServerId, MAIN_PM_POLICY, OFF_PACE_CLASSES, OFF_PACE_SOURCES, offPaceLaunchAllowed, OPN_BROWSER_EXCEPTION,
+  OPUS_REPLACEMENT_RUNTIME, OWNER_RULE_ROUTES, PACE_BACKUP_RUNTIME, paceBackupReason, PARITY_BACKUP_REASON,
+  parityReason, readLocalRouting, recordedLaneEntry, replacementReason, REPLACEMENT_RUNTIME,
+  replacementRuntimeForModel, resolveCatalogLabel, routeReason, selectWorkerRoute, stampLiveResolution, UI_CLASSES,
+  uiTaskLaneClass, validateLaneClass, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved,
+} from './agent-routing.mjs';
+import {
+  activeModelHold, isDevinReadyProjection, readAgyQuotaProjectionHolds, readDevinReady, readModelHolds,
+} from './agy-holds.mjs';
 import { managedWorkerNames } from './paseo-worker.mjs';
-import { isMappedServer, remoteServesNeon, verifiedRemote } from './remote-target.mjs';
+import {
+  isMappedServer, remoteAgyProviderUnavailable, remoteCursorStep, remoteServesBackup, remoteServesModel, remoteServesNeon,
+  remoteServesOpus, verifiedRemote,
+} from './remote-target.mjs';
 import { readTask, updateTask, withFileLock } from './task-state.mjs';
 
-const usage = 'usage: route.mjs --class <class> [--catalog FILE] ' +
+const usage = 'usage: route.mjs --class <class|main-pm|opn-browser> [--catalog FILE] ' +
   '[--owner-model ID --owner-effort LEVEL [--owner-fast on|off]] [--task TASK_JSON --lane SLUG]';
 
-// Replacement opt-in: the antigravityFallback namespace of the user's ~/.config/opc/routing.json, written only by Config's
-// pace job and read strictly (readLocalRouting), never reported. Other keys (pq) are not read.
 const RFC3339_UTC = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,3}))?Z$/;
 function utcTime(value) {
   const m = typeof value === 'string' ? RFC3339_UTC.exec(value) : null;
@@ -35,10 +45,7 @@ function utcTime(value) {
 }
 const exactKeys = (value, keys) => value != null && typeof value === 'object' && !Array.isArray(value) &&
   isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort());
-// The switch, from the strictly read local routing file (readLocalRouting): exactly {enabled, state: {off_pace, as_of,
-// expires_at}} with RFC 3339 UTC times and as_of <= now < expires_at, and enabled and off_pace the same boolean. 'forced'
-// when both are true (off pace, decision 314a), 'parity' when both are false (not forced: decision 359 alternation; it
-// proves nothing about quota), null for anything else: absent, stale, malformed, unsafe or contradictory, which stays Opus.
+
 function switchMode(doc, now) {
   const fallback = doc?.antigravityFallback;
   if (!exactKeys(fallback, ['enabled', 'state']) || typeof fallback.enabled !== 'boolean') return null;
@@ -49,11 +56,27 @@ function switchMode(doc, now) {
   return fallback.enabled ? 'forced' : 'parity';
 }
 
-// Decision 359 alternation state: per launching agent (PASEO_AGENT_ID), the number of eligible code lanes admitted while
-// the switch said not forced. An even count gives an Opus turn, an odd one a Neon turn. It lives beside routing.json, which
-// it never touches, in an owner-only file read as strictly as that file: absent is an empty state, anything unreadable,
-// unsafe or malformed is null and keeps every lane on Opus without consuming a turn. Only recordWorkerRoute writes it,
-// under its lock, after the lane's record is written.
+// Decision 399a / 397c: exported pure validator for Config-owned devin-ready.json; live resolution always reads the
+// Mac file directly (no caller override).
+export const isDevinFirstReady = (signal, now = Date.now()) => isDevinReadyProjection(signal, now);
+
+// Live local policy snapshot used to verify at launch time that routing.json, devin-ready.json, agy-quota.json,
+// agy-model-holds.json, the launcher and Cursor exclusion lists, and the local daemon have not drifted since resolveWorkerRoute ran.
+function liveLocalPolicySnapshot(taskClass, now = Date.now()) {
+  if (process.platform !== 'darwin') return 'non-darwin';
+  const localSrv = localServerId();
+  const doc = readLocalRouting();
+  const mode = switchMode(doc, now);
+  const devin = readDevinReady(now);
+  const proj = readAgyQuotaProjectionHolds(now);
+  const holds = readModelHolds();
+  const holdsOk = holds != null;
+  const heldNH = holdsOk && localSrv ? activeModelHold(holds, localSrv, REPLACEMENT_RUNTIME.model, now) != null : false;
+  const heldOH = holdsOk && localSrv ? activeModelHold(holds, localSrv, OPUS_REPLACEMENT_RUNTIME.model, now) != null : false;
+  const exclusions = [doc?.replacementExcludedLaunchers ?? null, doc?.cursorExcludedProjects ?? null];
+  return JSON.stringify([taskClass, localSrv, mode, devin, proj, holdsOk, heldNH, heldOH, exclusions]);
+}
+
 const alternationPath = () => join(homedir(), '.config', 'opc', 'code-alternation.json');
 const MAX_LAUNCHERS = 256;
 const launcherId = id => typeof id === 'string' && /^[A-Za-z0-9-]{8,128}$/.test(id);
@@ -68,7 +91,6 @@ function readAlternation(path = alternationPath()) {
       text = readFileSync(fd, 'utf8');
     } finally { closeSync(fd); }
   } catch (error) { return error.code === 'ENOENT' ? { launchers: {} } : null; }
-  // An empty file is an empty state: recordWorkerRoute creates the file empty before it first takes the lock.
   if (text === '') return { launchers: {} };
   try {
     const doc = JSON.parse(text), launchers = doc?.launchers;
@@ -80,7 +102,6 @@ function readAlternation(path = alternationPath()) {
     return doc;
   } catch { return null; } // probe-ok: fails closed, a malformed alternation state keeps every lane on Opus; expires 2027-05-22
 }
-// Writes the state through a synced owner-only temporary file renamed over it, keeping the most recently admitted launchers.
 function writeAlternation(path, doc) {
   const entries = Object.entries(doc.launchers).sort(([, a], [, b]) => utcTime(b.at) - utcTime(a.at)).slice(0, MAX_LAUNCHERS);
   const temporary = join(resolve(path, '..'), `.code-alternation-${randomUUID()}.tmp`);
@@ -92,146 +113,565 @@ function writeAlternation(path, doc) {
   try { fsyncSync(dir); } finally { closeSync(dir); }
 }
 
-// The runtime proof the PM verified on the target, independent of the opt-in, may be at most this old.
 const REPLACEMENT_PROOF_MAX_AGE_MS = 60 * 60 * 1000;
-// Whether proof and target show the replacement runtime verified on the local Mac target within the window.
-function neonReady(proof, target, now) {
-  const runtime = REPLACEMENT_RUNTIME, verifiedAt = utcTime(proof?.verified_at);
-  return exactKeys(target, ['daemon', 'local', 'platform']) && isTargetId(target.daemon) &&
-    exactKeys(proof, ['provider', 'extends', 'model', 'thinking', 'mode', 'sandboxed', 'write', 'target', 'verified_at']) &&
-    proof.provider === runtime.provider && proof.extends === runtime.extends && proof.model === runtime.model &&
-    proof.thinking === runtime.effort && isReplacementMode(proof.mode) && proof.sandboxed === true && proof.write === true &&
-    isDeepStrictEqual(proof.target, target) && verifiedAt != null && verifiedAt <= now &&
-    now - verifiedAt <= REPLACEMENT_PROOF_MAX_AGE_MS;
-}
-// The off-pace route for a default Claude Worker lane (code Opus high; plan, ui-design and ui-check Fable high under
-// decision 366a), or null to keep the class default. context is the PM's structured launch context, never prompt text,
-// a label, an alias, or a record: task (readTask) and lane, and, for Neon, target {daemon, local: true, platform:
-// 'darwin'}, the local daemon it will launch on, and proof {provider, extends, model, thinking, mode, sandboxed: true,
-// write: true, target, verified_at}, the PM-verified capability on that target.
-// Only a fresh default lane of an eligible class (OFF_PACE_CLASSES; never a review, review-security, research, watcher,
-// smoke, browser, sites, owner-named route or PM), never one from an excluded launcher (offPaceLaunchAllowed), is
-// eligible (a recorded lane keeps its route). With unavailable, the PM's evidence that Neon cannot launch on the target
-// (newer than any fresh proof), it takes the Sol backup when the catalog serves it; else with a fresh proof it takes
-// Neon; else (no proof, no evidence) the class default. The opt-in is read last.
-// remote: for a remote target only, the attestation readRemoteNeonTarget returned for it (remote-target.mjs).
-const REPLACEMENT_CONTEXT_KEYS = ['task', 'lane', 'proof', 'target', 'unavailable', 'remote'];
-// unavailable {provider: 'agy-opc', target, checked_at, finding}: what MCP inspect_provider (with list_models) showed on
-// the same local target within the last hour: agy-opc missing, disabled, not available, or not serving the model at
-// high with mode auto.
-const UNAVAILABLE_FINDINGS = ['missing', 'disabled', 'not-available', 'not-serving'];
+const recent = (value, now) => { const at = utcTime(value); return at != null && at <= now && now - at <= REPLACEMENT_PROOF_MAX_AGE_MS; };
+
 const validTarget = target => exactKeys(target, ['daemon', 'local', 'platform']) && isTargetId(target.daemon) &&
   target.local === true && target.platform === 'darwin';
-// The admissible launch target of a context: the local Mac target with no attestation, or a remote target with a fresh
-// verified attestation of it that shows Neon served and no caller unavailable evidence (a remote takes no Sol backup).
+
+// Resolve/record only accepts resolve-time remote attestations (workspace === null), never launch-only attestations.
 const admissibleTarget = context => context?.target?.local === false
-  ? verifiedRemote(context.remote, context.target) && remoteServesNeon(context.remote) && context.unavailable === undefined
+  ? verifiedRemote(context.remote, context.target) && context.remote.workspace === null && context.unavailable === undefined &&
+    (remoteServesNeon(context.remote) || remoteServesOpus(context.remote) ||
+      (remoteAgyProviderUnavailable(context.remote) && remoteServesBackup(context.remote)))
   : validTarget(context?.target) && context?.remote === undefined && !isMappedServer(context.target.daemon);
-const recent = (value, now) => { const at = utcTime(value); return at != null && at <= now && now - at <= REPLACEMENT_PROOF_MAX_AGE_MS; };
-function neonUnavailable(unavailable, target, now) {
-  return validTarget(target) && exactKeys(unavailable, ['provider', 'target', 'checked_at', 'finding']) &&
-    unavailable.provider === REPLACEMENT_RUNTIME.provider && isDeepStrictEqual(unavailable.target, target) &&
-    UNAVAILABLE_FINDINGS.includes(unavailable.finding) && recent(unavailable.checked_at, now);
+
+const PROOF_KEYS = ['provider', 'extends', 'model', 'thinking', 'mode', 'sandboxed', 'write', 'target', 'verified_at'];
+function parseProofs(proof, target, now) {
+  const byModel = new Map();
+  if (proof === undefined) return { valid: true, byModel };
+  const list = Array.isArray(proof) ? proof : [proof];
+  if (list.length === 0 || list.length > 2) return { valid: false, byModel };
+  const seen = new Set();
+  for (const item of list) {
+    if (!exactKeys(item, PROOF_KEYS)) return { valid: false, byModel };
+    const runtime = replacementRuntimeForModel(item.model);
+    if (!runtime || item.provider !== runtime.provider || item.extends !== runtime.extends ||
+        item.thinking !== runtime.effort || !isReplacementMode(item.mode) || item.sandboxed !== true ||
+        item.write !== true || !isDeepStrictEqual(item.target, target) || seen.has(runtime.model)) {
+      return { valid: false, byModel };
+    }
+    seen.add(runtime.model);
+    const verifiedAt = utcTime(item.verified_at);
+    if (verifiedAt == null) return { valid: false, byModel };
+    if (verifiedAt <= now && now - verifiedAt <= REPLACEMENT_PROOF_MAX_AGE_MS) {
+      byModel.set(runtime.model, { verifiedAt, mode: item.mode });
+    }
+  }
+  return { valid: true, byModel };
 }
-// The admission of a fresh eligible off-pace lane: null when no off-pace rule applies (the plain class default), else
-// {route, parity}. route is the off-pace route (Neon or the Sol backup) or null for the class default. Forced (switch
-// true, decisions 314a and 366a): Neon with a fresh proof, the backup with newer fresh unavailable evidence, else null;
-// new paths (plan, ui-design, ui-check) bind a local target to the local daemon's own serverId, while forced 314a code
-// keeps its caller-target rule for existing receipts. Not forced (a valid fresh false, decision 359, code only): parity
-// {launcher, admitted, consumes} from the launcher's alternation state; an even admitted count is an Opus turn (route
-// null, consumes), an odd one a Neon turn that takes Neon or, with that evidence, the backup (consumes), and with
-// neither stays Opus without consuming. state is the alternation state already read under its lock; omitted, it is read
-// now (a resolve, which writes nothing); null (unreadable or malformed) admits nothing. pre {chain, localServer} holds
-// the slow reads (the launcher chain and the local daemon's serverId) taken earlier by recordWorkerRoute, so nothing
-// slow runs under the alternation lock; omitted, they are read now.
+
+const UNAVAILABLE_FINDINGS = ['missing', 'disabled', 'not-available', 'not-serving'];
+const PROVIDER_UNAVAILABLE_KEYS = ['provider', 'target', 'checked_at', 'finding'];
+const MODEL_UNAVAILABLE_KEYS = ['provider', 'target', 'checked_at', 'finding', 'model'];
+function parseUnavailable(unavailable, target, now) {
+  const byModel = new Map();
+  if (unavailable === undefined) return { valid: true, byModel };
+  if (!validTarget(target)) return { valid: false, byModel };
+  const list = Array.isArray(unavailable) ? unavailable : [unavailable];
+  if (list.length === 0 || list.length > 2) return { valid: false, byModel };
+  const record = (modelId, at) => {
+    const prev = byModel.get(modelId);
+    if (prev == null || at > prev) byModel.set(modelId, at);
+  };
+  for (const item of list) {
+    const isProviderWide = exactKeys(item, PROVIDER_UNAVAILABLE_KEYS);
+    const isModelScoped = !isProviderWide && exactKeys(item, MODEL_UNAVAILABLE_KEYS);
+    if (!isProviderWide && !isModelScoped) return { valid: false, byModel };
+    if (item.provider !== REPLACEMENT_RUNTIME.provider || !isDeepStrictEqual(item.target, target)) {
+      return { valid: false, byModel };
+    }
+    const checkedAt = utcTime(item.checked_at);
+    if (checkedAt == null) return { valid: false, byModel };
+    if (isProviderWide) {
+      if (!UNAVAILABLE_FINDINGS.includes(item.finding)) return { valid: false, byModel };
+      if (checkedAt <= now && now - checkedAt <= REPLACEMENT_PROOF_MAX_AGE_MS) {
+        record(REPLACEMENT_RUNTIME.model, checkedAt);
+        record(OPUS_REPLACEMENT_RUNTIME.model, checkedAt);
+      }
+    } else {
+      const runtime = replacementRuntimeForModel(item.model);
+      if (!runtime || item.finding !== 'not-serving') return { valid: false, byModel };
+      if (checkedAt <= now && now - checkedAt <= REPLACEMENT_PROOF_MAX_AGE_MS) {
+        record(runtime.model, checkedAt);
+      }
+    }
+  }
+  return { valid: true, byModel };
+}
+
+const FABLE_UNAVAILABLE_KEYS = ['provider', 'model', 'target', 'checked_at', 'finding'];
+const FABLE_UNAVAILABLE_FINDINGS = ['not-serving', 'quota-exhausted', 'unavailable'];
+function fableCannotServe(evidence, target, now) {
+  if (evidence === undefined) return false;
+  if (!exactKeys(evidence, FABLE_UNAVAILABLE_KEYS)) return false;
+  return evidence.provider === 'pi' && typeof evidence.model === 'string' &&
+    /(?:^|[/._-])fable(?:$|[/._[-])/i.test(evidence.model) &&
+    isDeepStrictEqual(evidence.target, target) &&
+    FABLE_UNAVAILABLE_FINDINGS.includes(evidence.finding) && recent(evidence.checked_at, now);
+}
+
+const piServesRow = (catalog, expected) => {
+  const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
+  return rows?.filter(row => row?.id === expected.model && row.label === expected.label &&
+    row.thinkingOptions?.some(option => option?.id === expected.effort)).length === 1;
+};
+
+// Decision 393a / 398a / 399a ladder evaluation: agy Neon High -> agy Opus High -> (eligible bounded code lane on the
+// configured Cursor host only: Cursor Neon) -> Sol Medium Fast off.
+// On remote targets, partial model capability subsets NEVER prove agy unavailable: the steps past agy require EITHER
+// provider-level positive unavailability on a resolve read of that target (agy-opc missing or disabled) OR both NH and OH
+// served by remote agy-opc and both covered by active authentic Mac error holds. cursorEligible is the caller's
+// cursorEligibilityProblem() === null for this task, lane, and target; Cursor that is unknown fails closed, and only
+// ineligible or positively unavailable Cursor passes to Sol.
+function evaluateAgyLadder({ targetId, isRemote, remote, proof, unavailable, target, catalog, holdsDoc, projectionHolds, now,
+  cursorEligible = false }) {
+  const nhModel = REPLACEMENT_RUNTIME.model, ohModel = OPUS_REPLACEMENT_RUNTIME.model;
+  const heldNH = (targetId != null && activeModelHold(holdsDoc, targetId, nhModel, now) != null) ||
+    (!isRemote && projectionHolds?.[nhModel] === true);
+  const heldOH = (targetId != null && activeModelHold(holdsDoc, targetId, ohModel, now) != null) ||
+    (!isRemote && projectionHolds?.[ohModel] === true);
+  const proofs = target ? parseProofs(proof, target, now) : { valid: true, byModel: new Map() };
+  const unavails = target && !isRemote ? parseUnavailable(unavailable, target, now) : { valid: true, byModel: new Map() };
+  if (!proofs.valid || !unavails.valid) return { status: 'invalid-evidence' };
+  const proofNH = proofs.byModel.get(nhModel) ?? null, proofOH = proofs.byModel.get(ohModel) ?? null;
+  const solServed = isRemote ? remoteServesBackup(remote) : piServesRow(catalog, PACE_BACKUP_RUNTIME);
+
+  if (isRemote) {
+    const providerDown = remoteAgyProviderUnavailable(remote);
+    const servesNH = remoteServesModel(remote, nhModel);
+    const servesOH = remoteServesModel(remote, ohModel);
+    const cursor = cursorEligible ? remoteCursorStep(remote) : { status: 'unavailable' };
+    const solProvider = solServed ? `pi/${PACE_BACKUP_RUNTIME.model}` : null;
+    const pastAgy = () => {
+      if (cursor.status === 'available') {
+        return { status: 'admitted', kind: 'cursor', runtime: CURSOR_OVERFLOW_RUNTIME, mode: cursor.mode, nextFallback: solProvider };
+      }
+      if (cursor.status !== 'unavailable') return { status: 'proof-required', runtime: CURSOR_OVERFLOW_RUNTIME, nextFallback: solProvider };
+      return solServed
+        ? { status: 'admitted', kind: 'backup', runtime: PACE_BACKUP_RUNTIME, nextFallback: null }
+        : { status: 'unavailable' };
+    };
+    if (providerDown) return pastAgy();
+    const nextAfterOH = cursor.status === 'available' ? `${CURSOR_OVERFLOW_RUNTIME.provider}/${CURSOR_OVERFLOW_RUNTIME.model}` : solProvider;
+    const nextAfterNH = servesOH ? `${OPUS_REPLACEMENT_RUNTIME.provider}/${OPUS_REPLACEMENT_RUNTIME.model}` : null;
+    if (servesNH && !heldNH) {
+      return proofNH
+        ? { status: 'admitted', kind: 'replacement', runtime: REPLACEMENT_RUNTIME, mode: proofNH.mode, nextFallback: nextAfterNH }
+        : { status: 'proof-required', runtime: REPLACEMENT_RUNTIME, nextFallback: nextAfterNH };
+    }
+    // Capability subset (e.g. NH missing while agy-opc is ready, or OH missing while NH is held) never unlocks remote Sol!
+    if (servesOH && !heldOH) {
+      if (!servesNH && !heldNH) {
+        // Remote agy-opc serves OH only without NH: allow OH only with OH proof (never unlocks Sol if OH later fails).
+        return proofOH
+          ? { status: 'admitted', kind: 'replacement', runtime: OPUS_REPLACEMENT_RUNTIME, mode: proofOH.mode, nextFallback: null }
+          : { status: 'proof-required', runtime: OPUS_REPLACEMENT_RUNTIME, nextFallback: null };
+      }
+      return proofOH
+        ? { status: 'admitted', kind: 'replacement', runtime: OPUS_REPLACEMENT_RUNTIME, mode: proofOH.mode, nextFallback: nextAfterOH }
+        : { status: 'proof-required', runtime: OPUS_REPLACEMENT_RUNTIME, nextFallback: nextAfterOH };
+    }
+    // Only when BOTH NH and OH are genuinely served and BOTH have active authentic Mac holds may remote Cursor or Sol admit.
+    if (servesNH && servesOH && heldNH && heldOH) return pastAgy();
+    return { status: 'subset-unproven' };
+  }
+
+  const unavailNH = unavails.byModel.has(nhModel) && (!proofNH || unavails.byModel.get(nhModel) > proofNH.verifiedAt);
+  const unavailOH = unavails.byModel.has(ohModel) && (!proofOH || unavails.byModel.get(ohModel) > proofOH.verifiedAt);
+  const blockedNH = heldNH || unavailNH, blockedOH = heldOH || unavailOH;
+  const readyNH = !blockedNH && proofNH != null, readyOH = !blockedOH && proofOH != null;
+  const nextAfterOH = solServed ? `pi/${PACE_BACKUP_RUNTIME.model}` : null;
+  const nextAfterNH = blockedOH ? nextAfterOH : `${OPUS_REPLACEMENT_RUNTIME.provider}/${OPUS_REPLACEMENT_RUNTIME.model}`;
+
+  if (readyNH) {
+    return { status: 'admitted', kind: 'replacement', runtime: REPLACEMENT_RUNTIME, mode: proofNH.mode, nextFallback: nextAfterNH };
+  }
+  if (!blockedNH) {
+    return { status: 'proof-required', runtime: REPLACEMENT_RUNTIME, nextFallback: nextAfterNH };
+  }
+  if (readyOH) {
+    return { status: 'admitted', kind: 'replacement', runtime: OPUS_REPLACEMENT_RUNTIME, mode: proofOH.mode, nextFallback: nextAfterOH };
+  }
+  if (!blockedOH) {
+    return { status: 'proof-required', runtime: OPUS_REPLACEMENT_RUNTIME, nextFallback: nextAfterOH };
+  }
+  if (solServed) {
+    return { status: 'admitted', kind: 'backup', runtime: PACE_BACKUP_RUNTIME, nextFallback: null };
+  }
+  return { status: 'unavailable' };
+}
+
+const REPLACEMENT_CONTEXT_KEYS = ['task', 'lane', 'proof', 'target', 'unavailable', 'remote', 'fableUnavailable'];
+const SPECIAL_SOURCES = Object.freeze([...OFF_PACE_SOURCES, DEVIN_FIRST_SOURCE]);  // OFF_PACE_SOURCES includes cursor-overflow
 const ALTERNATION_SOURCES = Object.freeze(['task-default', ...OFF_PACE_SOURCES]);
 const offPaceRule = kind => kind === 'code' ? WORKER_DEFAULT_ROUTES.code
   : kind === 'plan' ? WORKER_DEFAULT_ROUTES.plan
     : Object.hasOwn(OWNER_RULE_ROUTES, kind ?? '') ? OWNER_RULE_ROUTES[kind] : null;
+
+function providerForRoute(route, taskClass) {
+  if (route.source === 'replacement') return `${route.receipt?.provider ?? REPLACEMENT_RUNTIME.provider}/${route.model}`;
+  if (route.source === CURSOR_OVERFLOW_SOURCE) return `${CURSOR_OVERFLOW_RUNTIME.provider}/${route.model}`;
+  if (['browser', 'browser-hard', 'sites'].includes(canonicalWorkerClass(taskClass ?? route.kind))) return `codex/${route.model}`;
+  return `pi/${route.model}`;
+}
+
+function decisionEnvelope({ route, reason, provider, host = 'local', nextFallback = null, proofRequired = false,
+  fallbackChain = null, taskClass = null, taskId = null, lane = null, launchable = true, inPlaceAllowed = false,
+  verifyLive = null }) {
+  if (route?.role === 'worker' && launchable) {
+    const boundClass = taskClass === 'opn-browser' ? 'opn-browser' : (canonicalWorkerClass(taskClass ?? route.kind) ?? null);
+    stampLiveResolution(route, {
+      taskId, lane, taskClass: boundClass, targetDaemon: host, launchable: true, inPlaceAllowed, verifyLive,
+    });
+  }
+  return Object.freeze({
+    route,
+    reason,
+    provider,
+    model: route.model,
+    effort: route.effort,
+    fast: route.fastMode,
+    host,
+    nextFallback,
+    proofRequired,
+    ...(fallbackChain ? { fallbackChain } : {}),
+  });
+}
+
+// Bound admission for fresh eligible lanes (397c/399a Devin-first Pi Opus High; forced 393a code NH -> OH -> Sol;
+// 390a plan/ui Fable High with agy ladder ONLY on positive fresh Fable cannot-serve evidence; 359 code parity).
+// Evaluates Devin-first and positive Fable unavailability BEFORE requiring Fable in the Pi catalog.
 function offPaceAdmission(context, { taskClass, catalog }, state, pre = null) {
-  try {
-    const { task, lane, proof, target, unavailable } = context ?? {};
-    const kind = canonicalWorkerClass(taskClass), rule = offPaceRule(kind), now = Date.now();
-    const expectedLabel = kind === 'code' ? 'Opus' : 'Fable';
-    if (context == null || typeof context !== 'object' || Object.keys(context).some(key => !REPLACEMENT_CONTEXT_KEYS.includes(key)) ||
-        !OFF_PACE_CLASSES.includes(kind) || !rule ||
-        rule.label !== expectedLabel || rule.effort !== 'high' || rule.fastMode !== false) return null;
-    const base = selectWorkerRoute({ taskKind: kind, catalog });
-    if (base.effort !== 'high' || base.fastMode !== false || !task || typeof task !== 'object' ||
-        (!UI_CLASSES.includes(kind) && task.ui === true) ||
-        typeof task.id !== 'string' || typeof lane !== 'string' || (task.routes && Object.hasOwn(task.routes, lane))) return null;
-    // Only the local Mac target, or a verified armed remote one; any other target keeps the class default and consumes nothing.
-    if (!admissibleTarget(context)) return null;
-    const ready = neonReady(proof, target, now);
-    // Both fresh: the newer one decides.
-    const down = neonUnavailable(unavailable, target, now) &&
-      (!ready || utcTime(unavailable.checked_at) > utcTime(proof.verified_at));
-    const neon = !down && ready;
-    const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
-    const backup = down && rows?.filter(row => row?.id === PACE_BACKUP_RUNTIME.model && row.label === PACE_BACKUP_RUNTIME.label &&
-      row.thinkingOptions?.some(option => option?.id === PACE_BACKUP_RUNTIME.effort)).length === 1;
-    const { branchName } = managedWorkerNames({ taskId: task.id, lane });
-    const doc = readLocalRouting(), mode = switchMode(doc, now);
-    if (mode == null || (mode === 'forced' && !neon && !backup) || !offPaceLaunchAllowed(doc, pre ? pre.chain : undefined)) return null;
-    const offPace = (forced) => {
-      const runtime = neon ? REPLACEMENT_RUNTIME : PACE_BACKUP_RUNTIME;
-      return Object.freeze({ role: 'worker', source: neon ? 'replacement' : 'pace-backup', kind, model: runtime.model,
-        effort: runtime.effort, fastMode: runtime.fastMode,
-        reason: neon ? (forced ? replacementReason(kind) : PARITY_REASON) : (forced ? paceBackupReason(kind) : PARITY_BACKUP_REASON),
-        receipt: Object.freeze(neon ? { provider: runtime.provider, mode: proof.mode, target: target.daemon, task: task.id, lane,
-          placement: branchName } : { ...(kind !== 'code' ? { target: target.daemon } : {}), task: task.id, lane, placement: branchName }) });
-    };
-    if (mode === 'forced') {
-      if (kind !== 'code' && target.local !== false && (pre ? pre.localServer : localServerId()) !== target.daemon) return null;
-      return Object.freeze({ route: offPace(true), parity: null });
-    }
-    // Decision 359 code parity applies only to the code class; plan, ui-design and ui-check stay Fable high when not forced.
-    if (kind !== 'code') return null;
-    // A local target is the local daemon's own serverId; a remote one is bound by its attestation (admissibleTarget).
+  const { task, lane, proof, target, unavailable, remote, fableUnavailable } = context ?? {};
+  const kind = canonicalWorkerClass(taskClass), rule = offPaceRule(kind), now = Date.now();
+  const expectedLabel = kind === 'code' ? 'Opus' : 'Fable';
+  if (context == null || typeof context !== 'object' || Object.keys(context).some(key => !REPLACEMENT_CONTEXT_KEYS.includes(key)) ||
+      !LEGACY_OFF_PACE_CLASSES.includes(kind) || !rule ||
+      rule.label !== expectedLabel || rule.effort !== 'high' || rule.fastMode !== false) return null;
+  if (!task || typeof task !== 'object' || (!UI_CLASSES.includes(kind) && task.ui === true) ||
+      typeof task.id !== 'string' || typeof lane !== 'string' || (task.routes && Object.hasOwn(task.routes, lane))) return null;
+
+  const { branchName } = managedWorkerNames({ taskId: task.id, lane });
+
+  // 1. Settled precedence (397c/399a): positive fresh Mac devin-ready.json FIRST (before Fable catalog lookup!).
+  if (DEVIN_FIRST_CLASSES.includes(kind) && readDevinReady(now) && piServesRow(catalog, DEVIN_FIRST_RUNTIME)) {
+    const route = Object.freeze({
+      role: 'worker', source: DEVIN_FIRST_SOURCE, kind, model: DEVIN_FIRST_RUNTIME.model,
+      effort: DEVIN_FIRST_RUNTIME.effort, fastMode: DEVIN_FIRST_RUNTIME.fastMode,
+      reason: devinFirstReason(kind),
+      receipt: Object.freeze({ task: task.id, lane, placement: branchName }),
+    });
+    return Object.freeze({ route, parity: null, host: target?.daemon ?? 'local', nextFallback: null });
+  }
+
+  const doc = readLocalRouting(), mode = switchMode(doc, now);
+  const allowed = offPaceLaunchAllowed(doc, pre ? pre.chain : undefined);
+  const projectionHolds = readAgyQuotaProjectionHolds(now);
+
+  // 2. Decision 390a: plan / ui-design / ui-check enter the agy ladder ONLY with positive fresh Fable cannot-serve
+  // evidence (checked BEFORE falling back to Fable in the Pi catalog!).
+  if (!OFF_PACE_CLASSES.includes(kind)) {
+    if (!allowed || !admissibleTarget(context) || !fableCannotServe(fableUnavailable, target, now)) return null;
     if (target.local !== false && (pre ? pre.localServer : localServerId()) !== target.daemon) return null;
-    const launcher = process.env.PASEO_AGENT_ID, alternation = state === undefined ? readAlternation() : state;
-    if (!launcherId(launcher) || alternation == null) return null;
-    const admitted = Object.hasOwn(alternation.launchers, launcher) ? alternation.launchers[launcher].admitted : 0;
-    const neonTurn = admitted % 2 === 1, taken = neonTurn && (neon || backup);
-    return Object.freeze({ route: taken ? offPace(false) : null,
-      parity: Object.freeze({ launcher, admitted, consumes: !neonTurn || taken }) });
-  } catch { return null; } // probe-ok: fails closed, any error resolves no off-pace route; expires 2027-05-22
+    const holdsDoc = readModelHolds();
+    if (holdsDoc == null) throw Error('agy model holds file is unsafe or malformed; refusing to route lane');
+    const step = evaluateAgyLadder({
+      targetId: target.daemon, isRemote: target.local === false, remote, proof, unavailable, target, catalog,
+      holdsDoc, projectionHolds, now,
+    });
+    if (step.status === 'proof-required') {
+      throw Error(`live policy selected ${step.runtime.provider}/${step.runtime.model}, but fresh verified proof is missing or stale; refusing to fall back or invent Sol`);
+    }
+    if (step.status === 'subset-unproven') {
+      throw Error('remote agy capability subset does not prove agy unavailable for Sol backup; failing closed');
+    }
+    if (step.status !== 'admitted') {
+      throw Error('fable-unavailable agy ladder failed closed: invalid evidence or Sol backup unavailable');
+    }
+    const isRep = step.kind === 'replacement';
+    const route = Object.freeze({
+      role: 'worker', source: isRep ? 'replacement' : 'pace-backup', kind, model: step.runtime.model,
+      effort: step.runtime.effort, fastMode: step.runtime.fastMode,
+      reason: isRep ? replacementReason(kind, step.runtime.model) : paceBackupReason(kind),
+      receipt: Object.freeze(isRep
+        ? { provider: step.runtime.provider, mode: step.mode, target: target.daemon, task: task.id, lane, placement: branchName }
+        : { target: target.daemon, task: task.id, lane, placement: branchName }),
+    });
+    return Object.freeze({ route, parity: null, host: target.daemon, nextFallback: step.nextFallback });
+  }
+
+  // 3. Code class: requires valid fresh switch (forced or parity) and allowed launcher.
+  if (mode == null || !allowed) return null;
+  if (!admissibleTarget(context)) {
+    if (mode === 'forced') {
+      throw Error('forced code off-pace route requires a verified local Mac or armed remote target; refusing to silently substitute Opus or Sol');
+    }
+    return null;
+  }
+  const localSrv = target.local === false ? null : (pre ? pre.localServer : localServerId());
+  if (mode === 'parity' && target.local !== false && localSrv !== target.daemon) return null;
+
+  const holdsDoc = readModelHolds();
+  if (holdsDoc == null) {
+    if (mode === 'forced') throw Error('agy model holds file is unsafe or malformed; refusing to route off-pace code lane');
+    return null;
+  }
+
+  // Decision 398a: Cursor is considered only for an eligible bounded code lane on the configured Cursor host.
+  const cursorEligible = target.local === false &&
+    cursorEligibilityProblem({ task, lane, kind, targetDaemon: target.daemon, doc }) === null;
+  const buildCodeRoute = (step, forced) => {
+    if (step.kind === 'cursor') {
+      return Object.freeze({
+        role: 'worker', source: CURSOR_OVERFLOW_SOURCE, kind: 'code', model: step.runtime.model, effort: null, fastMode: false,
+        reason: CURSOR_OVERFLOW_REASON,
+        receipt: Object.freeze({ provider: step.runtime.provider, mode: step.mode, target: target.daemon, task: task.id, lane, placement: branchName }),
+      });
+    }
+    const isRep = step.kind === 'replacement';
+    return Object.freeze({
+      role: 'worker', source: isRep ? 'replacement' : 'pace-backup', kind, model: step.runtime.model,
+      effort: step.runtime.effort, fastMode: step.runtime.fastMode,
+      reason: isRep
+        ? (forced ? replacementReason(kind, step.runtime.model) : parityReason(step.runtime.model))
+        : (forced ? paceBackupReason(kind) : PARITY_BACKUP_REASON),
+      receipt: Object.freeze(isRep
+        ? { provider: step.runtime.provider, mode: step.mode, target: target.daemon, task: task.id, lane, placement: branchName }
+        : { ...(target.local === false ? { target: target.daemon } : {}), task: task.id, lane, placement: branchName }),
+    });
+  };
+
+  if (mode === 'forced') {
+    const step = evaluateAgyLadder({
+      targetId: target.daemon, isRemote: target.local === false, remote, proof, unavailable, target, catalog,
+      holdsDoc, projectionHolds, now, cursorEligible,
+    });
+    if (step.status === 'proof-required') {
+      throw Error(`live policy selected ${step.runtime.provider}/${step.runtime.model}, but fresh verified proof is missing or stale; refusing to fall back or invent Sol`);
+    }
+    if (step.status === 'subset-unproven') {
+      throw Error('remote agy capability subset does not prove agy unavailable for Sol backup; failing closed');
+    }
+    if (step.status !== 'admitted') {
+      throw Error('forced off-pace code route failed closed: invalid evidence or Sol backup unavailable');
+    }
+    if (step.kind === 'replacement' && step.runtime.model === OPUS_REPLACEMENT_RUNTIME.model &&
+        target.local !== false && localSrv !== target.daemon) {
+      throw Error('forced agy Opus high route requires the local daemon serverId; refusing to route');
+    }
+    return Object.freeze({ route: buildCodeRoute(step, true), parity: null, host: target.daemon, nextFallback: step.nextFallback });
+  }
+
+  // 4. Decision 359 code parity (not forced: false/false): alternates subscription Opus vs agy side per launcher.
+  const launcher = process.env.PASEO_AGENT_ID, alternation = state === undefined ? readAlternation() : state;
+  if (!launcherId(launcher) || alternation == null) return null;
+  const admitted = Object.hasOwn(alternation.launchers, launcher) ? alternation.launchers[launcher].admitted : 0;
+  const agyTurn = admitted % 2 === 1;
+  if (!agyTurn) {
+    return Object.freeze({
+      route: null, host: target.daemon, nextFallback: null,
+      parity: Object.freeze({ launcher, admitted, consumes: true }),
+    });
+  }
+  const step = evaluateAgyLadder({
+    targetId: target.daemon, isRemote: target.local === false, remote, proof, unavailable, target, catalog,
+    holdsDoc, projectionHolds, now, cursorEligible,
+  });
+  if (step.status === 'proof-required') {
+    throw Error(`parity agy turn selected ${step.runtime.provider}/${step.runtime.model}, but fresh verified proof is missing or stale; turn not consumed`);
+  }
+  if (step.status === 'subset-unproven') {
+    throw Error('parity agy turn failed closed: remote agy capability subset does not prove agy unavailable; turn not consumed');
+  }
+  if (step.status !== 'admitted') {
+    throw Error('parity agy turn failed closed: invalid evidence or Sol backup unavailable; turn not consumed');
+  }
+  return Object.freeze({
+    route: buildCodeRoute(step, false), host: target.daemon, nextFallback: step.nextFallback,
+    parity: Object.freeze({ launcher, admitted, consumes: true }),
+  });
 }
 
-// An owner route is returned unchanged; owner-rule classes (ui-design, ui-check) carry their rule's reason, and every
-// other class runs at its table default. With a replacement context an eligible class lane may resolve to an off-pace
-// route (offPaceAdmission); every other case returns exactly what it returns without one. A resolve writes nothing, so
-// it consumes no alternation turn.
-export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, catalog, replacement = null } = {}) {
-  taskClass = canonicalWorkerClass(taskClass);
+// Read-only live policy preview (for bare `route.mjs --class <class>` or `resolveWorkerRoute` without replacement
+// context): applies Config-owned devin-ready.json and agy-quota.json projections, fresh trusted forcing switch,
+// live Mac error holds, and read-only alternation peek without writing any file or consuming any turn.
+function liveReadOnlyDecision({ taskClass, catalog, task = null, lane = null, now = Date.now() }) {
+  const localSrv = process.platform === 'darwin' ? localServerId() : null;
+  const host = localSrv ?? 'local';
+  const holdsDoc = process.platform === 'darwin' ? readModelHolds() : { holds: {}, probes: {} };
+  const projectionHolds = readAgyQuotaProjectionHolds(now);
+  const snapshot = liveLocalPolicySnapshot(taskClass, now);
+  const verifyLive = () => liveLocalPolicySnapshot(taskClass, Date.now()) === snapshot;
+
+  if (taskClass === 'main-pm') {
+    const chain = MAIN_PM_POLICY.fallbackChain.map(step => {
+      const held = step.standIn && (
+        (localSrv && holdsDoc && activeModelHold(holdsDoc, localSrv, step.model, now) != null) ||
+        projectionHolds[step.model] === true
+      );
+      return Object.freeze({ ...step, skipped: Boolean(held) });
+    });
+    const next = chain.find(step => !step.skipped)?.provider ?? null;
+    const def = MAIN_PM_POLICY.defaultRoute;
+    return decisionEnvelope({
+      route: def, reason: def.reason, provider: `pi/${def.model}`, host, nextFallback: next,
+      proofRequired: false, fallbackChain: Object.freeze(chain), launchable: false,
+    });
+  }
+
+  if (taskClass === 'opn-browser') {
+    const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
+    const row = resolveCatalogLabel(rows, OPN_BROWSER_EXCEPTION.label);
+    if (!row.thinkingOptions?.some(option => option.id === OPN_BROWSER_EXCEPTION.effort)) {
+      throw Error(`${OPN_BROWSER_EXCEPTION.label} does not serve required thinking ${OPN_BROWSER_EXCEPTION.effort}; the Worker lane stops`);
+    }
+    const route = Object.freeze({
+      role: 'worker', source: 'owner-explicit', model: row.id, effort: OPN_BROWSER_EXCEPTION.effort,
+      fastMode: OPN_BROWSER_EXCEPTION.fastMode,
+    });
+    return decisionEnvelope({
+      route, reason: OPN_BROWSER_EXCEPTION.reason, provider: `pi/${row.id}`, host, nextFallback: null,
+      proofRequired: false, taskClass: 'opn-browser', taskId: null, lane, launchable: true, inPlaceAllowed: true, verifyLive,
+    });
+  }
+
+  const kind = canonicalWorkerClass(taskClass);
+
+  // Devin-first Pi Opus High (397c/399a) checked BEFORE Fable catalog default!
+  if (DEVIN_FIRST_CLASSES.includes(kind) && readDevinReady(now) && piServesRow(catalog, DEVIN_FIRST_RUNTIME)) {
+    const preview = Object.freeze({
+      role: 'worker', source: DEVIN_FIRST_SOURCE, kind, model: DEVIN_FIRST_RUNTIME.model,
+      effort: DEVIN_FIRST_RUNTIME.effort, fastMode: DEVIN_FIRST_RUNTIME.fastMode, reason: devinFirstReason(kind),
+    });
+    return decisionEnvelope({
+      route: preview, reason: preview.reason, provider: `pi/${preview.model}`, host, nextFallback: null,
+      proofRequired: false, taskClass: kind, taskId: task?.id ?? null, lane, launchable: false, inPlaceAllowed: false,
+    });
+  }
+
+  if (Object.hasOwn(OWNER_RULE_ROUTES, kind ?? '')) {
+    const route = selectWorkerRoute({ taskKind: kind, catalog });
+    return decisionEnvelope({
+      route, reason: OWNER_RULE_ROUTES[kind].reason, provider: `pi/${route.model}`, host, nextFallback: null,
+      proofRequired: false, taskClass: kind, taskId: task?.id ?? null, lane, launchable: true, inPlaceAllowed: true, verifyLive,
+    });
+  }
+  if (!Object.hasOwn(WORKER_DEFAULT_ROUTES, kind ?? '')) throw workerRouteUnresolved();
+
+  const baseRoute = selectWorkerRoute({ taskKind: kind, catalog });
+  const baseProvider = providerForRoute(baseRoute, kind);
+
+  if (kind !== 'code') {
+    return decisionEnvelope({
+      route: baseRoute, reason: routeReason(baseRoute), provider: baseProvider, host, nextFallback: null,
+      proofRequired: false, taskClass: kind, taskId: task?.id ?? null, lane, launchable: true, inPlaceAllowed: true, verifyLive,
+    });
+  }
+
+  const doc = readLocalRouting(), mode = switchMode(doc, now);
+  if (mode == null || !offPaceLaunchAllowed(doc)) {
+    return decisionEnvelope({
+      route: baseRoute, reason: routeReason(baseRoute), provider: baseProvider, host, nextFallback: null,
+      proofRequired: false, taskClass: kind, taskId: task?.id ?? null, lane, launchable: true, inPlaceAllowed: true, verifyLive,
+    });
+  }
+  if (holdsDoc == null) {
+    throw Error('agy model holds file is unsafe or malformed; refusing live off-pace decision');
+  }
+
+  const evalLadderPreview = (forced) => {
+    const step = evaluateAgyLadder({
+      targetId: localSrv, isRemote: false, remote: null, proof: undefined, unavailable: undefined,
+      target: null, catalog, holdsDoc, projectionHolds, now,
+    });
+    if (step.status === 'proof-required') {
+      const reason = forced ? replacementReason('code', step.runtime.model) : parityReason(step.runtime.model);
+      const preview = Object.freeze({
+        role: 'worker', source: 'replacement', kind: 'code', model: step.runtime.model,
+        effort: step.runtime.effort, fastMode: step.runtime.fastMode, reason,
+      });
+      return decisionEnvelope({
+        route: preview, reason, provider: `${step.runtime.provider}/${step.runtime.model}`, host,
+        nextFallback: step.nextFallback, proofRequired: true, taskClass: 'code', taskId: task?.id ?? null, lane,
+        launchable: false, inPlaceAllowed: false,
+      });
+    }
+    if (step.status === 'admitted' && step.kind === 'backup') {
+      const reason = forced ? paceBackupReason('code') : PARITY_BACKUP_REASON;
+      const preview = Object.freeze({
+        role: 'worker', source: 'pace-backup', kind: 'code', model: step.runtime.model,
+        effort: step.runtime.effort, fastMode: step.runtime.fastMode, reason,
+      });
+      return decisionEnvelope({
+        route: preview, reason, provider: `pi/${step.runtime.model}`, host,
+        nextFallback: null, proofRequired: false, taskClass: 'code', taskId: task?.id ?? null, lane,
+        launchable: false, inPlaceAllowed: false,
+      });
+    }
+    throw Error('live off-pace code decision failed closed: both agy models held and Sol medium backup unavailable');
+  };
+
+  if (mode === 'forced') return evalLadderPreview(true);
+
+  const launcher = process.env.PASEO_AGENT_ID, alternation = readAlternation();
+  if (!launcherId(launcher) || alternation == null) {
+    return decisionEnvelope({
+      route: baseRoute, reason: routeReason(baseRoute), provider: baseProvider, host, nextFallback: null,
+      proofRequired: false, taskClass: kind, taskId: task?.id ?? null, lane, launchable: true, inPlaceAllowed: true, verifyLive,
+    });
+  }
+  const admitted = Object.hasOwn(alternation.launchers, launcher) ? alternation.launchers[launcher].admitted : 0;
+  if (admitted % 2 === 1) return evalLadderPreview(false);
+  return decisionEnvelope({
+    route: baseRoute, reason: routeReason(baseRoute), provider: baseProvider, host, nextFallback: null,
+    proofRequired: false, taskClass: kind, taskId: task?.id ?? null, lane, launchable: true, inPlaceAllowed: false, verifyLive,
+  });
+}
+
+// Single live resolver. Owner routes always win unadjusted. Never accepts a caller Devin override (always reads Mac
+// devin-ready.json). Stamps every launchable route with exact task/lane/target/live-policy verification.
+export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, catalog, task = null, lane = null, replacement = null } = {}) {
+  const now = Date.now();
   if (ownerRoute) {
-    const route = selectWorkerRoute({ ownerRoute, taskKind: taskClass, catalog });
-    return Object.freeze({ route, reason: routeReason(route) });
+    const kind = canonicalWorkerClass(taskClass);
+    const route = selectWorkerRoute({ ownerRoute, taskKind: kind, catalog });
+    const host = process.platform === 'darwin' ? (localServerId() ?? 'local') : 'local';
+    const snapshot = liveLocalPolicySnapshot(kind ?? 'owner', now);
+    return decisionEnvelope({
+      route, reason: routeReason(route), provider: providerForRoute(route, kind), host, nextFallback: null,
+      proofRequired: false, taskClass: kind, taskId: task?.id ?? replacement?.task?.id ?? null,
+      lane: lane ?? replacement?.lane ?? null, launchable: true, inPlaceAllowed: true,
+      verifyLive: () => liveLocalPolicySnapshot(kind ?? 'owner', Date.now()) === snapshot,
+    });
   }
-  if (Object.hasOwn(OWNER_RULE_ROUTES, taskClass ?? '')) {
-    const resolved = Object.freeze({ route: selectWorkerRoute({ taskKind: taskClass, catalog }), reason: OWNER_RULE_ROUTES[taskClass].reason });
-    const replaced = replacement == null ? null : offPaceAdmission(replacement, { taskClass, catalog })?.route;
-    return replaced ? Object.freeze({ route: replaced, reason: replaced.reason }) : resolved;
+  if (taskClass === 'main-pm' || taskClass === 'opn-browser') {
+    if (replacement != null) throw Error(`${taskClass} is a resolver-only policy and takes no managed replacement context`);
+    return liveReadOnlyDecision({ taskClass, catalog, task, lane, now });
   }
-  if (!Object.hasOwn(WORKER_DEFAULT_ROUTES, taskClass ?? '')) throw workerRouteUnresolved();
-  const route = selectWorkerRoute({ taskKind: taskClass, catalog });
-  const resolved = Object.freeze({ route, reason: routeReason(route),
-    ...(['browser', 'browser-hard', 'sites'].includes(taskClass) ? { provider: `codex/${route.model}` } : {}) });
-  const replaced = replacement == null ? null : offPaceAdmission(replacement, { taskClass, catalog })?.route;
-  return replaced ? Object.freeze({ route: replaced, reason: replaced.reason }) : resolved;
+  const kind = canonicalWorkerClass(taskClass);
+  if (replacement != null) {
+    if (!Object.hasOwn(OWNER_RULE_ROUTES, kind ?? '') && !Object.hasOwn(WORKER_DEFAULT_ROUTES, kind ?? '')) {
+      throw workerRouteUnresolved();
+    }
+    const admitted = offPaceAdmission(replacement, { taskClass: kind, catalog });
+    const boundTaskId = replacement.task?.id ?? task?.id ?? null;
+    const boundLane = replacement.lane ?? lane ?? null;
+    const snapshot = liveLocalPolicySnapshot(kind, now);
+    const verifyLive = () => liveLocalPolicySnapshot(kind, Date.now()) === snapshot;
+    if (admitted?.route) {
+      return decisionEnvelope({
+        route: admitted.route, reason: admitted.route.reason, provider: providerForRoute(admitted.route, kind),
+        host: admitted.host ?? 'local', nextFallback: admitted.nextFallback ?? null, proofRequired: false,
+        taskClass: kind, taskId: boundTaskId, lane: boundLane, launchable: true, inPlaceAllowed: false, verifyLive,
+      });
+    }
+    const baseRoute = selectWorkerRoute({ taskKind: kind, catalog });
+    const reason = Object.hasOwn(OWNER_RULE_ROUTES, kind ?? '') ? OWNER_RULE_ROUTES[kind].reason : routeReason(baseRoute);
+    return decisionEnvelope({
+      route: baseRoute, reason, provider: providerForRoute(baseRoute, kind),
+      host: admitted?.host ?? (replacement.target?.daemon ?? 'local'), nextFallback: null, proofRequired: false,
+      taskClass: kind, taskId: boundTaskId, lane: boundLane, launchable: true, inPlaceAllowed: !admitted?.parity, verifyLive,
+    });
+  }
+  return liveReadOnlyDecision({ taskClass: kind, catalog, task, lane, now });
 }
 
-// One route per lane. Repairs and resumes reuse the recorded entry; a different route for the lane is refused, as the
-// Worker request and brief refuse it. A new entry is checked against today's class table and against its lane's class
-// (taskClass, or a task default's own class): the owner rules, and a task default's model by its catalog row when a
-// catalog is given, else by name. That happens here, once; later reads check only its shape. A UI task records only its
-// ui-design and ui-check lanes, on Fable high, Fast off (or an admitted forced off-pace route under decision 366a).
-// counting: the caller holds the alternation lock and counts a turn this lane takes; without it a lane whose admission
-// now takes a turn is refused, so an uncounted turn is never recorded.
-function recordLane(task, { lane, route, reason, taskClass = null, catalog = null, replacement = null }, state, pre = null, counting = false) {
+function recordLane(task, { lane, route, reason, taskClass = null, catalog = null, replacement = null },
+  state, pre = null, counting = false) {
   if (task.ui) {
     taskClass = uiTaskLaneClass(task, taskClass);
-    if (!isUiRoute(route) && !(OFF_PACE_SOURCES.includes(route?.source) && route.kind === taskClass)) {
+    if (!isUiRoute(route) && !((OFF_PACE_SOURCES.includes(route?.source) || route?.source === DEVIN_FIRST_SOURCE) && route.kind === taskClass)) {
       throw Error(`UI task: a ${taskClass} lane records only Fable high, Fast off (owner rule); the build goes to a code task`);
     }
   }
@@ -240,33 +680,27 @@ function recordLane(task, { lane, route, reason, taskClass = null, catalog = nul
     if (recorded.reason !== reason) throw Error(`lane ${lane} already has a recorded route; repairs and resumes reuse it`);
     return { entry: recorded, admission: null };
   }
-  // A fresh off-pace route records only as its admission resolves now, against this locked record (and, not forced, the
-  // locked alternation state). An owner-named route is never admitted and consumes nothing.
-  const admission = replacement != null && ALTERNATION_SOURCES.includes(route?.source)
-    ? offPaceAdmission({ ...replacement, task, lane }, { taskClass, catalog }, state, pre) : null;
-  if (OFF_PACE_SOURCES.includes(route?.source) && (reason !== route.reason || !isDeepStrictEqual(admission?.route, route))) {
+  const specialSource = SPECIAL_SOURCES.includes(route?.source);
+  const needsAdmission = (replacement != null || route?.source === DEVIN_FIRST_SOURCE) &&
+    (ALTERNATION_SOURCES.includes(route?.source) || route?.source === DEVIN_FIRST_SOURCE);
+  const admission = needsAdmission
+    ? offPaceAdmission({ ...(replacement ?? {}), task, lane }, { taskClass, catalog }, state, pre) : null;
+  if (specialSource && (reason !== route.reason || !isDeepStrictEqual(admission?.route, route))) {
     throw Error(`a ${route.source} route records only through its admitted resolution for this task and lane`);
   }
-  // Not forced, an eligible task default records only on the turn it resolved for: when a competing admission of the same
-  // launcher took that turn first, the lane is refused and may be resolved again.
   if ((admission?.parity && route.source === 'task-default' && admission.route != null) || (admission?.parity?.consumes && !counting)) {
     throw Error(`lane ${lane}: the launcher's alternation turn changed since this route was resolved; resolve the lane again`);
   }
   validateRoleRoute('worker', route);
   const laneClass = taskClass ?? (route.source === 'task-default' ? route.kind : null);
   if (laneClass != null) validateLaneClass(route, laneClass, catalog);
+  if (route.source === 'task-default' || UI_CLASSES.includes(canonicalWorkerClass(laneClass))) {
+    assertLiveResolution(route, { task, lane, taskClass: laneClass, target: replacement?.target ?? null });
+  }
   task.routes = { ...(task.routes ?? {}), [lane]: { route: structuredClone(route), reason, recorded_at: new Date().toISOString() } };
   return { entry: task.routes[lane], admission };
 }
 
-// Records a lane's route. Only a fresh lane of the code class (or an alias) on a task default or off-pace route, with a
-// local or verified remote target in its replacement context, while the switch says not forced (decision 359), can take an alternation turn.
-// For it the slow reads (launcher chain, local daemon serverId) are taken first, without any lock, and an unlocked dry
-// admission decides whether it takes a turn. Only a lane that does takes the alternation lock: under it the admission is
-// decided again against the locked state, the task record is written, and only then is the launcher's admitted count
-// raised, once. Every other record (a replay, an owner-named route, another class, a forced lane, a lane that falls back
-// to Opus without a turn) never touches the lock or the state. A crash between the two writes leaves the lane recorded and
-// its turn uncounted, so the launcher repeats that one turn; it never records a wrong route or counts a turn twice.
 const ALTERNATION_LOCK_WAIT_MS = 10000;
 export function recordWorkerRoute(taskPath, { lane, route, reason, taskClass = null, catalog = null, replacement = null }) {
   const options = { lane, route, reason, taskClass, catalog, replacement };
@@ -275,7 +709,8 @@ export function recordWorkerRoute(taskPath, { lane, route, reason, taskClass = n
     updateTask(taskPath, task => { result = recordLane(task, options, state, pre, counting); });
     return result;
   };
-  const candidate = replacement != null && ALTERNATION_SOURCES.includes(route?.source) &&
+  const candidate = replacement != null && !readDevinReady(Date.now()) &&
+    ALTERNATION_SOURCES.includes(route?.source) &&
     canonicalWorkerClass(taskClass ?? route.kind) === 'code' && admissibleTarget(replacement) &&
     !Object.hasOwn(readTask(taskPath).routes ?? {}, lane ?? '') && switchMode(readLocalRouting(), Date.now()) === 'parity';
   if (!candidate) return write(undefined, null, false).entry;
@@ -284,11 +719,9 @@ export function recordWorkerRoute(taskPath, { lane, route, reason, taskClass = n
   if (!dry?.parity?.consumes) return write(undefined, pre, false).entry;
   const path = alternationPath();
   mkdirSync(join(homedir(), '.config', 'opc'), { recursive: true, mode: 0o700 });
-  // The file exists before its lock is taken, so a writer that crashed holding the lock leaves a path that unlock takes.
   try { closeSync(openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)); }
   catch (error) { if (error.code !== 'EEXIST') throw error; }
   return withFileLock(path, held => {
-    // Unreadable or malformed (null) admits nothing.
     const current = readAlternation(path);
     const { entry, admission } = write(current, pre, true);
     if (admission?.parity?.consumes) {
@@ -300,9 +733,6 @@ export function recordWorkerRoute(taskPath, { lane, route, reason, taskClass = n
   }, 'alternation lock', ALTERNATION_LOCK_WAIT_MS);
 }
 
-// The route-selection flags (--class, --owner-model, --owner-effort, --owner-fast) given for a lane that already has a
-// recorded route that they would not select. A task default records its class; an owner-named route must keep the named
-// class's owner rules, and a class alone selects an owner-named route only for ui-design and ui-check.
 function differingLaneFlags(stored, flags, ownerRoute) {
   const differ = [];
   if (ownerRoute) {
@@ -311,9 +741,9 @@ function differingLaneFlags(stored, flags, ownerRoute) {
     if (ownerRoute.fastMode !== stored.fastMode) differ.push('owner-fast');
   }
   if (flags.class != null) {
-    // An off-pace record (replacement or pace-backup) carries its canonical class, so --class <kind> resumes it.
     let fits = stored.source === 'task-default' ? canonicalWorkerClass(stored.kind) === canonicalWorkerClass(flags.class)
-      : OFF_PACE_SOURCES.includes(stored.source) ? canonicalWorkerClass(stored.kind) === canonicalWorkerClass(flags.class)
+      : SPECIAL_SOURCES.includes(stored.source)
+        ? canonicalWorkerClass(stored.kind) === canonicalWorkerClass(flags.class)
         : ownerRoute != null || Object.hasOwn(OWNER_RULE_ROUTES, canonicalWorkerClass(flags.class));
     if (fits && stored.source !== 'task-default') {
       try { validateLaneClass(stored, flags.class, null, { recorded: true }); } catch { fits = false; }
@@ -323,7 +753,6 @@ function differingLaneFlags(stored, flags, ownerRoute) {
   return differ;
 }
 
-// Catalog rows from Paseo capabilities ({id, label, thinkingOptions}) or `paseo provider models pi --json`.
 export function catalogRows(rows) {
   if (!Array.isArray(rows)) throw Error('Pi catalog must be a JSON array of model rows');
   return rows.map(row => ({ id: row.id, label: row.label ?? row.model,
@@ -336,14 +765,18 @@ const readJson = (path, what) => {
 
 async function readCatalog(path) {
   if (path) return catalogRows(readJson(path, 'catalog'));
-  // On Windows the paseo CLI is an npm .cmd shim, which only cmd.exe can start. The words are fixed, so cmd.exe gets
-  // them as one quoted command line, as shell: true would build it; arguments plus shell: true is deprecated (DEP0190).
   const [file, args, verbatim] = process.platform === 'win32'
     ? [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '"paseo provider models pi --json"'], true]
     : ['paseo', ['provider', 'models', 'pi', '--json'], false];
   const { stdout } = await promisify(execFile)(file, args,
     { timeout: 60000, maxBuffer: 16 << 20, encoding: 'utf8', windowsVerbatimArguments: verbatim });
   return catalogRows(JSON.parse(stdout));
+}
+
+function humanSummaryLine(label, resolved, recorded = false) {
+  const suffix = resolved.proofRequired ? ' (proof required)' : '';
+  const tag = recorded ? ' (recorded)' : '';
+  return `route ${label}${tag}: ${resolved.provider} effort=${resolved.effort ?? 'model-fixed'} fast=${resolved.fast ? 'on' : 'off'} host=${resolved.host} next=${resolved.nextFallback ?? 'none'}${suffix}`;
 }
 
 async function main(argv) {
@@ -359,7 +792,6 @@ async function main(argv) {
       (flags['owner-fast'] && !['on', 'off'].includes(flags['owner-fast']))) throw Error(usage);
   const ownerRoute = flags['owner-model'] ? { role: 'worker', source: 'owner-explicit', model: flags['owner-model'],
     effort: flags['owner-effort'], fastMode: flags['owner-fast'] === 'on' } : null;
-  // A recorded lane resumes on its route: plainly, or with route flags that select exactly that route.
   const task = flags.task && flags.lane ? readTask(resolve(flags.task)) : null;
   const recorded = task?.routes?.[flags.lane] ?? null;
   if (recorded) {
@@ -368,18 +800,34 @@ async function main(argv) {
       throw Error(`lane ${flags.lane} already has a recorded route that --${differ.join(', --')} would not select; resume it ` +
         'without route flags, or resolve a new lane');
     }
-    return { route: recorded.route, reason: recorded.reason };
+    const provider = providerForRoute(recorded.route, recorded.route.kind);
+    const out = {
+      route: recorded.route, reason: recorded.reason, provider, model: recorded.route.model,
+      effort: recorded.route.effort, fast: recorded.route.fastMode,
+      host: recorded.route.receipt?.target ?? 'local', nextFallback: null, proofRequired: false,
+    };
+    return { out, summary: humanSummaryLine(flags.lane, out, true) };
   }
   if (!ownerRoute && !flags.class) throw Error(usage);
-  const catalog = ownerRoute ? null : await readCatalog(flags.catalog);
-  // A task lane carries its task and lane as off-pace context; with no proof or evidence it stays on the default.
-  const replacement = task ? { task, lane: flags.lane } : null;
-  const resolved = await resolveWorkerRoute({ taskClass: flags.class ?? null, ownerRoute, catalog, replacement });
-  if (flags.task) recordWorkerRoute(resolve(flags.task), { lane: flags.lane, ...resolved, taskClass: flags.class ?? null, catalog, replacement });
-  return resolved;
+  if (flags.task && (flags.class === 'main-pm' || flags.class === 'opn-browser')) {
+    throw Error(`${flags.class} is a resolver-only policy and cannot be recorded as a managed Worker lane`);
+  }
+  const catalog = ownerRoute || flags.class === 'main-pm' ? null : await readCatalog(flags.catalog);
+  const resolved = await resolveWorkerRoute({ taskClass: flags.class ?? null, ownerRoute, catalog, task, lane: flags.lane ?? null });
+  if (flags.task) {
+    if (resolved.proofRequired || SPECIAL_SOURCES.includes(resolved.route?.source)) {
+      throw Error(`live policy selected ${resolved.provider}, which requires exact bound target/workspace admission via resolveWorkerRoute before recording`);
+    }
+    recordWorkerRoute(resolve(flags.task), { lane: flags.lane, ...resolved, taskClass: flags.class ?? null, catalog });
+  }
+  const label = flags.class ?? 'owner';
+  return { out: resolved, summary: humanSummaryLine(label, resolved, false) };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try { console.log(JSON.stringify(await main(process.argv.slice(2)), null, 2)); }
-  catch (error) { console.error(error.message); process.exitCode = 1; }
+  try {
+    const { out, summary } = await main(process.argv.slice(2));
+    console.error(summary);
+    console.log(JSON.stringify(out, null, 2));
+  } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
