@@ -145,6 +145,8 @@ bash "$PWCLI" tracing-stop
 
 ### Multi-tab work
 
+When the task is done, close every tab you opened unless the owner still has to act in it or a named later step reuses it. List every tab you keep and why in your report.
+
 ```bash
 bash "$PWCLI" tab-new https://example.com
 bash "$PWCLI" tab-list
