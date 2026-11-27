@@ -7,7 +7,7 @@ metadata:
 
 # OPC
 
-The PM owns scope, topology, integration, verification, and publication. Implementation authorizes bounded Worker lanes, not subdelegation or route substitution. Done means verified merge, required sync, and cleanup, not a local commit or PR.
+The PM owns scope, topology, integration, verification, and publication. Implementation authorizes bounded Worker lanes, not subdelegation or route substitution. OPC ends at verified merge, required sync, and cleanup; earlier endpoints are ordinary scoped work.
 
 Read linked references only when their branch applies.
 
@@ -25,19 +25,18 @@ Default to one scout; add another only for an independent question expected to t
 
 Resolve every route, PMs included, via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted. Always consult `route.mjs --class <class>` (or `resolveWorkerRoute`) live before launching any fresh or replayed worker—never launch from remembered defaults, never invent Sol without positive proof/holds, and keep recorded, owner, review, and non-Claude routes unchanged.
 
-Default to one sequential implementer Worker (server, UI, docs together). Add tests only for owner/PM-specified cases. Never split by work type or file. Parallelize only independent 30+ minute pieces without shared files or ordering. One owner per file; PM writes shared contracts first. Use fresh agents only when fresh context helps: review (spec and diff), verification (user flows), or context-free research. One Worker lineage per lane; serialize only live checks sharing resources.
+Default to one sequential implementer Worker (server, UI, docs together). Add tests only for owner/PM-specified cases. Never split by work type or file. Parallelize only independent 30+ minute pieces without shared files or ordering. One owner per file; PM writes shared contracts first. Use fresh agents only when fresh context helps: spec/diff review, user-flow verification, or context-free research. One Worker lineage per lane; serialize only live checks sharing resources.
 
-Visual design (new screen, layout, component) gets one read-only `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`.
+Visual design (screen, layout, component) gets one read-only `ui-design` lane and optional `ui-check`; `code` builds. Copy-only UI changes stay `code`.
 
 When no Worker holds the checkout, the PM does work under about 20 tool calls itself. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work, read [Sites](references/codex-sites.md "branch:sites") and route it with `route.mjs --class sites`. For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
 ## 4. Yield
 
-Pi exposes agent-scoped `tools.mcp__paseo__create_agent` / `tools.mcp__paseo__send_agent_prompt` via codemode (`exposure: codemode`); call with `notifyOnFinish: true`.
-`paseo send` never notifies on finish; unset `PASEO_AGENT_ID` defaults to interrupt, not steer. Any worker CLI send requires a same-step one-shot check-back.
+Every hand-off to a Worker must either carry a finish notification or queue a one-shot check-back in the same step; never wait on a Worker without one.
 Finish independent work and yield. On notification, read `get_agent_status` and `get_agent_activity` once each. While running: no babysitting, CLI waits, terminal inspection, status narration, retries, or replacements. Report terminal failures.
 
-Keep Neon turns short; to change course before one ends, stop and resume it instead of steering.
+Keep Neon turns short; stop and resume instead of steering to change course mid-turn.
 
 ## 5. Integrate
 
