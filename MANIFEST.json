@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "be2aca282219a12ba47b5bb34c8ae19eae4cf69c",
+  "source_commit": "d6967fa991cd070bedcb1d179c7de296d624b704",
   "skill_count": 25,
   "file_count": 153,
   "files": [
@@ -198,8 +198,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5107,
-      "sha256": "1bf899a7ec0ab042b715a66175273409f883603c49c697de8df624e173b3c48d"
+      "bytes": 5142,
+      "sha256": "364e46d58e911e0a1f3b0fe59f48554ad1d9a3c887cb64e7674186314ffb374a"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -359,8 +359,8 @@
       "path": "skills/orchestration/opn/references/host-adapters.md",
       "category": "orchestration",
       "skill": "opn",
-      "bytes": 4107,
-      "sha256": "c13454d7f9b417cdb6d544dc5b503c81595d7c27dc32fdabce1290a3d2cceb3a"
+      "bytes": 4388,
+      "sha256": "c306c74eddb7023bdd0faf789a1dd65f1d8f8f14e46eb45f3bdb465dd3245bbc"
     },
     {
       "path": "skills/orchestration/opn/scripts/test_validate_opn.py",
