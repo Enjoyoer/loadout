@@ -23,7 +23,7 @@ Default to one scout; add another only for an independent question expected to t
 
 ## 3. Worker
 
-Resolve every route, PMs included, via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted. Manual Claude-class worker launches off pace prefer verified `agy-opc` Neon High (`auto`, `auto_accept: true`); use Pi Sol medium only with positive fresh unavailable evidence (never assume Sol without it), keeping owner, recorded, review, and non-Claude routes unchanged.
+Resolve every route, PMs included, via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted. Always consult `route.mjs --class <class>` (or `resolveWorkerRoute`) live before launching any fresh or replayed worker—never launch from remembered defaults, never invent Sol without positive proof/holds, and keep recorded, owner, review, and non-Claude routes unchanged.
 
 Default to one implementer Worker building items sequentially (server, UI, docs together), adding tests only when owner or PM names cases. Never split by work type (frontend, backend, tests) or file. Parallelize only independent 30+ minute pieces (no shared files/ordering); one owner per file, PM writes shared contracts first. Use fresh agents only where fresh context helps: reviewer (spec and diff), verifier (user flows), and context-free research. One Worker lineage per lane; shared live resources serialize only live checks.
 

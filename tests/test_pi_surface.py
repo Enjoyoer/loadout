@@ -1544,15 +1544,20 @@ assert.equal(r.materializeFixedRoute('scout',catalog,'pi',unapproved).model,'fle
     def test_worker_task_defaults_owner_precedence_and_native_gate(self):
         script=r"""
 import assert from 'node:assert/strict';
-const r=await import(process.argv[1]);const w=await import(process.argv[2]);
+const r=await import(process.argv[1]);const w=await import(process.argv[2]);const rt=await import(process.argv[3]);
 const levels=ids=>ids.map(id=>({id}));
 const catalog=[['claude-opus-5-5','Opus'],['claude-fable-5-1','Fable'],['gpt-6.1-sol','Sol'],['gpt-6.1-terra','Terra'],['gpt-6-luna','Luna'],['gpt-6-astra','Astra'],['chatgpt-web/pro','Web Pro']]
  .map(([id,label])=>({id:'fleet/'+id,label,thinkingOptions:levels(['low','medium','high','xhigh','max'])}));
 const piCaps={enabled:true,status:'available',modes:[],models:catalog};
 const nativeCaps={enabled:true,status:'available',modes:[{id:'full-access',isUnattended:true}],models:catalog};
 const workspace={workspaceId:'wks-example',cwd:'/tmp/example-worktree'};
-const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',lane:'lane',title:'Worker',initialPrompt:'Do it',workspace,capabilities:piCaps,...extra});
+// Every managed Worker is bound to its task record.
+const boundTask={id:'task-0001-example',routes:{}};
+const build=extra=>w.buildManagedWorkerRequest({taskId:'task-0001-example',task:boundTask,lane:'lane',title:'Worker',initialPrompt:'Do it',workspace,capabilities:piCaps,taskClass:extra.route?.kind??(/gpt/.test(extra.route?.model??'')?'watcher':'code'),...extra});
+assert.throws(()=>build({task:null,route:r.selectWorkerRoute({taskKind:'code',catalog})}),/takes task: readTask/);
 const plain=value=>JSON.parse(JSON.stringify(value));
+// A fresh class default launches only from a live resolveWorkerRoute decision in this process, for this task and lane.
+const live=async (kind,cat=catalog)=>(await rt.resolveWorkerRoute({taskClass:kind,catalog:cat,task:boundTask,lane:'lane'})).route;
 // Owner-approved task routes: Fast off by default, on for the Luna classes (owner 2026-11-17), for review, browser and browser-hard (decision 327) and for review-security (decision 332).
 assert.deepEqual([...Object.keys(r.WORKER_DEFAULT_ROUTES),...Object.keys(r.OWNER_RULE_ROUTES)].sort(),['browser','browser-hard','code','plan','research','review','review-security','sites','smoke','ui-check','ui-design','watcher']);
 for(const [kind,label,effort,fastMode] of [['code','Opus','high',false],['plan','Fable','high',false],['research','Terra','high',false],['review','Sol','high',true],['review-security','Sol','xhigh',true],['smoke','Luna','low',true],['sites','Luna','xhigh',true],['browser','Sol','low',true],['browser-hard','Sol','high',true],['ui-design','Fable','high',false],['ui-check','Fable','high',false],['watcher','Sol','low',false]]){
@@ -1571,7 +1576,8 @@ for(const [alias,kind] of Object.entries(r.WORKER_CLASS_ALIASES)){
 // Worker defaults are frozen.
 assert(Object.isFrozen(r.WORKER_DEFAULT_ROUTES)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.code)&&Object.isFrozen(r.WORKER_DEFAULT_ROUTES.browser));
 // Code default: Opus at high (owner 2026-11-18), Fast off, on Pi, recorded as a task default.
-const code=r.selectWorkerRoute({taskKind:'code',catalog});
+const code=await live('code');
+assert.throws(()=>build({route:r.selectWorkerRoute({taskKind:'code',catalog})}),/pasted, remembered, or stale routes are refused/);
 assert.deepEqual(plain(code),{role:'worker',source:'task-default',kind:'code',model:'fleet/claude-opus-5-5',effort:'high',fastMode:false,reason:'code default Opus high, Fast off'});
 const codeReq=build({route:code});
 assert.equal(codeReq.request.provider,'pi/fleet/claude-opus-5-5');assert.deepEqual(codeReq.request.settings,{thinkingOptionId:'high'});
@@ -1586,7 +1592,7 @@ assert(r.buildDelegatedBrief({role:'worker',route:fableCode,taskClass:'code',cat
 assert(!r.buildDelegatedBrief({role:'worker',route:code,catalog,brief:'x'}).includes(ownerLine));
 assert(!r.buildDelegatedBrief({role:'worker',route:fableCode,taskClass:'ui-design',catalog,brief:'x'}).includes(ownerLine));
 // Browser default: Sol at low, Fast on (decision 327).
-const browser=r.selectWorkerRoute({taskKind:'browser',catalog:{pi:catalog}});
+const browser=await live('browser',{pi:catalog});
 assert.deepEqual(plain(browser),{role:'worker',source:'task-default',kind:'browser',model:'gpt-6.1-sol',effort:'low',fastMode:true,reason:'browser default Sol low, Fast on, native Codex authorized by owner 2026-10-14'});
 const browserReq=build({route:browser,capabilities:nativeCaps});
 assert.equal(browserReq.request.provider,'codex/gpt-6.1-sol');assert.deepEqual(browserReq.request.settings,{thinkingOptionId:'low',features:{fast_mode:true},modeId:'full-access'});
@@ -1601,7 +1607,7 @@ assert.equal(ownerReq.request.provider,'pi/fleet/gpt-6.1-sol');assert.deepEqual(
 assert.equal(ownerReq.request.labels['opc.service-tier'],'fast');assert.equal(ownerReq.request.labels['opc.route-source'],'owner-explicit');
 // Decision 332: review-security defaults to Sol xhigh with the Fast label; an owner-named GPT route is allowed and, resolved
 // alone as when recorded, keeps the xhigh minimum.
-const secReq=build({route:r.selectWorkerRoute({taskKind:'review-security',catalog})});
+const secReq=build({route:await live('review-security')});
 assert.equal(secReq.request.provider,'pi/fleet/gpt-6.1-sol');assert.deepEqual(secReq.request.settings,{thinkingOptionId:'xhigh'});assert.equal(secReq.request.labels['opc.service-tier'],'fast');
 assert.deepEqual(plain(r.selectWorkerRoute({ownerRoute:{...owner,effort:'xhigh'},taskKind:'security',catalog})),{...owner,effort:'xhigh'});
 assert.throws(()=>r.selectWorkerRoute({ownerRoute:{...owner,model:'fleet/claude-opus-5-5',fastMode:false},taskKind:'review-security',catalog}),/below the review-security minimum xhigh/);
@@ -1617,16 +1623,18 @@ assert.throws(()=>r.selectWorkerRoute({ownerRoute:code,catalog}),/source owner-e
 // A recorded default cannot be edited or replayed against another catalog row.
 assert.throws(()=>build({route:{...code,effort:'xhigh'}}),/task-default route/);
 assert.throws(()=>build({route:{...code,fastMode:true}}),/task-default route/);
-assert.throws(()=>build({route:{...code,kind:'docs'}}),/task-default route/);
-assert.throws(()=>build({route:{...code,model:'fleet/gpt-6.1-sol'}}),/match its Pi catalog label/);
+assert.throws(()=>build({route:{...code,kind:'docs'},taskClass:'code'}),/task-default route/);
+assert.throws(()=>build({route:{...code,model:'fleet/gpt-6.1-sol'}}),/code class runs Opus/);
 // Native Workers fail without the owner's authorization and are allowed with it.
 const unserved={role:'worker',source:'owner-explicit',model:'gpt-6.2-nova',effort:'high',fastMode:true};
 assert.throws(()=>build({route:unserved}),/Pi catalog does not serve gpt-6.2-nova at high thinking; Workers run on Pi only/);
 assert.throws(()=>build({route:owner,surface:'codex',capabilities:nativeCaps}),/explicit owner authorization/);
-for(const provider of ['codex/gpt-6.1-sol','claude/claude-opus-5-5[1m]']){
- assert.throws(()=>build({provider,route:owner,capabilities:nativeCaps}),/explicit owner authorization/);
+const ownerClaude={role:'worker',source:'owner-explicit',model:'claude-opus-5-5[1m]',effort:'high',fastMode:false};
+const claudeCaps={...nativeCaps,models:[{id:'claude-opus-5-5[1m]',label:'Opus',thinkingOptions:levels(['high'])}]};
+for(const [provider,route,caps] of [['codex/gpt-6.1-sol',owner,nativeCaps],['claude/claude-opus-5-5[1m]',ownerClaude,claudeCaps]]){
+ assert.throws(()=>build({provider,route,capabilities:caps}),/explicit owner authorization/);
  for(const value of [true,'yes',{answer:'yes'}])assert.throws(()=>r.resolveWorkerSurface({provider,nativeAuthorization:value}),/explicit owner authorization/);
- const allowed=build({provider,route:owner,capabilities:nativeCaps,nativeAuthorization:'owner-explicit'});
+ const allowed=build({provider,route,capabilities:caps,nativeAuthorization:'owner-explicit'});
  assert.equal(allowed.request.provider,provider);assert.equal(allowed.modeId,'full-access');
 }
 const nativeReq=build({route:owner,surface:'codex',capabilities:nativeCaps,nativeAuthorization:'owner-explicit'});
@@ -1638,7 +1646,9 @@ assert.equal(r.resolveWorkerSurface({provider:'pi/fleet/gpt-6.1-sol'}).provider,
 assert.equal(r.resolveWorkerSurface({provider:'codex/gpt-6-luna',role:'scout'}).provider,'codex/gpt-6-luna');
 """
         opc=ROOT/'skills/orchestration/opc/scripts'
-        done=subprocess.run(['node','--input-type=module','-e',script,(opc/'agent-routing.mjs').as_uri(),(opc/'paseo-worker.mjs').as_uri()],capture_output=True,text=True)
+        with tempfile.TemporaryDirectory() as home:
+            done=subprocess.run(['node','--input-type=module','-e',script,(opc/'agent-routing.mjs').as_uri(),(opc/'paseo-worker.mjs').as_uri(),
+                                 (opc/'route.mjs').as_uri()],capture_output=True,text=True,env={**os.environ,'HOME':home})
         self.assertEqual(done.returncode,0,done.stderr)
 
     @unittest.skipIf(os.name == "nt", "fake paseo is a POSIX shell script")
