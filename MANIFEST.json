@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "81813d06eeda4c8680b8cce31b93bb1939dc8e5f",
+  "source_commit": "6a0ca0b33095ef063743bc7c8e110593769287bf",
   "skill_count": 25,
   "file_count": 153,
   "files": [
@@ -863,8 +863,8 @@
       "path": "skills/planning-writing/call-coach/SKILL.md",
       "category": "planning-writing",
       "skill": "call-coach",
-      "bytes": 8617,
-      "sha256": "52cfc3495edc52f7203febca17957f6f4d4230353de821d4cbf51af48dc0610f"
+      "bytes": 8845,
+      "sha256": "e3d6082fd0fe2b8385877c9955126451f30130239773e2a78fde292082eaa640"
     },
     {
       "path": "skills/planning-writing/call-coach/agents/openai.yaml",
