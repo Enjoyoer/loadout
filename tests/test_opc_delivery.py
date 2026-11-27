@@ -2170,7 +2170,8 @@ class OpcDeliveryTest(unittest.TestCase):
             assert.equal(opnBrJson.model, 'gpt-6.2-sol');
             assert.equal(opnBrJson.effort, 'low');
             assert.equal(opnBrJson.fast, true);
-            assert.deepEqual(opnBrJson.route, {{ role: 'worker', source: 'owner-explicit', model: 'gpt-6.2-sol', effort: 'low', fastMode: true }});
+            assert.deepEqual(opnBrJson.route, {{ role: 'worker', source: 'owner-explicit', model: 'gpt-6.2-sol', effort: 'low', fastMode: true,
+              policy: 'opn-browser' }});
             const codexBr = JSON.parse(runCli(['--class', 'browser', '--catalog', catalogPath]).stdout);
             assert.equal(codexBr.provider, 'codex/gpt-6.2-sol');
             assert.equal(codexBr.effort, 'low');
@@ -2276,6 +2277,18 @@ class OpcDeliveryTest(unittest.TestCase):
                 initialPrompt: 'Go', route: opnLive.route, task: readTask(taskPath), taskClass, capabilities: codexCaps,
                 workspace: {{ workspaceId: 'wks-managed', cwd: '/tmp/managed' }} }}), /never a managed worktree/);
             }}
+            // The route parsed from the CLI's JSON stays marked: it is never recorded as a normal browser lane (or with no
+            // class), never reaches the managed builder, and is no fresh in-place launch authority.
+            const parsedRoute = opnBrJson.route;
+            for (const taskClass of [undefined, 'browser']) {{
+              assert.throws(() => recordWorkerRoute(taskPath, {{ lane: 'opn-json', route: parsedRoute, reason: opnBrJson.reason, taskClass }}),
+                /opn-browser is a resolver-only policy and cannot be recorded/);
+              assert.throws(() => buildManagedWorkerRequest({{ taskId: readTask(taskPath).id, lane: 'opn-json', title: 'Browse',
+                initialPrompt: 'Go', route: parsedRoute, task: readTask(taskPath), taskClass, capabilities: codexCaps,
+                workspace: {{ workspaceId: 'wks-managed', cwd: '/tmp/managed' }} }}), /never a managed worktree/);
+              assert.throws(() => opnBuild({{ taskClass }}, parsedRoute), /launches only with taskClass opn-browser/);
+            }}
+            assert.throws(() => opnBuild({{}}, parsedRoute), /pasted, remembered, or stale routes are refused/);
             assert.deepEqual(readTask(taskPath).routes, routesBefore);
             // Pasted, other-lane, or other-class routes never launch as opn-browser.
             assert.throws(() => opnBuild({{}}, structuredClone(opnLive.route)), /pasted, remembered, or stale routes are refused/);

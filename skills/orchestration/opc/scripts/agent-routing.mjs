@@ -508,10 +508,11 @@ export function selectOpnBrowserMode(capabilities) {
   }
   return modeId;
 }
-// Whether resolveWorkerRoute resolved this route object as opn-browser (its live stamp, read without the freshness
-// window), so no caller class, omitted or other, maps it to Pi, to the browser class, or to a recorded or managed lane.
+// Whether a route is an opn-browser route: its policy marker, which survives the CLI's JSON so a parsed or pasted copy
+// stays marked, or resolveWorkerRoute's live opn-browser stamp. No caller class, omitted or other, maps a marked route
+// to Pi, to the browser class, or to a recorded or managed lane; only the live stamp authorizes an in-place launch.
 export const isOpnBrowserRoute = route => route != null && typeof route === 'object' &&
-  liveResolutions.get(route)?.taskClass === 'opn-browser';
+  (route.policy === 'opn-browser' || liveResolutions.get(route)?.taskClass === 'opn-browser');
 // Whether already-parsed JSON text repeats a key in any object, with escaped spellings decoded.
 export function repeatsKey(text) {
   const objects = [];

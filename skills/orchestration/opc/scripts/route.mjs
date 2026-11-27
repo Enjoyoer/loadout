@@ -515,7 +515,7 @@ function liveReadOnlyDecision({ taskClass, catalog, task = null, lane = null, no
     // (`paseo provider models codex`) must serve it, and a Pi catalog never does.
     resolveOpnBrowserRow(Array.isArray(catalog) ? catalog : catalog?.codex);
     const { provider, model, effort, fastMode, reason } = OPN_BROWSER_EXCEPTION;
-    const route = Object.freeze({ role: 'worker', source: 'owner-explicit', model, effort, fastMode });
+    const route = Object.freeze({ role: 'worker', source: 'owner-explicit', model, effort, fastMode, policy: 'opn-browser' });
     return decisionEnvelope({
       route, reason, provider: `${provider}/${model}`, host, nextFallback: null,
       proofRequired: false, taskClass: 'opn-browser', taskId: null, lane, launchable: true, inPlaceAllowed: true, verifyLive,
