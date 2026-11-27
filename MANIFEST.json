@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "2226ab9743e2ecc6b160edda0e373e072eb2e30c",
+  "source_commit": "b4cdb16917750fc4b536fc7ad563ceae5624659e",
   "skill_count": 25,
   "file_count": 153,
   "files": [
@@ -198,8 +198,8 @@
       "path": "skills/orchestration/opc/SKILL.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 4960,
-      "sha256": "60d078490cd751a609da51ed538f9f94e5bc85669474cee98cec466b2ecbe9e6"
+      "bytes": 4943,
+      "sha256": "89c473c6a5a57ecc3ca7d34039a4defd9e6e3a8ca83ef0387e7c02f24b98c329"
     },
     {
       "path": "skills/orchestration/opc/agents/openai.yaml",
@@ -219,8 +219,8 @@
       "path": "skills/orchestration/opc/references/imp-execution.md",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 5729,
-      "sha256": "b559427fefa27496182a784964f7bfd428cfe295e426e397f04cbccc73a8750a"
+      "bytes": 5770,
+      "sha256": "b46f2f2809a6c9590c668cbafd642606d4a95d09af68795dc48a9dcb43419d93"
     },
     {
       "path": "skills/orchestration/opc/references/pr-evidence.md",
