@@ -128,6 +128,8 @@ Remote debugging lets any local process drive that browser while it runs. Keep t
 
 On every path, the section 2 length check comes after the submit, never between the fill and the submit.
 
+When the task is done, close every tab you opened unless the owner still has to act in it or a named later step reuses it. List every tab you keep and why in your report.
+
 ## 5. CAPTCHA, 2FA, locked vault
 
 - CAPTCHA: solve it yourself, whether it is a checkbox, an image grid, an audio challenge or a slider puzzle. If it expires or fails, reload and try again. Ask the owner only after 3 real attempts fail, or when it needs something you cannot do (a phone call or a hardware key). Then leave the page visible and say what blocked you.
