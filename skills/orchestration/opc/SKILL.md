@@ -7,25 +7,25 @@ metadata:
 
 # OPC
 
-The PM owns scope, topology, integration, verification, and publication. OPC implementation authorizes bounded Worker lanes, never subdelegation or route substitution. OPC ends with verified merge, required sync, and cleanup; earlier endpoints are ordinary scoped work. Local commits and PRs are internal stages.
+The PM owns scope, topology, integration, verification, and publication. Implementation authorizes bounded Worker lanes, not subdelegation or route substitution. Done means verified merge, required sync, and cleanup, not a local commit or PR.
 
-Follow this state machine, reading linked references only when their branch applies.
+Read linked references only when their branch applies.
 
 ## 1. Scope
 
-Record outcome, assigned checkout, owner, committed base, permitted changes, and acceptance checks (observable, preferably end-to-end or live). Escalate scope or authority changes to the owner.
+Record outcome, checkout, owner, committed base, scope, and observable acceptance checks (prefer end-to-end/live). Escalate scope or authority changes to the owner.
 
 Enable browser review only when the initial request explicitly asks; the choice is immutable through repairs, resumes, and reinvocation. Initialize the [execution mechanics](references/imp-execution.md "runtime") before launching lanes.
 
 ## 2. Optional scouting
 
-Default to one scout; add another only for an independent question expected to take 30+ minutes. Trivial, localized, or inherently sequential work skips scouting and planning. Synthesize findings first. Use a read-only `plan` Worker only for material ambiguity or cross-lane decisions.
+Default to one scout; add another only for an independent question expected to take 30+ minutes. Skip scouting and planning for trivial, localized, or sequential work. Synthesize findings first. Use a read-only `plan` Worker only for material ambiguity or cross-lane decisions.
 
 ## 3. Worker
 
 Resolve every route, PMs included, via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted. Always consult `route.mjs --class <class>` (or `resolveWorkerRoute`) live before launching any fresh or replayed worker—never launch from remembered defaults, never invent Sol without positive proof/holds, and keep recorded, owner, review, and non-Claude routes unchanged.
 
-Default to one implementer Worker building items sequentially (server, UI, docs together), adding tests only when owner or PM names cases. Never split by work type (frontend, backend, tests) or file. Parallelize only independent 30+ minute pieces (no shared files/ordering); one owner per file, PM writes shared contracts first. Use fresh agents only where fresh context helps: reviewer (spec and diff), verifier (user flows), and context-free research. One Worker lineage per lane; shared live resources serialize only live checks.
+Default to one sequential implementer Worker (server, UI, docs together). Add tests only for owner/PM-specified cases. Never split by work type or file. Parallelize only independent 30+ minute pieces without shared files or ordering. One owner per file; PM writes shared contracts first. Use fresh agents only when fresh context helps: review (spec and diff), verification (user flows), or context-free research. One Worker lineage per lane; serialize only live checks sharing resources.
 
 Visual design (new screen, layout, component) gets one read-only `ui-design` lane and optional `ui-check`; `code` builds it. Copy-only UI changes stay `code`.
 
@@ -33,13 +33,15 @@ When no Worker holds the checkout, the PM does work under about 20 tool calls it
 
 ## 4. Yield
 
-Use agent-scoped `create_agent` and `send_agent_prompt` with `notifyOnFinish: true`; finish independent work and yield. On notification, read `get_agent_status` and `get_agent_activity` once each. No babysitting, CLI waits, terminal inspection, status narration, retries, or replacements while running. Report terminal failures.
+Pi exposes agent-scoped `tools.mcp__paseo__create_agent` / `tools.mcp__paseo__send_agent_prompt` via codemode (`exposure: codemode`); call with `notifyOnFinish: true`.
+`paseo send` never notifies on finish; unset `PASEO_AGENT_ID` defaults to interrupt, not steer. Any worker CLI send requires a same-step one-shot check-back.
+Finish independent work and yield. On notification, read `get_agent_status` and `get_agent_activity` once each. While running: no babysitting, CLI waits, terminal inspection, status narration, retries, or replacements. Report terminal failures.
 
 Keep Neon turns short; to change course before one ends, stop and resume it instead of steering.
 
 ## 5. Integrate
 
-Verify returned agent/workspace identity, path, branch, commits, selected-base ancestry, and exact diff. Integrate by repository merge/cherry-pick policy, never merely on completion/idle status. Send repairs to the same Worker; repeat yield and integration.
+Verify agent/workspace identity, path, branch, commits, base ancestry, and exact diff. Follow repository merge/cherry-pick policy; completion/idle alone is insufficient. Send repairs to the same Worker; repeat yield and integration.
 
 ## 6. Verify
 
