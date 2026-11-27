@@ -2040,6 +2040,15 @@ class OpcDeliveryTest(unittest.TestCase):
             "  printf '{\"Id\":\"live-pm-0001\",\"ParentAgentId\":null}\\n'\n"
             "  exit 0\n"
             "fi\n"
+            # Default catalogs: native Codex rows are unprefixed; the Pi one serves only fleet/gpt-6.2-sol.
+            "if [ \"$1 $2 $3 $4\" = 'provider models codex --json' ]; then\n"
+            "  printf '[{\"id\":\"gpt-6.2-sol\",\"label\":\"Sol\",\"thinkingOptionIds\":[\"low\",\"high\"]}]\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1 $2 $3 $4\" = 'provider models pi --json' ]; then\n"
+            "  printf '[{\"id\":\"fleet/gpt-6.2-sol\",\"label\":\"Sol\",\"thinkingOptionIds\":[\"low\",\"high\"]}]\\n'\n"
+            "  exit 0\n"
+            "fi\n"
             "exit 1\n"
         )
         paseo_shim.chmod(0o755)
@@ -2149,6 +2158,10 @@ class OpcDeliveryTest(unittest.TestCase):
             const piOnly = runCli(['--class', 'opn-browser', '--catalog', catalogPath]);
             assert.notEqual(piOnly.status, 0);
             assert.match(piOnly.stderr, /exactly one native Codex gpt-6.2-sol at low thinking/);
+            // With no --catalog the CLI reads `paseo provider models codex --json`, never the Pi catalog.
+            const opnDefault = runCli(['--class', 'opn-browser']);
+            assert.equal(opnDefault.status, 0, opnDefault.stderr);
+            assert.equal(JSON.parse(opnDefault.stdout).provider, 'codex/gpt-6.2-sol');
             const opnBr = runCli(['--class', 'opn-browser', '--catalog', codexCatalogPath]);
             assert.equal(opnBr.status, 0, opnBr.stderr);
             assert.match(opnBr.stderr, /route opn-browser: codex\\/gpt-6.2-sol effort=low fast=on host=srv-live-local next=none/);
