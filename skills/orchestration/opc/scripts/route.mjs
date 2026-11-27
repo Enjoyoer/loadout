@@ -17,7 +17,7 @@ import {
   localServerId, MAIN_PM_POLICY, OFF_PACE_CLASSES, OFF_PACE_SOURCES, offPaceLaunchAllowed, OPN_BROWSER_EXCEPTION,
   OPUS_REPLACEMENT_RUNTIME, OWNER_RULE_ROUTES, PACE_BACKUP_RUNTIME, paceBackupReason, PARITY_BACKUP_REASON,
   parityReason, readLocalRouting, recordedLaneEntry, replacementReason, REPLACEMENT_RUNTIME,
-  replacementRuntimeForModel, resolveCatalogLabel, routeReason, selectWorkerRoute, stampLiveResolution, UI_CLASSES,
+  replacementRuntimeForModel, resolveOpnBrowserRow, routeReason, selectWorkerRoute, stampLiveResolution, UI_CLASSES,
   uiTaskLaneClass, validateLaneClass, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved,
 } from './agent-routing.mjs';
 import {
@@ -511,17 +511,12 @@ function liveReadOnlyDecision({ taskClass, catalog, task = null, lane = null, no
   }
 
   if (taskClass === 'opn-browser') {
-    const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
-    const row = resolveCatalogLabel(rows, OPN_BROWSER_EXCEPTION.label);
-    if (!row.thinkingOptions?.some(option => option.id === OPN_BROWSER_EXCEPTION.effort)) {
-      throw Error(`${OPN_BROWSER_EXCEPTION.label} does not serve required thinking ${OPN_BROWSER_EXCEPTION.effort}; the Worker lane stops`);
-    }
-    const route = Object.freeze({
-      role: 'worker', source: 'owner-explicit', model: row.id, effort: OPN_BROWSER_EXCEPTION.effort,
-      fastMode: OPN_BROWSER_EXCEPTION.fastMode,
-    });
+    // Owner decision 412a: native Codex gpt-6.2-sol low, Fast on, in the PM's own workspace; the catalog must serve it.
+    resolveOpnBrowserRow(Array.isArray(catalog) ? catalog : catalog?.pi);
+    const { provider, model, effort, fastMode, reason } = OPN_BROWSER_EXCEPTION;
+    const route = Object.freeze({ role: 'worker', source: 'owner-explicit', model, effort, fastMode });
     return decisionEnvelope({
-      route, reason: OPN_BROWSER_EXCEPTION.reason, provider: `pi/${row.id}`, host, nextFallback: null,
+      route, reason, provider: `${provider}/${model}`, host, nextFallback: null,
       proofRequired: false, taskClass: 'opn-browser', taskId: null, lane, launchable: true, inPlaceAllowed: true, verifyLive,
     });
   }
@@ -623,6 +618,9 @@ function liveReadOnlyDecision({ taskClass, catalog, task = null, lane = null, no
 // devin-ready.json). Stamps every launchable route with exact task/lane/target/live-policy verification.
 export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, catalog, task = null, lane = null, replacement = null } = {}) {
   const now = Date.now();
+  if (taskClass === 'opn-browser' && ownerRoute != null) {
+    throw Error('opn-browser takes no owner-named route; owner decision 412a fixes its model, thinking, and Fast');
+  }
   if (ownerRoute) {
     const kind = canonicalWorkerClass(taskClass);
     const route = selectWorkerRoute({ ownerRoute, taskKind: kind, catalog });
@@ -792,6 +790,9 @@ async function main(argv) {
       (flags['owner-fast'] && !['on', 'off'].includes(flags['owner-fast']))) throw Error(usage);
   const ownerRoute = flags['owner-model'] ? { role: 'worker', source: 'owner-explicit', model: flags['owner-model'],
     effort: flags['owner-effort'], fastMode: flags['owner-fast'] === 'on' } : null;
+  if (flags.class === 'opn-browser' && ['owner-model', 'owner-effort', 'owner-fast'].some(key => flags[key] != null)) {
+    throw Error('opn-browser takes no --owner-model, --owner-effort, or --owner-fast; owner decision 412a fixes its route');
+  }
   const task = flags.task && flags.lane ? readTask(resolve(flags.task)) : null;
   const recorded = task?.routes?.[flags.lane] ?? null;
   if (recorded) {

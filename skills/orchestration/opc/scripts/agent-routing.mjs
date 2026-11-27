@@ -462,7 +462,7 @@ export function assertLiveResolution(route, { task = null, lane = null, taskClas
   return live;
 }
 // Resolver-only policies outside the 12-class worker table: main-pm (read-only policy ladder) and opn-browser (the named
-// OPN Pi browser exception, keeping native Codex browser unchanged and never admitting a code GPT route).
+// OPN native Codex browser exception, keeping the browser class unchanged and never admitting a code GPT route).
 export const MAIN_PM_POLICY = Object.freeze({
   defaultRoute: Object.freeze({
     role: 'main-pm', source: 'policy-default', model: 'fleet/claude-opus-5-5', effort: 'high', fastMode: false,
@@ -476,10 +476,23 @@ export const MAIN_PM_POLICY = Object.freeze({
     Object.freeze({ step: 'agy-opus', provider: 'agy-opc/claude-opus-5-5-high', model: 'claude-opus-5-5-high', effort: 'high', fast: false, standIn: true }),
   ]),
 });
+// Owner decision 412a (2026-11-27): a fresh PM-started OPN browser worker runs native Codex gpt-6.2-sol, thinking low,
+// Fast on, in the PM's own workspace so it shares the Paseo browser (native Codex gets the Paseo MCP browser tools from
+// its runtime Paseo MCP server). No caller override changes the model, thinking, Fast, or workspace.
 export const OPN_BROWSER_EXCEPTION = Object.freeze({
-  label: 'Sol', effort: 'low', fastMode: true,
-  reason: 'opn-browser named exception: Pi Sol low, Fast on (PM workspace)',
+  provider: 'codex', model: 'gpt-6.2-sol', effort: 'low', fastMode: true,
+  reason: 'opn-browser named exception: native Codex gpt-6.2-sol low, Fast on (PM workspace, owner 412a)',
 });
+// The one catalog row (Pi rows by native id, or native Codex rows) serving the opn-browser model at its thinking.
+export function resolveOpnBrowserRow(rows) {
+  const { model, effort } = OPN_BROWSER_EXCEPTION;
+  const served = (Array.isArray(rows) ? rows : []).filter(row => typeof row?.id === 'string' &&
+    nativeModelId(row.id) === model && row.thinkingOptions?.some(option => option?.id === effort));
+  if (served.length !== 1) {
+    throw Error(`the catalog must serve exactly one native Codex ${model} at ${effort} thinking; the opn-browser lane stops`);
+  }
+  return served[0];
+}
 // Whether already-parsed JSON text repeats a key in any object, with escaped spellings decoded.
 export function repeatsKey(text) {
   const objects = [];
