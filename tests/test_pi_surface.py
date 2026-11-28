@@ -1546,7 +1546,7 @@ assert.equal(r.materializeFixedRoute('scout',catalog,'pi',unapproved).model,'fle
 import assert from 'node:assert/strict';
 const r=await import(process.argv[1]);const w=await import(process.argv[2]);const rt=await import(process.argv[3]);
 const levels=ids=>ids.map(id=>({id}));
-const catalog=[['claude-opus-5-5','Opus'],['claude-fable-5-1','Fable'],['gpt-6.1-sol','Sol'],['gpt-6.1-terra','Terra'],['gpt-6-luna','Luna'],['gpt-6-astra','Astra'],['chatgpt-web/pro','Web Pro']]
+const catalog=[['claude-opus-5-5','Opus'],['claude-fable-5-1','Fable'],['gpt-6.1-sol','Sol'],['gpt-6.1-terra','Terra'],['gpt-6-luna','Luna'],['gpt-6.2-astra','Astra'],['chatgpt-web/pro','Web Pro']]
  .map(([id,label])=>({id:'fleet/'+id,label,thinkingOptions:levels(['low','medium','high','xhigh','max'])}));
 const piCaps={enabled:true,status:'available',modes:[],models:catalog};
 const nativeCaps={enabled:true,status:'available',modes:[{id:'full-access',isUnattended:true}],models:catalog};
@@ -1578,13 +1578,13 @@ assert(Object.isFrozen(r.WORKER_DEFAULT_ROUTES)&&Object.isFrozen(r.WORKER_DEFAUL
 // Code default: ordinary OPC code on Astra at medium (decision 411a), Fast off (explicit Standard), on Pi, recorded as a task default.
 const code=await live('code');
 assert.throws(()=>build({route:r.selectWorkerRoute({taskKind:'code',catalog})}),/pasted, remembered, or stale routes are refused/);
-assert.deepEqual(plain(code),{role:'worker',source:'task-default',kind:'code',model:'fleet/gpt-6-astra',effort:'medium',fastMode:false,reason:'code default Astra medium, Fast off (ordinary OPC code, decision 411a)'});
+assert.deepEqual(plain(code),{role:'worker',source:'task-default',kind:'code',model:'fleet/gpt-6.2-astra',effort:'medium',fastMode:false,reason:'code default Astra medium, Fast off (ordinary OPC code, decision 411a)'});
 const codeReq=build({route:code});
-assert.equal(codeReq.request.provider,'pi/fleet/gpt-6-astra');assert.deepEqual(codeReq.request.settings,{thinkingOptionId:'medium'});
+assert.equal(codeReq.request.provider,'pi/fleet/gpt-6.2-astra');assert.deepEqual(codeReq.request.settings,{thinkingOptionId:'medium'});
 assert.equal(codeReq.request.labels['opc.route-source'],'task-default');
 assert.equal(codeReq.request.labels['opc.service-tier'],'standard');assert.equal('opc.fast-requested' in codeReq.request.labels,false);
-assert.equal(r.resolveAgentSurface('worker',{taskKind:'code'},catalog).provider,'pi/fleet/gpt-6-astra');
-assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/gpt-6-astra; effort=medium; Fast=off/);
+assert.equal(r.resolveAgentSurface('worker',{taskKind:'code'},catalog).provider,'pi/fleet/gpt-6.2-astra');
+assert.match(r.buildDelegatedBrief({role:'worker',route:code,brief:'x'}),/model=fleet\/gpt-6.2-astra; effort=medium; Fast=off/);
 // A Fable code lane owns the codebase; an Opus code lane and a Fable ui-design lane do not get that line.
 const ownerLine='You are the owner and long-term maintainer of this codebase';
 const fableCode={role:'worker',source:'owner-explicit',model:'fleet/claude-fable-5-1',effort:'high',fastMode:false};

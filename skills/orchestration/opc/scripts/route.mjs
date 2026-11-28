@@ -685,7 +685,7 @@ function recordLane(task, { lane, route, reason, taskClass = null, catalog = nul
     throw Error(`a ${route.source} route records only through its admitted resolution for this task and lane`);
   }
   // A decision 359 Opus turn records only the Opus row, never the ordinary Astra default (decision 411a).
-  if ((admission?.parity && route.source === 'task-default' && (admission.route != null || ordinaryCodeRoute(route, Array.isArray(catalog) ? catalog : catalog?.pi))) ||
+  if ((admission?.parity && route.source === 'task-default' && (admission.route != null || ordinaryCodeRoute(route))) ||
       (admission?.parity?.consumes && !counting)) {
     throw Error(`lane ${lane}: the launcher's alternation turn changed since this route was resolved; resolve the lane again`);
   }

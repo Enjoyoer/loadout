@@ -72,6 +72,8 @@ export const WORKER_DEFAULT_ROUTES = Object.freeze({
 // explicitly by the caller, never inferred from an alias) keeps the shared Opus high code row.
 export const CODE_SCOPES = Object.freeze(['ordinary', 'preserved']);
 export const ORDINARY_CODE_ROUTE = workerClass('Astra', 'medium');
+// The exact model id of the ordinary code default; no other id, and no other model labelled Astra, takes the exception.
+export const ORDINARY_CODE_MODEL = 'fleet/gpt-6.2-astra';
 export const ORDINARY_CODE_REASON = 'code default Astra medium, Fast off (ordinary OPC code, decision 411a)';
 export const PRESERVED_CODE_REASON = 'code default Opus high, Fast off (preserved scope: UI build or OPN work, decision 411a)';
 export const WORKER_CLASS_ALIASES = Object.freeze({
@@ -83,11 +85,19 @@ const OWNER_RULE_ALIASES = Object.freeze({ ui: 'ui-design' });
 export const canonicalWorkerClass = kind => Object.hasOwn(WORKER_CLASS_ALIASES, kind ?? '') ? WORKER_CLASS_ALIASES[kind]
   : Object.hasOwn(OWNER_RULE_ALIASES, kind ?? '') ? OWNER_RULE_ALIASES[kind] : kind;
 const workerRule = kind => WORKER_DEFAULT_ROUTES[canonicalWorkerClass(kind)];
-// A code task default on the Astra model is checked against the ordinary code row (decision 411a), any other task
-// default against its class row. By its catalog row's label or, without a catalog, by its name.
-export const ordinaryCodeRoute = (route, rows = null) => route?.source === 'task-default' &&
-  canonicalWorkerClass(route.kind) === 'code' && labelModel(route.model, ORDINARY_CODE_ROUTE.label, rows);
-const defaultRule = (route, rows = null) => ordinaryCodeRoute(route, rows) ? ORDINARY_CODE_ROUTE : workerRule(route?.kind);
+// A code task default on exactly ORDINARY_CODE_MODEL is checked against the ordinary code row (decision 411a), any other
+// task default against its class row.
+export const ordinaryCodeRoute = route => route?.source === 'task-default' &&
+  canonicalWorkerClass(route.kind) === 'code' && route.model === ORDINARY_CODE_MODEL;
+const defaultRule = route => ordinaryCodeRoute(route) ? ORDINARY_CODE_ROUTE : workerRule(route?.kind);
+// A rule's catalog row: for the ordinary code row the one row whose id is exactly ORDINARY_CODE_MODEL and whose label is
+// Astra, for any other rule the one row with its label.
+function ruleRow(rows, rule) {
+  if (rule !== ORDINARY_CODE_ROUTE) return resolveCatalogLabel(rows, rule.label);
+  const matches = rows?.filter(row => row?.id === ORDINARY_CODE_MODEL && row.label === rule.label) || [];
+  if (matches.length !== 1) throw Error(`catalog must have exactly one ${ORDINARY_CODE_MODEL} row labelled ${rule.label} (found ${matches.length})`);
+  return matches[0];
+}
 // Default routes a class ran before a class-table change. A lane recorded as that exact default still rebuilds on it,
 // any route on that label in the class keeps its Fast rule, and no new task default takes it.
 const FORMER_CLASS_ROUTES = Object.freeze({
@@ -119,7 +129,7 @@ export function isGptOrWebRoute(route, catalog = null) {
   const rows = Array.isArray(catalog) ? catalog : catalog?.pi;
   // A task default takes its class's label, unless it is a recorded former default of another label (an Opus
   // review-security lane from before decision 332).
-  const label = route?.label ?? (route?.source === 'task-default' && !formerClassRoute(route, route.kind, rows) ? defaultRule(route, rows)?.label
+  const label = route?.label ?? (route?.source === 'task-default' && !formerClassRoute(route, route.kind, rows) ? defaultRule(route)?.label
     : rows?.find(row => row.id === route?.model || row.id?.slice(row.id.indexOf('/') + 1) === route?.model)?.label);
   return GPT_WEB_LABELS.includes(label) || GPT_WEB_MODEL.test(route?.model ?? '');
 }
@@ -205,7 +215,7 @@ function laneProblem(route, taskClass, rows, recorded = false) {
   const ownerRule = fableProblem(route, rows) ?? classFastProblem(route, taskClass, rows);
   if (ownerRule) return ownerRule;
   // The ordinary code default (decision 411a) is checked against its own row: Astra, at its own minimum.
-  const ordinary = taskClass === 'code' && ordinaryCodeRoute(route, rows);
+  const ordinary = taskClass === 'code' && ordinaryCodeRoute(route);
   const rule = ordinary ? ORDINARY_CODE_ROUTE : WORKER_DEFAULT_ROUTES[taskClass];
   // The other GPT exception: the exact off-pace backup in an eligible off-pace class, which records only through its
   // admitted off-pace resolution and launches only from its own recorded lane (owner decisions 310, 316, 393a).
@@ -224,8 +234,8 @@ const knownClass = taskClass => Object.hasOwn(WORKER_DEFAULT_ROUTES, canonicalWo
 // A task default runs its class's own model: with a catalog exactly the class's row, without one a model id that names
 // the class's label (the name rule of the UI check), failing closed.
 function defaultIdentityProblem(route, rows) {
-  const rule = defaultRule(route, rows);
-  if (rows) return classModelId(route.kind, resolveCatalogLabel(rows, rule.label).id) === classModelId(route.kind, route.model) ? null : `${route.model} is not the ${route.kind} class's ${rule.label} model`;
+  const rule = defaultRule(route);
+  if (rows) return classModelId(route.kind, ruleRow(rows, rule).id) === classModelId(route.kind, route.model) ? null : `${route.model} is not the ${route.kind} class's ${rule.label} model`;
   return namesLabel(route.model, rule.label) ? null : `${route.model} does not name the ${route.kind} class's ${rule.label} model`;
 }
 
@@ -810,7 +820,7 @@ function validateWorkerRoute(route) {
 function validateRebuild(route, taskClass, rows) {
   taskClass = canonicalWorkerClass(taskClass);
   const valid = validateRecordedWorkerRoute(route);
-  const rule = taskClass === 'code' && ordinaryCodeRoute(route, rows) ? ORDINARY_CODE_ROUTE : WORKER_DEFAULT_ROUTES[taskClass];
+  const rule = taskClass === 'code' && ordinaryCodeRoute(route) ? ORDINARY_CODE_ROUTE : WORKER_DEFAULT_ROUTES[taskClass];
   const ceiling = rule && (rule.ceiling ?? rule.effort);
   const former = recordedFormerDefault(route, taskClass, rows);
   const problem = laneProblem(route, taskClass, rows, true) ?? (route.source !== 'task-default' || former ? null
@@ -832,7 +842,7 @@ function validateRebuild(route, taskClass, rows) {
       `${candidates.length ? `serves ${route.model} but not at ${route.effort} thinking` : `has no ${route.model}`}; ` +
       'this lane cannot relaunch on its recorded route, so resolve a route for a new lane');
   }
-  if (classModelId(taskClass, resolveCatalogLabel(rows, rule.label).id) !== classModelId(taskClass, route.model)) {
+  if (classModelId(taskClass, ruleRow(rows, rule).id) !== classModelId(taskClass, route.model)) {
     throw Error(`recorded ${route.kind} Worker route cannot rebuild: ${route.model} is not the ${route.kind} class's ${rule.label} model`);
   }
   return valid;
@@ -958,7 +968,7 @@ export function selectWorkerRoute({ ownerRoute = null, taskKind = null, catalog,
   if (!Object.hasOwn(WORKER_DEFAULT_ROUTES, taskKind ?? '')) throw workerRouteUnresolved();
   const ordinary = taskKind === 'code' && scope !== 'preserved';
   const rule = ordinary ? ORDINARY_CODE_ROUTE : WORKER_DEFAULT_ROUTES[taskKind];
-  const row = resolveCatalogLabel(rows, rule.label);
+  const row = ruleRow(rows, rule);
   const effort = rule.effort;
   if (!row.thinkingOptions?.some(option => option.id === effort)) {
     throw Error(`${rule.label} does not serve required thinking ${effort}; the Worker lane stops`);
@@ -1086,8 +1096,8 @@ function mapRoute(route, catalog, { fallbackProvider = 'codex', surface = 'pi', 
   const originalProvider = route.provider?.split('/')[0] ?? fallbackProvider;
   const original = { ...route, provider: route.provider ?? `${originalProvider}/${route.model}` };
   if (surface !== 'pi' && !NATIVE_WORKER_SURFACES.includes(surface)) throw Error('surface must be pi, codex, or claude');
-  if (route.source === 'task-default' && !recordedFormer && (!defaultRule(route, catalog) ||
-      classModelId(route.kind, resolveCatalogLabel(catalog, defaultRule(route, catalog).label).id) !== classModelId(route.kind, route.model))) {
+  if (route.source === 'task-default' && !recordedFormer && (!defaultRule(route) ||
+      classModelId(route.kind, ruleRow(catalog, defaultRule(route)).id) !== classModelId(route.kind, route.model))) {
     throw Error('task-default Worker route must match its Pi catalog label');
   }
   if (browserClass(routeClass(route, taskClass)) && surface !== 'claude') {
