@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "22e04d32aeda58ed1bb9447ed9f6fa20a8167bc2",
+  "source_commit": "37df6d1ec6cea79f05dc0f719217629517d23e10",
   "skill_count": 25,
   "file_count": 153,
   "files": [
@@ -275,8 +275,8 @@
       "path": "skills/orchestration/opc/scripts/agent-routing.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 92063,
-      "sha256": "7aa11bf6178c4bbd4b1964e1358d08873111f0918f24c3440042b38ba0fad3c2"
+      "bytes": 92591,
+      "sha256": "70fb1ba3d5bd1f36af04defd2dd511eee4a0304d0cc9a2a7b0f43437d892edf8"
     },
     {
       "path": "skills/orchestration/opc/scripts/agy-holds.mjs",
@@ -310,8 +310,8 @@
       "path": "skills/orchestration/opc/scripts/route.mjs",
       "category": "orchestration",
       "skill": "opc",
-      "bytes": 50063,
-      "sha256": "082958cbfc806832b8446a917e85a6dcba79ec2981611d322be701dd6223deec"
+      "bytes": 50015,
+      "sha256": "9ca40d6a092aa9f9a706ee620fed4abd91d765553364ce38af41838254a839ce"
     },
     {
       "path": "skills/orchestration/opc/scripts/task-state.mjs",
