@@ -14,9 +14,9 @@ import {
   assertLiveResolution, canonicalWorkerClass, CURSOR_OVERFLOW_REASON, CURSOR_OVERFLOW_RUNTIME, CURSOR_OVERFLOW_SOURCE,
   cursorEligibilityProblem, DEVIN_FIRST_CLASSES, DEVIN_FIRST_RUNTIME, DEVIN_FIRST_SOURCE,
   devinFirstReason, isReplacementMode, isTargetId, isUiRoute, launcherChain, LEGACY_OFF_PACE_CLASSES,
-  isOpnBrowserRoute, localServerId, MAIN_PM_POLICY, OFF_PACE_CLASSES, OFF_PACE_SOURCES, offPaceLaunchAllowed, OPN_BROWSER_EXCEPTION,
+  isOpnBrowserRoute, localServerId, MAIN_PM_POLICY, ordinaryCodeRoute, OFF_PACE_CLASSES, OFF_PACE_SOURCES, offPaceLaunchAllowed, OPN_BROWSER_EXCEPTION,
   OPUS_REPLACEMENT_RUNTIME, OWNER_RULE_ROUTES, PACE_BACKUP_RUNTIME, paceBackupReason, PARITY_BACKUP_REASON,
-  parityReason, readLocalRouting, recordedLaneEntry, replacementReason, REPLACEMENT_RUNTIME,
+  parityReason, readLocalRouting, recordedLaneEntry, replacementReason, REPLACEMENT_RUNTIME, requireCodeScope,
   replacementRuntimeForModel, resolveOpnBrowserRow, routeReason, selectWorkerRoute, stampLiveResolution, UI_CLASSES,
   uiTaskLaneClass, validateLaneClass, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved,
 } from './agent-routing.mjs';
@@ -30,8 +30,14 @@ import {
 } from './remote-target.mjs';
 import { readTask, updateTask, withFileLock } from './task-state.mjs';
 
-const usage = 'usage: route.mjs --class <class|main-pm|opn-browser> [--catalog FILE] ' +
+const usage = 'usage: route.mjs --class <class|main-pm|opn-browser> [--scope ordinary|preserved] [--catalog FILE] ' +
   '[--owner-model ID --owner-effort LEVEL [--owner-fast on|off]] [--task TASK_JSON --lane SLUG]';
+
+// Decision 359's subscription Opus turn keeps the shared Opus high code row whatever the code scope (decision 411a).
+export const PARITY_OPUS_REASON = 'code default Opus high, Fast off (Opus turn of the per-launcher alternation, decision 359)';
+const parityOpusRoute = catalog => Object.freeze({
+  ...selectWorkerRoute({ taskKind: 'code', catalog, scope: 'preserved' }), reason: PARITY_OPUS_REASON,
+});
 
 const RFC3339_UTC = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,3}))?Z$/;
 function utcTime(value) {
@@ -486,7 +492,7 @@ function offPaceAdmission(context, { taskClass, catalog }, state, pre = null) {
 // Read-only live policy preview (for bare `route.mjs --class <class>` or `resolveWorkerRoute` without replacement
 // context): applies Config-owned devin-ready.json and agy-quota.json projections, fresh trusted forcing switch,
 // live Mac error holds, and read-only alternation peek without writing any file or consuming any turn.
-function liveReadOnlyDecision({ taskClass, catalog, task = null, lane = null, now = Date.now() }) {
+function liveReadOnlyDecision({ taskClass, catalog, task = null, lane = null, now = Date.now(), scope = null }) {
   const localSrv = process.platform === 'darwin' ? localServerId() : null;
   const host = localSrv ?? 'local';
   const holdsDoc = process.platform === 'darwin' ? readModelHolds() : { holds: {}, probes: {} };
@@ -545,23 +551,17 @@ function liveReadOnlyDecision({ taskClass, catalog, task = null, lane = null, no
   }
   if (!Object.hasOwn(WORKER_DEFAULT_ROUTES, kind ?? '')) throw workerRouteUnresolved();
 
-  const baseRoute = selectWorkerRoute({ taskKind: kind, catalog });
-  const baseProvider = providerForRoute(baseRoute, kind);
+  // The class default (for code, the scope's default), or for code the decision 359 Opus turn; selected only when used.
+  const baseDecision = (route, inPlaceAllowed = true) => decisionEnvelope({
+    route, reason: routeReason(route), provider: providerForRoute(route, kind), host, nextFallback: null,
+    proofRequired: false, taskClass: kind, taskId: task?.id ?? null, lane, launchable: true, inPlaceAllowed, verifyLive,
+  });
+  const classDefault = () => selectWorkerRoute({ taskKind: kind, catalog, scope });
 
-  if (kind !== 'code') {
-    return decisionEnvelope({
-      route: baseRoute, reason: routeReason(baseRoute), provider: baseProvider, host, nextFallback: null,
-      proofRequired: false, taskClass: kind, taskId: task?.id ?? null, lane, launchable: true, inPlaceAllowed: true, verifyLive,
-    });
-  }
+  if (kind !== 'code') return baseDecision(classDefault());
 
   const doc = readLocalRouting(), mode = switchMode(doc, now);
-  if (mode == null || !offPaceLaunchAllowed(doc)) {
-    return decisionEnvelope({
-      route: baseRoute, reason: routeReason(baseRoute), provider: baseProvider, host, nextFallback: null,
-      proofRequired: false, taskClass: kind, taskId: task?.id ?? null, lane, launchable: true, inPlaceAllowed: true, verifyLive,
-    });
-  }
+  if (mode == null || !offPaceLaunchAllowed(doc)) return baseDecision(classDefault());
   if (holdsDoc == null) {
     throw Error('agy model holds file is unsafe or malformed; refusing live off-pace decision');
   }
@@ -600,25 +600,21 @@ function liveReadOnlyDecision({ taskClass, catalog, task = null, lane = null, no
 
   if (mode === 'forced') return evalLadderPreview(true);
 
+  // An unreadable launcher or alternation state admits no parity turn and stays on the scope default.
   const launcher = process.env.PASEO_AGENT_ID, alternation = readAlternation();
-  if (!launcherId(launcher) || alternation == null) {
-    return decisionEnvelope({
-      route: baseRoute, reason: routeReason(baseRoute), provider: baseProvider, host, nextFallback: null,
-      proofRequired: false, taskClass: kind, taskId: task?.id ?? null, lane, launchable: true, inPlaceAllowed: true, verifyLive,
-    });
-  }
+  if (!launcherId(launcher) || alternation == null) return baseDecision(classDefault());
   const admitted = Object.hasOwn(alternation.launchers, launcher) ? alternation.launchers[launcher].admitted : 0;
   if (admitted % 2 === 1) return evalLadderPreview(false);
-  return decisionEnvelope({
-    route: baseRoute, reason: routeReason(baseRoute), provider: baseProvider, host, nextFallback: null,
-    proofRequired: false, taskClass: kind, taskId: task?.id ?? null, lane, launchable: true, inPlaceAllowed: false, verifyLive,
-  });
+  return baseDecision(parityOpusRoute(catalog), false);
 }
 
 // Single live resolver. Owner routes always win unadjusted. Never accepts a caller Devin override (always reads Mac
 // devin-ready.json). Stamps every launchable route with exact task/lane/target/live-policy verification.
-export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, catalog, task = null, lane = null, replacement = null } = {}) {
+// scope (code only): ordinary (the default) or preserved, the caller's explicit choice for a UI build or OPN work.
+export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, catalog, task = null, lane = null, replacement = null,
+  scope = null } = {}) {
   const now = Date.now();
+  requireCodeScope(scope, taskClass);
   if (taskClass === 'opn-browser' && ownerRoute != null) {
     throw Error('opn-browser takes no owner-named route; owner decision 412a fixes its model, thinking, and Fast');
   }
@@ -655,7 +651,8 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
         taskClass: kind, taskId: boundTaskId, lane: boundLane, launchable: true, inPlaceAllowed: false, verifyLive,
       });
     }
-    const baseRoute = selectWorkerRoute({ taskKind: kind, catalog });
+    // A consumed decision 359 turn that admitted no agy route is the Opus turn; otherwise the class or scope default.
+    const baseRoute = admitted?.parity ? parityOpusRoute(catalog) : selectWorkerRoute({ taskKind: kind, catalog, scope });
     const reason = Object.hasOwn(OWNER_RULE_ROUTES, kind ?? '') ? OWNER_RULE_ROUTES[kind].reason : routeReason(baseRoute);
     return decisionEnvelope({
       route: baseRoute, reason, provider: providerForRoute(baseRoute, kind),
@@ -663,7 +660,7 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
       taskClass: kind, taskId: boundTaskId, lane: boundLane, launchable: true, inPlaceAllowed: !admitted?.parity, verifyLive,
     });
   }
-  return liveReadOnlyDecision({ taskClass: kind, catalog, task, lane, now });
+  return liveReadOnlyDecision({ taskClass: kind, catalog, task, lane, now, scope });
 }
 
 function recordLane(task, { lane, route, reason, taskClass = null, catalog = null, replacement = null },
@@ -687,7 +684,9 @@ function recordLane(task, { lane, route, reason, taskClass = null, catalog = nul
   if (specialSource && (reason !== route.reason || !isDeepStrictEqual(admission?.route, route))) {
     throw Error(`a ${route.source} route records only through its admitted resolution for this task and lane`);
   }
-  if ((admission?.parity && route.source === 'task-default' && admission.route != null) || (admission?.parity?.consumes && !counting)) {
+  // A decision 359 Opus turn records only the Opus row, never the ordinary Astra default (decision 411a).
+  if ((admission?.parity && route.source === 'task-default' && (admission.route != null || ordinaryCodeRoute(route, Array.isArray(catalog) ? catalog : catalog?.pi))) ||
+      (admission?.parity?.consumes && !counting)) {
     throw Error(`lane ${lane}: the launcher's alternation turn changed since this route was resolved; resolve the lane again`);
   }
   validateRoleRoute('worker', route);
@@ -752,6 +751,8 @@ function differingLaneFlags(stored, flags, ownerRoute) {
     }
     if (!fits) differ.push('class');
   }
+  // Scope preserved never selects the ordinary Astra code default (ordinary may have selected an Opus parity turn).
+  if (flags.scope === 'preserved' && ordinaryCodeRoute(stored)) differ.push('scope');
   return differ;
 }
 
@@ -788,7 +789,7 @@ async function main(argv) {
     if (!argv[i].startsWith('--') || argv[i + 1] == null || argv[i + 1].startsWith('--')) throw Error(usage);
     flags[argv[i].slice(2)] = argv[++i];
   }
-  const known = ['class', 'catalog', 'owner-model', 'owner-effort', 'owner-fast', 'task', 'lane'];
+  const known = ['class', 'scope', 'catalog', 'owner-model', 'owner-effort', 'owner-fast', 'task', 'lane'];
   const unknown = Object.keys(flags).find(key => !known.includes(key));
   if (unknown) throw Error(`unknown option --${unknown}; ${usage}`);
   if (!!flags['owner-model'] !== !!flags['owner-effort'] || !!flags.task !== !!flags.lane ||
@@ -798,6 +799,7 @@ async function main(argv) {
   if (flags.class === 'opn-browser' && ['owner-model', 'owner-effort', 'owner-fast'].some(key => flags[key] != null)) {
     throw Error('opn-browser takes no --owner-model, --owner-effort, or --owner-fast; owner decision 412a fixes its route');
   }
+  requireCodeScope(flags.scope, flags.class);
   const task = flags.task && flags.lane ? readTask(resolve(flags.task)) : null;
   const recorded = task?.routes?.[flags.lane] ?? null;
   if (recorded) {
@@ -820,7 +822,8 @@ async function main(argv) {
   }
   const catalog = ownerRoute || flags.class === 'main-pm' ? null
     : await readCatalog(flags.catalog, flags.class === 'opn-browser' ? 'codex' : 'pi');
-  const resolved = await resolveWorkerRoute({ taskClass: flags.class ?? null, ownerRoute, catalog, task, lane: flags.lane ?? null });
+  const resolved = await resolveWorkerRoute({ taskClass: flags.class ?? null, ownerRoute, catalog, task, lane: flags.lane ?? null,
+    scope: flags.scope ?? null });
   if (flags.task) {
     if (resolved.proofRequired || SPECIAL_SOURCES.includes(resolved.route?.source)) {
       throw Error(`live policy selected ${resolved.provider}, which requires exact bound target/workspace admission via resolveWorkerRoute before recording`);
