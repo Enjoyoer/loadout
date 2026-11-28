@@ -7,8 +7,8 @@ import {
   closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isAbsolute, join, relative, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import {
   assertLiveResolution, canonicalWorkerClass, CURSOR_OVERFLOW_REASON, CURSOR_OVERFLOW_RUNTIME, CURSOR_OVERFLOW_SOURCE,
@@ -16,7 +16,7 @@ import {
   devinFirstReason, isReplacementMode, isTargetId, isUiRoute, launcherChain, LEGACY_OFF_PACE_CLASSES,
   isOpnBrowserRoute, localServerId, MAIN_PM_POLICY, OFF_PACE_CLASSES, OFF_PACE_SOURCES, offPaceLaunchAllowed, OPN_BROWSER_EXCEPTION,
   OPUS_REPLACEMENT_RUNTIME, OWNER_RULE_ROUTES, PACE_BACKUP_RUNTIME, paceBackupReason, PARITY_BACKUP_REASON,
-  parityReason, readLocalRouting, recordedLaneEntry, replacementReason, REPLACEMENT_RUNTIME,
+  parityReason, readLocalRouting, readOwnerJsonFile, recordedLaneEntry, replacementReason, REPLACEMENT_RUNTIME,
   replacementRuntimeForModel, resolveOpnBrowserRow, routeReason, selectWorkerRoute, stampLiveResolution, UI_CLASSES,
   uiTaskLaneClass, validateLaneClass, validateRoleRoute, WORKER_DEFAULT_ROUTES, workerRouteUnresolved,
 } from './agent-routing.mjs';
@@ -55,6 +55,17 @@ function switchMode(doc, now) {
   if (asOf == null || expiresAt == null || !(asOf < expiresAt && asOf <= now && now < expiresAt)) return null;
   return fallback.enabled ? 'forced' : 'parity';
 }
+
+// Owner decision 435a: the Config-published Linux copy of routing.json, read with the same strict owner-file checks as
+// the Mac file, and only its antigravityFallback key; every other key is dropped unread. 'forced' (fresh, both true)
+// sends the route CLI to the Mac; anything else (missing, stale, unsafe, parity) keeps the current Linux local policy.
+function linuxSwitchMode(now = Date.now()) {
+  if (process.platform !== 'linux') return null;
+  const doc = readOwnerJsonFile(join(homedir(), '.config', 'opc', 'routing.json'));
+  return doc ? switchMode({ antigravityFallback: doc.antigravityFallback }, now) : null;
+}
+const linuxForcedRefusal = () => Error('fresh off pace on Linux: a code lane is decided on the Mac, and no Linux code ' +
+  'route is admitted locally; resolve it with route.mjs, which asks the Mac, or wait until the Linux switch is not forced');
 
 // Decision 399a / 397c: exported pure validator for Config-owned devin-ready.json; live resolution always reads the
 // Mac file directly (no caller override).
@@ -639,6 +650,8 @@ export async function resolveWorkerRoute({ taskClass = null, ownerRoute = null, 
     return liveReadOnlyDecision({ taskClass, catalog, task, lane, now });
   }
   const kind = canonicalWorkerClass(taskClass);
+  // Decision 435a: under the fresh forced Linux switch a managed Linux code lane never silently takes the class default.
+  if (kind === 'code' && linuxSwitchMode(now) === 'forced') throw linuxForcedRefusal();
   if (replacement != null) {
     if (!Object.hasOwn(OWNER_RULE_ROUTES, kind ?? '') && !Object.hasOwn(WORKER_DEFAULT_ROUTES, kind ?? '')) {
       throw workerRouteUnresolved();
@@ -776,6 +789,117 @@ async function readCatalog(path, provider = 'pi') {
   return catalogRows(JSON.parse(stdout));
 }
 
+// Owner decision 435a: under the fresh forced Linux switch the route CLI asks the Mac route.mjs (the same install under
+// the Mac home) over noninteractive `ssh mac` with the same safe routing args, and prints the Mac's decision once it
+// validates. The answer is a policy preview only: it is never stamped as an in-process resolution, never recorded into a
+// Linux task, and any transport failure or unexpected answer refuses with no local fallback.
+const MAC_SSH_TIMEOUT_MS = 150000;
+const SAFE_FORWARD = /^[A-Za-z0-9._/[\]-]{1,128}$/;
+const SAFE_SCRIPT = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+const printable = text => String(text ?? '').split('\n').map(line => line.trim()).filter(Boolean).at(-1)
+  ?.replace(/[^\x20-\x7e]/g, '?').slice(0, 300) ?? '';
+
+function macRouteArgs(flags) {
+  if (flags.catalog != null) {
+    throw Error('fresh off pace on Linux: --catalog names a Linux file the Mac cannot read; resolve without --catalog ' +
+      'so the Mac reads its own catalog');
+  }
+  if (flags.task != null) {
+    throw Error('fresh off pace on Linux: the Mac decision is a policy preview, not Linux launch authority, so an ' +
+      'unrecorded --task lane is not recorded (recorded lanes replay unchanged); refusing rather than defaulting locally');
+  }
+  if (!SAFE_FORWARD.test(flags.class) || flags.class.startsWith('-')) {
+    throw Error('fresh off pace on Linux: --class is not a plain class name; refusing to forward it to the Mac');
+  }
+  return ['--class', flags.class];
+}
+
+async function askMacRoute(args) {
+  // The Mac runs the same install at the same path under its own home; the remote login shell supplies node, and the
+  // values reach node as positional words ("$0" "$@"), never re-parsed by a shell.
+  const script = relative(homedir(), fileURLToPath(import.meta.url));
+  if (isAbsolute(script) || script.split('/').includes('..') || !SAFE_SCRIPT.test(script)) {
+    throw Error('fresh off pace on Linux: route.mjs is not installed under this home, so no Mac install path matches; refusing');
+  }
+  const words = [script, ...args].map(word => `'${word}'`).join(' ');
+  const command = `exec "$SHELL" -lc 'exec node "$0" "$@"' ${words}`;
+  let stdout;
+  try {
+    ({ stdout } = await promisify(execFile)('ssh', ['-n', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '--', 'mac', command],
+      { timeout: MAC_SSH_TIMEOUT_MS, maxBuffer: 1 << 20, encoding: 'utf8' }));
+  } catch (error) {
+    const why = error.killed ? 'timed out' : error.code === 'ENOENT' ? 'ssh is not installed'
+      : `${error.code === 255 ? 'ssh failed' : 'Mac route.mjs refused'} (exit ${error.code}): ${printable(error.stderr)}`;
+    throw Error(`fresh off pace on Linux: no Mac route decision, ${why}; refusing with no local fallback`);
+  }
+  try { return JSON.parse(stdout); } catch {
+    throw Error('fresh off pace on Linux: the Mac route answer is not JSON; refusing with no local fallback');
+  }
+}
+
+const DECISION_KEYS = ['route', 'reason', 'provider', 'model', 'effort', 'fast', 'host', 'nextFallback', 'proofRequired'];
+const plainObject = value => value != null && typeof value === 'object' && !Array.isArray(value);
+// The decision the Mac answer must equal, apart from what only the Mac knows (host, catalog model id, holds); or a reason
+// to refuse. A code class default is refused: Mac route.mjs over SSH has no PASEO_AGENT_ID on its own daemon, so its
+// launcher check (offPaceLaunchAllowed) fails and it can only answer the class default, never a fresh off-pace route.
+function macDecisionProblem(out, taskClass) {
+  const mainPm = taskClass === 'main-pm';
+  if (!exactKeys(out, mainPm ? [...DECISION_KEYS, 'fallbackChain'] : DECISION_KEYS)) return 'unexpected answer keys';
+  const { route } = out;
+  if (!plainObject(route) || out.model !== route.model || out.effort !== route.effort || out.fast !== route.fastMode ||
+      typeof out.fast !== 'boolean' || !isTargetId(out.host) || typeof out.proofRequired !== 'boolean') {
+    return 'inconsistent answer';
+  }
+  const kind = canonicalWorkerClass(taskClass);
+  const expect = (reason, provider, { nextFallback = [null], proofRequired = false } = {}) =>
+    out.reason !== reason ? 'unexpected reason' : out.provider !== provider ? 'unexpected provider'
+      : !nextFallback.includes(out.nextFallback) || out.nextFallback === out.provider ? 'unexpected next fallback'
+        : out.proofRequired !== proofRequired ? 'unexpected proof flag' : null;
+  if (mainPm) {
+    const def = MAIN_PM_POLICY.defaultRoute, chain = out.fallbackChain, steps = MAIN_PM_POLICY.fallbackChain;
+    if (!isDeepStrictEqual(route, def) || !Array.isArray(chain) || chain.length !== steps.length ||
+        chain.some((step, i) => !plainObject(step) || typeof step.skipped !== 'boolean' ||
+          !isDeepStrictEqual(step, { ...steps[i], skipped: step.skipped }))) return 'unexpected main-pm policy';
+    return expect(def.reason, `pi/${def.model}`, { nextFallback: [chain.find(step => !step.skipped)?.provider ?? null] });
+  }
+  if (taskClass === 'opn-browser') {
+    const { provider, model, effort, fastMode, reason } = OPN_BROWSER_EXCEPTION;
+    return isDeepStrictEqual(route, { role: 'worker', source: 'owner-explicit', model, effort, fastMode, policy: 'opn-browser' })
+      ? expect(reason, `${provider}/${model}`) : 'unexpected opn-browser route';
+  }
+  if (route.source === DEVIN_FIRST_SOURCE) {
+    const { model, effort, fastMode } = DEVIN_FIRST_RUNTIME, reason = devinFirstReason(kind);
+    return DEVIN_FIRST_CLASSES.includes(kind) &&
+      isDeepStrictEqual(route, { role: 'worker', source: DEVIN_FIRST_SOURCE, kind, model, effort, fastMode, reason })
+      ? expect(reason, `pi/${model}`) : 'unexpected devin-first route';
+  }
+  if (kind === 'code' && (route.source === 'replacement' || route.source === 'pace-backup')) {
+    // A fresh forced ladder preview, exactly as liveReadOnlyDecision builds it.
+    const backup = route.source === 'pace-backup';
+    const runtime = backup ? PACE_BACKUP_RUNTIME : replacementRuntimeForModel(route.model);
+    const reason = !runtime ? null : backup ? paceBackupReason('code') : replacementReason('code', runtime.model);
+    if (!runtime || !isDeepStrictEqual(route, { role: 'worker', source: route.source, kind: 'code', model: runtime.model,
+      effort: runtime.effort, fastMode: runtime.fastMode, reason })) return 'unexpected off-pace code route';
+    const sol = `pi/${PACE_BACKUP_RUNTIME.model}`;
+    return backup ? expect(reason, sol)
+      : expect(reason, `${runtime.provider}/${runtime.model}`, { proofRequired: true,
+        nextFallback: [null, sol, `${OPUS_REPLACEMENT_RUNTIME.provider}/${OPUS_REPLACEMENT_RUNTIME.model}`] });
+  }
+  if (kind === 'code') {
+    return 'the Mac answered the code class default: over SSH Mac route.mjs cannot read the Linux launcher on its own ' +
+      'daemon, so it never admits an off-pace code route; refusing rather than substituting Opus';
+  }
+  try { validateRoleRoute('worker', route); } catch (error) { return error.message; }
+  if (Object.hasOwn(OWNER_RULE_ROUTES, kind ?? '')) {
+    const rule = OWNER_RULE_ROUTES[kind];
+    return exactKeys(route, ['role', 'source', 'model', 'effort', 'fastMode']) && route.source === 'owner-explicit' &&
+      route.effort === rule.effort && route.fastMode === rule.fastMode
+      ? expect(rule.reason, providerForRoute(route, kind)) : 'unexpected class route';
+  }
+  return route.source === 'task-default' && route.kind === kind && Object.hasOwn(WORKER_DEFAULT_ROUTES, kind ?? '')
+    ? expect(routeReason(route), providerForRoute(route, kind)) : 'unexpected class route';
+}
+
 function humanSummaryLine(label, resolved, recorded = false) {
   const suffix = resolved.proofRequired ? ' (proof required)' : '';
   const tag = recorded ? ' (recorded)' : '';
@@ -817,6 +941,13 @@ async function main(argv) {
   if (!ownerRoute && !flags.class) throw Error(usage);
   if (flags.task && (flags.class === 'main-pm' || flags.class === 'opn-browser')) {
     throw Error(`${flags.class} is a resolver-only policy and cannot be recorded as a managed Worker lane`);
+  }
+  // Owner-named routes never move with pace, so they stay local; every class resolution goes to the Mac.
+  if (!ownerRoute && linuxSwitchMode() === 'forced') {
+    const out = await askMacRoute(macRouteArgs(flags));
+    const problem = macDecisionProblem(out, flags.class);
+    if (problem) throw Error(`fresh off pace on Linux: refusing the Mac route answer (${problem}); no local fallback`);
+    return { out, summary: humanSummaryLine(`${flags.class} via mac`, out, false) };
   }
   const catalog = ownerRoute || flags.class === 'main-pm' ? null
     : await readCatalog(flags.catalog, flags.class === 'opn-browser' ? 'codex' : 'pi');

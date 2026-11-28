@@ -3132,5 +3132,147 @@ class OpcDeliveryTest(unittest.TestCase):
         """, env=env)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX owner-file checks and shell shims only')
+    def test_decision_435a_linux_fresh_off_pace_asks_the_mac(self):
+        # PM-specified checks: a fresh forced Linux copy delegates once and keeps the safe args and the Mac answer; a
+        # stale copy keeps the local default and never runs ssh; ssh failure, a malformed answer, and unsafe or missing
+        # context refuse with no local fallback; the Mac never delegates. One host plays both sides: a preload sets
+        # process.platform, and a fake ssh runs the forwarded command as the "Mac" (darwin, no PASEO_AGENT_ID).
+        root = Path(self.task).parent.parent
+        home = root / 'home-435a'
+        opc_dir = home / '.config' / 'opc'
+        opc_dir.mkdir(parents=True, mode=0o700)
+        install = home / '.local' / 'share' / 'loadout' / 'skills' / 'opc' / 'scripts'
+        shutil.copytree(SCRIPTS, install)
+        route_cli = str(install / 'route.mjs')
+        fake = root / 'bin-435a'
+        fake.mkdir()
+        preload = {}
+        for name in ('linux', 'darwin'):
+            preload[name] = root / f'as-{name}.mjs'
+            preload[name].write_text(f"Object.defineProperty(process, 'platform', {{ value: '{name}' }});\n")
+        ssh_log = root / 'ssh.log'
+        (fake / 'paseo').write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1 $2\" = 'daemon status' ]; then printf '{\"localDaemon\":\"running\",\"serverId\":\"srv-mac\"}\\n'; exit 0; fi\n"
+            "if [ \"$1 $2 $3 $4\" = 'provider models pi --json' ]; then cat \"$FAKE_CATALOG\"; exit 0; fi\n"
+            "exit 1\n")
+        (fake / 'ssh').write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$*\" >> {shlex.quote(str(ssh_log))}\n"
+            "case \"$FAKE_SSH\" in\n"
+            "  fail) echo 'ssh: connect to host mac port 22: Connection refused' >&2; exit 255;;\n"
+            "  garbage) echo 'Last login: today'; exit 0;;\n"
+            "  canned) cat \"$FAKE_ANSWER\"; exit 0;;\n"
+            "esac\n"
+            "[ \"$1 $2 $3 $4 $5 $6 $7 $8\" = '-n -T -o BatchMode=yes -o ConnectTimeout=15 -- mac' ] || exit 254\n"
+            "shift 8\n"
+            f"cd \"$HOME\" && unset PASEO_AGENT_ID && NODE_OPTIONS=--import={shlex.quote(str(preload['darwin']))} "
+            f"SHELL={shlex.quote(str(fake / 'login-shell'))} exec /bin/sh -c \"$1\"\n")
+        # The Mac login shell, minus the host profile (which would reorder PATH past the fake paseo).
+        (fake / 'login-shell').write_text('#!/bin/sh\n[ "$1" = -lc ] || exit 253\nshift\nexec /bin/sh -c "$@"\n')
+        for shim in ('paseo', 'ssh', 'login-shell'):
+            (fake / shim).chmod(0o755)
+        catalog = root / 'catalog-435a.json'
+        catalog.write_text(json.dumps([{'id': f'fleet/{model}', 'label': label, 'thinkingOptionIds': ['low', 'medium', 'high', 'xhigh']}
+                                       for model, label in [('claude-opus-5-5', 'Opus'), ('claude-fable-5-1', 'Fable'),
+                                                            ('gpt-6.2-sol', 'Sol'), ('gpt-6.1-terra', 'Terra'), ('gpt-6-luna', 'Luna')]]))
+        base_env = {k: v for k, v in os.environ.items() if k not in ('PASEO_AGENT_ID', 'PASEO_HOST', 'NODE_OPTIONS')}
+        base_env.update(HOME=str(home), PATH=f"{fake}{os.pathsep}{os.environ.get('PATH', '')}", FAKE_CATALOG=str(catalog))
+
+        def switch(state):
+            now = time.time()
+            stamp = lambda offset: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now + offset))
+            on = state != 'parity'
+            as_of, expires = (stamp(-7200), stamp(-3600)) if state == 'stale' else (stamp(-60), stamp(3600))
+            path = opc_dir / 'routing.json'
+            path.write_text(json.dumps({'pq': ['unused'], 'replacementExcludedLaunchers': [], 'antigravityFallback': {
+                'enabled': on, 'state': {'off_pace': on, 'as_of': as_of, 'expires_at': expires}}}))
+            path.chmod(0o600)
+
+        def route(*args, host='linux', **extra):
+            if ssh_log.exists():
+                ssh_log.unlink()
+            env = {**base_env, 'NODE_OPTIONS': f"--import={preload[host]}", **extra}
+            done = run('node', route_cli, *args, env=env)
+            calls = ssh_log.read_text().splitlines() if ssh_log.exists() else []
+            return done, calls
+
+        # Stale, then fresh-but-parity, Linux copies keep the local default and never run ssh.
+        for state in ('stale', 'parity'):
+            switch(state)
+            done, calls = route('--class', 'code', '--catalog', str(catalog))
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(json.loads(done.stdout)['route']['source'], 'task-default')
+            self.assertEqual(calls, [])
+        recorded, calls = route('--class', 'plan', '--catalog', str(catalog), '--task', self.task, '--lane', 'linux-plan')
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        self.assertEqual(calls, [])
+
+        switch('forced')
+        # Fresh forced: one ssh call with the safe args only; the answer is exactly what the Mac CLI prints.
+        mac, _ = route('--class', 'plan', host='darwin')
+        self.assertEqual(mac.returncode, 0, mac.stderr)
+        for cls in ('plan', 'main-pm'):
+            done, calls = route('--class', cls)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(len(calls), 1, calls)
+            self.assertTrue(calls[0].startswith('-n -T -o BatchMode=yes -o ConnectTimeout=15 -- mac '), calls[0])
+            self.assertTrue(calls[0].endswith(f"'.local/share/loadout/skills/opc/scripts/route.mjs' '--class' '{cls}'"), calls[0])
+            self.assertIn(f'route {cls} via mac: ', done.stderr)
+            self.assertEqual(json.loads(done.stdout)['host'], 'srv-mac')
+        self.assertEqual(json.loads(route('--class', 'plan')[0].stdout), json.loads(mac.stdout))
+        # The Mac over ssh cannot read the Linux launcher, so it only ever answers the code class default: refused, never Opus.
+        done, calls = route('--class', 'code')
+        self.assertEqual((done.returncode, done.stdout, len(calls)), (1, '', 1), done.stderr)
+        self.assertIn('cannot read the Linux launcher', done.stderr)
+        # Transport failure and malformed answers refuse with no local fallback.
+        done, calls = route('--class', 'plan', FAKE_SSH='fail')
+        self.assertEqual((done.returncode, done.stdout, len(calls)), (1, '', 1))
+        self.assertIn('ssh failed (exit 255): ssh: connect to host mac port 22: Connection refused; refusing with no local fallback', done.stderr)
+        done, _ = route('--class', 'plan', FAKE_SSH='garbage')
+        self.assertEqual((done.returncode, done.stdout), (1, ''))
+        self.assertIn('not JSON', done.stderr)
+        answer = root / 'answer-435a.json'
+        good = json.loads(mac.stdout)
+        for bad in ({**good, 'extra': 1}, {**good, 'provider': 'pi/fleet/gpt-6.2-sol'},
+                    {**good, 'route': {**good['route'], 'model': 'fleet/gpt-6.2-sol'}, 'model': 'fleet/gpt-6.2-sol'},
+                    {**good, 'route': {**good['route'], 'effort': 'low'}, 'effort': 'low'}, [good]):
+            answer.write_text(json.dumps(bad))
+            done, _ = route('--class', 'plan', FAKE_SSH='canned', FAKE_ANSWER=str(answer))
+            self.assertEqual((done.returncode, done.stdout), (1, ''), bad)
+            self.assertIn('refusing the Mac route answer', done.stderr)
+        answer.write_text(json.dumps(good))
+        self.assertEqual(route('--class', 'plan', FAKE_SSH='canned', FAKE_ANSWER=str(answer))[0].returncode, 0)
+        # Unsafe or missing context refuses before any ssh call, and an unrecorded --task lane is never recorded.
+        before = Path(self.task).read_text()
+        for args, why in ((['--class', "plan'$(touch pwned)"], 'not a plain class name'),
+                          (['--class', 'plan', '--catalog', str(catalog)], 'Mac cannot read'),
+                          (['--class', 'plan', '--task', self.task, '--lane', 'linux-new'], 'policy preview')):
+            done, calls = route(*args)
+            self.assertEqual((done.returncode, calls), (1, []), done.stderr)
+            self.assertIn(why, done.stderr)
+        self.assertEqual(Path(self.task).read_text(), before)
+        self.assertFalse((home / 'pwned').exists())
+        # A recorded lane replays unchanged and owner-named routes stay local, with no ssh call.
+        done, calls = route('--task', self.task, '--lane', 'linux-plan')
+        self.assertEqual((done.returncode, calls), (0, []), done.stderr)
+        self.assertEqual(json.loads(done.stdout)['route'], json.loads(recorded.stdout)['route'])
+        done, calls = route('--class', 'code', '--owner-model', 'fleet/claude-opus-5-5', '--owner-effort', 'high')
+        self.assertEqual((done.returncode, calls), (0, []), done.stderr)
+        # In process, a managed Linux code lane never silently defaults under the fresh forced switch.
+        done = run('node', '--input-type=module', '-e', f"""
+            import assert from 'node:assert/strict';
+            import {{ resolveWorkerRoute }} from {json.dumps((install / 'route.mjs').as_uri())};
+            const catalog = JSON.parse((await import('node:fs')).readFileSync({json.dumps(str(catalog))}, 'utf8'))
+              .map(row => ({{ id: row.id, label: row.label, thinkingOptions: row.thinkingOptionIds.map(id => ({{ id }})) }}));
+            await assert.rejects(resolveWorkerRoute({{ taskClass: 'code', catalog }}), /decided on the Mac/);
+            assert.equal((await resolveWorkerRoute({{ taskClass: 'plan', catalog }})).route.source, 'task-default');
+        """, env={**base_env, 'NODE_OPTIONS': f"--import={preload['linux']}"})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        # The Mac itself never delegates, whatever its switch says.
+        done, calls = route('--class', 'plan', '--catalog', str(catalog), host='darwin')
+        self.assertEqual((done.returncode, calls), (0, []), done.stderr)
+
 if __name__ == "__main__":
     unittest.main()

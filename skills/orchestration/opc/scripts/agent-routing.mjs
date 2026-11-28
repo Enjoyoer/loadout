@@ -544,7 +544,12 @@ export function readLocalRouting() {
 }
 // Any owner-only local OPC file read the same strict way (routing.json, the remote target mapping), or null.
 export function readOwnerJson(path) {
-  if (process.platform !== 'darwin' || typeof process.getuid !== 'function') return null;
+  return process.platform === 'darwin' ? readOwnerJsonFile(path) : null;
+}
+// The same strict owner-only read on any POSIX host. Decision 435a uses it only for the Config-published Linux copy of
+// routing.json, and only its antigravityFallback key (route.mjs); every Mac reader stays on readOwnerJson.
+export function readOwnerJsonFile(path) {
+  if (typeof process.getuid !== 'function') return null;
   let text;
   try {
     const link = lstatSync(path);
