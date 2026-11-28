@@ -1617,7 +1617,7 @@ assert.equal(build({route:{...owner,fastMode:false}}).request.labels['opc.servic
 assert.throws(()=>r.selectWorkerRoute({catalog}),/ask the owner/);
 assert.throws(()=>r.selectWorkerRoute({taskKind:'docs',catalog}),/ask the owner/);
 assert.throws(()=>r.resolveAgentRoute('worker'),/ask the owner/);
-assert.throws(()=>r.selectWorkerRoute({taskKind:'code',catalog:catalog.filter(row=>row.label!=='Astra')}),/catalog label Astra/);
+assert.throws(()=>r.selectWorkerRoute({taskKind:'code',catalog:catalog.filter(row=>row.label!=='Astra')}),{message:'catalog must have exactly one fleet/gpt-6.2-astra row labelled Astra (found 0)'});
 assert.throws(()=>r.selectWorkerRoute({taskKind:'browser',catalog:catalog.map(row=>row.label==='Sol'?{...row,thinkingOptions:levels(['high'])}:row)}),/does not serve required thinking low/);
 assert.throws(()=>r.selectWorkerRoute({ownerRoute:code,catalog}),/source owner-explicit/);
 // A recorded default cannot be edited or replayed against another catalog row.
