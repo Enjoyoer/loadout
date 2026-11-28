@@ -300,8 +300,8 @@ class OpcDeliveryTest(unittest.TestCase):
     def test_recorded_route_reads_and_updates_after_class_table_change(self):
         root = Path(self.task).parent.parent
         (root / "catalog.json").write_text(json.dumps(CATALOG))
-        recorded = run("node", str(SCRIPTS / "route.mjs"), "--class", "code", "--catalog", str(root / "catalog.json"),
-                       "--task", self.task, "--lane", "code-lane")
+        recorded = run("node", str(SCRIPTS / "route.mjs"), "--class", "code", "--scope", "preserved",
+                       "--catalog", str(root / "catalog.json"), "--task", self.task, "--lane", "code-lane")
         self.assertEqual(recorded.returncode, 0, recorded.stderr)
         # An alternate table: the same scripts with the code class fixed at a level the record does not carry.
         changed = root / "changed"
@@ -412,8 +412,9 @@ class OpcDeliveryTest(unittest.TestCase):
                                 task_class="security")
             if lane == "sol-default-off":
                 for step in ("request", "brief"):
-                    self.assertEqual(built[step].get("error"), "recorded review-security Worker route cannot rebuild: Fast off "
-                                                               "does not match the review-security class", step)
+                    self.assertEqual(built[step].get("error"), "recorded review-security Worker route cannot rebuild: "
+                                                               "fleet/gpt-6.2-sol is a GPT or web model and the review-security "
+                                                               "class runs Opus", step)
                 continue
             self.assertEqual(built["request"].get("provider"), f"pi/{route['model']}", (lane, built))
             self.assertEqual(built["request"]["settings"], {"thinkingOptionId": route["effort"]}, lane)
@@ -527,7 +528,8 @@ class OpcDeliveryTest(unittest.TestCase):
               taskKind: 'watcher' }}, catalog)), attempt(() => resolveAgentSurface('worker', {{ taskKind: 'watcher' }}, catalog))]));
         """)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(json.loads(done.stdout), ["task-default Worker route must match its Pi catalog label",
+        self.assertEqual(json.loads(done.stdout), ["recorded owner or task-default route required for worker; a recorded lane "
+                                                   "rebuilds only with its destination task, lane, and class",
                                                    "pi/fleet/gpt-6.2-sol"])
 
     def test_route_cli_research_resolves_to_terra_high(self):
@@ -596,7 +598,8 @@ class OpcDeliveryTest(unittest.TestCase):
         (root / "catalog.json").write_text(json.dumps(catalog))
         ui = self.ui_task()
         for task, kind, lane in ((self.task, "code", "code-lane"), (ui, "ui", "ui-lane")):
-            recorded = run("node", str(SCRIPTS / "route.mjs"), "--class", kind, "--catalog", str(root / "catalog.json"),
+            scope = ("--scope", "preserved") if kind == "code" else ()
+            recorded = run("node", str(SCRIPTS / "route.mjs"), "--class", kind, *scope, "--catalog", str(root / "catalog.json"),
                            "--task", task, "--lane", lane)
             self.assertEqual(recorded.returncode, 0, recorded.stderr)
         own = self.launch(ui, "ui-lane", "recorded['ui-lane'].route", catalog)
@@ -640,8 +643,8 @@ class OpcDeliveryTest(unittest.TestCase):
     def record_code_lane(self, catalog):
         root = Path(self.task).parent.parent
         (root / "catalog.json").write_text(json.dumps(catalog))
-        recorded = run("node", str(SCRIPTS / "route.mjs"), "--class", "code", "--catalog", str(root / "catalog.json"),
-                       "--task", self.task, "--lane", "code-lane")
+        recorded = run("node", str(SCRIPTS / "route.mjs"), "--class", "code", "--scope", "preserved",
+                       "--catalog", str(root / "catalog.json"), "--task", self.task, "--lane", "code-lane")
         self.assertEqual(recorded.returncode, 0, recorded.stderr)
 
     def test_mismatched_task_id_and_task_record_is_refused(self):
@@ -1189,8 +1192,8 @@ class OpcDeliveryTest(unittest.TestCase):
             // 5. Non-Claude classes stay unchanged while forced on.
             const nonTask = readTask(taskPath);
             for (const [cls, model, effort, fastMode] of [
-              ['review', 'fleet/gpt-6.2-sol', 'high', true],
-              ['review-security', 'fleet/gpt-6.2-sol', 'xhigh', true],
+              ['review', 'fleet/claude-opus-5-5', 'high', false],
+              ['review-security', 'fleet/claude-opus-5-5', 'xhigh', false],
               ['research', 'fleet/gpt-6.1-terra', 'high', false],
               ['watcher', 'fleet/gpt-6.2-sol', 'low', false],
               ['smoke', 'fleet/gpt-6-luna', 'low', true],
@@ -1583,7 +1586,7 @@ class OpcDeliveryTest(unittest.TestCase):
             assert.equal(cliPlanBound.route.source, 'task-default');
             assert.equal(cliPlanBound.route.model, 'fleet/claude-fable-5-1');
             // Normal non-Claude OPN classes keep working through raw CLI unchanged.
-            for (const [cls, model] of [['research', 'fleet/gpt-6.1-terra'], ['review', 'fleet/gpt-6.2-sol'],
+            for (const [cls, model] of [['research', 'fleet/gpt-6.1-terra'], ['review', 'fleet/claude-opus-5-5'],
               ['watcher', 'fleet/gpt-6.2-sol'], ['smoke', 'fleet/gpt-6-luna']]) {{
               const res = JSON.parse(execFileSync(process.execPath,
                 [routeCli, '--class', cls, '--catalog', catalogPath], {{ encoding: 'utf8' }}));
@@ -2085,6 +2088,7 @@ class OpcDeliveryTest(unittest.TestCase):
               ['gpt-6.2-sol', 'Sol'],
               ['gpt-6.1-terra', 'Terra'],
               ['gpt-6-luna', 'Luna'],
+              ['gpt-6.2-astra', 'Astra'],
             ].map(([id, label]) => ({{ id: 'fleet/' + id, label, thinkingOptions: [{{ id: 'low' }}, {{ id: 'medium' }}, {{ id: 'high' }}, {{ id: 'xhigh' }}] }}));
             writeFileSync(catalogPath, JSON.stringify(catalog));
             const piCaps = {{ enabled: true, status: 'available', modes: [], models: catalog }};
@@ -2710,6 +2714,7 @@ class OpcDeliveryTest(unittest.TestCase):
               {{ id: 'fleet/claude-opus-5-5', label: 'Opus', thinkingOptions: [{{ id: 'high' }}] }},
               {{ id: 'fleet/claude-fable-5-1', label: 'Fable', thinkingOptions: [{{ id: 'high' }}] }},
               {{ id: 'fleet/gpt-6.2-sol', label: 'Sol', thinkingOptions: [{{ id: 'medium' }}] }},
+              {{ id: 'fleet/gpt-6.2-astra', label: 'Astra', thinkingOptions: [{{ id: 'medium' }}] }},
             ];
             const cursorHost = {{ daemon: 'srv-cursor-linux', local: false, platform: 'linux' }};
             process.env.FAKE_PM_CWD = '/Users/example/Projects/app-pm';
@@ -2924,6 +2929,7 @@ class OpcDeliveryTest(unittest.TestCase):
               {{ id: 'fleet/claude-fable-5-1', label: 'Fable', thinkingOptions: [{{ id: 'high' }}] }},
               {{ id: 'fleet/gpt-6.2-sol', label: 'Sol', thinkingOptions: [{{ id: 'medium' }}] }},
               {{ id: 'fleet/gpt-6.1-terra', label: 'Terra', thinkingOptions: [{{ id: 'high' }}] }},
+              {{ id: 'fleet/gpt-6.2-astra', label: 'Astra', thinkingOptions: [{{ id: 'medium' }}] }},
             ];
             const catalogPath = join(opcDir, 'catalog.json');
             writeFileSync(catalogPath, JSON.stringify(catalog));
@@ -3094,7 +3100,7 @@ class OpcDeliveryTest(unittest.TestCase):
                 expires_at: new Date(now + 3_600_000).toISOString() }} }},
             }});
             offPaceRouting([process.env.PASEO_AGENT_ID]);
-            const opnCode = await resolveWorkerRoute({{ taskClass: 'code', catalog, lane: 'opn-code' }});
+            const opnCode = await resolveWorkerRoute({{ taskClass: 'code', catalog, lane: 'opn-code', scope: 'preserved' }});
             assert.equal(opnCode.route.source, 'task-default');
             for (const extra of [{{ provider: sol, agentSettings: {{ thinkingOptionId: 'medium' }} }},
               {{ provider: 'pi/fleet/claude-opus-5-5', agentSettings: {{ thinkingOptionId: 'medium' }} }}]) {{
@@ -3104,7 +3110,7 @@ class OpcDeliveryTest(unittest.TestCase):
               agentSettings: {{ thinkingOptionId: 'high' }} }}).request.settings, {{ thinkingOptionId: 'high' }});
 
             // 44255e3 fix 3: a managed launch takes its task record (a stamp for task A never builds for task B), and the
-            // stamp is bound to the launcher exclusions, so lifting an exclusion makes the remembered Opus default stale.
+            // stamp is bound to the launcher exclusions, so lifting an exclusion makes the remembered ordinary default stale.
             const exCode = await resolveWorkerRoute({{ task: readTask(taskPath), taskClass: 'code', catalog, lane: 'ex-code' }});
             assert.equal(exCode.route.source, 'task-default');
             const exBuild = extra => buildManagedWorkerRequest({{ taskId: readTask(taskPath).id, task: readTask(taskPath), lane: 'ex-code',
@@ -3112,7 +3118,7 @@ class OpcDeliveryTest(unittest.TestCase):
               route: exCode.route, taskClass: 'code', ...extra }});
             assert.throws(() => exBuild({{ task: null, taskId: 'another-task-0001' }}), /takes task: readTask/);
             assert.throws(() => exBuild({{ taskId: 'another-task-0001' }}), /bound task record id/);
-            assert.equal(exBuild({{}}).request.provider, 'pi/fleet/claude-opus-5-5');
+            assert.equal(exBuild({{}}).request.provider, 'pi/fleet/gpt-6.2-astra');
             offPaceRouting([]);
             assert.throws(() => exBuild({{}}), /changed since this route was resolved/);
             assert.throws(() => recordWorkerRoute(taskPath, {{ lane: 'ex-code', ...exCode, taskClass: 'code', catalog }}), /changed since this route was resolved/);
