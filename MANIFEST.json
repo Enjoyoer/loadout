@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "hash_basis": "git-blob",
-  "source_commit": "37df6d1ec6cea79f05dc0f719217629517d23e10",
+  "source_commit": "5db1a7996dec791dca9d0d4e068d73621a17786a",
   "skill_count": 25,
   "file_count": 153,
   "files": [
@@ -1082,31 +1082,31 @@
   "plugins": [
     {
       "id": "cache-aware-autocompact",
-      "paseo": ">=0.15.0 <0.16.0"
+      "paseo": ">=0.15.0 <0.16.0 || >=0.18.0 <0.19.0"
     },
     {
       "id": "history-cwd-fallback",
-      "paseo": ">=0.15.0 <0.16.0"
+      "paseo": ">=0.15.0 <0.16.0 || >=0.18.0 <0.19.0"
     },
     {
       "id": "merged-worker-archiver",
-      "paseo": ">=0.15.0 <0.16.0"
+      "paseo": ">=0.15.0 <0.16.0 || >=0.18.0 <0.19.0"
     },
     {
       "id": "orphan-project-sweeper",
-      "paseo": ">=0.15.0 <0.16.0"
+      "paseo": ">=0.15.0 <0.16.0 || >=0.18.0 <0.19.0"
     },
     {
       "id": "pi-fast-toggle",
-      "paseo": ">=0.15.0 <0.16.0"
+      "paseo": ">=0.15.0 <0.16.0 || >=0.18.0 <0.19.0"
     },
     {
       "id": "usage-limit-auto-resume",
-      "paseo": ">=0.15.0 <0.16.0"
+      "paseo": ">=0.15.0 <0.16.0 || >=0.18.0 <0.19.0"
     },
     {
       "id": "workspace-folder-title",
-      "paseo": ">=0.15.0 <0.16.0"
+      "paseo": ">=0.15.0 <0.16.0 || >=0.18.0 <0.19.0"
     }
   ],
   "plugin_files": [
@@ -1137,8 +1137,8 @@
     {
       "path": "plugins/cache-aware-autocompact/paseo-plugin.json",
       "plugin": "cache-aware-autocompact",
-      "bytes": 190,
-      "sha256": "09e4e27ae354fa4fe3c5e073feb7f32b7a9963182339bdb9459687e7c395c29b"
+      "bytes": 210,
+      "sha256": "f3653df7c27ae2983ca8caf4bf68e6b938a1b160ccfccce0e82e1a49cc80778e"
     },
     {
       "path": "plugins/cache-aware-autocompact/server/compaction.ts",
@@ -1299,8 +1299,8 @@
     {
       "path": "plugins/history-cwd-fallback/paseo-plugin.json",
       "plugin": "history-cwd-fallback",
-      "bytes": 259,
-      "sha256": "065ebf8d2b85996d3757509fecda41ebb55bffbb06cf5ab89ff2cd1e1cd8604d"
+      "bytes": 279,
+      "sha256": "3eff449b509a685e2fa5cd93657274cca6d4efa9de484324dc51bad342034ab5"
     },
     {
       "path": "plugins/history-cwd-fallback/server/bridge.ts",
@@ -1359,8 +1359,8 @@
     {
       "path": "plugins/merged-worker-archiver/paseo-plugin.json",
       "plugin": "merged-worker-archiver",
-      "bytes": 438,
-      "sha256": "cec3dabee0344109458a0758c3af642d860ba78d5c7414bc047ac68106b0b0dd"
+      "bytes": 458,
+      "sha256": "8c7ebb6f40a8b37a2ec2005584b18d5d6a9683e6cf38ba348358625380dc0788"
     },
     {
       "path": "plugins/merged-worker-archiver/scripts/dry-run.ts",
@@ -1551,8 +1551,8 @@
     {
       "path": "plugins/orphan-project-sweeper/paseo-plugin.json",
       "plugin": "orphan-project-sweeper",
-      "bytes": 94,
-      "sha256": "319a0cf01cc204569642b22b9f5c733465e5b08c244d76c150203d3789d7c2e5"
+      "bytes": 114,
+      "sha256": "0a74c0b95a930338eb6ebffa07b7fc66cfec42528a23d95212c11db1a9cad8d1"
     },
     {
       "path": "plugins/orphan-project-sweeper/scripts/dry-run.ts",
@@ -1665,8 +1665,8 @@
     {
       "path": "plugins/pi-fast-toggle/paseo-plugin.json",
       "plugin": "pi-fast-toggle",
-      "bytes": 164,
-      "sha256": "6859955c1192628117cd748029684fb55f8b86be71d8e2b12c48511e3a46b600"
+      "bytes": 184,
+      "sha256": "568da053e5538440c450c51bfbcb336538e83315c1d328599834038bbb5d869c"
     },
     {
       "path": "plugins/pi-fast-toggle/server/daemon.ts",
@@ -1761,8 +1761,8 @@
     {
       "path": "plugins/usage-limit-auto-resume/paseo-plugin.json",
       "plugin": "usage-limit-auto-resume",
-      "bytes": 271,
-      "sha256": "e9c345ff313ed7e369ce8fe5c10340cc4a5b2efb7e24cbc108cc43d8a17cc887"
+      "bytes": 291,
+      "sha256": "a54256a591e6e7bc35e51ae9797b7fb943eee3f7aabe9783ade9eb9d73ce7284"
     },
     {
       "path": "plugins/usage-limit-auto-resume/server/config.ts",
@@ -1941,8 +1941,8 @@
     {
       "path": "plugins/workspace-folder-title/paseo-plugin.json",
       "plugin": "workspace-folder-title",
-      "bytes": 216,
-      "sha256": "fae9c6a2121910e1a295c76a486e1baf33425a6d30a8697359047be00b507193"
+      "bytes": 236,
+      "sha256": "084706c08be21172665777089861f4f3d400b6b76b58ce9dff09a2c79fbd0870"
     },
     {
       "path": "plugins/workspace-folder-title/tsconfig.json",
