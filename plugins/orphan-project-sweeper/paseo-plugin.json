@@ -1,6 +1,6 @@
 {
   "id": "orphan-project-sweeper",
   "requirements": {
-    "paseo": ">=0.15.0 <0.16.0"
+    "paseo": ">=0.15.0 <0.16.0 || >=0.18.0 <0.19.0"
   }
 }

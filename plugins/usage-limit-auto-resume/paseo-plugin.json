@@ -2,7 +2,7 @@
   "id": "usage-limit-auto-resume",
   "description": "Safely resumes same-agent work after a recognized usage-limit failure.",
   "requirements": {
-    "paseo": ">=0.15.0 <0.16.0"
+    "paseo": ">=0.15.0 <0.16.0 || >=0.18.0 <0.19.0"
   },
   "build": [
     ["npm", "ci", "--ignore-scripts"],
