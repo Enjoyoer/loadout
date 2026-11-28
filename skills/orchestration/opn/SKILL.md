@@ -40,6 +40,7 @@ An outbound action for the owner (email, call, order, payment, post or quote to 
 
 ## Live systems
 
+- A shared service that other agents depend on changes only through one detached script that applies the change, restarts, health-checks and rolls back on failure. Never stop one as a separate step.
 - On a machine the owner is using, wait until it is idle before anything disruptive.
 - To stop a process, find it by name or pattern with a fresh scan, confirm it is the right one, stop that confirmed PID, then verify the stop with a fresh scan. Never reuse a saved PID, and never stop by pattern (`pkill -f`, `killall`).
 - Cleanup: the owning PM cleans its own scratch. Deleting anything outside the host's disk-guard allowlist (the paths its automatic cleanup may already delete) needs the owner's yes.

@@ -25,7 +25,7 @@ Default to one scout; add another only for an independent question expected to t
 
 Resolve every route, PMs included, via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted. Always consult `route.mjs --class <class>` (or `resolveWorkerRoute`) live before launching any fresh or replayed worker.
 
-Default to one sequential implementer Worker (server, UI, docs together). Parallelize only independent 30+ minute pieces without shared files or ordering. One owner per file; PM writes shared contracts first. Use fresh agents only when fresh context helps: spec/diff review, user-flow verification, or context-free research. One Worker lineage per lane; serialize only live checks sharing resources.
+Default to one sequential implementer Worker (server, UI, docs together); never split by work type or file. Parallelize only independent 30+ minute pieces without shared files or ordering. One owner per file; PM writes shared contracts first. Use fresh agents only when fresh context helps: spec/diff review, user-flow verification, or context-free research. One Worker lineage per lane; serialize only live checks sharing resources.
 
 Visual design (screen, layout, component) gets one read-only `ui-design` lane and optional `ui-check`; `code` builds. Copy-only UI changes stay `code`.
 
