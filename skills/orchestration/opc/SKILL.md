@@ -7,7 +7,7 @@ metadata:
 
 # OPC
 
-The PM owns scope, topology, integration, verification, and publication. Implementation authorizes bounded Worker lanes, not subdelegation or route substitution. OPC ends at verified merge, required sync, and cleanup; earlier endpoints are ordinary scoped work.
+The PM owns scope, topology, integration in its own checkout, verification, and publication. Implementation authorizes bounded Worker lanes, not subdelegation or route substitution. OPC ends at verified merge, required sync, and cleanup; earlier endpoints are ordinary scoped work.
 
 Read linked references only when their branch applies.
 
@@ -19,22 +19,22 @@ Enable browser review only when the initial request explicitly asks; the choice 
 
 ## 2. Optional scouting
 
-Default to one scout; add another only for an independent question expected to take 30+ minutes. Skip scouting and planning for trivial, localized, or sequential work. Synthesize findings first. Use a read-only `plan` Worker only for material ambiguity or cross-lane decisions.
+Default to one scout; add another only for an independent question expected to take 30+ minutes. Skip scouting and planning for trivial, localized, or sequential work. Use a read-only `plan` Worker only for material ambiguity or cross-lane decisions.
 
 ## 3. Worker
 
-Resolve every route, PMs included, via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted. Always consult `route.mjs --class <class>` (or `resolveWorkerRoute`) live before launching any fresh or replayed worker—never launch from remembered defaults, never invent Sol without positive proof/holds, and keep recorded, owner, review, and non-Claude routes unchanged.
+Resolve every route, PMs included, via [routing](references/routing.md "branch:routing"); owner model, effort, and Fast win unadjusted. Always consult `route.mjs --class <class>` (or `resolveWorkerRoute`) live before launching any fresh or replayed worker.
 
-Default to one sequential implementer Worker (server, UI, docs together). Add tests only for owner/PM-specified cases. Never split by work type or file. Parallelize only independent 30+ minute pieces without shared files or ordering. One owner per file; PM writes shared contracts first. Use fresh agents only when fresh context helps: spec/diff review, user-flow verification, or context-free research. One Worker lineage per lane; serialize only live checks sharing resources.
+Default to one sequential implementer Worker (server, UI, docs together); never split by work type or file. Parallelize only independent 30+ minute pieces without shared files or ordering. One owner per file; PM writes shared contracts first. Use fresh agents only when fresh context helps: spec/diff review, user-flow verification, or context-free research. One Worker lineage per lane; serialize only live checks sharing resources.
 
 Visual design (screen, layout, component) gets one read-only `ui-design` lane and optional `ui-check`; `code` builds. Copy-only UI changes stay `code`.
 
-When no Worker holds the checkout, the PM does work under about 20 tool calls itself. The PM stays in its checkout as sole integrator and publisher. For hosted Sites work, read [Sites](references/codex-sites.md "branch:sites") and route it with `route.mjs --class sites`. For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
+When no Worker holds the checkout, the PM does work under about 20 tool calls itself. For hosted Sites work, read [Sites](references/codex-sites.md "branch:sites") and route it with `route.mjs --class sites`. For cancellation or uncertain execution, read [recovery](references/recovery.md "branch:recovery") before acting.
 
 ## 4. Yield
 
 Every hand-off to a Worker must either carry a finish notification or queue a one-shot check-back in the same step; never wait on a Worker without one.
-Finish independent work and yield. On notification, read worker status and activity once each. While running: no babysitting, CLI waits, terminal inspection, status narration, retries, or replacements. Report terminal failures.
+While running: no babysitting, CLI waits, terminal inspection, status narration, retries, or replacements.
 
 Keep Neon turns short; stop and resume instead of steering to change course mid-turn.
 
@@ -44,7 +44,7 @@ Verify agent/workspace identity, path, branch, commits, base ancestry, and exact
 
 ## 6. Verify
 
-Independently check required behavior and final committed deliverable bytes using the execution mechanics. Reuse a receipt only while head, bytes, command, and evidence remain unchanged; otherwise rerun. [Review rules](references/web-reviewer.md#review-rules "branch:review") bind every review; initially enabled review reads it at the published candidate head. Security-sensitive diffs review on `review-security`. A small PR (not security-sensitive, changing no live system, and under about 50 changed lines) gets no review agent unless the owner asks: the Worker's own checks and the PM's readback cover it. Review never replaces PM correctness checks. Unrun platform or browser checks remain unverified.
+Independently check required behavior and final committed deliverable bytes using the execution mechanics. Reuse a receipt only while head, bytes, command, and evidence remain unchanged; otherwise rerun. [Review rules](references/web-reviewer.md#review-rules "branch:review") bind every review; initially enabled review reads it at the published candidate head. Security-sensitive diffs review on `review-security`. A small PR (not security-sensitive, changing no live system, and under about 50 changed lines) gets no review agent unless the owner asks: the Worker's own checks and the PM's readback cover it. Unrun platform or browser checks remain unverified.
 
 ## 7. Merge and cleanup
 

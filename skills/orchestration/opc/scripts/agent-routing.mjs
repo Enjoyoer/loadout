@@ -18,7 +18,7 @@ export function isValidModelId(value) {
 }
 
 export const FIXED_ROLE_ROUTES = Object.freeze({
-  // Owner decision 277a: a one-week scout trial on Terra high, Fast off, until 2026-11-26.
+  // Owner decision 277a (adopted 2026-11-28, decision 429a): scout runs Terra high, Fast off.
   scout: Object.freeze({ label: 'Terra', fallbackProvider: 'codex', effort: 'high', fastMode: false }),
   reviewer: Object.freeze({ label: 'Web Pro', fallbackProvider: 'codex', effort: null, fastMode: false }),
 });

@@ -170,6 +170,16 @@ python3 -m unittest discover -s tests
 
 CI runs these on Ubuntu, macOS, and Windows for every pull request, together with manifest verification, the `opc` package validator, and each plugin's `npm run check` (or `typecheck`) on Ubuntu and Windows.
 
+After changing [`opn`](skills/orchestration/opn/SKILL.md), run its maintainer checks from the repository root (installed hosts get no copy of these scripts or [`evals.json`](skills/orchestration/opn/evals.json)):
+
+```bash
+python3 skills/orchestration/opn/scripts/validate-opn.py
+python3 -m unittest discover -s skills/orchestration/opn/scripts -p "test_*.py"
+python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/orchestration/opn
+```
+
+The [`evals.json`](skills/orchestration/opn/evals.json) scenarios require a separate behavioral evaluator; without one, report them unexecuted.
+
 ## Publication integrity
 
 `MANIFEST.json` records committed Git-blob sizes and SHA256 values for every active skill and plugin file, and each plugin's Paseo version pin. Commit package content first, run `python3 scripts/generate_manifest.py`, then commit the manifest separately. `scripts/verify_manifest.py` checks the complete committed tree. The working tree, generated files, local secrets, and another repository's history are not publication sources.
