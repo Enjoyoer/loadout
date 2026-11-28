@@ -462,7 +462,7 @@ export function assertLiveResolution(route, { task = null, lane = null, taskClas
   return live;
 }
 // Resolver-only policies outside the 12-class worker table: main-pm (read-only policy ladder) and opn-browser (the named
-// OPN Pi browser exception, keeping native Codex browser unchanged and never admitting a code GPT route).
+// OPN native Codex browser exception, keeping the browser class unchanged and never admitting a code GPT route).
 export const MAIN_PM_POLICY = Object.freeze({
   defaultRoute: Object.freeze({
     role: 'main-pm', source: 'policy-default', model: 'fleet/claude-opus-5-5', effort: 'high', fastMode: false,
@@ -476,10 +476,43 @@ export const MAIN_PM_POLICY = Object.freeze({
     Object.freeze({ step: 'agy-opus', provider: 'agy-opc/claude-opus-5-5-high', model: 'claude-opus-5-5-high', effort: 'high', fast: false, standIn: true }),
   ]),
 });
+// Owner decision 412a (2026-11-27): a fresh PM-started OPN browser worker runs native Codex gpt-6.2-sol, thinking low,
+// Fast on, in the PM's own workspace so it shares the Paseo browser (native Codex gets the Paseo MCP browser tools from
+// its runtime Paseo MCP server). No caller override changes the model, thinking, Fast, or workspace.
 export const OPN_BROWSER_EXCEPTION = Object.freeze({
-  label: 'Sol', effort: 'low', fastMode: true,
-  reason: 'opn-browser named exception: Pi Sol low, Fast on (PM workspace)',
+  provider: 'codex', model: 'gpt-6.2-sol', effort: 'low', fastMode: true,
+  reason: 'opn-browser named exception: native Codex gpt-6.2-sol low, Fast on (PM workspace, owner 412a)',
+  modeId: 'full-access',
 });
+// The one native Codex catalog row (`paseo provider models codex`, unprefixed ids) serving the opn-browser model at its
+// thinking; a Pi row such as fleet/gpt-6.2-sol never authorizes it.
+export function resolveOpnBrowserRow(rows) {
+  const { model, effort } = OPN_BROWSER_EXCEPTION;
+  const served = (Array.isArray(rows) ? rows : []).filter(row => row?.id === model &&
+    row.thinkingOptions?.some(option => option?.id === effort));
+  if (served.length !== 1) {
+    throw Error(`the catalog must serve exactly one native Codex ${model} at ${effort} thinking; the opn-browser lane stops`);
+  }
+  return served[0];
+}
+// The native Codex full-access mode, advertised exactly once (stock Paseo Codex may omit isUnattended on it) and with no
+// other unattended mode beside it; anything else is ambiguous and stops the opn-browser lane.
+export function selectOpnBrowserMode(capabilities) {
+  const { modeId } = OPN_BROWSER_EXCEPTION;
+  const modes = capabilities?.enabled === true && capabilities.status === 'available' && Array.isArray(capabilities.modes)
+    ? capabilities.modes : null;
+  const full = modes?.filter(mode => mode?.id === modeId) ?? [];
+  if (full.length !== 1 || full[0].isUnattended === false ||
+      modes.some(mode => mode?.isUnattended === true && mode.id !== modeId)) {
+    throw Error(`native Codex must advertise exactly one ${modeId} mode and no other unattended mode; the opn-browser lane stops`);
+  }
+  return modeId;
+}
+// Whether a route is an opn-browser route: its policy marker, which survives the CLI's JSON so a parsed or pasted copy
+// stays marked, or resolveWorkerRoute's live opn-browser stamp. No caller class, omitted or other, maps a marked route
+// to Pi, to the browser class, or to a recorded or managed lane; only the live stamp authorizes an in-place launch.
+export const isOpnBrowserRoute = route => route != null && typeof route === 'object' &&
+  (route.policy === 'opn-browser' || liveResolutions.get(route)?.taskClass === 'opn-browser');
 // Whether already-parsed JSON text repeats a key in any object, with escaped spellings decoded.
 export function repeatsKey(text) {
   const objects = [];
@@ -1078,6 +1111,9 @@ const isClaudeModel = model => /(?:^|\/)claude-/i.test(model ?? '') || CLAUDE_LA
 export function resolveWorkerSurface({ provider, agentSettings = {}, role = 'worker', route, catalog, surface = 'pi',
   nativeAuthorization = null, task = null, lane = null, taskClass = null, capabilities = null, target = null,
   serverId = null, remote = null, workspace = null, inPlace = false } = {}) {
+  if (isOpnBrowserRoute(route)) {
+    throw Error('an opn-browser route launches only in place with taskClass opn-browser (buildInPlaceWorkerRequest)');
+  }
   const replacement = role === 'worker' && route?.source === 'replacement';
   const backup = role === 'worker' && route?.source === 'pace-backup';
   const devinFirst = role === 'worker' && route?.source === DEVIN_FIRST_SOURCE;

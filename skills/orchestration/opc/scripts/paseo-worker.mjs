@@ -1,6 +1,6 @@
 import {
   assertLiveResolution, CURSOR_OVERFLOW_LABEL, CURSOR_OVERFLOW_SOURCE, DEVIN_FIRST_SOURCE, isGptOrWebRoute, OFF_PACE_SOURCES, OPN_BROWSER_EXCEPTION,
-  replacementSettings, resolveCatalogLabel, resolveWorkerSurface,
+  isOpnBrowserRoute, replacementSettings, resolveOpnBrowserRow, resolveWorkerSurface, selectOpnBrowserMode,
 } from './agent-routing.mjs';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -117,6 +117,9 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
   agentSettings = {}, workerLabels = {}, workspace, capabilities, role = 'worker', route, surface = 'pi',
   nativeAuthorization = null, task = null, taskClass = null, target = null, remote = null }) {
   if (role !== 'worker') throw Error(`buildManagedWorkerRequest builds only Workers (role worker), not ${String(role)}`);
+  if (taskClass === 'opn-browser' || isOpnBrowserRoute(route)) {
+    throw Error('an opn-browser Worker runs in the PM\'s own workspace (buildInPlaceWorkerRequest), never a managed worktree');
+  }
   // A remote target is only a recorded off-pace lane's (replacement or bound pace-backup), with a fresh attestation
   // readRemoteAgyTarget / readRemoteNeonTarget returned.
   const remoteLaunch = target?.local === false;
@@ -178,7 +181,7 @@ export function buildManagedWorkerRequest({ taskId, lane, title, provider, initi
 // opn-browser): enforces a fresh live route from resolveWorkerRoute bound to exact lane, class, target, and current
 // live policy/daemon state. Rejects pasted/remembered routes, stale local runtime, and routes requiring managed placement.
 export function buildInPlaceWorkerRequest({ title, initialPrompt, route, taskClass, capabilities, lane,
-  workerLabels = {}, target = null, provider, agentSettings = {}, surface = 'pi', nativeAuthorization = null }) {
+  workerLabels = {}, target = null, provider, agentSettings = {}, surface = 'pi', nativeAuthorization = null, ...extra }) {
   const agentTitle = required(title, 'Worker title');
   const prompt = required(initialPrompt, 'initial prompt');
   const laneSlug = required(lane, 'Worker lane');
@@ -191,24 +194,39 @@ export function buildInPlaceWorkerRequest({ title, initialPrompt, route, taskCla
   if (OFF_PACE_SOURCES.includes(route?.source) || route?.source === DEVIN_FIRST_SOURCE) {
     throw Error(`a ${route.source} route requires managed worktree placement (buildManagedWorkerRequest)`);
   }
+  // An opn-browser route keeps its own class: an omitted or other taskClass never maps it to Pi or to browser.
+  if (isOpnBrowserRoute(route) && taskClass !== 'opn-browser') {
+    throw Error('an opn-browser route launches only with taskClass opn-browser, never as Pi or the browser class');
+  }
   assertLiveResolution(route, { lane: laneSlug, taskClass, target, inPlace: true });
   if (taskClass === 'opn-browser') {
-    const modeId = selectPiMode(capabilities);
-    const row = resolveCatalogLabel(capabilities?.models, OPN_BROWSER_EXCEPTION.label);
-    if (route.model !== row.id || route.effort !== OPN_BROWSER_EXCEPTION.effort || route.fastMode !== true ||
-        !row.thinkingOptions?.some(option => option?.id === OPN_BROWSER_EXCEPTION.effort)) {
-      throw Error('opn-browser route does not match the target Pi Sol low catalog row');
+    // Owner decision 412a: native Codex gpt-6.2-sol, thinking low, Fast on, in the PM's own workspace (no workspaceId, so
+    // create_agent starts it beside the PM and its Paseo browser). capabilities is native Codex inspect_provider's result
+    // with list_models rows as models. No caller provider, settings, or placement changes it.
+    const unknown = Object.keys(extra);
+    if (unknown.length) throw Error(`an opn-browser Worker takes no ${unknown.join(', ')}; it runs in the PM's own workspace`);
+    const { provider: codex, model, effort, fastMode } = OPN_BROWSER_EXCEPTION;
+    if (route.source !== 'owner-explicit' || route.model !== model || route.effort !== effort || route.fastMode !== fastMode) {
+      throw Error(`opn-browser route is not the validated native Codex ${model} ${effort}, Fast on route`);
     }
+    resolveOpnBrowserRow(capabilities?.models);
+    const mapped = `${codex}/${model}`, requested = { thinkingOptionId: effort, features: { fast_mode: fastMode } };
+    if (provider != null && provider !== mapped) {
+      throw Error(`explicit provider ${provider} is not what this lane's validated route maps to (${mapped})`);
+    }
+    if (Object.keys(agentSettings ?? {}).length && !isDeepStrictEqual(agentSettings, requested)) {
+      throw Error(`opn-browser settings must be exactly ${effort} thinking with Fast on; no caller override changes them`);
+    }
+    const modeId = selectOpnBrowserMode(capabilities);
     return Object.freeze({
       modeId,
       request: Object.freeze({
         title: agentTitle,
-        provider: `pi/${row.id}`,
+        provider: mapped,
         initialPrompt: prompt,
         notifyOnFinish: true,
-        settings: { thinkingOptionId: route.effort },
-        labels: { ...labels(workerLabels), role: 'worker', 'opc.worker-lane': laneSlug,
-          'opc.service-tier': 'fast', 'opc.route-source': 'opn-browser' },
+        settings: { ...requested, modeId },
+        labels: { ...labels(workerLabels), role: 'worker', 'opc.worker-lane': laneSlug, 'opc.route-source': 'opn-browser' },
       }),
     });
   }
